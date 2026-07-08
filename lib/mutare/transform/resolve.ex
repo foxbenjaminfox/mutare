@@ -39,7 +39,7 @@ defmodule Mutare.Transform.Resolve do
   alias Mutare.AST
   alias Mutare.MacroRouting.Registry, as: Macros
   alias Mutare.Mutator
-  alias Mutare.Transform.{Aliases, Imports, MetaKeys, ModuleScope, Uses}
+  alias Mutare.Transform.{Aliases, Calls, Imports, Meta, MetaKeys, ModuleScope, Uses}
   alias Mutare.Transform.Resolve.{ArgumentMarks, MacroStamp, NodeIds}
 
   @doc "Stamp remote calls, bare imported calls, and bare imported captures with their resolved module."
@@ -116,11 +116,11 @@ defmodule Mutare.Transform.Resolve do
   # fewer written arg — resolve it as *piped* (effective arity +1), the LHS normally. The
   # RHS's own arguments are ordinary expressions, so descent resets the flag. The LHS *is* the
   # RHS's effective argument 0, so if the RHS marks that position (`Process.sleep/1`,
-  # `:timer.sleep/1`, or a custom index-0 mark) `ArgumentMarks.stamp_receiver/3` marks the LHS —
-  # the piped counterpart of the visible-arg stamping the RHS clause did.
+  # `:timer.sleep/1`, or a custom index-0 mark) `mark_pipe_receiver/3` marks the LHS — the piped
+  # counterpart of the visible-arg stamping the RHS clause did.
   defp walk({:|>, meta, [lhs, rhs]}, env) do
     rhs = walk(rhs, %{env | pipe_mode: :piped})
-    lhs = ArgumentMarks.stamp_receiver(walk(lhs, %{env | pipe_mode: :unpiped}), rhs, env.marks)
+    lhs = mark_pipe_receiver(walk(lhs, %{env | pipe_mode: :unpiped}), rhs, env)
     {:|>, meta, [lhs, rhs]}
   end
 
@@ -341,6 +341,46 @@ defmodule Mutare.Transform.Resolve do
   # every other argument — the stamp rides through untouched.
   defp descend_marked(args, module_key, fun, env),
     do: args |> ArgumentMarks.stamp(module_key, fun, env.pipe_mode, env.marks) |> descend(env)
+
+  # Mark a pipe's left side — the RHS call's effective argument 0, which `descend_marked/4` can't
+  # reach because it isn't in the RHS's visible args — when the RHS marks index 0. The cheap
+  # `receiver_fun?` pre-filter runs first; only then is the RHS target resolved.
+  defp mark_pipe_receiver(lhs, rhs, env) do
+    if ArgumentMarks.receiver_fun?(rhs, env.marks) do
+      case pipe_target(rhs, env) do
+        {module_key, fun, effective_arity} ->
+          case ArgumentMarks.receiver_labels(module_key, fun, effective_arity, env.marks) do
+            nil -> lhs
+            labels -> Meta.add_marks(lhs, labels)
+          end
+
+        nil ->
+          lhs
+      end
+    else
+      lhs
+    end
+  end
+
+  # The resolved `{module_key, function, effective_arity}` of a walked pipe RHS call, or `nil`. A
+  # remote/erlang head resolves via `Calls.resolved_call/1` (reading the stamps this pass just
+  # placed); a bare head via `bare_module_key/4` (the import/Kernel resolution the bare-call clause
+  # used) — so a bare `Kernel` or imported RHS resolves the same as when the call is written
+  # non-piped, honouring the effective-index-0 contract there too.
+  defp pipe_target({{:., _dm, [_recv, fun]}, _meta, args} = rhs, _env)
+       when is_atom(fun) and is_list(args) do
+    case Calls.resolved_call(rhs) do
+      {module_key, ^fun, _args, _rebuild} -> {module_key, fun, length(args) + 1}
+      _ -> nil
+    end
+  end
+
+  defp pipe_target({fun, meta, args}, env) when is_atom(fun) and is_list(args),
+    do:
+      {bare_module_key(fun, Mutator.effective_arity(args, :piped), meta, env), fun,
+       length(args) + 1}
+
+  defp pipe_target(_rhs, _env), do: nil
 
   defp capture_arity(n) when is_integer(n) and n >= 0, do: {:ok, n}
   defp capture_arity({:__block__, _meta, [n]}) when is_integer(n) and n >= 0, do: {:ok, n}

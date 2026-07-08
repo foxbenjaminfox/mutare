@@ -81,16 +81,12 @@ defmodule Mutare.Mutators.IntegerLiteral do
       end)
   end
 
-  # The built-in timeout table plus any `:skip_arguments` positions the user configured, which are
-  # marked with this family's *own name* so they suppress only `:integer` (integers) at those spots —
-  # AtomLiteral takes the option separately for atoms.
+  # The built-in timeout table plus any `:skip_arguments` positions the user configured
+  # (per-instance, read back by `Mutare.Mutator.self_marked?/1`).
   @impl Mutare.Mutator
   def argument_marks(config) do
-    timeout_marks() ++ Mutare.Mutator.argument_marks_from(skip_arguments(config), name())
+    timeout_marks() ++ Mutare.Mutator.skip_arguments_marks(config)
   end
-
-  defp skip_arguments(config) when is_list(config), do: Keyword.get(config, :skip_arguments, [])
-  defp skip_arguments(_config), do: []
 
   # Decline at a marked timeout position (an integer there is a magic duration constant the suite
   # can't pin — a near-unkillable equivalent mutant) or a user-configured `:skip_arguments` position;
@@ -99,7 +95,7 @@ defmodule Mutare.Mutators.IntegerLiteral do
   # directly callable in tests).
   @impl Mutare.Mutator
   def mutate(node, context) do
-    if Mutare.Mutator.marked?(context, @timeout_mark) or Mutare.Mutator.marked?(context, name()),
+    if Mutare.Mutator.marked?(context, @timeout_mark) or Mutare.Mutator.self_marked?(context),
       do: :skip,
       else: mutate(node)
   end

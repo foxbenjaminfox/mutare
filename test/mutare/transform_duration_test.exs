@@ -496,6 +496,66 @@ defmodule Mutare.TransformDurationTest do
         )
       end
     end
+
+    test "a one-based (out-of-range) index is rejected, not silently ignored" do
+      # Effective indices for arity 3 are 0..2; `[3]` is a one-based typo that would mark nothing.
+      assert_raise ArgumentError, ~r/below the arity 3/, fn ->
+        value_triples(
+          "def f, do: 1",
+          [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp, :put, 3, [3]}]}]
+        )
+      end
+    end
+
+    test ":skip_arguments is per-instance across :as copies of the same module" do
+      # `:a` configures `put/3` arg 2; `:b` is a plain second instance. Only `:a` skips the literal
+      # there — a shared module-name label would have made `:b` skip it too.
+      {_m, triples} =
+        value_triples(
+          "def f(c), do: MyApp.put(c, :k, 300)",
+          [
+            {Mutare.Mutators.IntegerLiteral, as: :a, skip_arguments: [{MyApp, :put, 3, [2]}]},
+            {Mutare.Mutators.IntegerLiteral, as: :b}
+          ]
+        )
+
+      assert {:b, "300", "0"} in triples
+      refute Enum.any?(triples, fn {m, _o, _} -> m == :a end)
+    end
+
+    test "a configured effective-index-0 mark covers both the plain and piped receiver forms" do
+      # `Kernel.to_string/1` arg 0 is the value in `to_string(123)` and the piped receiver in
+      # `123 |> to_string()`. Both are held back — the piped receiver resolves through the same
+      # Kernel/import machinery as the written call.
+      config = [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{Kernel, :to_string, 1, [0]}]}]
+
+      assert value_triples("def f, do: to_string(123)", config) |> elem(1) == []
+      assert value_triples("def f, do: 123 |> to_string()", config) |> elem(1) == []
+
+      # …while an unconfigured Kernel call is untouched.
+      assert {:integer, "123", "0"} in (value_triples("def f, do: to_string(123)", [
+                                          Mutare.Mutators.IntegerLiteral
+                                        ])
+                                        |> elem(1))
+    end
+
+    test "FloatLiteral and StringLiteral honour :skip_arguments too" do
+      {_m, floats} =
+        value_triples(
+          "def f(c), do: MyApp.ratio(c, 1.5)",
+          [{Mutare.Mutators.FloatLiteral, skip_arguments: [{MyApp, :ratio, 2, [1]}]}]
+        )
+
+      assert floats == []
+
+      {_m, strings} =
+        value_triples(
+          ~s|def f(c), do: MyApp.tag(c, "x")|,
+          [{Mutare.Mutators.StringLiteral, skip_arguments: [{MyApp, :tag, 2, [1]}]}]
+        )
+
+      assert strings == []
+    end
   end
 
   # Transform a module body and return `{meta, triples}` where each triple is

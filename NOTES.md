@@ -4835,12 +4835,27 @@ Mechanism:
   `:timeout` table (via `IntegerLiteral.timeout_marks/0`, which `AtomLiteral` reuses) so the marks survive
   either family being disabled.
 
-**Configurable marks.** `argument_marks/1` receives the mutator instance's config, so a mutator can
-fold options-driven positions into its declarations. `IntegerLiteral`/`AtomLiteral` expose a
-`:skip_arguments` option (`[{module, function, arity, positions}]`) via `Mutator.argument_marks_from/2`,
-each marking with its *own* name as the label — so a configured position suppresses only that family
-(they take the option independently), a typo raises at startup, and adding a stdlib timeout stays a
-pure data edit to the built-in table.
+fold options-driven positions into its declarations. The value families (`IntegerLiteral`,
+`AtomLiteral`, `FloatLiteral`, `StringLiteral`) expose a `:skip_arguments` option
+(`[{module, function, arity, positions}]`) via `Mutator.skip_arguments_marks/1`, and read it back
+with `Mutator.self_marked?/1`. Three properties worth calling out, each a fix from review:
+
+- **Per-instance.** The marks are labeled with an internal self-mark that `ArgumentMarks.build/1`
+  *relabels to the spec's (`:as`-resolved) name*, and `self_marked?/1` reads the instance name off
+  `context.name` (added by dispatch). So two `:as` copies of the same module with different
+  `:skip_arguments` don't collide — a shared module-name label would have made both skip every
+  configured position. (Marking with a *shared* label instead — e.g. `:timeout` — is still available
+  via `argument_marks_from/2` for the cross-family built-ins.)
+- **Effective-index-0 works piped.** A configured `{Kernel, :to_string, 1, [0]}` suppresses
+  `to_string(123)` *and* `123 |> to_string()`. The piped-receiver path resolves the RHS through
+  `Resolve`'s own import/`Kernel` resolution (`bare_module_key`), not just `resolved_call/1` (which
+  doesn't recover a bare `Kernel` call) — so the effective-index-0 contract holds for piped receivers
+  the same as written calls.
+- **Fails loud on a bad index.** A one-based typo like `[3]` for an arity-3 call (valid effective
+  indices `0..2`) raises at startup rather than silently marking nothing.
+
+Adding a stdlib timeout is still a pure data edit to the built-in table; adding the option to another
+family is a two-line `argument_marks/1` + `mutate/2` pair.
 
 Where the timeout use sits relative to the other positive exclusions: it is the **first
 signal-quality** one — every prior exclusion (struct fields, `for` options, `:uniq`, quoted data) is a

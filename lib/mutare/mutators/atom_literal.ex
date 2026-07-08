@@ -48,12 +48,8 @@ defmodule Mutare.Mutators.AtomLiteral do
   # of `IntegerLiteral`'s.
   @impl Mutare.Mutator
   def argument_marks(config) do
-    Mutare.Mutators.IntegerLiteral.timeout_marks() ++
-      Mutare.Mutator.argument_marks_from(skip_arguments(config), name())
+    Mutare.Mutators.IntegerLiteral.timeout_marks() ++ Mutare.Mutator.skip_arguments_marks(config)
   end
-
-  defp skip_arguments(config) when is_list(config), do: Keyword.get(config, :skip_arguments, [])
-  defp skip_arguments(_config), do: []
 
   # Decline for `:infinity` at a marked timeout position — the "wait forever" duration, not a value
   # to perturb (a *different* atom there is not a duration and still mutates, e.g.
@@ -62,7 +58,7 @@ defmodule Mutare.Mutators.AtomLiteral do
   # dispatch.
   @impl Mutare.Mutator
   def mutate(node, context) do
-    if Mutare.Mutator.marked?(context, name()) or infinity_timeout?(node, context),
+    if Mutare.Mutator.self_marked?(context) or infinity_timeout?(node, context),
       do: :skip,
       else: mutate(node)
   end

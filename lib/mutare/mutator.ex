@@ -144,6 +144,7 @@ defmodule Mutare.Mutator do
   """
   @type context :: %{
           :pipe_mode => pipe_mode(),
+          optional(:name) => atom(),
           optional(:opts) => term(),
           optional(:config) => term(),
           optional(:behaviours) => MapSet.t(module()),
@@ -452,16 +453,48 @@ defmodule Mutare.Mutator do
   def marked?(%{marks: marks}, label), do: MapSet.member?(marks, label)
   def marked?(_context, _label), do: false
 
+  # The label a `:skip_arguments` mark carries until `Mutare.Transform.Resolve.ArgumentMarks` relabels
+  # it with the instance's name at build — so two `:as` copies of the same module don't collide on a
+  # shared module-name label.
+  @self_mark :__mutare_self__
+
+  @doc false
+  @spec self_mark() :: atom()
+  def self_mark, do: @self_mark
+
+  @doc """
+  Whether the offered node sits at a position *this instance* asked to leave alone via its
+  `:skip_arguments` option (`skip_arguments_marks/1`). Per-instance — a second `:as` copy of the same
+  module with different `:skip_arguments` is unaffected, because the mark is resolved to the
+  instance's own name. Total over a context without a name (the common non-configured case).
+  """
+  @spec self_marked?(context()) :: boolean()
+  def self_marked?(%{name: name} = context), do: marked?(context, name)
+  def self_marked?(_context), do: false
+
+  @doc """
+  The `c:argument_marks/1` declarations for a configurable mutator's `:skip_arguments` option — the
+  one-liner a value family uses to expose "also leave these call positions alone". Reads the
+  `{module, function, arity, positions}` list from the instance's `config` and labels each with the
+  per-instance self-mark that `self_marked?/1` reads back.
+
+      def argument_marks(config), do: builtin() ++ Mutare.Mutator.skip_arguments_marks(config)
+  """
+  @spec skip_arguments_marks(term()) ::
+          [{module(), atom(), arity(), [non_neg_integer() | {:keyword, atom()}], atom()}]
+  def skip_arguments_marks(config), do: argument_marks_from(skip_entries(config), @self_mark)
+
+  defp skip_entries(config) when is_list(config), do: Keyword.get(config, :skip_arguments, [])
+  defp skip_entries(_config), do: []
+
   @doc """
   Turns a user-facing list of `{module, function, arity, positions}` entries into
-  `c:argument_marks/1` declarations under `label` — the helper a configurable mutator uses to expose
-  "also leave these positions alone" as an option (e.g. `skip_arguments:`). `positions` is a list of
-  effective argument indices and `{:keyword, key}` option keys, exactly as in a declaration. Raises
-  `ArgumentError` with a pointed message on a malformed entry, so a typo fails at startup rather than
-  silently marking nothing.
-
-      def argument_marks(config),
-        do: builtin() ++ Mutare.Mutator.argument_marks_from(config[:skip_arguments] || [], name())
+  `c:argument_marks/1` declarations under `label`. `positions` is a list of effective argument
+  indices and `{:keyword, key}` option keys, exactly as in a declaration; an index is validated
+  against the declared arity. Raises `ArgumentError` with a pointed message on a malformed entry, so
+  a typo fails at startup rather than silently marking nothing. For the common "leave positions from
+  my `:skip_arguments` option alone" case, use `skip_arguments_marks/1` (which labels per-instance);
+  reach for this directly only when you want a *shared* label other mutators may react to.
   """
   @spec argument_marks_from(term(), atom()) ::
           [{module(), atom(), arity(), [non_neg_integer() | {:keyword, atom()}], atom()}]
@@ -476,7 +509,7 @@ defmodule Mutare.Mutator do
   defp marks_entry({module, fun, arity, positions} = entry, label)
        when is_atom(module) and is_atom(fun) and is_integer(arity) and arity >= 0 and
               is_list(positions) do
-    Enum.each(positions, &valid_position!(&1, entry))
+    Enum.each(positions, &valid_position!(&1, arity, entry))
     {module, fun, arity, positions, label}
   end
 
@@ -486,13 +519,18 @@ defmodule Mutare.Mutator do
             "{module, function, arity, positions}"
   end
 
-  defp valid_position!(index, _entry) when is_integer(index) and index >= 0, do: :ok
-  defp valid_position!({:keyword, key}, _entry) when is_atom(key), do: :ok
+  # Positions are *effective* indices, so a valid one is `0..arity-1` — a one-based typo like index
+  # `3` for an arity-3 call would silently mark nothing, so reject it here.
+  defp valid_position!(index, arity, _entry)
+       when is_integer(index) and index >= 0 and index < arity,
+       do: :ok
 
-  defp valid_position!(position, entry) do
+  defp valid_position!({:keyword, key}, _arity, _entry) when is_atom(key), do: :ok
+
+  defp valid_position!(position, arity, entry) do
     raise ArgumentError,
           "invalid position #{inspect(position)} in #{inspect(entry)}; expected a " <>
-            "non-negative index or {:keyword, key}"
+            "0-based index below the arity #{arity}, or {:keyword, key}"
   end
 
   @doc """

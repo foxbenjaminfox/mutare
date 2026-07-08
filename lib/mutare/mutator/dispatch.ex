@@ -76,8 +76,14 @@ defmodule Mutare.Mutator.Dispatch do
   # the spec-derived context keys are named, shared by the node-level (`mutations/3`) and
   # selector-host (`host_targets/3`) paths — `structural_context/1` builds the same keys
   # minus `:pipe_mode` from scratch.
-  defp put_spec_context(context, %Spec{opts: opts, config: config, behaviours: behaviours}) do
+  defp put_spec_context(context, %Spec{
+         name: name,
+         opts: opts,
+         config: config,
+         behaviours: behaviours
+       }) do
     context
+    |> Map.put(:name, name)
     |> Map.put(:opts, opts)
     |> Map.put(:config, config)
     |> Map.put(:behaviours, behaviours)
