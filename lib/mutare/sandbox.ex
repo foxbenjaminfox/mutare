@@ -17,8 +17,8 @@ defmodule Mutare.Sandbox do
 
   Two materialisation modes, chosen by `:keep_sandbox`:
 
-    * **fresh (default)** — a throwaway dir is wiped (`reset!/1`) and re-copied
-      every run, so the metamutant recompiles cold. Always correct, no caching.
+    * **fresh (default)** — a throwaway dir is wiped and re-copied every run, so the metamutant
+      recompiles cold. Always correct, no caching.
     * **kept (`keep_sandbox: true`)** — the sandbox (and its compiled `_build`)
       is *preserved* between runs and re-materialised by `sync/4`: a file is
       rewritten only when its desired content differs (unchanged files keep their
@@ -34,39 +34,18 @@ defmodule Mutare.Sandbox do
   alias Mutare.{Options, Schema}
   alias Mutare.Coverage.Recorder
   alias Mutare.Run.Context
-  alias Mutare.Sandbox.{CompilerOptions, Lock, Paths, Seed}
+  alias Mutare.Sandbox.{CompilerOptions, Lock, Ownership, Paths, Seed}
   alias Mutare.Sandbox.Command.Invocation
 
-  @lock_name ".mutare_sandbox.lock"
+  # Sourced from `Mutare.Sandbox.Lock` (its single owner) so the excluded-paths list and the
+  # ownership guard (`Mutare.Sandbox.Ownership`) share one lock filename.
+  @lock_name Lock.name()
   @excluded ~w(_build .git .elixir_ls .lexical cover) ++ [@lock_name]
 
   # The build environment every sandbox `mix` runs under is owned by
   # `Mutare.Sandbox.Command.Invocation` (`Invocation.mix_env/0`), which sets it on
   # every invocation — so the dependencies' compiled artifacts we seed (see
   # `Mutare.Sandbox.Seed.dep_build/2`) live under `_build/<env>/lib`.
-
-  # A sandbox is a throwaway copy we compile, mutate, and wipe. Before clearing a
-  # directory we must be sure it is *ours* — not, say, a path `--sandbox` was
-  # pointed at by mistake — so we never `rm_rf!` arbitrary user data. We take a
-  # path only when it is one of:
-  #
-  #   1. absent — we create it;
-  #   2. an empty directory — we adopt it; or
-  #   3. a directory carrying our ownership marker — a sandbox from an earlier
-  #      run, which we wipe and reuse (poison recovery rebuilds the same path).
-  #
-  # Anything else — a non-empty directory we never marked, a regular file, a
-  # symlink — is refused untouched. The marker is a small dotfile whose first
-  # line is a fixed signature; we verify its contents (not just its name) so a
-  # coincidental file cannot hand us ownership of a directory we did not create.
-  @marker_name ".mutare_sandbox"
-  @marker_signature "mutare-sandbox-ownership-marker"
-  @marker_body """
-  #{@marker_signature}
-
-  This directory is a Mutare sandbox: a compiled-and-mutated copy of a target
-  project. Mutare overwrites and prunes it on every run — keep nothing here.
-  """
 
   # The bootstrap is three dependency-free snippets, each rendered the same way
   # from a quoted AST its owner defines: the mutant selector
@@ -178,7 +157,7 @@ defmodule Mutare.Sandbox do
     sandbox = options.sandbox || default_sandbox(root, options.keep_sandbox)
 
     Paths.validate!(root, sandbox)
-    claim!(sandbox, options.keep_sandbox, options.sandbox != nil)
+    Ownership.claim!(sandbox, options.keep_sandbox, options.sandbox != nil)
 
     if options.keep_sandbox do
       # Reuse the existing sandbox (and its `_build`): re-materialise it in place,
@@ -228,7 +207,7 @@ defmodule Mutare.Sandbox do
       sandbox = options.sandbox || default_sandbox(root, options.keep_sandbox)
 
       Paths.validate!(root, sandbox)
-      ensure_lockable!(sandbox)
+      Ownership.ensure_lockable!(sandbox)
       Lock.acquire(sandbox)
     end
   end
@@ -288,131 +267,8 @@ defmodule Mutare.Sandbox do
     Path.join(System.tmp_dir!(), "mutare_sandbox_#{digest}")
   end
 
-  # Take ownership of the sandbox path, then leave our marker. `lstat` (not
-  # `stat`) so a symlink is seen as a symlink, never followed to a directory we
-  # would then wipe. `pinned?` is whether the caller chose `:sandbox` explicitly
-  # (vs. an auto-generated default) — it decides how an existing *owned* dir is
-  # treated in fresh mode (see the cond).
-  defp claim!(sandbox, keep?, pinned?) do
-    case File.lstat(sandbox) do
-      {:error, :enoent} ->
-        File.mkdir_p!(sandbox)
-
-      {:ok, %File.Stat{type: :directory}} ->
-        handle_existing_dir!(sandbox, keep?, pinned?)
-
-      {:ok, %File.Stat{type: type}} ->
-        refuse!(sandbox, "is a #{type}, not a directory")
-
-      {:error, reason} ->
-        raise File.Error, reason: reason, action: "inspect sandbox", path: sandbox
-    end
-
-    put_if_changed(marker_path(sandbox), @marker_body)
-  end
-
-  # What to do with an existing *directory* at the sandbox path, by ownership and mode.
-  defp handle_existing_dir!(sandbox, keep?, pinned?) do
-    owned = owned?(sandbox)
-
-    cond do
-      # Keep mode reuses an owned dir *in place* — `sync` re-materialises it,
-      # preserving its `_build`. Never wiped.
-      keep? and owned ->
-        :ok
-
-      # Fresh mode at an explicitly pinned `:sandbox`: wiping a prior Mutare
-      # sandbox at a fixed path is the documented, intended reuse.
-      owned and pinned? ->
-        reset!(sandbox)
-
-      # Fresh mode at an auto-generated path: the pid-salted name cannot collide
-      # with a *live* run, so an existing owned dir here is a stale leftover (or,
-      # very rarely, an unexpected pid+counter collision). Refuse loudly rather
-      # than silently wipe — clobbering a concurrently-active sandbox is exactly
-      # the corruption the salting guards against.
-      owned ->
-        refuse_autogen!(sandbox)
-
-      effectively_empty?(sandbox) ->
-        :ok
-
-      true ->
-        refuse!(sandbox, "is a non-empty directory without Mutare's ownership marker")
-    end
-  end
-
-  # Ours iff the marker is a regular file whose contents start with our
-  # signature — verified, so a coincidental dotfile can't grant ownership.
-  defp owned?(sandbox) do
-    path = marker_path(sandbox)
-
-    match?({:ok, %File.Stat{type: :regular}}, File.lstat(path)) and
-      match?({:ok, @marker_signature <> _}, File.read(path))
-  end
-
-  defp reset!(sandbox) do
-    File.mkdir_p!(sandbox)
-
-    for entry <- File.ls!(sandbox), entry != @lock_name do
-      File.rm_rf!(Path.join(sandbox, entry))
-    end
-  end
-
-  defp marker_path(sandbox), do: Path.join(sandbox, @marker_name)
-
-  @spec refuse!(Path.t(), String.t()) :: no_return()
-  defp refuse!(sandbox, reason) do
-    raise ArgumentError,
-          "refusing to use sandbox #{inspect(sandbox)}: it #{reason}. Mutare only writes " <>
-            "to a path that is absent, an empty directory, or a previous Mutare sandbox; " <>
-            "point it at a fresh or empty directory."
-  end
-
-  @spec refuse_autogen!(Path.t()) :: no_return()
-  defp refuse_autogen!(sandbox) do
-    raise ArgumentError,
-          "refusing to use sandbox #{inspect(sandbox)}: it is an existing Mutare sandbox at an " <>
-            "auto-generated path. That path is salted with this process's OS pid, so it cannot " <>
-            "collide with a live run — this is a stale leftover from a halted run (or, rarely, " <>
-            "an unexpected pid+counter collision). Mutare won't wipe it automatically; delete it " <>
-            "and re-run, or pass an explicit --sandbox to reuse a fixed path."
-  end
-
   defp reusable_sandbox?(%Options{sandbox: sandbox, keep_sandbox: keep_sandbox}),
     do: keep_sandbox or sandbox != nil
-
-  # The lock lives inside the sandbox, so a lock-only directory is still empty
-  # for adoption purposes. This is the crash-before-marker case: Mutare created
-  # the sandbox path and acquired the lock, then died before writing the ownership
-  # marker.
-  defp effectively_empty?(sandbox) do
-    sandbox
-    |> File.ls!()
-    |> Enum.reject(&(&1 == @lock_name))
-    |> Enum.empty?()
-  end
-
-  # Refuse non-empty, unowned directories before creating or reclaiming an
-  # internal lock. That keeps a user-provided sandbox scoped to that exact path
-  # without dropping a lock file into arbitrary user data.
-  defp ensure_lockable!(sandbox) do
-    case File.lstat(sandbox) do
-      {:error, :enoent} ->
-        File.mkdir_p!(sandbox)
-
-      {:ok, %File.Stat{type: :directory}} ->
-        unless owned?(sandbox) or effectively_empty?(sandbox) do
-          refuse!(sandbox, "is a non-empty directory without Mutare's ownership marker")
-        end
-
-      {:ok, %File.Stat{type: type}} ->
-        refuse!(sandbox, "is a #{type}, not a directory")
-
-      {:error, reason} ->
-        raise File.Error, reason: reason, action: "inspect sandbox", path: sandbox
-    end
-  end
 
   defp copy_project(root, sandbox) do
     for entry <- File.ls!(root), entry not in @excluded do
@@ -524,7 +380,9 @@ defmodule Mutare.Sandbox do
     overrides = override_files(root, schema, project)
     sources = source_rel_paths(root)
     source_set = MapSet.new(sources)
-    managed = MapSet.union(source_set, MapSet.new([@marker_name | Map.keys(overrides)]))
+
+    managed =
+      MapSet.union(source_set, MapSet.new([Ownership.marker_name() | Map.keys(overrides)]))
 
     # 1. mirror every source file, applying generated overrides (metamutant source
     #    and the injected test helper) in place of the original.
@@ -620,16 +478,6 @@ defmodule Mutare.Sandbox do
     end)
   end
 
-  # Write only when the bytes actually change, so unchanged files keep their mtime.
-  # A size check short-circuits the full read for the common unchanged-large-file
-  # case.
-  defp put_if_changed(path, content) do
-    unless same_content?(path, content) do
-      File.mkdir_p!(Path.dirname(path))
-      File.write!(path, content)
-    end
-  end
-
   # Generated sandbox files must be materialised inside the sandbox even when the
   # copied target contained a symlink at that path (or in one of its parent
   # components). File.write!/2 would follow those symlinks and mutate the linked
@@ -690,16 +538,6 @@ defmodule Mutare.Sandbox do
   defp remove_existing_path!(path, :directory), do: File.rm_rf!(path)
   defp remove_existing_path!(path, :symlink), do: File.rm!(path)
   defp remove_existing_path!(path, _type), do: File.rm!(path)
-
-  defp same_content?(path, content) do
-    case File.stat(path) do
-      {:ok, %File.Stat{type: :regular, size: size}} when size == byte_size(content) ->
-        File.read(path) == {:ok, content}
-
-      _ ->
-        false
-    end
-  end
 
   # File rel-paths under `root` (skipping `@excluded` at the top level, matching
   # `copy_project/2`), keyed exactly like `Schema.metamutants` (`relative/2`).

@@ -80,11 +80,13 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
 - **`Mutare.Manifest` / `Mutare.Metamutant`** — the lazily-built map from a metamutant line range
   back to the mutant id(s) living there, so **Poison** can attribute a compile error. Keyed by id;
   no metamutant↔original line mapping.
-- **`Mutare.Sandbox`** (+ `Seed`, `Command`, `Command.Invocation`/`Output`, `CompilerOptions`) —
-  materializes a temp copy of the target, overwrites the metamutant sources, injects a
-  dependency-free bootstrap (selector reader + timeout/owner-death watchers + coverage helper —
-  the owner-death watcher also prefixes `config/config.exs`, covering the one compile), and seeds
-  the deps'/app's compiled `_build` so the one compile is minimal. `Command` is the **run side of the
+- **`Mutare.Sandbox`** (+ `Ownership`, `Lock`, `Seed`, `Command`, `Command.Invocation`/`Output`,
+  `CompilerOptions`) — materializes a temp copy of the target, overwrites the metamutant sources,
+  injects a dependency-free bootstrap (selector reader + timeout/owner-death watchers + coverage
+  helper — the owner-death watcher also prefixes `config/config.exs`, covering the one compile), and
+  seeds the deps'/app's compiled `_build` so the one compile is minimal. `Ownership` is the
+  safety guard — the one place that may `rm_rf!` a sandbox — deciding whether a path is adopted,
+  wiped, or refused untouched (it never touches a non-directory or an unmarked non-empty dir). `Command` is the **run side of the
   exit-code contract**: it runs a mutant `mix test` and decodes the exit code into a typed outcome
   (`:passed`/`:failed`/`:timeout`/`:sigkilled`/`:harness_error`, refined from output into
   `:suite_compile_error`/`:atom_exhausted`/`:boot_failure`).
