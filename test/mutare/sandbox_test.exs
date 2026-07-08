@@ -789,6 +789,24 @@ defmodule Mutare.SandboxTest do
       assert %{outcome: :skipped} = capture_seed(project, schema, sandbox: sandbox)
     end
 
+    test "seeds a majority-but-not-all run (3 of 4) — the raised fraction gate", context do
+      project = context.project
+      # 3 of 4 modules mutated (f = 0.75): the measured overhead (~0.1 ms/beam) is negligible
+      # against reusing the 4th, so the gate (0.9) seeds — where the old 0.5 gate cold-compiled.
+      for m <- ~w(a b c d), do: put_app_beam(project, "myapp", "lib/#{m}.ex", "M#{m}#{uniq()}")
+      put_app_manifest(project, "myapp", [Path.expand(project)])
+
+      schema = %Schema{
+        metamutants:
+          Map.new(~w(a b c), &{"lib/#{&1}.ex", "defmodule M#{&1} do\n  def x, do: 2\nend\n"})
+      }
+
+      sandbox = Path.join(context.base, "sandbox")
+
+      assert %{outcome: :seeded, reused: 1, recompiled: 3} =
+               capture_seed(project, schema, sandbox: sandbox)
+    end
+
     test "reports the :fallback outcome when a metamutant beam can't be matched", context do
       project = context.project
       # Enough untouched modules to clear the gate, but no beam for the metamutant file: the

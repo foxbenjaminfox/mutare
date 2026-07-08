@@ -71,9 +71,18 @@ defmodule Mutare.Sandbox.Seed do
   end
 
   # The largest fraction of the app's modules we'll recompile and still bother seeding.
-  # Above it (most of the app is being mutated), the copy + beam scan can outweigh the
-  # saving, so we fall back to a plain cold compile. Tunable.
-  @seed_app_build_max_fraction 0.5
+  # Above it (nearly the whole app is being mutated) the reuse shrinks to ~nothing while the
+  # O(N) copy still runs, so we fall back to a plain cold compile.
+  #
+  # Set from measurement (NOTES "Tuning the app-build-seed fraction gate"): the seed's
+  # overhead — copying `_build/<env>/lib/<app>` plus the `:beam_lib` scan of every beam — is
+  # ~0.1 ms/beam (≈15-20 ms total on 120-200-module apps, scale-invariant per beam), which is
+  # negligible against the ~8-11 ms *wall* it costs to cold-compile each reused original. The
+  # crossover where overhead outweighs the saving is ~0.98; seeding is a clear win for narrow
+  # runs and at worst a ~15-20 ms wash near f=1. 0.9 keeps essentially all the benefit
+  # (including typical *full* runs, which sit at f≈0.85-0.95 because siteless files exist)
+  # while leaving margin for a very large app, where the copy overhead grows toward ~1 s.
+  @seed_app_build_max_fraction 0.9
 
   # Seed the sandbox's `_build` with the *mutated app's own* already-compiled beams,
   # so a run that rewrites only a few files (`--line`/`--since`/`--only`, a `paths:`

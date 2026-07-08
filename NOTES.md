@@ -853,6 +853,38 @@ unattributable shape (a metamutant under no app dir, or no umbrella project yet 
 app) collapses to `:skipped` rather than risk an unreasoned no-op. A mix of kept + fallen-
 back apps reports `:partial`.
 
+### Tuning the app-build-seed fraction gate `[done]`
+`worth_seeding?/2` declines the app seed once the mutated files exceed
+`@seed_app_build_max_fraction` of the app's compiled modules — the guard against "copy +
+beam scan costs more than it saves." The threshold started at **0.5**, a guess. Measured it
+and raised it to **0.9**.
+
+Measurement (synthetic 120-module app + Mutare's own 197 modules). The gate trades two
+terms, both measured directly (the end-to-end compile wall was too noise-dominated on cheap
+modules to read a crossover from):
+- **Overhead** — copy `_build/<env>/lib/<app>` + `:beam_lib`-scan every beam (what
+  `app_build` does besides compile): **~0.1 ms/beam** (≈15-20 ms total; copy ~2× the scan),
+  and *per-beam* so scale-invariant.
+- **Saving** — the cold-compile wall of each reused (unmutated) original: **~8 ms** (cheap
+  synthetic) to **~11 ms** (real Mutare modules) per module.
+
+So the crossover `f* = 1 − overhead_per_beam / compile_wall_per_module ≈ 1 − 0.1/8 ≈ 0.98`.
+Overhead is negligible; seeding is a clear win for narrow runs (the motivating "aim at one
+module" case) and, thanks to `--verbose` timings, measured at e.g. 0.6 s seeded vs ~5 s cold
+on a one-file scope. The end-to-end sweep (seed on vs `--no-seed-app-build`) confirmed the
+*direction* — win at low `f`, a wash (never a real loss) at high `f`, because there the
+metamutant compile dominates the wall and the reused originals compile "for free" behind it
+in parallel. **0.5 was far too conservative** — it cold-compiled the whole app for any run
+touching >½ of it, forgoing reuse of the untouched remainder (still +80-200 ms on these apps
+at f=0.9; more on apps with pricier modules).
+
+Chose **0.9**, not removal: keeps ~all the benefit (typical *full* runs land at f≈0.85-0.95,
+since data/behaviour/`ignore-file` modules have no sites), while leaving margin for the
+degenerate near-`f=1` case on a **very large** app, where the O(N) copy — the one cost that
+grows unbounded with module count, ~1 s at a few-thousand beams — can exceed the vanishing
+reuse. Never a correctness lever (seeding is always correct; per-app teardown makes a miss
+cheap): purely how often we pay a tiny overhead for a often-large win.
+
 ### Compiler options for the one metamutant compile `[done]`
 The metamutant compile is a single `mix compile`, dominated by `beam_ssa_opt` on
 the biggest generated module (the long-pole above). Profiling that pass on Mutare's
