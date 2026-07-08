@@ -331,6 +331,27 @@ defmodule Mutare.TransformDurationTest do
       assert_compiles(meta)
     end
 
+    test "a duration piped as the receiver (effective index 0) is suppressed" do
+      # `1000 |> Process.sleep()`: the duration *is* the piped value — the call's effective argument
+      # 0, not one of its visible args. It is marked on the pipe's left side, so it is held back like
+      # the plain `Process.sleep(1000)`; a computed value piped there still mutates its sub-literals.
+      for body <- [
+            "def f, do: 1000 |> Process.sleep()",
+            "def f, do: 500 |> :timer.sleep()"
+          ] do
+        {meta, triples} = value_triples(body)
+        assert triples == []
+        assert_compiles(meta)
+      end
+
+      {_m, computed} = value_triples("def f(b), do: (b * 2) |> Process.sleep()")
+      assert {:literal, "2", "1"} in computed
+
+      # A non-timeout function piped the same way is untouched (the receiver pre-filter is exact).
+      {_m, other} = value_triples("def f, do: 1000 |> Integer.to_string()")
+      assert {:literal, "1000", "0"} in other
+    end
+
     test "a shadowing alias resolves elsewhere and is NOT suppressed" do
       # `alias MyApp.Task, as: Task` rebinds `Task`, so `Task.await` resolves to `MyApp.Task` —
       # a different module the table does not list — and the literal timeout mutates normally.

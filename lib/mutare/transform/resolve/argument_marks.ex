@@ -10,13 +10,14 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   # used to live in the transform.
   #
   # Flow: `build/1` folds the enabled mutators' declarations into a registry keyed by the *resolved*
-  # `{module, function, arity}`. `Mutare.Transform.Resolve` calls `stamp/5` at each call it resolves,
-  # stamping the marked argument nodes' `meta[:mutare_marks]` (via `Mutare.Transform.Meta.add_marks/2`)
-  # with the union of labels. `Mutare.Transform.Analyze.Attach.offer/4` reads those marks back and
-  # hands them to the mutators as `context.marks`. The mutator (`c:Mutare.Mutator.mutate/2`) reads
-  # them and decides. See NOTES "Argument marks".
+  # `{module, function, arity}`. `Mutare.Transform.Resolve` calls `stamp/5` at each call it resolves
+  # (and `stamp_receiver/3` at each `|>`), stamping the marked argument nodes' `meta[:mutare_marks]`
+  # (via `Mutare.Transform.Meta.add_marks/2`) with the union of labels.
+  # `Mutare.Transform.Analyze.Attach.offer/4` reads those marks back and hands them to the mutators as
+  # `context.marks`. The mutator (`c:Mutare.Mutator.mutate/2`) reads them and decides. See NOTES
+  # "Argument marks".
   #
-  # Two behaviours fall out of "mark only the value node", rather than being special-cased:
+  # Three behaviours fall out of "mark only the value node", rather than being special-cased:
   #
   #   * **Arity-keyed keyword options.** Keyword marks are looked up by the call's *effective* arity
   #     just like positional ones, so `Task.async_stream/3` (fun form) and `/5` (MFA form) — whose
@@ -25,9 +26,15 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   #   * **Container-preserving scope.** Only the option *value* node is stamped, never the options
   #     *list*, so a list-level mutation (`List` collapsing an explicit `[…]` to `[]`) is untouched —
   #     a marked call behaves exactly like an unmarked one but for the held-back value.
+  #   * **Piped receiver.** A pipe's left side is the RHS call's *effective argument 0*, which is not
+  #     in the RHS's own arg list. So `stamp/5` (which walks the RHS args) can't reach it; `stamp_
+  #     receiver/3` marks it from the `|>` clause when effective index 0 carries a mark (`Process.
+  #     sleep/1`, `:timer.sleep/1`, or any mutator's index-0 mark). `receiver_funs` is a cheap
+  #     pre-filter — the function names that *have* an index-0 mark — so a pipe whose RHS isn't one
+  #     of them never pays a resolution.
 
   alias Mutare.{AST, Mutator}
-  alias Mutare.Transform.{Aliases, Meta}
+  alias Mutare.Transform.{Aliases, Calls, Meta}
 
   @typedoc "A resolved-call key: `{module_key, function, arity}` (arity is *effective* — pipe counted)."
   @type call_key :: {Aliases.module_key(), atom(), arity()}
@@ -41,12 +48,17 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
           keyword: %{atom() => MapSet.t(atom())}
         }
 
-  @typedoc "The built registry — the resolved calls that carry marks."
-  @type registry :: %{call_key() => entry()}
+  @typedoc """
+  The built registry: `by_call` maps each resolved call to its marked positions; `receiver_funs` is
+  the set of function names with a mark at *effective index 0*, a pre-filter for the piped-receiver
+  path so ordinary pipes cost nothing.
+  """
+  @type t :: %__MODULE__{by_call: %{call_key() => entry()}, receiver_funs: MapSet.t(atom())}
+  defstruct by_call: %{}, receiver_funs: MapSet.new()
 
   @doc "The empty registry — no mutator asked to mark anything."
-  @spec empty() :: registry()
-  def empty, do: %{}
+  @spec empty() :: t()
+  def empty, do: %__MODULE__{}
 
   @doc """
   Fold the enabled mutators' `c:Mutare.Mutator.argument_marks/0` declarations into a registry keyed
@@ -55,31 +67,59 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   `[:Process]`). A mutator without the callback contributes nothing; two mutators marking the same
   position union their labels.
   """
-  @spec build([Mutator.Spec.t() | module()]) :: registry()
+  @spec build([Mutator.Spec.t() | module()]) :: t()
   def build(mutators) do
-    mutators
-    |> Enum.flat_map(&declarations/1)
-    |> Enum.reduce(%{}, &add_declaration/2)
+    by_call =
+      mutators
+      |> Enum.flat_map(&declarations/1)
+      |> Enum.reduce(%{}, &add_declaration/2)
+
+    receiver_funs =
+      for {{_module_key, fun, _arity}, entry} <- by_call,
+          Map.has_key?(entry.positional, 0),
+          into: MapSet.new(),
+          do: fun
+
+    %__MODULE__{by_call: by_call, receiver_funs: receiver_funs}
   end
 
   @doc """
   Stamp the marked argument nodes of a resolved call with their labels, returning the (possibly
   updated) argument list. `pipe_mode` is `:piped` for a `|>` stage — its receiver is effective
-  argument 0, so a marked effective index shifts one place off the visible list. Returns `args`
-  unchanged when the call carries no marks (the common path — a cheap map lookup).
+  argument 0, so a marked effective index shifts one place off the visible list (and index 0 itself
+  is handled by `stamp_receiver/3`). Returns `args` unchanged when the call carries no marks (the
+  common path — a cheap map lookup).
   """
-  @spec stamp([Macro.t()], Aliases.module_key(), atom(), Mutator.pipe_mode(), registry()) ::
-          [Macro.t()]
-  def stamp(args, module_key, fun, pipe_mode, registry) when is_list(args) do
+  @spec stamp([Macro.t()], Aliases.module_key(), atom(), Mutator.pipe_mode(), t()) :: [Macro.t()]
+  def stamp(args, module_key, fun, pipe_mode, %__MODULE__{by_call: by_call}) when is_list(args) do
     offset = pipe_offset(pipe_mode)
 
-    case Map.get(registry, {module_key, fun, length(args) + offset}) do
+    case Map.get(by_call, {module_key, fun, length(args) + offset}) do
       nil -> args
       entry -> args |> stamp_positional(entry.positional, offset) |> stamp_keyword(entry.keyword)
     end
   end
 
   def stamp(args, _module_key, _fun, _pipe_mode, _registry), do: args
+
+  @doc """
+  Mark a pipe's left side (`piped_value |> rhs`) when the RHS call marks its *effective argument 0* —
+  the position the piped value fills, which `stamp/5` can't see because it is not in the RHS's own
+  arg list. The `receiver_funs` pre-filter short-circuits every pipe whose RHS function has no
+  index-0 mark (the overwhelming majority) before touching `resolved_call/1`. The RHS has already
+  been resolved by `Mutare.Transform.Resolve`, so reading it back here is stamp-cheap.
+  """
+  @spec stamp_receiver(Macro.t(), Macro.t(), t()) :: Macro.t()
+  def stamp_receiver(lhs, rhs, %__MODULE__{receiver_funs: receiver_funs, by_call: by_call}) do
+    if MapSet.member?(receiver_funs, rhs_fun(rhs)) do
+      case receiver_labels(rhs, by_call) do
+        nil -> lhs
+        labels -> Meta.add_marks(lhs, labels)
+      end
+    else
+      lhs
+    end
+  end
 
   # --- registry build --------------------------------------------------------
 
@@ -94,10 +134,10 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   # One declaration `{module, fun, arity, positions, label}` → labelled positions folded onto the
   # resolved-call key. `positions` is a list of visible-argument *effective* indices and
   # `{:keyword, key}` option keys.
-  defp add_declaration({module, fun, arity, positions, label}, registry) do
+  defp add_declaration({module, fun, arity, positions, label}, by_call) do
     key = {Aliases.from_module(module), fun, arity}
-    entry = Map.get(registry, key, %{positional: %{}, keyword: %{}})
-    Map.put(registry, key, Enum.reduce(positions, entry, &add_position(&2, &1, label)))
+    entry = Map.get(by_call, key, %{positional: %{}, keyword: %{}})
+    Map.put(by_call, key, Enum.reduce(positions, entry, &add_position(&2, &1, label)))
   end
 
   defp add_position(entry, index, label) when is_integer(index),
@@ -156,6 +196,32 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   end
 
   defp stamp_option_pair(other, _keyword), do: other
+
+  # --- piped receiver --------------------------------------------------------
+
+  # The effective-index-0 label set of a pipe's RHS call, or `nil`. The RHS's visible args are the
+  # call's effective args 1.., so the piped receiver is effective index 0 and the effective arity is
+  # `length(visible args) + 1`.
+  defp receiver_labels(rhs, by_call) do
+    case Calls.resolved_call(rhs) do
+      {module_key, fun, args, _rebuild} ->
+        case Map.get(by_call, {module_key, fun, length(args) + 1}) do
+          nil -> nil
+          entry -> Map.get(entry.positional, 0)
+        end
+
+      nil ->
+        nil
+    end
+  end
+
+  # The written function name of a pipe RHS call head (remote `Mod.fun`/`:mod.fun` or bare `fun`), or
+  # `nil` for a non-call RHS — never in `receiver_funs`, so the pre-filter rejects it.
+  defp rhs_fun({{:., _dot_meta, [_recv, fun]}, _meta, args}) when is_atom(fun) and is_list(args),
+    do: fun
+
+  defp rhs_fun({fun, _meta, args}) when is_atom(fun) and is_list(args), do: fun
+  defp rhs_fun(_rhs), do: nil
 
   defp pipe_offset(:piped), do: 1
   defp pipe_offset(_unpiped), do: 0

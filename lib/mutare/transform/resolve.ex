@@ -114,9 +114,14 @@ defmodule Mutare.Transform.Resolve do
 
   # `|>` pipe: the RHS is a call whose effective first argument is the LHS, so it carries one
   # fewer written arg — resolve it as *piped* (effective arity +1), the LHS normally. The
-  # RHS's own arguments are ordinary expressions, so descent resets the flag.
+  # RHS's own arguments are ordinary expressions, so descent resets the flag. The LHS *is* the
+  # RHS's effective argument 0, so if the RHS marks that position (`Process.sleep/1`,
+  # `:timer.sleep/1`, or a custom index-0 mark) `ArgumentMarks.stamp_receiver/3` marks the LHS —
+  # the piped counterpart of the visible-arg stamping the RHS clause did.
   defp walk({:|>, meta, [lhs, rhs]}, env) do
-    {:|>, meta, [walk(lhs, %{env | pipe_mode: :unpiped}), walk(rhs, %{env | pipe_mode: :piped})]}
+    rhs = walk(rhs, %{env | pipe_mode: :piped})
+    lhs = ArgumentMarks.stamp_receiver(walk(lhs, %{env | pipe_mode: :unpiped}), rhs, env.marks)
+    {:|>, meta, [lhs, rhs]}
   end
 
   # A bare function-reference capture `&fun/N` is a call value, but the ref node is

@@ -4842,9 +4842,12 @@ neither: `sleep(100) → 0` is not equivalent, it is a *judgment* that the mutan
 score-corrupting. Deliberately **not configurable** (`# mutare:ignore` only *adds* suppressions, and
 the site never exists to re-enable); the table is curated, not exhaustive — trivially extended by a
 row. `receive … after N ->` needs no entry (the timeout sits in the `->` clause's *pattern* position,
-which the walk never offers). One documented gap: a duration piped as the *receiver*
-(`1000 |> Process.sleep()`, effective index 0, not a visible arg) still mutates — rare enough to leave
-as residual noise rather than reach into the `|>` LHS path.
+which the walk never offers). A duration piped as the *receiver* (`1000 |> Process.sleep()`, effective
+index 0, not a visible arg) is covered too: `ArgumentMarks.stamp_receiver/3` marks the pipe's left
+side from the `|>` clause when the RHS marks index 0, behind a `receiver_funs` pre-filter so ordinary
+pipes pay nothing. (This was a documented gap under the first cut and became cheap to close once
+marking was a general facility — a mutator marks a position and the pipe LHS is just another node that
+can carry the stamp.)
 
 ### Expanded default mutator set `[done]`
 The built-ins grew from arithmetic+relational to a fuller catalog, **all on by
