@@ -4778,6 +4778,76 @@ module and fun, so the `equivalent?` footprint is now a nid-less `[mod, fun]` **
 pruned nothing before and prunes nothing now), but it makes `ModeSwap→AtomLiteral` the **sole**
 covering footprint. See "Overlap resolution" above.
 
+### Duration-argument literals — a signal-quality positional exclusion `[done]`
+A duration/timeout *literal* — `Process.sleep(1000)`, `Process.send_after(pid, msg, 5_000)`, the
+`GenServer.call/3` timeout, `Task.await(t, :infinity)`, `Task.async_stream(…, timeout: 5_000)` — is
+left unmutated (`Mutare.Transform.Analyze.Durations`, wired into the runtime-call descent of
+`Analyze`). Two reasons, the second the non-obvious one:
+
+- **Survivor noise.** No test pins an exact millisecond count, so `sleep(100) → 101` just survives.
+- **It can mint *false kills*.** A *shrunk* timeout (`… → 0`, the `zero` variant; or `n − 1`) can
+  trip a real `:timeout` or a timing-dependent failure — which Mutare scores as a **kill**. So
+  leaving these in doesn't only pad the denominator with unkillable survivors; it can inflate the
+  *numerator* with kills that measure scheduler timing, not a test assertion. Both directions
+  corrupt the score, so the numerator argument is what tips this from "nice-to-have" to "worth
+  building".
+
+Design decisions, and why each:
+
+- **Positional, not unit-based.** The tool can't know a literal "is milliseconds" — units are
+  unknowable. It *can* know a literal sits in a known duration *position*. So the table is a curated
+  list of `{resolved module, function, arity} → arg index` (plus `{module, function, arity} → option
+  key` for trailing-keyword timeouts like `async_stream`'s `:timeout`), matched through the same
+  `Transform.Calls.resolved_call/1` the call families use — aliased / imported / `:timer`-atom forms
+  for free, a shadowing `alias MyApp.Task` correctly *not* matched. Both tables are **arity-keyed**,
+  which is load-bearing for the keyword one: `Task.async_stream/3` (fun form) and `/5` (MFA form) end
+  in an options list, but `/4` — the MFA form `(enum, module, function, args)` — ends in the callback
+  `args` *list*, so a literal `[timeout: 5_000]` written there is ordinary data and must still
+  mutate. Keying by arity is what tells the options-bearing forms apart from that. Two AST-shape
+  wrinkles the descent also handles so the coverage isn't spelling-dependent: an options list written
+  *explicitly* (`[timeout: 5_000]`) is wrapped by Sourceror in a single-element `__block__`, unwrapped
+  by the keyword-shape check; and a function like `Task.yield_many/2`, whose second arg is *either* a
+  bare `timeout()` *or* an options keyword, sits in **both** tables — the descent checks the options
+  shape first, so a keyword-list arg routes to the option path and a bare literal to the positional
+  one, never colliding.
+- **Scoped to the value, never the container.** A positional duration is a scalar leaf, so leaving
+  it raw suppresses exactly its `Literal`/`AtomLiteral` mutation. A *keyword* duration is different:
+  its value sits inside an options *list*, which has its own list-level mutation (`List` collapsing
+  an explicit `[…]` to `[]`). So the keyword path does **not** take the list over — it descends the
+  options list *normally* (offering `List` and everything else just as an off-table call would),
+  then strips only the duration value's own candidate. Without that, being in the timeout table
+  would silently suppress an unrelated `[opts] → []` mutant — a module-dependent divergence for a
+  non-duration mutation. The feature's invariant is therefore exact: a table call is identical to
+  an off-table call *but for the held-back duration value*. (Whether `[opts] → []` is itself a
+  worthwhile mutant — sugar options never get it, explicit ones do — is a separate `List`/trailing-
+  options consistency question, to settle uniformly for all calls, not via this table.)
+- **In Analyze, because it has to be.** `Literal`/`AtomLiteral` are node-level (`mutate/1` sees only
+  the literal, never its enclosing call), so they can't self-exclude. The descent is the one place
+  with both the call context and resolution, so it holds the literal back positionally — the same
+  leave-it-raw move as the `:uniq`/struct-field hold-backs, and the equivalent-sibling drops.
+- **Literal-only.** Only a bare integer or `:infinity` *directly* in the position is suppressed. A
+  *computed* duration (`base * 2`, `@default_timeout`, a var) still mutates — we can't call a
+  sub-literal like the `2` in `base * 2` "the duration", and mutating genuine arithmetic is real
+  signal. This sidesteps the whole "which nested literal is the duration" ambiguity.
+- **Duration atoms only.** `:infinity` is suppressed (every timeout position accepts it); a
+  *sibling* non-duration atom in the same call is not — `GenServer.stop(s, :normal, :infinity)`
+  still mutates `:normal` (the reason) and `Task.shutdown(t, :brutal_kill)` still mutates
+  `:brutal_kill`. Positional, not "every atom in the call".
+
+Where it sits relative to the other positive exclusions: this is the **first signal-quality**
+exclusion — every prior one (struct fields, `for` options, `:uniq`, quoted data) is a
+*compile-safety* exclusion, and the equivalent-sibling drops are *provable* equivalences. Duration
+suppression is neither: `sleep(100) → 0` is not equivalent, it is a *judgment* that the mutant is
+near-unkillable and score-corrupting. That's why the rationale is spelled out rather than assumed.
+
+Deliberately **not configurable** (like the other positional exclusions): `# mutare:ignore` only
+*adds* suppressions, and the site here never exists to ignore or re-enable. The table is curated,
+not exhaustive — a trivially-extended positive list of high-confidence stdlib/OTP timeouts. Two
+things already handled elsewhere: `receive … after N ->` needs no entry (the timeout sits in the
+`->` clause's *pattern* position, which the walk never offers). One documented gap: a duration
+piped as the *receiver* (`1000 |> Process.sleep()`, effective index 0, not a visible arg) still
+mutates — rare enough to leave as residual noise rather than reach into the `|>` LHS path.
+
 ### Expanded default mutator set `[done]`
 The built-ins grew from arithmetic+relational to a fuller catalog, **all on by
 default**: **arithmetic** (now also unary `-x`→`x`), **relational**, **logical**

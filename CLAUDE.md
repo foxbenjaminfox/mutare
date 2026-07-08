@@ -63,7 +63,9 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   - **`Analyze`** — the context-threaded recursive descent that names each position's context
     (`:runtime` / `:pattern` / `:scaffold` / `:compile_time` / …) and attaches a typed candidate to
     each mutatable node's own metadata. This is where most routing subtlety lives (patterns, pipes,
-    conditions with escaping bindings, keyword keys, macros) — read the moduledoc before editing it.
+    conditions with escaping bindings, keyword keys, macros, duration/timeout positions
+    (`Analyze.Durations` — a signal-quality exclusion, NOTES "Duration-argument literals")) — read
+    the moduledoc before editing it.
   - **`ModulePlan` / `FunctionPlan` / `Candidate.*`** — the IR: statements classified into items,
     liftable clause groups, and one typed struct per legal mutation kind.
   - **Emit** (`emit/2`, plus pure helpers `ClauseAST` / `GuardBuild` / `LiftedEmit` /

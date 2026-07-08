@@ -11,6 +11,8 @@ defmodule Mutare.Mutators.AtomLiteral do
 
   Ordinary atom values, data map and keyword keys, and atoms in `case`, `receive`, and `fn` patterns remain eligible. Keys in a trailing call-options list are also mutated by default. Configure `{Mutare.Mutators.AtomLiteral, call_option_keys: false}` to exclude those keys.
 
+  `:infinity` in a known **timeout/duration position** (e.g. the `Task.await/2` or `GenServer.stop/3` timeout) is left unmutated — a positional exclusion owned by the analyze pass, not this family (see `Mutare.Transform.Analyze.Durations`). A *non-duration* sibling atom in the same call still mutates: `GenServer.stop(s, :normal, :infinity)` mutates the `:normal` reason but not the `:infinity` timeout.
+
   Interpolated quoted atoms (`:"a\#{x}b"`) are mutated as a whole to the sentinel — their runtime value can never statically be `:mutare`, so the swap always applies — while the expressions inside the interpolation stay eligible for their own mutations, mirroring how `Mutare.Mutators.StringLiteral` treats interpolated strings.
   """
   @behaviour Mutare.Mutator
