@@ -4810,9 +4810,20 @@ Mechanism:
   already resolves each call's `{module, fun, arity}` (through the same alias/import machinery as call
   matching — aliased / imported / `:timer`-atom forms for free, a shadowing `alias MyApp.Task`
   correctly not matched) and stamps `meta`. `ArgumentMarks.stamp/5` puts `meta[:mutare_marks]` (a
-  label set) on the marked argument *value* node; `Attach.offer/4` reads it back into `context.marks`;
+  label set) on the marked argument *value* node; the offer paths read it back into `context.marks`;
   `Mutator.marked?/2` is the reader. Analyze stays generic — it lost all the duration-specific code
   the first cut carried.
+- **Both offer paths surface the marks.** A node meets the mutators via *two* paths, and each must
+  enrich the context the same way or the contract goes inconsistent: the in-place body offer
+  (`Attach.offer/4`) and the **tag-based guard/pattern dispatch** (`Mutare.Transform.Tag`, which offers
+  guard/pattern nodes separately, without an in-place `case`). A guard-safe marked call
+  (`is_integer(t)` with a `:skip_arguments`/`argument_marks` mark on arg 0) is stamped by `stamp/5` in
+  the resolve pass regardless of where it sits, so a `when` guard's marked literal must be declined
+  just like a body call's. Both paths run the node's marks through the one `Meta.context_with_marks/2`
+  (empty-set short-circuit so unmarked nodes — the vast majority — pay nothing), so there is a single
+  definition of "surface a node's marks" and the guard path can't silently drift from the body path.
+  (The tag path's synthesized negative-literal value node carries no marks — `stamp/5` only marks call
+  arguments, never head/clause patterns — so its enrichment is a harmless no-op, kept uniform anyway.)
 - **Arity-keyed.** Positions are keyed by *effective* arity (a piped receiver is arg 0). Load-bearing
   for the keyword case: `Task.async_stream/3` (fun form) and `/5` (MFA form) end in an options list,
   but `/4` — `(enum, module, function, args)` — ends in the callback `args` *list*, so a literal

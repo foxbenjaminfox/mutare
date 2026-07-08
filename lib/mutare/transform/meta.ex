@@ -215,4 +215,20 @@ defmodule Mutare.Transform.Meta do
   end
 
   def add_marks(node, _labels), do: node
+
+  @doc """
+  The dispatch `context` enriched with `node`'s position marks (`marks/1`) under `:marks`, or the
+  context unchanged when the node carries none.
+
+  The single definition of "surface a node's marks to the mutators as `context.marks`", so both
+  paths that offer a node to the mutator set agree: the in-place offer
+  (`Mutare.Transform.Analyze.Attach.offer/4`) and the tag-based guard/pattern dispatch
+  (`Mutare.Transform.Tag`). The empty-set short-circuit keeps the overwhelmingly common *unmarked*
+  node off the `Map.put` path (the scan is heap-sensitive; NOTES "Scan is transform-bound").
+  """
+  @spec context_with_marks(map(), Macro.t()) :: map()
+  def context_with_marks(context, node) do
+    marks = marks(node)
+    if MapSet.size(marks) == 0, do: context, else: Map.put(context, :marks, marks)
+  end
 end

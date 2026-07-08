@@ -229,7 +229,7 @@ defmodule Mutare.Transform.Tag do
   # `offer_target/3` minus redundant empty-collection mutations and guard-illegal map
   # replacements (see `tag_in_rhs/3`).
   defp offer_legal_in_rhs(node, acc, mutators) do
-    muts = Enum.reject(Dispatch.mutations(node, mutators), &invalid_in_rhs_mutation?/1)
+    muts = Enum.reject(mutations(node, mutators), &invalid_in_rhs_mutation?/1)
     tag_node(node, muts, acc)
   end
 
@@ -241,7 +241,7 @@ defmodule Mutare.Transform.Tag do
   # `offer_target/3` minus the Conditional mutant forcing the node to `bool` — the redundant
   # short-circuit constant (see the `and`/`or` clause and `Mutare.Transform.Analyze`).
   defp offer_without_constant(node, bool, acc, mutators) do
-    muts = Enum.reject(Dispatch.mutations(node, mutators), &constant_mutation?(&1, bool))
+    muts = Enum.reject(mutations(node, mutators), &constant_mutation?(&1, bool))
     tag_node(node, muts, acc)
   end
 
@@ -253,7 +253,7 @@ defmodule Mutare.Transform.Tag do
   # constants (Conditional, ≡ the outer's). A strictness relaxation (`===` → `==`) is neither,
   # so it stays. Mirrors `Mutare.Transform.Analyze.drop_negation_redundant_candidates/2`.
   defp offer_negation_survivors(node, op, acc, mutators) do
-    muts = Enum.reject(Dispatch.mutations(node, mutators), &negation_redundant_mutation?(&1, op))
+    muts = Enum.reject(mutations(node, mutators), &negation_redundant_mutation?(&1, op))
     tag_node(node, muts, acc)
   end
 
@@ -287,8 +287,18 @@ defmodule Mutare.Transform.Tag do
 
   defp tag_spec(other, acc, _mutators), do: {other, acc}
 
+  # The mutations `node` admits, with any position marks stamped on it by
+  # `Mutare.Transform.Resolve.ArgumentMarks` surfaced to the mutators as `context.marks` — the same
+  # enrichment `Mutare.Transform.Analyze.Attach.offer/4` applies on the in-place path, so a
+  # guard-safe call's marked argument (`is_integer(t)` with a `:skip_arguments`/`argument_marks`
+  # mark on arg 0) is declined here too, not only when the same call sits in a body. Guards and
+  # patterns are never pipe stages, so the base context is `:unpiped`; a leaf that carries no marks
+  # (the overwhelming majority) is dispatched with that base untouched.
+  defp mutations(node, mutators),
+    do: Dispatch.mutations(node, mutators, Meta.context_with_marks(%{pipe_mode: :unpiped}, node))
+
   defp offer_target(node, acc, mutators),
-    do: tag_node(node, Dispatch.mutations(node, mutators), acc)
+    do: tag_node(node, mutations(node, mutators), acc)
 
   # === pattern-literal tagging ===============================================
 
@@ -365,14 +375,14 @@ defmodule Mutare.Transform.Tag do
   # A var (`{:x, _, nil}`), a bare leaf, or anything else: no literal to tag.
   defp tag_pattern_targets(other, acc, _mutators), do: {other, acc}
 
-  # The literal-valued mutations a node admits — `Dispatch.mutations/2` filtered to
+  # The literal-valued mutations a node admits — the local `mutations/2` (mark-aware) filtered to
   # those whose replacement is itself a scalar literal. A literal is legal in any
   # pattern sub-position, so this both selects the literal families (no other
   # built-in matches a scalar-literal node) and fences out a custom mutator that
   # would emit a pattern-illegal replacement.
   defp literal_pattern_mutations(node, mutators) do
     node
-    |> Dispatch.mutations(mutators)
+    |> mutations(mutators)
     |> Enum.filter(fn %Dispatch.Result{node: mutated} -> literal_node?(mutated) end)
   end
 
@@ -383,7 +393,7 @@ defmodule Mutare.Transform.Tag do
   # `Literal` mutate the value; each clean result then *replaces the whole `-n` node*.
   defp value_literal_mutations(value, mutators) do
     {:__block__, [], [value]}
-    |> Dispatch.mutations(mutators)
+    |> mutations(mutators)
     |> Enum.filter(fn %Dispatch.Result{node: mutated} -> literal_node?(mutated) end)
   end
 

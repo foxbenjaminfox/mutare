@@ -528,6 +528,36 @@ defmodule Mutare.TransformDurationTest do
       assert {:integer, "300", "0"} in plain
     end
 
+    test "a mark is honored inside a `when` guard, not only in a body call" do
+      # The guard/pattern tagging path (`Mutare.Transform.Tag`) offers a node to the mutators on its
+      # own — separately from the in-place body offer — so it must surface the same position marks a
+      # body offer does. `is_integer/1` is guard-safe, so `is_integer(123)` sits in guard position;
+      # a `:skip_arguments` mark on its argument must hold the literal back *there* just as it does in
+      # a body call. Both the def-clause guard (lifted via `FunctionPlan`) and the `case`-clause guard
+      # (via `Analyze`) route through `Tag.guard_targets`, so both are covered.
+      config = [{Mutare.Mutators.Literal, skip_arguments: [{Kernel, :is_integer, 1, [0]}]}]
+
+      for guarded <- [
+            "def f(x) when is_integer(123), do: x",
+            """
+            def f(x) do
+                case x do
+                  y when is_integer(123) -> y
+                end
+              end\
+            """
+          ] do
+        assert value_triples(guarded, config) |> elem(1) == [],
+               "expected the guard literal held back in `#{guarded}`"
+      end
+
+      # Non-vacuous: unconfigured, the same guard literal mutates fully.
+      {_m, plain} =
+        value_triples("def f(x) when is_integer(123), do: x", [Mutare.Mutators.Literal])
+
+      assert {:literal, "123", "0"} in plain
+    end
+
     test "a configured keyword-option value is left alone" do
       {_m, triples} =
         value_triples(
