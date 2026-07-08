@@ -110,8 +110,28 @@ defmodule Mutare.Sandbox.Seed do
   #
   # `--no-seed-app-build` opts out wholesale (force a cold compile — a debugging escape
   # hatch for the no-op surface, or a paranoid CI).
-  @spec app_build(Path.t(), Path.t(), Schema.t(), Options.t()) :: :ok
-  def app_build(_root, _sandbox, _schema, %Options{seed_app_build: false}), do: :ok
+  #
+  # Returns a `t:summary/0` describing what it did (seeded + beam counts, a fall back to a
+  # cold compile, or skipped). `Mutare.Sandbox` relays it on the `:on_phase` hook so
+  # `--verbose` can surface both the speed-up and an otherwise-silent fallback.
+  @typedoc """
+  What the app-build seed did, for `--verbose` narration:
+
+    * `:seeded` — engaged; `reused`/`recompiled` are the kept vs deleted (→ recompiling)
+      beam counts.
+    * `:fallback` — attempted, then torn back down to a cold compile (a metamutant beam
+      couldn't be matched, or the seed raised). The otherwise-*silent* case worth surfacing.
+    * `:skipped` — never attempted: opted out, nothing built to reuse, or too much of the
+      app mutated to be worth it. The expected default for a broad run.
+  """
+  @type summary ::
+          %{outcome: :seeded, reused: non_neg_integer(), recompiled: non_neg_integer()}
+          | %{outcome: :fallback, reason: String.t()}
+          | %{outcome: :skipped}
+
+  @spec app_build(Path.t(), Path.t(), Schema.t(), Options.t()) :: summary()
+  def app_build(_root, _sandbox, _schema, %Options{seed_app_build: false}),
+    do: %{outcome: :skipped}
 
   # Gated on the actual *outcome* (`worth_seeding?/2`), not on which flag scoped the run:
   # `metamutants` already reflects every narrowing, so the gate can't miss one (a `--only`
@@ -131,67 +151,81 @@ defmodule Mutare.Sandbox.Seed do
           not File.exists?(dst),
           do: {src, dst}
 
-    if worth_seeding?(map_size(metamutants), to_seed) do
+    # `total` (the app's compiled-beam count) drives both the worth-it gate and the
+    # reused count the `--verbose` summary reports, so compute it once, here.
+    total = total_beams(to_seed)
+
+    if worth_seeding?(map_size(metamutants), total) do
       expanded_root = Path.expand(root)
       expanded_sandbox = Path.expand(sandbox)
       meta_sources = MapSet.new(Map.keys(metamutants), &Path.join(expanded_root, &1))
 
       case do_seed(to_seed, meta_sources, expanded_root, expanded_sandbox) do
         # Only keep the seed if we *guaranteed* every metamutant will recompile.
-        {:ok, forced} -> unless MapSet.subset?(meta_sources, forced), do: teardown(to_seed)
-        {:error, message} -> tear_down_after(message, to_seed)
-      end
-    end
+        {:ok, forced, recompiled} ->
+          if MapSet.subset?(meta_sources, forced) do
+            %{outcome: :seeded, reused: total - recompiled, recompiled: recompiled}
+          else
+            teardown(to_seed)
+            fallback("a metamutant beam's recorded source could not be matched")
+          end
 
-    :ok
+        {:error, reason} ->
+          teardown(to_seed)
+          fallback(reason)
+      end
+    else
+      %{outcome: :skipped}
+    end
   end
 
   # The seeding work, isolated so `app_build/4`'s happy path reads as a plain `case`. Copies
   # each seedable app into the sandbox `_build`, deletes the metamutant beams (so they
-  # recompile) and relocates manifests, returning the set of source files whose beams were
-  # forced to recompile — or `{:error, message}` if any file op raised/threw (→ cold compile).
+  # recompile) and relocates manifests, returning `{:ok, forced, recompiled}` — the set of
+  # source files whose beams were forced to recompile, plus the beam-delete count the
+  # `--verbose` summary reports — or `{:error, reason}` if any file op raised/threw
+  # (→ the caller tears the seed down and cold-compiles).
   defp do_seed(to_seed, meta_sources, expanded_root, expanded_sandbox) do
-    forced =
-      Enum.reduce(to_seed, MapSet.new(), fn {src, dst}, found ->
+    {forced, recompiled} =
+      Enum.reduce(to_seed, {MapSet.new(), 0}, fn {src, dst}, {found, count} ->
         File.mkdir_p!(Path.dirname(dst))
         File.cp_r!(src, dst)
-        deleted = delete_metamutant_beams(dst, meta_sources)
+        {deleted, removed} = delete_metamutant_beams(dst, meta_sources)
         relocate_manifests(dst, expanded_root, expanded_sandbox)
-        MapSet.union(found, deleted)
+        {MapSet.union(found, deleted), count + removed}
       end)
 
-    {:ok, forced}
+    {:ok, forced, recompiled}
   rescue
-    e ->
-      {:error,
-       "Mutare: app-build seed failed, falling back to cold compile: " <> Exception.message(e)}
+    e -> {:error, "the seed raised: " <> Exception.message(e)}
   catch
-    kind, reason ->
-      {:error,
-       "Mutare: app-build seed aborted (#{kind} #{inspect(reason)}), falling back to cold compile"}
+    kind, reason -> {:error, "the seed aborted (#{kind} #{inspect(reason)})"}
   end
 
-  defp tear_down_after(message, to_seed) do
-    Logger.debug(message)
-    teardown(to_seed)
+  # Log the abandoned-seed cause (opt-in debug) and return the summary, so `--verbose` can
+  # surface the otherwise-silent fall back to a cold compile. The tear-down itself already
+  # happened at the call site.
+  defp fallback(reason) do
+    Logger.debug("Mutare: app-build seed fell back to a cold compile — " <> reason)
+    %{outcome: :fallback, reason: reason}
   end
 
   # Worth seeding when the metamutant files are a small enough fraction of the app's
-  # compiled modules — i.e. we'd reuse far more than we recompile. Reading the file set
-  # (not a flag) means `--line`/`--since`/`--only`/a `paths:` narrowing, and a sparse-site
-  # full run, are all handled uniformly, with no scoping mechanism to forget. Beam *names*
-  # are listed (a cheap directory read, not a `:beam_lib` parse), so the check stays cheap
-  # even on a large app.
-  defp worth_seeding?(0, _to_seed), do: false
-  defp worth_seeding?(_meta_count, []), do: false
+  # compiled modules (`total`) — i.e. we'd reuse far more than we recompile. Gating on the
+  # file count (not a flag) means `--line`/`--since`/`--only`/a `paths:` narrowing, and a
+  # sparse-site full run, are all handled uniformly, with no scoping mechanism to forget.
+  # `total` of 0 (nothing seedable — a fresh checkout, or an app never compiled) declines.
+  defp worth_seeding?(0, _total), do: false
+  defp worth_seeding?(_meta_count, 0), do: false
+  defp worth_seeding?(meta_count, total), do: meta_count <= total * @seed_app_build_max_fraction
 
-  defp worth_seeding?(meta_count, to_seed) do
-    total =
-      to_seed
-      |> Enum.map(fn {src, _dst} -> length(Path.wildcard(Path.join([src, "ebin", "*.beam"]))) end)
-      |> Enum.sum()
-
-    total > 0 and meta_count <= total * @seed_app_build_max_fraction
+  # The app's compiled-beam count across every seedable app dir — beam *names* are listed
+  # (a cheap directory read, not a `:beam_lib` parse), so the check stays cheap even on a
+  # large app. Drives the worth-it gate and the reused-beam count `--verbose` reports.
+  defp total_beams(to_seed) do
+    to_seed
+    |> Enum.map(fn {src, _dst} -> length(Path.wildcard(Path.join([src, "ebin", "*.beam"]))) end)
+    |> Enum.sum()
   end
 
   # The mutated app(s): every entry under the original's compiled `_build/<env>/lib`
@@ -206,10 +240,12 @@ defmodule Mutare.Sandbox.Seed do
   end
 
   # Delete every beam in `app_build`'s ebin whose recorded source is a metamutant file,
-  # returning the set of sources whose beam we deleted. The source is read from the beam's
-  # `compile_info` chunk via `:beam_lib` (a public, stable Erlang API), so the match is on
-  # what mix actually compiled — not a guess from module names that nested modules,
-  # `defimpl`s, or dynamic names could make incomplete.
+  # returning `{sources_set, beam_count}` — the set of sources whose beam we deleted (for the
+  # subset? completeness gate) and how many beams that was (for the `--verbose` recompiled
+  # count; one source can yield several beams via nested modules / `defimpl`s). The source is
+  # read from the beam's `compile_info` chunk via `:beam_lib` (a public, stable Erlang API),
+  # so the match is on what mix actually compiled — not a guess from module names that nested
+  # modules, `defimpl`s, or dynamic names could make incomplete.
   defp delete_metamutant_beams(app_build, meta_sources) do
     deleted =
       for beam <- Path.wildcard(Path.join([app_build, "ebin", "*.beam"])),
@@ -219,7 +255,7 @@ defmodule Mutare.Sandbox.Seed do
         source
       end
 
-    MapSet.new(deleted)
+    {MapSet.new(deleted), length(deleted)}
   end
 
   defp beam_source(beam) do

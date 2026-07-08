@@ -272,6 +272,27 @@ defmodule Mutare.Report.LiveTest do
     end
   end
 
+  describe "seed_line/1" do
+    test "a seeded app build names the reused vs recompiling beam counts" do
+      assert Live.seed_line(%{outcome: :seeded, reused: 12, recompiled: 1}) ==
+               "  ✓ reused 12 app beams, recompiling 1 metamutant beam"
+    end
+
+    test "singular/plural agree with the counts" do
+      assert Live.seed_line(%{outcome: :seeded, reused: 1, recompiled: 2}) ==
+               "  ✓ reused 1 app beam, recompiling 2 metamutant beams"
+    end
+
+    test "a fallback names the otherwise-silent cold compile" do
+      assert Live.seed_line(%{outcome: :fallback, reason: "the seed raised: boom"}) ==
+               "  ↺ app-build seed fell back to a cold compile (the seed raised: boom)"
+    end
+
+    test "a skipped seed renders no line (nil), so verbose stays quiet on the broad-run default" do
+      assert Live.seed_line(%{outcome: :skipped}) == nil
+    end
+  end
+
   describe "poison_round_line/1" do
     test "names the dropped mutant count" do
       line =

@@ -743,6 +743,85 @@ defmodule Mutare.SandboxTest do
       Sandbox.prepare(project, schema, opts)
       assert File.read!(witness) == "kept"
     end
+
+    test "reports the seeded outcome (reused/recompiled counts) on :on_phase", context do
+      project = context.project
+      put_app_beam(project, "myapp", "lib/foo.ex", "Foo#{uniq()}")
+      put_app_beam(project, "myapp", "lib/bar.ex", "Bar#{uniq()}")
+      put_app_manifest(project, "myapp", [Path.expand(project)])
+
+      schema = %Schema{metamutants: %{"lib/foo.ex" => "defmodule Foo do\n  def x, do: 2\nend\n"}}
+      sandbox = Path.join(context.base, "sandbox")
+
+      # 2 app beams, one mutated: the metamutant beam recompiles, the untouched one is reused.
+      assert %{outcome: :seeded, reused: 1, recompiled: 1} =
+               capture_seed(project, schema, sandbox: sandbox)
+    end
+
+    test "reports :skipped when --no-seed-app-build opts out", context do
+      project = context.project
+      put_app_beam(project, "myapp", "lib/foo.ex", "Foo#{uniq()}")
+      put_app_beam(project, "myapp", "lib/bar.ex", "Bar#{uniq()}")
+      put_app_manifest(project, "myapp", [Path.expand(project)])
+
+      schema = %Schema{metamutants: %{"lib/foo.ex" => "defmodule Foo do\n  def x, do: 2\nend\n"}}
+      sandbox = Path.join(context.base, "sandbox")
+
+      assert %{outcome: :skipped} =
+               capture_seed(project, schema, sandbox: sandbox, seed_app_build: false)
+    end
+
+    test "reports :skipped when most of the app would recompile anyway", context do
+      project = context.project
+      put_app_beam(project, "myapp", "lib/foo.ex", "Foo#{uniq()}")
+      put_app_beam(project, "myapp", "lib/bar.ex", "Bar#{uniq()}")
+      put_app_manifest(project, "myapp", [Path.expand(project)])
+
+      # Both modules mutated (2 of 2) → past the worth-it fraction → cold compile.
+      schema = %Schema{
+        metamutants: %{
+          "lib/foo.ex" => "defmodule Foo do\n  def x, do: 2\nend\n",
+          "lib/bar.ex" => "defmodule Bar do\n  def x, do: 2\nend\n"
+        }
+      }
+
+      sandbox = Path.join(context.base, "sandbox")
+      assert %{outcome: :skipped} = capture_seed(project, schema, sandbox: sandbox)
+    end
+
+    test "reports the :fallback outcome when a metamutant beam can't be matched", context do
+      project = context.project
+      # Enough untouched modules to clear the gate, but no beam for the metamutant file: the
+      # seed is torn down (a cold compile) and the otherwise-silent fallback is surfaced.
+      put_app_beam(project, "myapp", "lib/bar.ex", "Bar#{uniq()}")
+      put_app_beam(project, "myapp", "lib/baz.ex", "Baz#{uniq()}")
+      put_app_manifest(project, "myapp", [Path.expand(project)])
+
+      schema = %Schema{metamutants: %{"lib/foo.ex" => "defmodule Foo do\n  def x, do: 2\nend\n"}}
+      sandbox = Path.join(context.base, "sandbox")
+
+      assert %{outcome: :fallback, reason: reason} =
+               capture_seed(project, schema, sandbox: sandbox)
+
+      assert reason =~ "could not be matched"
+      # Fallback means torn down: the run proceeds as a cold compile, no seeded build left.
+      refute File.exists?(Path.join(sandbox, "_build/test/lib/myapp"))
+    end
+  end
+
+  # Run `Sandbox.prepare/3` with an `:on_phase` hook and return the app-build seed's summary
+  # (the `{:seed_app_build, summary}` detail event `--verbose` renders).
+  defp capture_seed(project, schema, opts) do
+    test_pid = self()
+
+    hook = fn
+      {:seed_app_build, summary} -> send(test_pid, {:captured_seed, summary})
+      _ -> :ok
+    end
+
+    Sandbox.prepare(project, schema, Keyword.put(opts, :on_phase, hook))
+    assert_receive {:captured_seed, summary}
+    summary
   end
 
   defp uniq, do: System.unique_integer([:positive])

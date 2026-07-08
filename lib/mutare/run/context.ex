@@ -7,11 +7,13 @@ defmodule Mutare.Run.Context do
   (`reporter`, `on_phase`, `on_start`, `on_scan`).
 
   `on_phase` receives both the phase-transition atoms (`:compiling` → `:baseline`
-  → `:coverage_probe` → `{:running, total}`) and structured **detail** events the
-  runner fires alongside them — `{:compiled, ms}`, `{:baseline_done, ms}`,
-  `{:coverage_done, summary}`, `{:run_config, cfg}` — carrying the behind-the-scenes
-  numbers `--verbose` renders. A custom hook should ignore events it doesn't know
-  (the in-tree consumer, `Mutare.Report.Live`, has a catch-all).
+  → `:coverage_probe` → `{:running, total}`) and structured **detail** events fired
+  alongside them — `{:compiled, ms}`, `{:baseline_done, ms}`, `{:coverage_done,
+  summary}`, `{:run_config, cfg}` (from `Mutare.Runner`) and `{:seed_app_build,
+  summary}` (from `Mutare.Sandbox`, during `:compiling`, reporting what the app-build
+  `_build` seed did) — carrying the behind-the-scenes numbers `--verbose` renders. A
+  custom hook should ignore events it doesn't know (the in-tree consumer,
+  `Mutare.Report.Live`, has a catch-all).
 
   Splitting these off `Mutare.Options` keeps that struct pure configuration. The
   pipeline (`Mutare.Schema`, `Mutare.Sandbox`, `Mutare.Runner`) threads a

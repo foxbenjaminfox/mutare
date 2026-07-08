@@ -154,6 +154,11 @@ defmodule Mutare.Runner do
 
   `:on_phase` may also receive detail events:
 
+    * `{:seed_app_build, summary}` — emitted during `:compiling` by `Mutare.Sandbox`
+      as it materialises: what the app-build `_build` seed did
+      (`Mutare.Sandbox.Seed.summary/0` — `:seeded` with reused/recompiled beam
+      counts, a `:fallback` to a cold compile, or `:skipped`). `--verbose` renders
+      the first two.
     * `{:poison_round, info}` — one compile-poison recovery round: the compile
       failed, the implicated mutants were dropped, and a rebuild + recompile is
       starting. `info` is `%{dropped: [%{id: id, file: file, line: line,

@@ -833,8 +833,13 @@ module's *compile-time* surface (macros, module attributes other modules read) s
 to compile-time dependents; correct, and usually tiny since metamutants preserve the public
 function signatures. `--no-seed-app-build` (`:seed_app_build` false) opts out wholesale —
 forcing a cold compile — as a diagnostic A/B for the no-op surface or for a paranoid CI.
-Possible follow-ups: per-app (not global) teardown on a partial miss; and surfacing
-"reused N / recompiled M" so the speed-up — and a silent fallback — are visible.
+Surfaced under `--verbose` (`[done]`): `Seed.app_build/4` returns a `t:summary/0`
+(`:seeded` with reused/recompiled beam counts, a `:fallback` to a cold compile, or
+`:skipped`), which `Sandbox.prepare/3` relays on the `:on_phase` hook as
+`{:seed_app_build, summary}`; `Report.Live.seed_line/1` renders a `✓`/`↺` line for the
+first two (a `:skipped` seed — the broad-run default — stays silent even in verbose), so
+both the speed-up and the otherwise-silent fallback are visible. Remaining follow-up:
+per-app (not global) teardown on a partial miss.
 
 ### Compiler options for the one metamutant compile `[done]`
 The metamutant compile is a single `mix compile`, dominated by `beam_ssa_opt` on

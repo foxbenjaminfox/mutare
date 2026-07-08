@@ -233,6 +233,13 @@ defmodule Mutare.Report.Live do
   def handle_cast({:phase, {:coverage_done, _summary} = event}, state),
     do: {:noreply, maybe_detail(state, event)}
 
+  # The app-build `_build` seed's outcome (fired by `Mutare.Sandbox` during the compile
+  # phase). A verbose-only `✓`/`↺` scrollback note surfacing the reused/recompiled beam
+  # counts, or an otherwise-silent fall back to a cold compile; a `:skipped` outcome (the
+  # broad-run default) leaves no line even in verbose. Inert (no line) in every other mode.
+  def handle_cast({:phase, {:seed_app_build, summary}}, state),
+    do: {:noreply, maybe_seed_note(state, summary)}
+
   # The run configuration (worker count, partition) is stashed, not printed: the
   # worker count rides onto the next `{:running, total}` label (verbose only).
   def handle_cast({:phase, {:run_config, cfg}}, state),
@@ -396,6 +403,23 @@ defmodule Mutare.Report.Live do
   def detail_line({:compiled, ms}), do: "  ✓ compiled in #{humanize_ms(ms)}"
   def detail_line({:baseline_done, ms}), do: "  ✓ baseline green in #{humanize_ms(ms)}"
   def detail_line({:coverage_done, summary}), do: "  ✓ " <> coverage_note(summary)
+
+  @doc """
+  Renders the app-build seed's outcome (`Mutare.Sandbox.Seed.summary/0`) as a persistent
+  status line, or `nil` for a `:skipped` seed (the broad-run default — no line even in
+  verbose). `:seeded` shows the reused vs recompiling beam counts; `:fallback` names the
+  otherwise-silent fall back to a cold compile.
+  """
+  @spec seed_line(map()) :: String.t() | nil
+  def seed_line(%{outcome: :seeded, reused: reused, recompiled: recompiled}) do
+    "  ✓ reused #{reused} app beam#{plural(reused)}, recompiling " <>
+      "#{recompiled} metamutant beam#{plural(recompiled)}"
+  end
+
+  def seed_line(%{outcome: :fallback, reason: reason}),
+    do: "  ↺ app-build seed fell back to a cold compile (#{reason})"
+
+  def seed_line(%{outcome: :skipped}), do: nil
 
   @doc """
   Renders one compile-poison recovery round as a persistent status line: how many
@@ -615,6 +639,17 @@ defmodule Mutare.Report.Live do
   # verbose (the runner fires these unconditionally).
   defp maybe_detail(%{verbose: true} = state, event), do: verbose_note(state, detail_line(event))
   defp maybe_detail(state, _event), do: state
+
+  # Like `maybe_detail/2`, but `seed_line/1` returns `nil` for a `:skipped` seed — leave no
+  # line in that case (and in every non-verbose mode).
+  defp maybe_seed_note(%{verbose: true} = state, summary) do
+    case seed_line(summary) do
+      nil -> state
+      line -> verbose_note(state, line)
+    end
+  end
+
+  defp maybe_seed_note(state, _summary), do: state
 
   # Start the animation tick only on a tty; in a verbose plain run there is no block
   # to animate, so the per-mutant lines are just scrollback.
