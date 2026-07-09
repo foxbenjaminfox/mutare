@@ -262,12 +262,12 @@ defmodule Mutare.Transform.Analyze do
   # position (only the transform knows where a clause returns — see
   # `annotate_returns/3`). A `def … rescue …` shorthand additionally gets its rescue
   # clauses narrowed/dropped (`host_def_rescue/3`). The body is first
-  # `normalize_clause_blocks/1`-ed so an **inline keyword** rescue/catch/else
+  # `Syntax.normalize_clause_blocks/1`-ed so an **inline keyword** rescue/catch/else
   # (`def f, do: …, rescue: (p -> b)`) reads like its block-form twin.
   defp analyze({vis, meta, [head, body_kw]}, _context, mutators)
        when vis in [:def, :defp] and is_list(body_kw) do
     head = analyze(head, :pattern, mutators)
-    body_kw = DefClause.normalize_clause_blocks(body_kw)
+    body_kw = Syntax.normalize_clause_blocks(body_kw)
     analyzed_kw = DefClause.analyze_do_blocks(__MODULE__, body_kw, mutators)
     annotated_kw = Returns.annotate_returns(analyzed_kw, body_kw, mutators)
     {vis, meta, [head, DefClause.host_def_rescue(annotated_kw, body_kw, mutators)]}
@@ -361,8 +361,12 @@ defmodule Mutare.Transform.Analyze do
   # a pattern — so it stays mutatable. Analyze its clauses keeping both sides
   # runtime, intercepting them before the generic `->` clause (below) would wrongly
   # pattern-route the conditions. The `:do` block key is protected by the
-  # keyword-pair clause.
+  # keyword-pair clause. The blocks are first `Syntax.normalize_clause_blocks/1`-ed
+  # so the keyword form (`cond(do: (c -> b))`) reads like its block-form twin —
+  # otherwise the wrapped clause list falls past `cond_block`'s list guard into the
+  # generic descent, which pattern-routes the conditions and leaves them unmutated.
   defp analyze({:cond, meta, [blocks]}, context, mutators) when is_list(blocks) do
+    blocks = Syntax.normalize_clause_blocks(blocks)
     {:cond, meta, [Conditions.cond_blocks(__MODULE__, blocks, body_context(context), mutators)]}
   end
 
@@ -409,6 +413,19 @@ defmodule Mutare.Transform.Analyze do
   # (separate from `:mutare`, since they need the dedicated emit). The whole-`case`-node
   # parity offer is dropped — no built-in matches a `case`, and a custom whole-`case` mutator
   # can't be combined with the per-clause tupling (a documented, built-in-irrelevant gap).
+  #
+  # The keyword form (`case x, do: (p -> b; …)`) wraps the clause list in an extra
+  # `:__block__` (`Syntax.normalize_clause_blocks/1`'s shape); unwrap and re-dispatch so
+  # it gets the same per-clause candidates as its block-form twin (rendering flips to
+  # block form at the final render, where block keys become plain atoms).
+  defp analyze(
+         {:case, meta,
+          [subject, [{do_key, {:__block__, _bmeta, [[{:->, _, _} | _] = clauses]}}]]},
+         :runtime,
+         mutators
+       ),
+       do: analyze({:case, meta, [subject, [{do_key, clauses}]]}, :runtime, mutators)
+
   defp analyze({:case, _meta, [_subject, [{_do_key, clauses}]]} = node, :runtime, mutators)
        when is_list(clauses) do
     analyzed = recurse(node, :runtime, mutators)
@@ -430,7 +447,7 @@ defmodule Mutare.Transform.Analyze do
   # `attach_clause_pattern_candidates/5` or `/6`. (Each mutant is a full copy — C×M —
   # acceptable for these rare, small constructs; `case` uses the per-clause path above.)
   defp analyze({:receive, meta, [blocks]} = node, :runtime, mutators) when is_list(blocks) do
-    normalized_blocks = ClausePatterns.normalize_receive_clause_blocks(blocks)
+    normalized_blocks = Syntax.normalize_clause_blocks(blocks)
     normalized_node = {:receive, meta, [normalized_blocks]}
     {clauses, rebuild} = ClausePatterns.receive_do_clauses(normalized_blocks, meta)
 
@@ -477,12 +494,17 @@ defmodule Mutare.Transform.Analyze do
   # catch/else/after mutate; the rescue/else/catch patterns stay `:pattern`). This clause handles the
   # explicit `try`; the `def … rescue …` shorthand carries the same blocks at the def-body level and
   # is hosted in a synthesized `try` by `host_def_rescue/3` (off the same `rescue_type_candidates/3`).
+  # The blocks are first `Syntax.normalize_clause_blocks/1`-ed so the keyword form
+  # (`try(do: …, rescue: (p -> b))`) reads like its block-form twin — otherwise
+  # `rescue_type_candidates/3`'s list guard misses the wrapped clause list and the
+  # narrowing/clause-drop mutants are silently skipped.
   defp analyze({:try, meta, [blocks]} = node, :runtime, mutators) when is_list(blocks) do
-    analyzed = recurse(node, :runtime, mutators)
+    normalized_blocks = Syntax.normalize_clause_blocks(blocks)
+    analyzed = recurse({:try, meta, [normalized_blocks]}, :runtime, mutators)
 
     candidates =
       Attach.build_candidates(node, Dispatch.mutations(node, mutators)) ++
-        ClausePatterns.rescue_type_candidates(blocks, meta, mutators)
+        ClausePatterns.rescue_type_candidates(normalized_blocks, meta, mutators)
 
     Attach.put_candidates_if_any(analyzed, candidates)
   end
@@ -548,9 +570,10 @@ defmodule Mutare.Transform.Analyze do
   # its bindings — which escape to later clauses and the `do` body — exactly the rewriteable
   # position, so each clause routes through `analyze_statement/3` (a `=` gets a
   # `Candidate.MatchPattern`; a `<-` keeps its LHS a `:pattern`; a bare expr is ordinary
-  # runtime). The keyword tail descends as usual (the `do` body's own non-final `=`
-  # statements are reached there too; `else` patterns stay `:pattern` via the generic `->`
-  # clause). A `<-` non-match routes to `else`, but a `=` non-match raises `MatchError`
+  # runtime). The keyword tail is `Syntax.normalize_clause_blocks/1`-ed (so a keyword-form
+  # `else: (p -> b)` reads like its block-form twin) and descends as usual (the `do` body's
+  # own non-final `=` statements are reached there too; `else` patterns stay `:pattern` via
+  # the generic `->` clause). A `<-` non-match routes to `else`, but a `=` non-match raises `MatchError`
   # (which `else` never catches) — preserved by the rewrite's trailing raise clause. (A
   # malformed `with` with no keyword tail falls back to the generic runtime descent.)
   defp analyze({:with, meta, args} = node, :runtime, mutators)
@@ -558,6 +581,7 @@ defmodule Mutare.Transform.Analyze do
     if is_list(List.last(args)) do
       {clauses, [body_kw]} = Enum.split(args, -1)
       clauses = Enum.map(clauses, &MatchPatterns.analyze_statement(__MODULE__, &1, mutators))
+      body_kw = Syntax.normalize_clause_blocks(body_kw)
       rebuilt = {:with, meta, clauses ++ [analyze(body_kw, :runtime, mutators)]}
       Attach.offer(rebuilt, node, mutators)
     else
@@ -676,6 +700,20 @@ defmodule Mutare.Transform.Analyze do
     end
   end
 
+  # A **stab-clause block** — `{:__block__, _, [[-> …]]}`, the parse of parenthesized arrow
+  # clauses. Only arrow clauses produce this shape (`[a -> b]` is a syntax error, so a genuine
+  # list literal never contains a `->`), yet it is byte-identical to a list literal's, so the
+  # generic clause below would *offer* it — letting `List` collapse required `->` clauses to
+  # `[]` — and splice a selector where only clauses are legal: poison twice over. It surfaces
+  # wherever arrow clauses sit in a position with no dedicated construct clause: a keyword-form
+  # tail (`with …, else: (_ -> …)`, an unrouted macro's `do:`), a `for` `reduce:` `do:` body,
+  # a bare macro argument. (`case`/`cond`/`receive`/`try`/`def rescue` never reach here — their
+  # clauses `Syntax.normalize_clause_blocks/1` the wrapper away first.) Descend clause-wise —
+  # the `->` clause keeps each LHS a `:pattern`, the safe default for an unknown host — and
+  # never offer the wrapper.
+  defp analyze({:__block__, meta, [[{:->, _, _} | _] = clauses]}, :runtime, mutators),
+    do: {:__block__, meta, [Enum.map(clauses, &analyze(&1, :runtime, mutators))]}
+
   # A generic runtime node: offer it and descend, or route a known-macro call's arguments
   # by treatment — see `do_analyze_call_node/3`. (A sigil is offered whole then descended
   # *surgically* via `descend_sigil/2`, so an interpolated `~r/a#{b}c/` still mutates `b`
@@ -694,22 +732,13 @@ defmodule Mutare.Transform.Analyze do
   # :keyword` marker on the original key is harmless — Sourceror renders the spliced
   # selector as an arrow (`%{(sel) => v}`) or a tuple (`[{(sel), v}]`) automatically.
   # Compile-time-constrained data keys (struct fields, `for` options) are kept raw by
-  # their own clauses, before reaching here.
-  #
-  # A block-key value that is a **stab-clause block** — the *keyword form* of a clause tail,
-  # `with …, else: (_ -> fallback)` or `case x, do: (1 -> :a)` — parses to the same
-  # `{:__block__, _, [[…]]}` shape as a list literal, but the construct demands literal `->`
-  # clauses there: both a `List` collapse to `[]` and the selector `case` itself are rejected
-  # ("expected -> clauses for :else in \"with\""), poisoning the single build. (The block-form
-  # tails never reach here — their clause lists arrive bare, routed by each construct's own
-  # clause.) Such a value descends *clause-wise* with the wrapper left raw, exactly like a
-  # `for` `reduce:` body.
+  # their own clauses, before reaching here. (A value holding a keyword-form clause tail —
+  # `with …, else: (_ -> fallback)` — descends into the stab-clause-block clause above,
+  # which keeps the wrapper raw; no special casing is needed here.)
   defp analyze({key, value} = pair, context, mutators) do
-    cond do
-      not Syntax.block_key?(key) -> recurse(pair, context, mutators)
-      stab_clause_block?(value) -> {key, analyze_stab_clause_block(value, context, mutators)}
-      true -> {key, analyze(value, context, mutators)}
-    end
+    if Syntax.block_key?(key),
+      do: {key, analyze(value, context, mutators)},
+      else: recurse(pair, context, mutators)
   end
 
   # anything else — a node in a non-runtime context, or a container/leaf:
@@ -841,22 +870,16 @@ defmodule Mutare.Transform.Analyze do
   # build), so it is held back; every other value (`:into`/`:reduce` and the `:do`/
   # `:reduce` body) descends as ordinary runtime.
   #
-  # The exception is a **`reduce:` `do:` body**, which is a *stab-clause* block
-  # (`acc -> expr`) that Sourceror represents identically to a list literal —
-  # `{:__block__, _, [[…]]}` — so the generic runtime descent would *offer* the
-  # wrapper and let `Mutare.Mutators.List` collapse it to `[]`. But the `for` special
-  # form requires those literal `acc -> expr` clauses ("the do block must be written
-  # using acc -> expr clauses"), so a `case`/`[]` spliced there poisons the single
-  # build. Such a body is descended *clause-wise* (each clause body still mutates; its
-  # pattern stays a pattern via the generic `->` clause) with the wrapper left raw.
+  # (A `reduce:` comprehension's `do:` body is a *stab-clause* block — `acc -> expr`
+  # clauses the `for` special form demands stay literal ("the do block must be written
+  # using acc -> expr clauses"). It needs no handling here: the stab-clause-block clause
+  # of the main descent descends it clause-wise with the wrapper left raw.)
   defp analyze_for_arg(opts, mutators) when is_list(opts) do
     Enum.map(opts, fn
       {key, value} ->
-        cond do
-          AST.key_atom(key) == :uniq -> {key, value}
-          stab_clause_block?(value) -> {key, analyze_stab_clause_block(value, :runtime, mutators)}
-          true -> {key, analyze(value, :runtime, mutators)}
-        end
+        if AST.key_atom(key) == :uniq,
+          do: {key, value},
+          else: {key, analyze(value, :runtime, mutators)}
 
       other ->
         analyze(other, :runtime, mutators)
@@ -870,20 +893,6 @@ defmodule Mutare.Transform.Analyze do
   # *bare macro call* qualifier is a filter, not value-discarded, so it stays unrewritten.)
   defp analyze_for_arg(arg, mutators),
     do: MatchPatterns.analyze_match_statement(__MODULE__, arg, mutators)
-
-  # A block whose sole child is a non-empty list of `->` clauses — indistinguishable in
-  # shape from a list literal, but only arrow clauses parse to it (`[a -> b]` is a syntax
-  # error, so a *genuine* list literal never contains a `->`). It surfaces at exactly two
-  # runtime spots: a `for` `reduce:` `do:` body, and a construct tail written in *keyword
-  # form* (`with …, else: (_ -> …)` / `case x, do: (…)`) — the block-form constructs are
-  # intercepted by their own `analyze/3` clauses with the clause list arriving bare.
-  # Each clause descends normally (the `->` clause keeps patterns `:pattern` and applies
-  # `body_context/1` to the body); the wrapper is never offered.
-  defp stab_clause_block?({:__block__, _meta, [[{:->, _, _} | _]]}), do: true
-  defp stab_clause_block?(_), do: false
-
-  defp analyze_stab_clause_block({:__block__, meta, [clauses]}, context, mutators),
-    do: {:__block__, meta, [Enum.map(clauses, &analyze(&1, context, mutators))]}
 
   # One entry of a struct's field map: keep the key (a compile-time field name) raw and
   # descend only the value. A struct update (`%S{base | a: 1}`) carries a `:|` node

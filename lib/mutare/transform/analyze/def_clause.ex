@@ -1,37 +1,18 @@
 defmodule Mutare.Transform.Analyze.DefClause do
   @moduledoc false
 
-  # The body-keyword machinery of a `def`/`defp` clause: normalize its block shape, route each
-  # block (`:do`/`:after` runtime, `:rescue`/`:catch`/`:else` clause lists), and host a
-  # `def … rescue …` shorthand in a synthesized `try` so `RescueType` reaches it. Extracted from
-  # `Mutare.Transform.Analyze` (the `def`/`defp` clause calls `normalize_clause_blocks/1` →
-  # `analyze_do_blocks/3` → `host_def_rescue/3`); the one-way dependency re-enters the walk only
+  # The body-keyword machinery of a `def`/`defp` clause: route each block (`:do`/`:after`
+  # runtime, `:rescue`/`:catch`/`:else` clause lists) and host a `def … rescue …` shorthand in
+  # a synthesized `try` so `RescueType` reaches it. Extracted from `Mutare.Transform.Analyze`
+  # (the `def`/`defp` clause calls `Syntax.normalize_clause_blocks/1` → `analyze_do_blocks/3` →
+  # `host_def_rescue/3` — the normalization unwraps an **inline keyword** rescue/catch/else so
+  # the clause routing here sees one shape); the one-way dependency re-enters the walk only
   # through the **injected `descent`** (the `Mutare.Transform.Analyze` module, passed in as the
   # first argument — `:runtime` via `descent.annotate/2`, `:pattern` via `descent.pattern/2`)
   # rather than naming it statically, with block-key predicates (`Syntax`) and candidate
   # attachment (`Attach`) on the dependency-neutral leaves.
 
   alias Mutare.Transform.Analyze.{Attach, ClausePatterns, Syntax}
-
-  # An **inline-keyword** rescue/catch/else (`def f, do: …, rescue: (p -> b)`) parses its clause
-  # value as a `{:__block__, _, [clauses]}` wrapper, where a block-form body's clause value is a
-  # bare list. Unwrap the former so every downstream consumer sees one shape: the clause routing
-  # in `analyze_do_blocks/3` (guarded on `is_list` — otherwise the whole rescue is mis-analyzed as
-  # a *runtime expression*, splicing a selector into a position no `->` clause may hold: poison),
-  # the rescue-clause-body return tails in `annotate_returns/3` (likewise `is_list`-guarded), and
-  # the rescue narrowing/clause-drop discovery in `host_def_rescue/3` → `rescue_type_candidates/3`
-  # (whose `:rescue` list guard would otherwise miss it, so the valid inline `def … rescue` form
-  # produced no `:rescue_type` mutants). A block-form body's clause values are already bare lists,
-  # so this is a no-op there; non-clause keys (`:do`/`:after`) are never unwrapped.
-  def normalize_clause_blocks(body_kw) do
-    Enum.map(body_kw, fn
-      {key, {:__block__, _meta, [clauses]}} = pair when is_list(clauses) ->
-        if Syntax.clause_block_key?(key), do: {key, clauses}, else: pair
-
-      pair ->
-        pair
-    end)
-  end
 
   # The body keyword of a clause (`[do: …, rescue: …, catch: …, else: …,
   # after: …]`, possibly with Sourceror's `{:__block__, _, [:do]}` keys). `:do`

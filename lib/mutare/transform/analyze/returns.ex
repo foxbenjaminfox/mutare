@@ -197,6 +197,11 @@ defmodule Mutare.Transform.Analyze.Returns do
               a_args != [] and length(a_args) == length(r_args) do
     {a_head, [a_blocks]} = Enum.split(a_args, -1)
     {_r_head, [r_blocks]} = Enum.split(r_args, -1)
+    # The analyzed copy's keyword-form clause tails were normalized at the construct's
+    # analyze clause; the raw copy still carries the source's `:__block__` wrapper.
+    # Normalize it too so the lockstep walk stays aligned (the clauses inside keep
+    # their own meta, so each candidate's `original`/`range` is unaffected).
+    r_blocks = Syntax.normalize_clause_blocks(r_blocks)
     kinds = Map.fetch!(@return_blocks, form)
 
     if descendable_blocks?(a_blocks, r_blocks, kinds) do
@@ -212,12 +217,13 @@ defmodule Mutare.Transform.Analyze.Returns do
   # Whether a construct's block list is safe to descend. It must be a keyword-block
   # list (both copies, equal length) whose every `:clauses` block carries a clean
   # `->` clause list. The **keyword form** (`with …, else: (c -> …)`, `case x, do:
-  # (… -> …)`) wraps that clause list in an extra `:__block__`; descending a
-  # *sibling* block (e.g. the `:do` value) would force Sourceror to re-render the
-  # whole construct in block form, where the wrapper renders as an illegal `[ -> ]`
-  # list. So a non-canonical construct is left a leaf (mutated whole — which renders
-  # fine), exactly as it was before `with`/`try`/`receive` descent. (`:value`
-  # blocks are always fine; an `if x, do: a, else: b` keyword form has no clauses.)
+  # (… -> …)`) wraps that clause list in an extra `:__block__` — but both copies
+  # arrive here `Syntax.normalize_clause_blocks/1`-ed (the analyzed copy at the
+  # construct's analyze clause, the raw copy just above), so the keyword form
+  # descends exactly like its block-form twin. A construct that is *still*
+  # non-canonical (a malformed shape) is left a leaf (mutated whole — which renders
+  # fine). (`:value` blocks are always fine; an `if x, do: a, else: b` keyword form
+  # has no clauses.)
   defp descendable_blocks?(a_blocks, r_blocks, kinds) do
     kw_block_list?(a_blocks) and kw_block_list?(r_blocks) and
       length(a_blocks) == length(r_blocks) and

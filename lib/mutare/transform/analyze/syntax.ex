@@ -46,4 +46,41 @@ defmodule Mutare.Transform.Analyze.Syntax do
   """
   @spec block_key?(Macro.t()) :: boolean()
   def block_key?(key), do: AST.key_atom(key) in @block_keys
+
+  @doc """
+  A non-empty list of `->` clauses — a `case`/`cond`/`receive` `do:`, a `rescue`/`catch`/
+  `else` body, a `reduce:` comprehension `do:`. Only arrow clauses parse to this shape
+  (`[a -> b]` is a syntax error, so a genuine list literal never contains a `->`).
+  """
+  @spec clause_list?(Macro.t()) :: boolean()
+  def clause_list?(list),
+    do: is_list(list) and list != [] and Enum.all?(list, &match?({:->, _, _}, &1))
+
+  @doc """
+  Unwrap every **keyword-form** clause tail in a construct's block keyword — the parse of
+  `case x, do: (p -> b)` / `cond(do: (c -> b))` / `try(…, rescue: (p -> b))` /
+  `receive(do: (p -> b), after: (t -> b))` / `def f, do: …, rescue: (p -> b)` — so downstream
+  consumers see one shape, the bare clause list the block form always carries. The wrapper —
+  `{key, {:__block__, _, [clauses]}}` — is otherwise indistinguishable from a *list literal*
+  in that keyword's value, so shape-based clause routing misses it: the clause machinery
+  (`cond` condition analysis, `case` per-clause tupling, `rescue` narrowing, receive-clause
+  copies, return tails) is `is_list`-guarded and silently skips the keyword form, and a
+  runtime descent would offer the wrapper to the `List` family (collapsing required `->`
+  clauses to `[]` — poison). Unwrapping is safe on shape alone: only arrow clauses parse to a
+  block whose sole child is a `clause_list?/1`, and the final render flips block keys back to
+  plain atoms, at which point Sourceror renders the construct in block form. A block-form
+  value is already a bare list (no-op), and non-block keys and non-clause values pass through.
+  """
+  @spec normalize_clause_blocks(Macro.t()) :: Macro.t()
+  def normalize_clause_blocks(blocks) when is_list(blocks) do
+    Enum.map(blocks, fn
+      {key, {:__block__, _meta, [clauses]}} = pair ->
+        if block_key?(key) and clause_list?(clauses), do: {key, clauses}, else: pair
+
+      other ->
+        other
+    end)
+  end
+
+  def normalize_clause_blocks(other), do: other
 end

@@ -586,12 +586,30 @@ defmodule Mutare.TransformTest do
   end
 
   describe "keyword-form clause tails (`else: (_ -> …)`)" do
-    # A construct tail written in *keyword form* — `with …, else: (_ -> fallback)` — is the
-    # other spot a stab-clause block surfaces (the same `{:__block__, _, [[…]]}` shape as a
-    # list literal; the block form arrives as a bare clause list instead). Before the fix
-    # `Mutare.Mutators.List` collapsed it to `[]` — and even the selector `case` is illegal
-    # there ("expected -> clauses for :else in \"with\"") — poisoning the single build. As
-    # with `reduce:`, the metamutant parses fine either way, so these compile it.
+    # A construct tail written in *keyword form* — `with …, else: (_ -> fallback)`,
+    # `case x, do: (p -> b)` — parses its clause list inside an extra `:__block__`, the
+    # same `{:__block__, _, [[…]]}` shape as a list literal (the block form arrives as a
+    # bare clause list instead). Untreated, `Mutare.Mutators.List` collapsed it to `[]` —
+    # and even the selector `case` is illegal there ("expected -> clauses for :else in
+    # \"with\"") — poisoning the single build; and the shape-guarded clause machinery
+    # (`cond` condition analysis, `case` per-clause tupling, `rescue` narrowing, return
+    # tails) silently skipped it, so keyword forms were under-mutated. The fix is
+    # `Syntax.normalize_clause_blocks/1` at each construct's analyze clause plus the raw
+    # side of the `Returns` walk, so each keyword form mutates **identically to its
+    # block-form twin** — asserted here as full site parity. As with `reduce:`, the
+    # metamutant parses fine either way, so these compile it, not just parse it.
+    defp kw_block_parity(kw_source, block_source) do
+      [kw, block] =
+        Enum.map([kw_source, block_source], fn source ->
+          {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
+          assert_compiles(meta)
+          sites |> Enum.map(&{&1.mutator, &1.original_code, &1.mutated_code}) |> Enum.sort()
+        end)
+
+      assert kw == block
+      kw
+    end
+
     @with_kw """
     defmodule WKw do
       def go(x) do
@@ -609,27 +627,124 @@ defmodule Mutare.TransformTest do
       assert_compiles(meta)
     end
 
-    test "clause bodies still mutate, patterns stay patterns, and the full set compiles" do
-      {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(@with_kw)
+    test "a keyword `with` mutates identically to its block-form twin" do
+      sites =
+        kw_block_parity(@with_kw, """
+        defmodule WBlock do
+          def go(x) do
+            with {:ok, v} <- x do
+              v + 1
+            else
+              :error -> 0
+              other -> other
+            end
+          end
+        end
+        """)
 
-      # The `do:` body `v + 1` is ordinary runtime and still mutates...
-      assert Enum.any?(sites, &(&1.mutator == :arithmetic and &1.original_form == :+))
-      # ...while the else-clause left side stays a pattern (`:error` is never atom-mutated).
-      refute Enum.any?(sites, &(&1.original_code == ":error"))
-      assert_compiles(meta)
+      # The `do:` body is ordinary runtime and mutates; the else-clause left side stays
+      # a pattern (`:error` is never atom-mutated); the else bodies are return tails.
+      assert Enum.any?(sites, &match?({:arithmetic, "v + 1", _}, &1))
+      refute Enum.any?(sites, &match?({_, ":error", _}, &1))
+      assert {:return_value, "other", "nil"} in sites
     end
 
-    test "keyword-form case and try tails compile under the full set" do
-      source = """
-      defmodule KwTails do
-        def pick(x), do: case(x, do: (1 -> :one; _ -> :other))
-        def guard(f), do: try(do: f.(), rescue: (_e -> :err), catch: (:throw, v -> v))
-      end
-      """
+    test "a keyword `cond` mutates identically — its clause left is a runtime condition" do
+      sites =
+        kw_block_parity(
+          """
+          defmodule CondKw do
+            def go(x), do: cond(do: (x > 1 -> :hi; true -> :lo))
+          end
+          """,
+          """
+          defmodule CondBlock do
+            def go(x) do
+              cond do
+                x > 1 -> :hi
+                true -> :lo
+              end
+            end
+          end
+          """
+        )
 
-      {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
-      refute Enum.any?(sites, &(&1.mutator == :list))
-      assert_compiles(meta)
+      # The condition mutates as runtime (it would be inert if pattern-routed)...
+      assert {:relational, "x > 1", "x < 1"} in sites
+      # ...and each clause body is a return tail.
+      assert {:return_value, ":hi", "nil"} in sites
+    end
+
+    test "a keyword `case` mutates identically — per-clause pattern candidates included" do
+      sites =
+        kw_block_parity(
+          """
+          defmodule CaseKw do
+            def go(x), do: case(x, do: ({:ok, v} -> v; _ -> :err))
+          end
+          """,
+          """
+          defmodule CaseBlock do
+            def go(x) do
+              case x do
+                {:ok, v} -> v
+                _ -> :err
+              end
+            end
+          end
+          """
+        )
+
+      # The tuple-the-scrutinee per-clause delivery reaches the keyword form's patterns.
+      assert {:convention, ":ok", ":error"} in sites
+    end
+
+    test "a keyword `try` mutates identically — rescue narrowing included" do
+      sites =
+        kw_block_parity(
+          """
+          defmodule TryKw do
+            def go(f), do: try(do: f.(), rescue: (e in [ArgumentError, KeyError] -> {:err, e}))
+          end
+          """,
+          """
+          defmodule TryBlock do
+            def go(f) do
+              try do
+                f.()
+              rescue
+                e in [ArgumentError, KeyError] -> {:err, e}
+              end
+            end
+          end
+          """
+        )
+
+      assert Enum.count(sites, &match?({:rescue_type, _, _}, &1)) == 2
+    end
+
+    test "a keyword `receive` mutates identically — after-clause return tails included" do
+      sites =
+        kw_block_parity(
+          """
+          defmodule RcvKw do
+            def go, do: receive(do: ({:msg, x} -> x), after: (100 -> :timeout))
+          end
+          """,
+          """
+          defmodule RcvBlock do
+            def go do
+              receive do
+                {:msg, x} -> x
+              after
+                100 -> :timeout
+              end
+            end
+          end
+          """
+        )
+
+      assert {:return_value, ":timeout", "nil"} in sites
     end
   end
 
