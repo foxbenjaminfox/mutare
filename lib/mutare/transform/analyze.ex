@@ -238,6 +238,24 @@ defmodule Mutare.Transform.Analyze do
     end
   end
 
+  # An *expression* capture (`&(&1 && &2)`, `&if(v = f(&1), do: v, else: g(&1))`): the body is
+  # ordinary runtime code (unlike the `&Mod.fun/N` reference capture above), so it analyzes
+  # exactly like the generic runtime clause — except that the direct capture argument is the
+  # one expression position where a `__block__` is illegal ("block expressions are not allowed
+  # inside the capture operator &"; every *nested* position under `&` accepts one). The only
+  # block the descent manufactures is the if/unless condition hoist, so it is re-delivered
+  # with the hoists folded into the condition (`Conditions.fold_hoist_into_condition/1`) — a
+  # legal, semantically identical position — before the capture is rebuilt.
+  defp analyze({:&, _meta, [_body]} = node, :runtime, mutators) do
+    case do_analyze_call_node(node, mutators, %{pipe_mode: :unpiped}) do
+      {:&, amp_meta, [child]} ->
+        {:&, amp_meta, [Conditions.fold_hoist_into_condition(child)]}
+
+      other ->
+        other
+    end
+  end
+
   # A `def`/`defp` clause reaching the in-place path (one that did not lift, or the
   # *original* clause of a lifted group): the head is a pattern, the body keyword is
   # runtime, and the `:do` block's *tail expression* is additionally a return-value

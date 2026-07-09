@@ -122,7 +122,10 @@ defmodule Mutare.Transform.Analyze.Conditions do
   #     end
   #
   # delivered as a `__block__` (which renders, compiles, and leaks `name` exactly like
-  # the original `if` in every position — statement, expression RHS, call argument).
+  # the original `if` in every position — statement, expression RHS, call argument —
+  # except the *direct argument of a capture*, the one expression position that rejects
+  # a block; the `&` clause in `Mutare.Transform.Analyze` re-delivers that case via
+  # `fold_hoist_into_condition/1`).
   # A **refutable** pattern (`if {:ok, v} = f() do`) keeps its `MatchError` semantics
   # by binding the match value to a temp first: `mutare_cond = f(); {:ok, v} =
   # mutare_cond; if … mutare_cond … do`. The temp is a placeholder until emit
@@ -167,6 +170,32 @@ defmodule Mutare.Transform.Analyze.Conditions do
     if_node = {form, meta, [rewritten, analyzed_body]}
     {:__block__, [], hoists ++ [if_node]}
   end
+
+  @doc """
+  Re-deliver a statement-hoisted `if`/`unless` (`hoist_if/6`'s `__block__`) with the hoists
+  folded *into the condition* — `if (v = f(); <condition>) do …` — for the one expression
+  position where a `__block__` is illegal: the **direct argument of a capture**.
+  `&if(v = f(&1), do: …)` would otherwise emit `&(v = f(&1); if …)`, which the capture
+  operator rejects ("block expressions are not allowed inside the capture operator &"),
+  sinking the single compile. A block *nested in* the condition is legal under `&`, and the
+  semantics are identical: the hoists still run unconditionally, exactly once, before the
+  condition, and their bindings still leak into the branches. Anything that is not the hoist
+  shape passes through untouched (a multi-statement block can't be written under `&` in
+  source, so only the hoist manufactures one there).
+  """
+  @spec fold_hoist_into_condition(Macro.t()) :: Macro.t()
+  def fold_hoist_into_condition({:__block__, _bmeta, [_, _ | _] = stmts} = block) do
+    case Enum.split(stmts, -1) do
+      {hoists, [{form, meta, [condition, body_kw]}]}
+      when form in [:if, :unless] and is_list(body_kw) ->
+        {form, meta, [{:__block__, [], hoists ++ [condition]}, body_kw]}
+
+      _ ->
+        block
+    end
+  end
+
+  def fold_hoist_into_condition(other), do: other
 
   # Synthesize the `IfCondition` decision (`true`/`false`) on the rewritten condition
   # root, ranged on the original condition. We build it directly rather than calling

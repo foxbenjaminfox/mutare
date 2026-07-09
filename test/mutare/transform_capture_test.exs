@@ -359,6 +359,88 @@ defmodule Mutare.TransformCaptureTest do
       Selector.put(Selector.baseline())
     end
 
+    test "a binding-escaping if condition folds its hoist into the condition (no block under &)" do
+      # `&if(v = pos(&1), do: v, else: neg(&1))`: the ordinary hoist would deliver
+      # `(v = pos(&1); if …)` — a `__block__` as the *direct* capture argument, the one
+      # expression position Elixir rejects ("block expressions are not allowed inside the
+      # capture operator &"), sinking the single compile. Under `&` the hoists fold into
+      # the condition instead — `if((v = pos(&1); <sel>), do: …)` — a legal nested
+      # position with identical semantics, and the decision mutant is still delivered.
+      source = """
+      defmodule Mutare.CaptureHoistFixture do
+        def go(list), do: Enum.map(list, &if(v = pos(&1), do: v, else: neg(&1)))
+        def pos(x), do: x + 1
+        def neg(x), do: x - 1
+      end
+      """
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
+
+      # The decision pair is delivered, diffed against the original condition.
+      assert Enum.map(sites, &{&1.original_code, &1.mutated_code}) ==
+               [{"v = pos(&1)", "true"}, {"v = pos(&1)", "false"}]
+
+      # It compiles (the whole point), and the capture still works: the baseline keeps
+      # the original semantics and flipping the forced-`false` mutant takes the else branch.
+      [{mod, _}] = assert_compiles(meta)
+
+      Selector.put(Selector.baseline())
+      assert mod.go([1, -5]) == [2, -4]
+
+      false_site = Enum.find(sites, &(&1.mutated_code == "false"))
+      Selector.put(false_site.id)
+      assert mod.go([1, -5]) == [0, -6]
+    after
+      Selector.put(Selector.baseline())
+    end
+
+    test "a refutable-pattern hoist (temp + re-match) also folds under &, and compiles" do
+      # The refutable shape lifts *two* statements (`tmp = fetch(&1); {:ok, v} = tmp`);
+      # both fold into the condition, preserving the MatchError-on-non-match semantics.
+      source = """
+      defmodule Mutare.CaptureHoistRefutableFixture do
+        def go(list), do: Enum.map(list, &if({:ok, v} = fetch(&1), do: v, else: :none))
+        def fetch(x), do: {:ok, x}
+      end
+      """
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
+
+      assert sites |> Enum.map(& &1.original_code) |> Enum.uniq() == ["{:ok, v} = fetch(&1)"]
+
+      [{mod, _}] = assert_compiles(meta)
+      Selector.put(Selector.baseline())
+      assert mod.go([1, 2]) == [1, 2]
+    after
+      Selector.put(Selector.baseline())
+    end
+
+    test "a hoist *nested* in the capture body (not the direct argument) stays a statement hoist" do
+      # Only the direct capture argument rejects a block; a hoisted `if` sitting as a call
+      # argument under `&` is legal as-is and keeps the ordinary statement-hoist delivery.
+      source = """
+      defmodule Mutare.CaptureNestedHoistFixture do
+        def go(list), do: Enum.map(list, &pos(if(v = fetch(&1), do: v, else: 0)))
+        def pos(x), do: x + 1
+        def fetch(x), do: x
+      end
+      """
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :if_condition))
+      assert_compiles(meta)
+    end
+
     test "numbered placeholders (`&1`/`&2`) are never mutated as integer literals" do
       # `&1`/`&2` carry a *bare* integer index, not a `{:__block__, _, [n]}` literal node, so
       # the literal families never see them. A body of only placeholders yields no literal
