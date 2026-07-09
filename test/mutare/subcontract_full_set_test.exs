@@ -117,4 +117,95 @@ defmodule Mutare.SubcontractFullSetTest do
       assert Enum.frequencies_by(sites, & &1.mutator) == %{integer: 2}
     end
   end
+
+  describe "a hosted macro inside a hosted island — lowered to rebuilds, live at runtime" do
+    # The deepest shape the full-set sub-contract admits: the outer `filter`'s hosted island
+    # contains *another* `filter`, whose own hosted catalog cannot be woven (hosted delivery
+    # never nests) but is **lowered** — each inner target mutant comes back as a whole-call
+    # rebuild (`splice(wrap(mutant))`, the selector degenerated to its selected branch) and
+    # rides the outer weave as an ordinary branch. Three delivery layers in one build: core's
+    # integer mutant of the inner condition's operand, relayed by the inner host's island
+    # sub-contract, lowered into the inner-`filter` rebuild, woven by the outer host.
+    @nested_source """
+    defmodule Mutare.SubcontractFullSetFixture.Nested do
+      import Mutare.Test.HostDSL
+
+      def go(y) do
+        filter([:ok], [] < filter([true], y > 1))
+      end
+    end
+    """
+
+    @compile {:no_warn_undefined, Mutare.SubcontractFullSetFixture.Nested}
+
+    test "the inner filter's hosted catalog surfaces through the outer weave, attributed and live" do
+      {metamutant, sites, _next} =
+        Mutare.Transform.transform_string_with_sites(@nested_source,
+          file: "subcontract_full_set_nested.ex",
+          mutators: @mutators
+        )
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        [{_module, _binary} | _] = Code.compile_string(metamutant)
+      end)
+
+      # The inner filter's own comparison reversal — hosted semantics inside the island,
+      # recorded under the host's family.
+      inner = site(sites, :host_node, "[] < filter([true], y < 1)")
+      assert inner.original_code == "[] < filter([true], y > 1)"
+
+      # The inner host's island sub-contract relays through the lowering too: core's integer
+      # mutant of the inner condition's right operand, three layers out, still core's Site.
+      succ = site(sites, :integer, "[] < filter([true], y > 2)")
+      assert succ.variant == ["succ"]
+
+      # Exactly one producer per position — the lowering introduces no duplicates.
+      assert Enum.frequencies_by(sites, & &1.mutator) == %{host_node: 2, integer: 2}
+
+      alias Mutare.SubcontractFullSetFixture.Nested, as: N
+
+      # Baseline: `2 > 1` → `[true]`; `[] < [true]` → true → kept.
+      assert N.go(2) == [:ok]
+
+      # The lowered inner reversal (`y < 1`): inner filter → `[]`; `[] < []` → false → dropped.
+      Selector.put(inner.id)
+      assert N.go(2) == []
+
+      # The relayed integer succ (`y > 2`): `2 > 2` → `[]`; `[] < []` → false → dropped.
+      Selector.put(succ.id)
+      assert N.go(2) == []
+
+      # The outer host's own reversal (`[] > …`) still weaves alongside → false → dropped.
+      Selector.put(site(sites, :host_node, "[] > filter([true], y > 1)").id)
+      assert N.go(2) == []
+    end
+
+    test "qualified ignores reach variant/2 labels on lowered inner hosted mutants" do
+      source = """
+      defmodule Mutare.SubcontractFullSetFixture.DerivedVariant do
+        import Mutare.Test.HostDSL
+
+        def go(y) do
+          filter([:ok], [] < filter([true], y > 1)) # mutare:ignore[derived_host:reverse]
+        end
+      end
+      """
+
+      {_metamutant, sites, _next} =
+        Mutare.Transform.transform_string_with_sites(source,
+          file: "subcontract_full_set_derived_variant.ex",
+          mutators: [
+            :integer,
+            Mutare.Test.HostNodeMutator,
+            Mutare.Test.DerivedVariantHostMutator
+          ]
+        )
+
+      inner = site(sites, :derived_host, "[] < filter([true], y < 1)")
+
+      assert inner.original_code == "[] < filter([true], y > 1)"
+      assert inner.variant == ["reverse"]
+      assert inner.ignored
+    end
+  end
 end

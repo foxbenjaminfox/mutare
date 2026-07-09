@@ -9,7 +9,7 @@ defmodule Mutare.Analyze do
     * a selector host (`c:Mutare.Mutator.MacroHost.host/2`) wraps each rebuilt subtree back under its pin, appends it to its `Mutare.Mutator.MacroHost.Target` mutants (tagged with the producing spec via `Mutare.Mutator.Mutation`'s `:producer`), and the ordinary hosted pipeline assigns ids, records sites under the producing family, and weaves the host's selector;
     * a mutator offered the whole call of a registered macro (`c:Mutare.Mutator.mutate/2` — the free-standing `dynamic/1,2` shape, where the macro sits in ordinary expression position and its `:skip` argument stays raw) rebuilds the call around each mutant and relays it the same way; delivery is the ordinary in-place selector.
 
-  On both paths the run's enabled specs arrive as `context.mutators` — the **full** set, selector hosts included — so the interior is analyzed exactly like top-level Elixir under the user's actual configuration (`:as` renames and per-instance options included — and with a family disabled, its interior mutants simply don't exist). A host-implementing mutator participates through its ordinary node-level surface (a registered macro inside the island is offered whole-call to its owner — the inner-`dynamic` case); only its `host/2` stays inert here, so hosted delivery never nests:
+  On both paths the run's enabled specs arrive as `context.mutators` — the **full** set, selector hosts included — so the interior is analyzed exactly like top-level Elixir under the user's actual configuration (`:as` renames and per-instance options included — and with a family disabled, its interior mutants simply don't exist). A host-implementing mutator participates through *both* of its surfaces: its ordinary node-level `mutate/1,2` (a registered macro inside the island is offered whole-call to its owner — the inner-`dynamic` case), and its hosted surface, whose targets are **lowered** to whole-call rebuilds (`splice(wrap(mutant))` — the woven selector degenerated to its selected branch) rather than woven, so hosted delivery never nests while no mutant is lost:
 
       defp pin_mutants({:^, meta, [inner]}, context) do
         for {spec, mutated, note, variant} <-
@@ -38,14 +38,19 @@ defmodule Mutare.Analyze do
   have done on the same code outside the DSL: macro-routing stamps are honored (a `:skip` or
   `:pattern` argument stays raw, an `:expression` argument descends), pattern positions are
   never mutated in place, and cross-family suppressions apply. A nested `{:hosted, …}` stamp
-  inside the subtree is left raw — no recursive hosting; the calling host owns the region.
+  inside the subtree keeps its argument core-raw, but the subscribed host's
+  `c:Mutare.Mutator.MacroHost.host/2` runs and each target mutant is **lowered** to a rebuild
+  of the hosting call — `splice(wrap(mutant))`, the woven selector degenerated to its selected
+  branch, by construction the value the weave evaluates to when that mutant is active. Hosting
+  is a delivery optimization, not a semantic category: hosted *semantics* come back as data;
+  hosted *delivery* (a woven selector) never nests — the calling host owns the region.
 
-  Only **node-level** producers run (`c:Mutare.Mutator.mutate/1` / `c:Mutare.Mutator.mutate/2`,
-  through the ordinary dispatch, so notes, variants, per-spec options, behaviours, and each
-  producer's `c:Mutare.Mutator.finalize/2` funnel follow the established contract). Structural
-  families in `mutators` are ignored — def-level, clause-level, and return-value shapes don't
-  apply to a bare expression subtree — and a selector host's `host/2` is masked (its ordinary
-  `mutate/1,2` still runs; a hosted mutant is a woven selector, not a rebuild).
+  Node-level producers run through the ordinary dispatch (`c:Mutare.Mutator.mutate/1` /
+  `c:Mutare.Mutator.mutate/2` — so notes, variants, per-spec options, behaviours, and each
+  producer's `c:Mutare.Mutator.finalize/2` funnel follow the established contract), and
+  selector hosts through the lowering above (their `finalize/2` runs at target normalization,
+  same contract). Structural families in `mutators` are ignored — def-level, clause-level, and
+  return-value shapes don't apply to a bare expression subtree.
 
   The function is pure — no ids are claimed and no sites are recorded; those remain the
   transform's, exercised when the relayed mutation flows through its delivery path (a host

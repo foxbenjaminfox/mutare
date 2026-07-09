@@ -38,10 +38,11 @@ defmodule Mutare.Transform.Analyze.Macros do
   # same logical mutant twice — a registered macro call is exactly where routing can make
   # regions core-raw, i.e. where the sub-contract precondition holds. The list is the full spec
   # set, so an island is analyzed exactly like top-level Elixir — a host-implementing plugin's
-  # *ordinary* surface (its registered macros, its resolved calls) produces inside an island
-  # too. The no-recursive-hosting property is collect's, where it belongs: `expression_mutations`
-  # disables each spec's `host/2` for its walk, so a nested `:hosted` stamp inside a
-  # sub-contracted island is left raw and hosted delivery never nests.
+  # ordinary surface *and its hosted surface* both produce inside an island. The
+  # no-recursive-hosting property is collect's, where it belongs: `expression_mutations` runs a
+  # nested `:hosted` stamp's `host/2` through this same attachment but *lowers* each target
+  # mutant to a whole-call rebuild (`splice(wrap(mutant))` — the woven selector degenerated to
+  # its selected branch), so hosted semantics participate while no selector ever nests.
   def analyze_known_macro(descent, node, routing, mutators, context \\ %{pipe_mode: :unpiped}) do
     context = Map.put(context, :mutators, mutators)
     {form, meta, args} = Attach.offer(node, node, mutators, context)

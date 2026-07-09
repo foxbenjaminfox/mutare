@@ -463,6 +463,66 @@ defmodule Mutare.Test.SecondHostMutator do
   def host(_call, _context), do: []
 end
 
+defmodule Mutare.Test.DerivedVariantHostMutator do
+  @moduledoc """
+  A host-only subscriber whose labels come from variant/2, not production-time tags.
+
+  It is deliberately router-free: tests pair it with an existing router (HostMutator or
+  HostNodeMutator) so it subscribes to the same filter/2 hosted fragment without contributing a
+  second route. The direct-fragment variant/2 shape is the regression surface for collect-time
+  hosted lowering: once an outer host relays the lowered rebuild, Site-time derivation sees the
+  outer rebuild instead of this hosted fragment.
+  """
+  @behaviour Mutare.Mutator
+  @behaviour Mutare.Mutator.MacroHost
+
+  alias Mutare.MacroRouting.Call
+  alias Mutare.Mutator.MacroHost.Target
+
+  @comparisons [:>, :<, :>=, :<=]
+
+  @impl Mutare.Mutator
+  def name, do: :derived_host
+
+  @impl Mutare.Mutator
+  def variants, do: ~w(reverse)
+
+  @impl Mutare.Mutator
+  def variant({op, _meta, [_left, _right]}, {mutated, _mmeta, [_mleft, _mright]})
+      when op in @comparisons do
+    if mutated == reverse(op), do: "reverse"
+  end
+
+  def variant(_original, _mutated), do: nil
+
+  @impl Mutare.Mutator.MacroHost
+  def hosted_macros, do: [{Mutare.Test.HostDSL, :filter, :any}]
+
+  @impl Mutare.Mutator.MacroHost
+  def host(%Call{node: {_form, _meta, args}}, _context) when length(args) in [1, 2] do
+    index = length(args) - 1
+
+    case Enum.at(args, index) do
+      {op, meta, [left, right]} = condition when op in @comparisons ->
+        splice = fn {form, smeta, sargs}, case_node ->
+          {form, smeta, List.replace_at(sargs, index, case_node)}
+        end
+
+        [Target.new(condition, [{reverse(op), meta, [left, right]}], splice)]
+
+      _other ->
+        []
+    end
+  end
+
+  def host(_call, _context), do: []
+
+  defp reverse(:>), do: :<
+  defp reverse(:<), do: :>
+  defp reverse(:>=), do: :<=
+  defp reverse(:<=), do: :>=
+end
+
 defmodule Mutare.Test.CustomRangeHostMutator do
   @moduledoc """
   A second host-only subscriber that targets the same fragment as HostMutator, but reports a

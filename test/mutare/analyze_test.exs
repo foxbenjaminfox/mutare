@@ -38,6 +38,42 @@ defmodule Mutare.AnalyzeTest do
     end
   end
 
+  defmodule BothSurfaceFilterMutator do
+    @behaviour Mutare.Mutator
+    @behaviour Mutare.MacroRouting
+    @behaviour Mutare.Mutator.MacroHost
+
+    alias Mutare.MacroRouting.Call
+    alias Mutare.Mutator.MacroHost.Target
+
+    @impl Mutare.Mutator
+    def name, do: :both_surface_filter
+
+    @impl Mutare.MacroRouting
+    def macro_routes,
+      do: [{Mutare.Test.HostDSL, :filter, 2, [:expression, :hosted]}]
+
+    @impl Mutare.Mutator.MacroHost
+    def hosted_macros, do: [{Mutare.Test.HostDSL, :filter, 2}]
+
+    @impl Mutare.Mutator
+    def mutate({:filter, meta, [_query, condition]}, _context),
+      do: [{:filter, meta, [[], condition]}]
+
+    def mutate(_node, _context), do: :skip
+
+    @impl Mutare.Mutator.MacroHost
+    def host(%Call{node: {:filter, _meta, [_query, {:>, meta, [left, right]} = condition]}}, _ctx) do
+      splice = fn {:filter, smeta, [query, _condition]}, case_node ->
+        {:filter, smeta, [query, case_node]}
+      end
+
+      [Target.new(condition, [{:<, meta, [left, right]}], splice)]
+    end
+
+    def host(_call, _context), do: []
+  end
+
   # Node-level families only: structural families (return_value, if_condition, the pattern
   # families) are contractually ignored by collect, and the call-matching families need the
   # resolver's stamps, which a bare `Sourceror.parse_string!` subtree doesn't carry.
@@ -99,32 +135,92 @@ defmodule Mutare.AnalyzeTest do
              end) == [{:arithmetic, "magic(1 + 1, 2 - 2)"}]
     end
 
-    test "a nested {:hosted, _} argument is left raw — no recursive hosting" do
-      {form, meta, args} = Sourceror.parse_string!("magic(1 + 1, 2 + 2)")
+    test "a nested {:hosted, _} argument is lowered — rebuilds, never a woven selector" do
+      {form, meta, args} = Sourceror.parse_string!("filter(1 + 1, x > 2)")
 
+      # The full stamp a resolved known-macro call carries: per-argument routing plus the call
+      # identity (`resolved_macro_call/1` needs it to build the host's `Call`).
       stamped =
         {form,
-         Meta.stamp_macro_routing(meta, [{:hosted, [Mutare.Test.HostMutator]}, :expression]),
-         args}
+         meta
+         |> Meta.stamp_macro_routing([
+           :expression,
+           {:hosted, [Mutare.Test.HostMutator, Mutare.Test.DerivedVariantHostMutator]}
+         ])
+         |> Meta.stamp_macro_call({[:Mutare, :Test, :HostDSL], :filter, :unpiped}), args}
 
-      # Even with the host present in the spec list, the hosted interior has no producer here:
-      # collect disables every spec's `host/2` (hosted delivery cannot nest), and the argument
-      # stays raw.
+      # The host runs through the same attachment the transform uses, but each target mutant
+      # comes back **lowered**: `splice(wrap(mutant))` — the woven selector degenerated to its
+      # selected branch — one whole-call rebuild per hosted mutant.
       muts =
         Analyze.expression_mutations(
           stamped,
-          specs([:arithmetic]) ++ [Mutare.Test.HostMutator]
+          specs([:arithmetic]) ++
+            [Mutare.Test.HostMutator, Mutare.Test.DerivedVariantHostMutator]
         )
 
-      assert Enum.map(muts, fn {_s, mutated, _n, _v} -> Sourceror.to_string(mutated) end) ==
-               ["magic(1 + 1, 2 - 2)"]
+      rendered =
+        Enum.map(muts, fn {spec, mutated, _n, _v} -> {spec.name, Sourceror.to_string(mutated)} end)
+
+      # The host's own catalog — boundary and reversal — as rebuilds under the host's family.
+      assert {:host_filter, "filter(1 + 1, x >= 2)"} in rendered
+      assert {:host_filter, "filter(1 + 1, x < 2)"} in rendered
+      assert {:derived_host, "filter(1 + 1, x < 2)"} in rendered
+
+      # The `:expression` argument still descends for core.
+      assert {:arithmetic, "filter(1 - 1, x > 2)"} in rendered
+
+      # The hosted argument stays core-raw — every core rebuild keeps the condition verbatim —
+      # and no selector is ever built: hosted delivery never nests.
+      assert Enum.all?(rendered, fn
+               {:arithmetic, code} -> code =~ "x > 2"
+               _other -> true
+             end)
+
+      refute Enum.any?(rendered, fn {_name, code} -> code =~ "case" end)
+
+      # The production-time note rides the lowering, and the tag resolves to the same normalized
+      # label list a hosted Site records at top level.
+      assert Enum.any?(muts, fn {_s, mutated, note, variant} ->
+               Sourceror.to_string(mutated) =~ "x >= 2" and
+                 note == "kill may require boundary data" and variant == ["boundary"]
+             end)
+
+      # A host that declares variants/0 but derives labels through variant/2 must be resolved
+      # while lowering still has the hosted fragment's own {original, mutated} pair.
+      assert Enum.any?(muts, fn {spec, mutated, _note, variant} ->
+               spec.name == :derived_host and Sourceror.to_string(mutated) =~ "x < 2" and
+                 variant == ["reverse"]
+             end)
     end
 
-    test "a host-implementing spec's ordinary mutate/2 participates — its host/2 stays inert" do
+    test "lowered hosted candidates stay before whole-call candidates on the same macro" do
+      {form, meta, args} = Sourceror.parse_string!("filter([:ok], x > 1)")
+
+      stamped =
+        {form,
+         meta
+         |> Meta.stamp_macro_routing([:expression, {:hosted, [BothSurfaceFilterMutator]}])
+         |> Meta.stamp_macro_call({[:Mutare, :Test, :HostDSL], :filter, :unpiped}), args}
+
+      rendered =
+        stamped
+        |> Analyze.expression_mutations([BothSurfaceFilterMutator])
+        |> Enum.map(fn {spec, mutated, _note, _variant} ->
+          {spec.name, Sourceror.to_string(mutated)}
+        end)
+
+      assert rendered == [
+               {:both_surface_filter, "filter([:ok], x < 1)"},
+               {:both_surface_filter, "filter([], x > 1)"}
+             ]
+    end
+
+    test "a host-implementing spec's ordinary mutate/2 participates in an island" do
       # The full-set contract: a spec that implements `host/2` is not excluded from collect —
       # its *ordinary* node-level surface runs like any other producer (here, the whole-call
       # offer of its registered `:skip` macro `dyn/1`), so an island containing such a macro is
-      # analyzed exactly like top-level Elixir. Only hosted delivery is masked.
+      # analyzed exactly like top-level Elixir.
       {form, meta, args} = Sourceror.parse_string!("dyn(y > min + 1)")
       stamped = {form, Meta.stamp_macro_routing(meta, [:skip]), args}
 

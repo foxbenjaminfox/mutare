@@ -131,10 +131,11 @@ defmodule Mutare.Mutator do
       mutator or extension registered via `Mutare.MacroRouting`): the run's enabled
       `Mutare.Mutator.Spec`s (hosts included), for sub-contracting ordinary-Elixir islands the
       macro's routing left raw back to core's generation via
-      `Mutare.Analyze.expression_mutations/3` — which masks each spec's `host/2`, so hosted
-      delivery never nests while every ordinary surface participates. Absent on ordinary node
-      offers — core fully descends an unregistered node itself, so sub-contracting there would
-      produce the same mutant twice.
+      `Mutare.Analyze.expression_mutations/3` — which lowers a nested host's targets to
+      whole-call rebuilds instead of weaving them, so hosted delivery never nests while every
+      surface (ordinary and hosted) participates. Absent on ordinary node offers — core fully
+      descends an unregistered node itself, so sub-contracting there would produce the same
+      mutant twice.
 
   The keys other than `:pipe_mode` are optional in the type because the base context
   carries only `:pipe_mode`; dispatch injects the configured options, the normalized
