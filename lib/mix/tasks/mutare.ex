@@ -53,7 +53,7 @@ defmodule Mix.Tasks.Mutare do
       # mutare:ignore[relational:>]              suppress one kind: the `i > j` swap
       # mutare:ignore[integer] off-by-one is ok  a filter and a reason together
 
-  The names inside `[...]` are mutator families (see below). A family may be qualified with `:label` to suppress only one *kind* of its mutants — `relational` declares `> >= < <= == != === !==`, `return_value` declares `empty`/`sentinel`, `literal` declares `zero`/`succ`/`pred`/`negate`. Run `--list-mutators` to see every built-in family's labels. Filtering fails safe: an unknown family, an empty `[]`, or a malformed `[…` (no closing bracket) matches nothing, so the mutant runs rather than hides — but a qualified label a known built-in (or active custom) doesn't declare is a hard error (with a "did you mean"), so a typo can't silently fail to match. An ignore that suppresses no mutant (a typo'd family, a line that has no mutant) is reported as a warning — and with `--strict-ignores`, exits the run 1.
+  The names inside `[...]` are mutator families (see below). A family may be qualified with `:label` to suppress only one *kind* of its mutants — `relational` declares `> >= < <= == != === !==`, `return_value` declares `empty`/`sentinel`, `integer` declares `zero`/`succ`/`pred`, `boolean` declares `negate`. Run `--list-mutators` to see every built-in family's labels. Filtering fails safe: an unknown family, an empty `[]`, or a malformed `[…` (no closing bracket) matches nothing, so the mutant runs rather than hides — but a qualified label a known built-in (or active custom) doesn't declare is a hard error (with a "did you mean"), so a typo can't silently fail to match. An ignore that suppresses no mutant (a typo'd family, a line that has no mutant) is reported as a warning — and with `--strict-ignores`, exits the run 1.
 
   For a span that isn't worth annotating line by line — a literal lookup table, a generated module — two scoped verbs take the same filter and reason:
 
@@ -71,8 +71,8 @@ defmodule Mix.Tasks.Mutare do
   All families run by default. Run `mix mutare --list-mutators` to print the catalog. Select a subset with `--mutators a,b,c` (or the `:mutators` key in `.mutare.exs`); list `builtins` to keep the whole default set and add to it — `--mutators builtins,relational` is every built-in, while `--mutators relational` is *only* the relational family. The family atoms, by kind:
 
     * Operators — `arithmetic`, `operand_swap`, `bitwise`, `relational`, `strict_equality`, `logical`, `list`, `conditional`
-    * Literals — `literal`, `string`, `float`, `atom`, `convention`, `charlist`, `word_list`, `string_sigil`, `map`, `tuple`, `bitstring`, `bitstring_spec`, `regex`, `datetime`, `alias`
-    * Calls (rewrite or drop a stdlib/remote call) — `collection`, `collection_arity`, `string_call`, `string_byte`, `map_keyword`, `keyword_delete`, `map_set`, `period_boundary`, `call_removal`, `default_drop`, `mode_swap`, `numeric`, `math`, `integer`
+    * Literals — `integer`, `boolean`, `string`, `float`, `atom`, `convention`, `charlist`, `word_list`, `string_sigil`, `map`, `tuple`, `bitstring`, `bitstring_spec`, `regex`, `datetime`, `alias`
+    * Calls (rewrite or drop a stdlib/remote call) — `collection`, `collection_arity`, `string_call`, `string_byte`, `map_keyword`, `keyword_delete`, `map_set`, `period_boundary`, `call_removal`, `default_drop`, `mode_swap`, `numeric`, `math`, `integer_call`
     * Structural — `return_value`, `if_condition`, `pattern_swap`, `pattern_wildcard`, `rescue_type`, `guard_drop`
     * Behaviour-aware — `genserver` (swaps an OTP callback's return tuple; fires only inside a `@behaviour GenServer` module)
 

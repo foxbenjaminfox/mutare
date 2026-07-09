@@ -128,7 +128,7 @@ encodes a module atom into its key shape when you need to build such a table.
 Two optional callbacks refine how users interact with your mutator:
 
 - `variants/0` (with `Mutare.Mutator.Mutation.tagged/2` or `variant/2`) gives
-  your mutations labels, so `# mutare:ignore[boolean:or]` can suppress one kind
+  your mutations labels, so `# mutare:ignore[and_or:or]` can suppress one kind
   without silencing the family. See `Mutare.Mutator` and `Mutare.Ignore`.
 - `mutate_call_option_keys?/1` lets a key-mutating family opt out of rewriting
   trailing call options like the `timeout:` in `foo(x, timeout: 5)`.

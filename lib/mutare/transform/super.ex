@@ -78,7 +78,7 @@ defmodule Mutare.Transform.Super do
     found
   end
 
-  # mutare:ignore[literal, clause_drop] unreachable — `in_clauses?` only maps over well-formed def/defp clauses, matched by the clause above, so neither the value nor the whole fallback is ever observed
+  # mutare:ignore[boolean, clause_drop] unreachable — `in_clauses?` only maps over well-formed def/defp clauses, matched by the clause above, so neither the value nor the whole fallback is ever observed
   defp body_has_super?(_), do: false
 
   # `level` is the quote-nesting depth: 0 is live code, where a `super` runs and is
