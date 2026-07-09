@@ -4855,7 +4855,7 @@ identical boilerplate, `use Mutare.Mutator.SkipArguments` injects the `argument_
 value family). `IntegerLiteral`/`AtomLiteral` don't use it: their `mutate/2` also gates on the
 built-in `:timeout`/`:infinity` marks, so they wire the two calls by hand. `ConventionAtom` is
 deliberately *excluded* — its `:ok`↔`:error` swaps are high-signal, the opposite of the opaque
-literals the option is for. Three properties worth calling out, each a fix from review:
+literals the option is for. Four properties worth calling out, each a fix from review:
 
 - **Per-instance, and namespaced against the public label space.** The marks are labeled with an
   internal self-mark that `ArgumentMarks.build/1` *relabels to a reserved, per-instance
@@ -4885,6 +4885,19 @@ literals the option is for. Three properties worth calling out, each a fix from 
   and `pipe_target/2` stamps the RHS import itself before keying, so an imported bare name resolves there
   too. (A *remote* parenless RHS `1000 |> Process.sleep` already carries `[]`, so only the bare-local
   form needed the `nil` case.)
+- **A whole import of a project module resolves via the declaration itself.** `Imports.stamp`
+  resolves a whole `import Mod` by *reflection*, so a mark naming a target-project module
+  (`skip_arguments: [{MyApp.Cache, :put, 3, [2]}]` under `import MyApp.Cache; put(c, :k, 300)`)
+  used to fall through: the module isn't loadable in the Mutare process, `bare_module_key`
+  returned `nil`, and the configured argument mutated — while the remote and selective-import
+  forms worked (a selective `only:` resolves straight from the source). The fix mirrors the
+  known-macro registry fallback (`Resolve.registered_macro_module/3`): when reflection can't
+  resolve a bare call, `marked_import_module/3` probes the marks registry
+  (`ArgumentMarks.declares?/4`) among the *whole*-imported modules in scope — the declaration
+  asserts the module provides `fun/arity`, and the compile-unambiguity rule makes the bare call
+  unambiguously it. A wrong declaration errs only in the safe direction (a mark can at most
+  suppress a mutant, never mis-resolve a mutation), and the piped forms come along for free
+  (`pipe_target/2` keys through the same `bare_module_key`).
 - **Fails loud on a bad index.** A one-based typo like `[3]` for an arity-3 call (valid effective
   indices `0..2`) raises at startup rather than silently marking nothing.
 

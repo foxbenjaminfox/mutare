@@ -105,6 +105,19 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   def stamp(args, _module_key, _fun, _pipe_mode, _registry), do: args
 
   @doc """
+  Whether the registry declares any mark for `{module_key, fun, arity}` — the probe behind
+  `Mutare.Transform.Resolve`'s whole-import fallback. `Imports.stamp` resolves a whole `import Mod`
+  by reflection, so a module defined only in the target project (which the Mutare process can't
+  load) leaves the bare call unresolved — but the declaration itself asserts the module provides
+  `fun/arity`, and the compile-unambiguity rule makes a bare call under a whole import of that
+  module unambiguously it. The resolver consults this so a declared mark still applies to the
+  imported bare form (same reasoning as its known-macro registry fallback).
+  """
+  @spec declares?(t(), Aliases.module_key(), atom(), arity()) :: boolean()
+  def declares?(%__MODULE__{by_call: by_call}, module_key, fun, arity),
+    do: Map.has_key?(by_call, {module_key, fun, arity})
+
+  @doc """
   Whether a pipe's RHS function *could* carry an effective-index-0 mark — the cheap `receiver_funs`
   pre-filter that lets `Mutare.Transform.Resolve` skip resolving the overwhelming majority of pipes.
   Only when this is true does the `|>` clause resolve the RHS target and call `receiver_labels/4`.

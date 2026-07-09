@@ -456,8 +456,9 @@ defmodule Mutare.Transform.Resolve do
   # displaced (`import Kernel, except:`). A local function — or a displaced name — resolves to
   # `nil` (no match), so a bare call is recognised as `Kernel.match?` exactly when it compiles
   # to it (a local `def match?/2` shadowing the Kernel macro is itself a compile error). When
-  # none of those resolve, fall back to the **registry** for a registered macro reached through
-  # a whole import the Mutare process can't reflect on (`registered_macro_module/3`).
+  # none of those resolve, fall back to the **registries** for a call reached through a whole
+  # import the Mutare process can't reflect on: a registered macro (`registered_macro_module/3`)
+  # first, then a declared argument mark (`marked_import_module/3`).
   defp bare_module_key(fun, arity, meta, env) do
     case Imports.resolved_import(meta) do
       {module_key, _kind} ->
@@ -466,7 +467,7 @@ defmodule Mutare.Transform.Resolve do
       nil ->
         if not Imports.kernel_displaced?(meta) and kernel_export?(fun, arity),
           do: [:Kernel],
-          else: registered_macro_module(fun, arity, env)
+          else: registered_macro_module(fun, arity, env) || marked_import_module(fun, arity, env)
     end
   end
 
@@ -499,6 +500,24 @@ defmodule Mutare.Transform.Resolve do
     |> Enum.sort()
     |> Enum.find_value(fn {module_key, selector} ->
       if Imports.whole?(selector) and Macros.lookup(env.macro_routes, module_key, fun, arity),
+        do: module_key
+    end)
+  end
+
+  # The marks-registry twin of `registered_macro_module/3`: a bare call under a whole import of a
+  # module the Mutare process can't reflect on, whose `{module, fun, arity}` some mutator *declared*
+  # an argument mark for (`argument_marks/1` — e.g. a `:skip_arguments` entry naming a target-project
+  # module). The declaration asserts the module provides `fun/arity`, and the compile-unambiguity
+  # rule does the rest, so `descend_marked/4` (and the piped-receiver path, via `pipe_target/2`) can
+  # stamp the configured positions on the imported bare form just as on the remote/selective-import
+  # forms. Wrong-declaration risk runs only in the safe direction — a mark can at most *suppress* a
+  # mutant, never mis-resolve a mutation. Same determinism argument as above (sorted fold); limited
+  # to whole imports for the same reason (a selective import already resolves without reflection).
+  defp marked_import_module(fun, arity, env) do
+    env.imports
+    |> Enum.sort()
+    |> Enum.find_value(fn {module_key, selector} ->
+      if Imports.whole?(selector) and ArgumentMarks.declares?(env.marks, module_key, fun, arity),
         do: module_key
     end)
   end

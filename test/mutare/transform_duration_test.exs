@@ -780,6 +780,48 @@ defmodule Mutare.TransformDurationTest do
       assert {:string, "\"x\"", "\"\""} in (value_triples(body, [str]) |> elem(1))
     end
 
+    test "a configured mark reaches a bare call through a whole import of a project module" do
+      # `import MyApp.Cache` can't be resolved by reflection (the module lives only in the target
+      # project, never loadable here), so `Imports.stamp` leaves the bare `put/3` unstamped — but
+      # the `:skip_arguments` declaration itself asserts `MyApp.Cache.put/3` exists, and the
+      # compile-unambiguity rule makes the bare call under the whole import unambiguously it. The
+      # resolver's marks-registry fallback (`marked_import_module/3`, the twin of the known-macro
+      # fallback) must therefore apply the mark to the imported bare form just as to the remote
+      # and selective-import forms.
+      config = [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp.Cache, :put, 3, [2]}]}]
+      body = "import MyApp.Cache\n  def f(c), do: put(c, :k, 300)"
+
+      assert value_triples(body, config) |> elem(1) == []
+
+      # …including the pipe-shifted form (the piped receiver is effective arg 0, so the marked
+      # effective index 2 is visible index 1)…
+      piped = "import MyApp.Cache\n  def f(c), do: c |> put(:k, 300)"
+      assert value_triples(piped, config) |> elem(1) == []
+
+      # …and the piped-receiver path (`pipe_target/2` resolves the RHS through the same fallback),
+      # parens or parenless.
+      recv = [
+        {Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp.Cache, :sleepish, 1, [0]}]}
+      ]
+
+      assert value_triples("import MyApp.Cache\n  def f, do: 300 |> sleepish()", recv) |> elem(1) ==
+               []
+
+      assert value_triples("import MyApp.Cache\n  def f, do: 300 |> sleepish", recv) |> elem(1) ==
+               []
+
+      # Not vacuous, and exactly keyed: unconfigured mutates, and the fallback is per-arity — a
+      # 2-ary `put` matches no `{…, :put, 3, …}` declaration, so its literal mutates normally.
+      assert {:integer, "300", "0"} in (value_triples(body, [Mutare.Mutators.IntegerLiteral])
+                                        |> elem(1))
+
+      assert {:integer, "300", "0"} in (value_triples(
+                                          "import MyApp.Cache\n  def f(c), do: put(c, 300)",
+                                          config
+                                        )
+                                        |> elem(1))
+    end
+
     test "FloatLiteral and StringLiteral honour :skip_arguments too" do
       {_m, floats} =
         value_triples(
