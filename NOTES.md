@@ -4885,6 +4885,17 @@ literals the option is for. Four properties worth calling out, each a fix from r
   and `pipe_target/2` stamps the RHS import itself before keying, so an imported bare name resolves there
   too. (A *remote* parenless RHS `1000 |> Process.sleep` already carries `[]`, so only the bare-local
   form needed the `nil` case.)
+- **Keyword marks reach a piped options list.** An arity-1 API whose only argument is options can be
+  spelled with the list as the pipe receiver — `[timeout: 500] |> MyApp.configure()`. The receiver
+  path originally handled only *positional index-0* labels (and the `receiver_funs` pre-filter
+  admitted only functions with an index-0 mark), so a configured `{:keyword, :timeout}` covered the
+  written `MyApp.configure(timeout: 500)` but left the piped spelling mutating — a silently
+  ineffective `:skip_arguments`. The observation that closed it: the piped receiver is *also* the
+  call's trailing argument exactly when the effective arity is 1, so `stamp_receiver/5` applies the
+  entry's keyword marks to the receiver in that one case (option-value stamping via the same
+  `stamp_options` the written form uses — container-preserving as always), and the pre-filter admits
+  arity-1 keyword-marked functions. Higher arities are deliberately untouched: there the receiver is
+  a leading argument, never the options list.
 - **A whole import of a project module resolves via the declaration itself.** `Imports.stamp`
   resolves a whole `import Mod` by *reflection*, so a mark naming a target-project module
   (`skip_arguments: [{MyApp.Cache, :put, 3, [2]}]` under `import MyApp.Cache; put(c, :k, 300)`)

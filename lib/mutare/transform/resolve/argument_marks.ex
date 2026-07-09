@@ -11,7 +11,7 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   #
   # Flow: `build/1` folds the enabled mutators' declarations into a registry keyed by the *resolved*
   # `{module, function, arity}`. `Mutare.Transform.Resolve` calls `stamp/5` at each call it resolves,
-  # and at each `|>` resolves the RHS target itself and calls `receiver_fun?/2` + `receiver_labels/4`
+  # and at each `|>` resolves the RHS target itself and calls `receiver_fun?/2` + `stamp_receiver/5`
   # to mark the piped value — stamping the marked argument nodes' `meta[:mutare_marks]` (via
   # `Mutare.Transform.Meta.add_marks/2`) with the union of labels.
   # `Mutare.Transform.Analyze.Attach.offer/4` reads those marks back and hands them to the mutators as
@@ -31,9 +31,11 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   #     in the RHS's own arg list. So `stamp/5` (which walks the RHS args) can't reach it; the `|>`
   #     clause resolves the RHS target (`Resolve` owns resolution, so a bare `Kernel`/imported RHS
   #     resolves like a written call) and marks the piped value when effective index 0 carries a mark
-  #     (`Process.sleep/1`, `:timer.sleep/1`, or any mutator's index-0 mark). `receiver_funs` is a
-  #     cheap pre-filter — the function names that *have* an index-0 mark — so a pipe whose RHS isn't
-  #     one of them never pays a resolution.
+  #     (`Process.sleep/1`, `:timer.sleep/1`, or any mutator's index-0 mark). When the effective
+  #     arity is 1 the receiver is *also* the trailing argument, so an arity-1 call's keyword marks
+  #     stamp the piped options list too (`[timeout: 500] |> MyApp.configure()`). `receiver_funs` is
+  #     a cheap pre-filter — the function names whose marks can reach a receiver — so a pipe whose
+  #     RHS isn't one of them never pays a resolution.
 
   alias Mutare.{AST, Mutator}
   alias Mutare.Transform.{Aliases, Meta}
@@ -52,8 +54,9 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
 
   @typedoc """
   The built registry: `by_call` maps each resolved call to its marked positions; `receiver_funs` is
-  the set of function names with a mark at *effective index 0*, a pre-filter for the piped-receiver
-  path so ordinary pipes cost nothing.
+  the set of function names whose marks can reach a piped receiver (a mark at *effective index 0*,
+  or a keyword mark on an arity-1 call — where the receiver is the trailing options argument), a
+  pre-filter for the piped-receiver path so ordinary pipes cost nothing.
   """
   @type t :: %__MODULE__{by_call: %{call_key() => entry()}, receiver_funs: MapSet.t(atom())}
   defstruct by_call: %{}, receiver_funs: MapSet.new()
@@ -77,8 +80,8 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
       |> Enum.reduce(%{}, &add_declaration/2)
 
     receiver_funs =
-      for {{_module_key, fun, _arity}, entry} <- by_call,
-          Map.has_key?(entry.positional, 0),
+      for {{_module_key, fun, arity}, entry} <- by_call,
+          Map.has_key?(entry.positional, 0) or (arity == 1 and entry.keyword != %{}),
           into: MapSet.new(),
           do: fun
 
@@ -118,44 +121,60 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
     do: Map.has_key?(by_call, {module_key, fun, arity})
 
   @doc """
-  Whether a pipe's RHS function *could* carry an effective-index-0 mark — the cheap `receiver_funs`
+  Whether a pipe's RHS function's marks *could* reach the piped receiver — the cheap `receiver_funs`
   pre-filter that lets `Mutare.Transform.Resolve` skip resolving the overwhelming majority of pipes.
-  Only when this is true does the `|>` clause resolve the RHS target and call `receiver_labels/4`.
+  Only when this is true does the `|>` clause resolve the RHS target and call `stamp_receiver/5`.
   """
   @spec receiver_fun?(Macro.t(), t()) :: boolean()
   def receiver_fun?(rhs, %__MODULE__{receiver_funs: receiver_funs}),
     do: MapSet.member?(receiver_funs, rhs_fun(rhs))
 
   @doc """
-  The effective-index-0 label set for a resolved pipe RHS `{module_key, function, effective_arity}`,
-  or `nil`. `Mutare.Transform.Resolve` resolves the target (so bare `Kernel`/imported RHS heads
-  resolve the same way as in a written call — not only what `resolved_call/1` alone recovers) and
-  hands it here; the piped value is that call's effective argument 0.
+  Stamp a pipe's LHS with the marks its resolved RHS `{module_key, function, effective_arity}`
+  places on the receiver, returning the (possibly updated) LHS. `Mutare.Transform.Resolve` resolves
+  the target (so bare `Kernel`/imported RHS heads resolve the same way as in a written call — not
+  only what `resolved_call/1` alone recovers) and hands it here. The receiver is the call's
+  effective argument 0, so an index-0 positional mark stamps the node itself; when the effective
+  arity is 1 it is *also* the trailing argument, so keyword marks stamp the option values inside a
+  piped options list (`[timeout: 500] |> MyApp.configure()`) exactly as in the written call.
   """
-  @spec receiver_labels(Aliases.module_key(), atom(), arity(), t()) :: MapSet.t(atom()) | nil
-  def receiver_labels(module_key, fun, effective_arity, %__MODULE__{by_call: by_call}) do
+  @spec stamp_receiver(Macro.t(), Aliases.module_key(), atom(), arity(), t()) :: Macro.t()
+  def stamp_receiver(lhs, module_key, fun, effective_arity, %__MODULE__{by_call: by_call}) do
     case Map.get(by_call, {module_key, fun, effective_arity}) do
-      nil -> nil
-      entry -> Map.get(entry.positional, 0)
+      nil ->
+        lhs
+
+      entry ->
+        lhs
+        |> stamp_receiver_positional(entry.positional)
+        |> stamp_receiver_keyword(entry.keyword, effective_arity)
     end
   end
 
-  @doc """
-  Stamp a marked argument node with `labels`, reaching *inside* a unary-signed numeric literal. A
-  negative (or explicitly `+`) literal parses as `{:-/:+, _, [positive_literal]}`, and the value
-  families (`IntegerLiteral`/`FloatLiteral`) fire on that *inner* literal — so a bare outer stamp would let
-  `MyApp.put(c, -300)` slip past a `:skip_arguments` that catches `MyApp.put(c, 300)`. Marks both the
-  sign node and the inner literal; every other node is stamped as-is. Used by the positional/keyword
-  stamping here and by `Mutare.Transform.Resolve`'s piped-receiver path.
-  """
-  @spec mark_argument(Macro.t(), Enumerable.t()) :: Macro.t()
-  def mark_argument({op, _meta, [{:__block__, _, [n]}]} = node, labels)
-      when op in [:-, :+] and is_number(n) do
+  defp stamp_receiver_positional(lhs, positional) do
+    case Map.get(positional, 0) do
+      nil -> lhs
+      labels -> mark_argument(lhs, labels)
+    end
+  end
+
+  defp stamp_receiver_keyword(lhs, keyword, _arity) when keyword == %{}, do: lhs
+  defp stamp_receiver_keyword(lhs, keyword, 1), do: stamp_options(lhs, keyword)
+  defp stamp_receiver_keyword(lhs, _keyword, _arity), do: lhs
+
+  # Stamp a marked argument node with `labels`, reaching *inside* a unary-signed numeric literal. A
+  # negative (or explicitly `+`) literal parses as `{:-/:+, _, [positive_literal]}`, and the value
+  # families (`IntegerLiteral`/`FloatLiteral`) fire on that *inner* literal — so a bare outer stamp
+  # would let `MyApp.put(c, -300)` slip past a `:skip_arguments` that catches `MyApp.put(c, 300)`.
+  # Marks both the sign node and the inner literal; every other node is stamped as-is. Used by the
+  # positional/keyword stamping and the piped-receiver stamping alike.
+  defp mark_argument({op, _meta, [{:__block__, _, [n]}]} = node, labels)
+       when op in [:-, :+] and is_number(n) do
     {^op, meta, [inner]} = Meta.add_marks(node, labels)
     {op, meta, [Meta.add_marks(inner, labels)]}
   end
 
-  def mark_argument(node, labels), do: Meta.add_marks(node, labels)
+  defp mark_argument(node, labels), do: Meta.add_marks(node, labels)
 
   # --- registry build --------------------------------------------------------
 

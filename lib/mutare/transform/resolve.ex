@@ -343,16 +343,14 @@ defmodule Mutare.Transform.Resolve do
     do: args |> ArgumentMarks.stamp(module_key, fun, env.pipe_mode, env.marks) |> descend(env)
 
   # Mark a pipe's left side — the RHS call's effective argument 0, which `descend_marked/4` can't
-  # reach because it isn't in the RHS's visible args — when the RHS marks index 0. The cheap
-  # `receiver_fun?` pre-filter runs first; only then is the RHS target resolved.
+  # reach because it isn't in the RHS's visible args — when the RHS's marks reach the receiver
+  # (an index-0 positional mark, or an arity-1 call's keyword marks on a piped options list). The
+  # cheap `receiver_fun?` pre-filter runs first; only then is the RHS target resolved.
   defp mark_pipe_receiver(lhs, rhs, env) do
     if ArgumentMarks.receiver_fun?(rhs, env.marks) do
       case pipe_target(rhs, env) do
         {module_key, fun, effective_arity} ->
-          case ArgumentMarks.receiver_labels(module_key, fun, effective_arity, env.marks) do
-            nil -> lhs
-            labels -> ArgumentMarks.mark_argument(lhs, labels)
-          end
+          ArgumentMarks.stamp_receiver(lhs, module_key, fun, effective_arity, env.marks)
 
         nil ->
           lhs

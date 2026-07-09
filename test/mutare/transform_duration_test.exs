@@ -614,6 +614,38 @@ defmodule Mutare.TransformDurationTest do
       assert triples == []
     end
 
+    test "a configured keyword-option mark covers the options list piped as the receiver" do
+      # An arity-1 API whose only argument is options can be spelled with the list as the pipe
+      # receiver — `[timeout: 500] |> MyApp.configure()`. The receiver is effective argument 0
+      # *and* the trailing argument, so the `{:keyword, :timeout}` mark must reach the piped
+      # option value just as in the written `MyApp.configure(timeout: 500)`.
+      config = [
+        {Mutare.Mutators.IntegerLiteral,
+         skip_arguments: [{MyApp, :configure, 1, [{:keyword, :timeout}]}]}
+      ]
+
+      assert value_triples("def f, do: MyApp.configure(timeout: 500)", config) |> elem(1) == []
+
+      assert value_triples("def f, do: [timeout: 500] |> MyApp.configure()", config) |> elem(1) ==
+               []
+
+      # Not vacuous: unconfigured, the piped option value mutates…
+      {_m, plain} =
+        value_triples("def f, do: [timeout: 500] |> MyApp.configure()", [
+          Mutare.Mutators.IntegerLiteral
+        ])
+
+      assert {:integer, "500", "0"} in plain
+
+      # …and under the config an unmarked sibling key still does — the mark froze one value, not
+      # the list.
+      {_m, sibling} =
+        value_triples("def f, do: [pool: 5, timeout: 500] |> MyApp.configure()", config)
+
+      assert {:integer, "5", "6"} in sibling or {:integer, "5", "0"} in sibling
+      refute Enum.any?(sibling, fn {_m, original, _} -> original == "500" end)
+    end
+
     test "a negative literal at a configured position is held back (mark reaches inside the unary -)" do
       # `-300` parses as `{:-, _, [300]}` and the value families fire on the inner positive literal,
       # so the mark must reach it — otherwise `MyApp.put(c, -300)` slips past a skip that catches
