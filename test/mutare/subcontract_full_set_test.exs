@@ -28,7 +28,7 @@ defmodule Mutare.SubcontractFullSetTest do
 
   @compile {:no_warn_undefined, Mutare.SubcontractFullSetFixture}
 
-  @mutators [:literal, Mutare.Test.HostNodeMutator]
+  @mutators [:integer, Mutare.Test.HostNodeMutator]
 
   setup_all do
     {metamutant, sites, _next_id} =
@@ -78,11 +78,11 @@ defmodule Mutare.SubcontractFullSetTest do
 
       # Two levels of sub-contract: the inner `dyn`'s own relay hands the literal `1` to core,
       # and the rebuilds ride all the way out to the hosted weave under core's family.
-      succ = site(sites, :literal, "false < dyn(y > 2)")
+      succ = site(sites, :integer, "false < dyn(y > 2)")
       assert succ.variant == ["succ"]
 
       # Exactly one producer per position — no duplicate from any level of the recursion.
-      assert Enum.frequencies_by(sites, & &1.mutator) == %{host_node: 2, literal: 2}
+      assert Enum.frequencies_by(sites, & &1.mutator) == %{host_node: 2, integer: 2}
     end
 
     test "every mutant switches at runtime through the one woven selector", %{sites: sites} do
@@ -94,7 +94,7 @@ defmodule Mutare.SubcontractFullSetTest do
       assert F.go(2) == []
 
       # The relayed literal succ (`y > 2`): `2 > 2` → false → dropped.
-      Selector.put(site(sites, :literal, "false < dyn(y > 2)").id)
+      Selector.put(site(sites, :integer, "false < dyn(y > 2)").id)
       assert F.go(2) == []
 
       # The owner's own outer reversal (`false > …`) → false → dropped.
@@ -108,13 +108,13 @@ defmodule Mutare.SubcontractFullSetTest do
       {_meta, sites, _next} =
         Mutare.Transform.transform_string_with_sites(@source,
           file: "subcontract_full_set.ex",
-          mutators: [:literal, {Mutare.Test.HostNodeMutator, drop_own: true}]
+          mutators: [:integer, {Mutare.Test.HostNodeMutator, drop_own: true}]
         )
 
       # The owner's finalize dropped its own catalog at generation — both the outer reversal
       # (the host-target funnel) and the inner `dyn` reversal (the collect-time funnel, before
       # the relay). The core-family relays are untouched: their producer's funnel is theirs.
-      assert Enum.frequencies_by(sites, & &1.mutator) == %{literal: 2}
+      assert Enum.frequencies_by(sites, & &1.mutator) == %{integer: 2}
     end
   end
 end
