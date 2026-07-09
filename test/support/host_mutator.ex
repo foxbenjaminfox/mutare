@@ -240,8 +240,8 @@ defmodule Mutare.Test.SubcontractHostMutator do
   It hosts `filter/2`'s comparison condition (like `Mutare.Test.HostMutator`) and treats the
   comparison's **right operand** as the island: its own foreign-semantics catalog contributes
   only the comparison reversal, while every mutant *inside* the right operand comes from
-  `Mutare.Analyze.expression_mutations/3` over `context.mutators` (the run's enabled non-host
-  specs, threaded by core) — each relayed as a `%Mutare.Mutator.Mutation{}` with `producer:`
+  `Mutare.Analyze.expression_mutations/3` over `context.mutators` (the run's enabled specs,
+  threaded by core) — each relayed as a `%Mutare.Mutator.Mutation{}` with `producer:`
   set, so the Site (and its `# mutare:ignore` vocabulary) belongs to the core family that
   reasoned about it, not to this host. Delivery stays 100% host-owned: the relayed rebuilds are
   just more branches of the same woven selector.
@@ -306,6 +306,120 @@ defmodule Mutare.Test.SubcontractHostMutator do
       Mutation.new({op, meta, [left, mutated]}, producer: spec, note: note, variant: variant)
     end
   end
+
+  defp reverse(:>), do: :<
+  defp reverse(:<), do: :>
+  defp reverse(:>=), do: :<=
+  defp reverse(:<=), do: :>=
+
+  defp comparison?({op, _meta, [_left, _right]}) when op in @comparisons, do: true
+  defp comparison?(_node), do: false
+end
+
+defmodule Mutare.Test.HostNodeMutator do
+  @moduledoc """
+  A **plugin-shaped** mutator — one module that is simultaneously a selector host and a
+  node-level producer, the reduced analog of `mutare_ecto` itself: it hosts `filter/2`'s
+  comparison condition (sub-contracting the right operand exactly like
+  `Mutare.Test.SubcontractHostMutator`) *and* registers `Mutare.Test.QueryDSL.dyn/1` `:skip`,
+  mutating the whole call through plain `mutate/2` (exactly like
+  `Mutare.Test.SubcontractNodeMutator`).
+
+  Its purpose is the **full-set sub-contract**: because `context.mutators` carries the run's
+  specs hosts included, a `dyn(...)` call *inside a hosted island* is offered back to this same
+  module's ordinary `mutate/2` — the inner-`dynamic` case — while its `host/2` stays inert
+  inside collect (no recursive hosting). One fixture proves both halves.
+  """
+  @behaviour Mutare.Mutator
+  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.Mutator.MacroHost
+
+  alias Mutare.MacroRouting.{ArgumentRoutes, Call}
+  alias Mutare.Mutator.MacroHost.Target
+  alias Mutare.Mutator.Mutation
+
+  @comparisons [:>, :<, :>=, :<=]
+
+  @impl Mutare.Mutator
+  def name, do: :host_node
+
+  @impl Mutare.MacroRouting
+  def macro_routes,
+    do: [
+      {Mutare.Test.HostDSL, :filter, :any, :routing},
+      {Mutare.Test.QueryDSL, :dyn, 1, :skip}
+    ]
+
+  @impl Mutare.Mutator.MacroHost
+  def hosted_macros, do: [{Mutare.Test.HostDSL, :filter, :any}]
+
+  @impl Mutare.MacroRouting
+  def route_arguments(%Call{arguments: args} = call, _context) do
+    routes = Enum.map(args, fn arg -> if comparison?(arg), do: :hosted, else: :expression end)
+    ArgumentRoutes.from_visible(call, routes)
+  end
+
+  # The node-level half: a whole-call `dyn` rewrite (its own comparison reversal) plus the
+  # sub-contract of the comparison's right operand over `context.mutators`.
+  @impl Mutare.Mutator
+  def mutate({:dyn, meta, [{op, cmeta, [left, right]}]}, context) when op in @comparisons do
+    reversal = {:dyn, meta, [{reverse(op), cmeta, [left, right]}]}
+
+    islands =
+      for {spec, mutated, note, variant} <-
+            Mutare.Analyze.expression_mutations(right, Map.get(context, :mutators, []), context) do
+        Mutation.new({:dyn, meta, [{op, cmeta, [left, mutated]}]},
+          producer: spec,
+          note: note,
+          variant: variant
+        )
+      end
+
+    [reversal | islands]
+  end
+
+  def mutate(_node, _context), do: :skip
+
+  # The producer-funnel half: with `drop_own: true` this instance's own mutants are filtered at
+  # generation — the reduced analog of `mutare_ecto`'s `families:` filter. A full-set
+  # sub-contract must run this *inside* the seam, so a dropped own-catalog mutant never gets
+  # relayed (a relayed mutation bypasses the receiving finalize; the producer's already ran).
+  @impl Mutare.Mutator
+  def finalize(mutation, context) do
+    if Keyword.get(context.config, :drop_own, false), do: :skip, else: mutation
+  end
+
+  # The hosting half: the condition is the last visible argument (index 1 direct, 0 piped);
+  # its own catalog is the comparison reversal, everything inside the right operand is
+  # sub-contracted and relayed with `producer:`.
+  @impl Mutare.Mutator.MacroHost
+  def host(%Call{node: {_form, _meta, args}}, context) when length(args) in [1, 2] do
+    index = length(args) - 1
+
+    case Enum.at(args, index) do
+      {op, meta, [left, right]} = condition when op in @comparisons ->
+        islands =
+          for {spec, mutated, note, variant} <-
+                Mutare.Analyze.expression_mutations(right, context.mutators, context) do
+            Mutation.new({op, meta, [left, mutated]},
+              producer: spec,
+              note: note,
+              variant: variant
+            )
+          end
+
+        splice = fn {form, smeta, sargs}, case_node ->
+          {form, smeta, List.replace_at(sargs, index, case_node)}
+        end
+
+        [Target.new(condition, [{reverse(op), meta, [left, right]} | islands], splice)]
+
+      _other ->
+        []
+    end
+  end
+
+  def host(_call, _context), do: []
 
   defp reverse(:>), do: :<
   defp reverse(:<), do: :>

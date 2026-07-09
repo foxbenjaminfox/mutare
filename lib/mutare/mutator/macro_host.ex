@@ -67,8 +67,10 @@ defmodule Mutare.Mutator.MacroHost do
 
   Subscribe through `c:hosted_macros/0`. The active macro route must contain `:hosted`, either
   statically or from `c:Mutare.MacroRouting.route_arguments/2`. `context` is the same map
-  `c:Mutare.Mutator.mutate/2` receives, plus `:mutators` — the run's enabled non-host
-  `Mutare.Mutator.Spec`s.
+  `c:Mutare.Mutator.mutate/2` receives, plus `:mutators` — the run's enabled
+  `Mutare.Mutator.Spec`s (hosts included; `Mutare.Analyze.expression_mutations/3` masks
+  `host/2` itself, so a sub-contracted island analyzes with every ordinary surface and hosted
+  delivery never nests).
 
   A `:hosted` route is permission and a delivery mode, **not a target list**: the callback
   receives the whole resolved macro call and owns locating the fragment(s) it will mutate. It

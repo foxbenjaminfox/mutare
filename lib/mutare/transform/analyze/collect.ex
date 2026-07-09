@@ -33,10 +33,16 @@ defmodule Mutare.Transform.Analyze.Collect do
   #     `mutate/1`/`mutate/2` exporters removes the structural-only families up front (which also
   #     keeps the `if`-condition hoist inert — it is gated on `Mutare.Mutators.IfCondition` being
   #     present — so no hoist placeholder ever reaches a rebuild).
-  #   * **Hosts** — a spec whose module exports `host/2` is excluded even when it also exports
-  #     `mutate/1`: a nested `{:hosted, …}` stamp inside the subtree stays raw either way (the
-  #     routing leaves the argument untouched), and excluding the host specs keeps its `host/2`
-  #     from even being probed. No recursive hosting; the outer host owns the region.
+  #   * **Hosted delivery** — a spec whose module exports `host/2` participates through its
+  #     ordinary `mutate/1`/`mutate/2` exactly like any other node-level producer (its registered
+  #     macros inside the subtree are offered whole-call — the `mutare_ecto` inner-`dynamic`
+  #     case), but its `host/2` is disabled for the walk: a hosted mutant is a woven selector,
+  #     not a node rebuild, so it cannot come back as collect data. A nested `{:hosted, …}` stamp
+  #     inside the subtree stays raw (the routing leaves the argument untouched) and no
+  #     `Candidate.Hosted` is ever produced. No recursive hosting; the outer host owns the
+  #     region. Termination of the recursion this permits (a sub-contracted interior offering a
+  #     registered macro whose owner sub-contracts again) is structural: every sub-contract
+  #     recurses on a strict subtree, and an AST is finite.
   #   * **Ids, sites, coverage, emission** — collect is pure. The host folds the rebuilds into
   #     its Target `:mutants` (tagging each with its `producer` spec), and the ordinary hosted
   #     pipeline claims ids and records Sites when the Target flows through `HostedEmit`.
@@ -74,23 +80,18 @@ defmodule Mutare.Transform.Analyze.Collect do
     end
   end
 
-  # The specs whose node-level producers run: `mutate/1`/`mutate/2` exporters, minus selector
-  # hosts (see the moduledoc), with structural callbacks masked so a structural mutator that
-  # also exports a no-op `mutate/1` cannot leak return/condition/pattern candidates into
-  # collect mode. Structural-only families (ReturnValue, IfCondition, the pattern families)
-  # fall out of the first filter; a host falls out of the second even when it also exports
-  # `mutate/1`.
+  # The specs whose node-level producers run: `mutate/1`/`mutate/2` exporters, with the
+  # non-collectible delivery callbacks masked — the structural callbacks (so a structural
+  # mutator that also exports a no-op `mutate/1` cannot leak return/condition/pattern
+  # candidates into collect mode) and `host/2` (so a selector host participates through its
+  # ordinary node-level surface while hosted delivery never nests — see the moduledoc).
+  # Structural-only families (ReturnValue, IfCondition, the pattern families) fall out of the
+  # exporter filter up front.
   defp node_level_specs(mutators) do
-    specs =
-      mutators
-      |> Enum.map(&Spec.coerce/1)
-      |> Dispatch.implementing_any(:mutate, [1, 2])
-
-    hosts = Dispatch.implementing(specs, :host, 2)
-
-    specs
-    |> Enum.reject(&(&1 in hosts))
-    |> Enum.map(&Spec.disable_callbacks(&1, @structural_callbacks))
+    mutators
+    |> Enum.map(&Spec.coerce/1)
+    |> Dispatch.implementing_any(:mutate, [1, 2])
+    |> Enum.map(&Spec.disable_callbacks(&1, [{:host, 2} | @structural_callbacks]))
   end
 
   # --- collect: post-order walk, stripping delivery meta ----------------------

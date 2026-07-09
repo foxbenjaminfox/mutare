@@ -76,7 +76,7 @@ defmodule Mutare.Mutator do
 
   A mutator whose mutation depends on a macro's arguments being routed specially implements `Mutare.MacroRouting` and registers the macros from `c:Mutare.MacroRouting.macro_routes/0`. Routes may be static or use `:routing` with `c:Mutare.MacroRouting.route_arguments/2` for shape-aware classification. Listing the mutator in `:mutators` auto-registers them.
 
-  Core still offers the *whole* registered call to `c:mutate/2`, with `context.mutators` carrying the run's enabled non-host specs — so a mutator that keeps a DSL argument raw (`:skip`) can rewrite the call itself and sub-contract the ordinary-Elixir islands inside that raw argument back to core's families via `Mutare.Analyze.expression_mutations/3`, relaying each rebuild as a `Mutare.Mutator.Mutation` with `producer:` set (see `Mutare.Analyze`).
+  Core still offers the *whole* registered call to `c:mutate/2`, with `context.mutators` carrying the run's enabled specs — so a mutator that keeps a DSL argument raw (`:skip`) can rewrite the call itself and sub-contract the ordinary-Elixir islands inside that raw argument back to core's generation via `Mutare.Analyze.expression_mutations/3`, relaying each rebuild as a `Mutare.Mutator.Mutation` with `producer:` set (see `Mutare.Analyze` — the island is analyzed with the full set, so another mutator's registered macro inside it is offered to *its* owner the same way).
 
   A mutator that produces mutations *inside* a compile-time DSL additionally implements `Mutare.Mutator.MacroHost`, subscribes with `c:Mutare.Mutator.MacroHost.hosted_macros/0`, and delivers foreign-DSL mutations through `c:Mutare.Mutator.MacroHost.host/2`. It need not own the DSL's routing: a separate extension may declare the `:hosted` position, and several hosts may subscribe to it. See the "which behaviours do I implement?" table in `Mutare.MacroRouting`.
 
@@ -128,11 +128,13 @@ defmodule Mutare.Mutator do
       module.
     * `:mutators` — present for selector hosts (`c:Mutare.Mutator.MacroHost.host/2`) and for
       the whole-call `mutate/2` offer of a **registered macro call** (a call some enabled
-      mutator or extension registered via `Mutare.MacroRouting`): the run's enabled non-host
-      `Mutare.Mutator.Spec`s, for sub-contracting ordinary-Elixir islands the macro's routing
-      left raw back to core's generation via `Mutare.Analyze.expression_mutations/3`. Absent
-      on ordinary node offers — core fully descends an unregistered node itself, so
-      sub-contracting there would produce the same mutant twice.
+      mutator or extension registered via `Mutare.MacroRouting`): the run's enabled
+      `Mutare.Mutator.Spec`s (hosts included), for sub-contracting ordinary-Elixir islands the
+      macro's routing left raw back to core's generation via
+      `Mutare.Analyze.expression_mutations/3` — which masks each spec's `host/2`, so hosted
+      delivery never nests while every ordinary surface participates. Absent on ordinary node
+      offers — core fully descends an unregistered node itself, so sub-contracting there would
+      produce the same mutant twice.
 
   The keys other than `:pipe_mode` are optional in the type because the base context
   carries only `:pipe_mode`; dispatch injects the configured options, the normalized

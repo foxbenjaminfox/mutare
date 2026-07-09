@@ -1,7 +1,7 @@
 defmodule Mutare.SubcontractNodeTest do
   @moduledoc """
   The **whole-call sub-contract** end to end (the free-standing-`dynamic` seam): a node-level
-  mutator that registered a `:skip` macro receives the run's enabled non-host specs on the
+  mutator that registered a `:skip` macro receives the run's enabled specs on the
   whole-call offer (`context.mutators`), hands the raw condition's island to
   `Mutare.Analyze.expression_mutations/3`, and relays each rebuild as an ordinary whole-call
   rewrite tagged `producer:` — the recorded Sites belong to the **producing core family** (its

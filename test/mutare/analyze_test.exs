@@ -108,7 +108,8 @@ defmodule Mutare.AnalyzeTest do
          args}
 
       # Even with the host present in the spec list, the hosted interior has no producer here:
-      # hosts are excluded from collect, and the argument stays raw.
+      # collect disables every spec's `host/2` (hosted delivery cannot nest), and the argument
+      # stays raw.
       muts =
         Analyze.expression_mutations(
           stamped,
@@ -117,6 +118,35 @@ defmodule Mutare.AnalyzeTest do
 
       assert Enum.map(muts, fn {_s, mutated, _n, _v} -> Sourceror.to_string(mutated) end) ==
                ["magic(1 + 1, 2 - 2)"]
+    end
+
+    test "a host-implementing spec's ordinary mutate/2 participates — its host/2 stays inert" do
+      # The full-set contract: a spec that implements `host/2` is not excluded from collect —
+      # its *ordinary* node-level surface runs like any other producer (here, the whole-call
+      # offer of its registered `:skip` macro `dyn/1`), so an island containing such a macro is
+      # analyzed exactly like top-level Elixir. Only hosted delivery is masked.
+      {form, meta, args} = Sourceror.parse_string!("dyn(y > min + 1)")
+      stamped = {form, Meta.stamp_macro_routing(meta, [:skip]), args}
+
+      muts =
+        Analyze.expression_mutations(
+          stamped,
+          specs([:arithmetic]) ++ [Mutare.Test.HostNodeMutator]
+        )
+
+      rendered =
+        Enum.map(muts, fn {spec, mutated, _n, _v} -> {spec.name, Sourceror.to_string(mutated)} end)
+
+      # The owner's whole-call rewrite fires…
+      assert {:host_node, "dyn(y < min + 1)"} in rendered
+
+      # …and its own sub-contract relays the interior to core, producer-attributed — two
+      # nesting levels through one collect call.
+      assert {:arithmetic, "dyn(y > min - 1)"} in rendered
+
+      # The `:skip` argument stayed core-raw: no direct core mutant landed inside the DSL body
+      # (every arithmetic rebuild above came back through the owner's relay, already wrapped).
+      assert Enum.count(rendered, &match?({:arithmetic, _}, &1)) == 1
     end
 
     test "a :pattern-routed argument descends as a match context, never mutated in place" do
