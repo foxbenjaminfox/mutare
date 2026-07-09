@@ -695,10 +695,21 @@ defmodule Mutare.Transform.Analyze do
   # selector as an arrow (`%{(sel) => v}`) or a tuple (`[{(sel), v}]`) automatically.
   # Compile-time-constrained data keys (struct fields, `for` options) are kept raw by
   # their own clauses, before reaching here.
+  #
+  # A block-key value that is a **stab-clause block** — the *keyword form* of a clause tail,
+  # `with …, else: (_ -> fallback)` or `case x, do: (1 -> :a)` — parses to the same
+  # `{:__block__, _, [[…]]}` shape as a list literal, but the construct demands literal `->`
+  # clauses there: both a `List` collapse to `[]` and the selector `case` itself are rejected
+  # ("expected -> clauses for :else in \"with\""), poisoning the single build. (The block-form
+  # tails never reach here — their clause lists arrive bare, routed by each construct's own
+  # clause.) Such a value descends *clause-wise* with the wrapper left raw, exactly like a
+  # `for` `reduce:` body.
   defp analyze({key, value} = pair, context, mutators) do
-    if Syntax.block_key?(key),
-      do: {key, analyze(value, context, mutators)},
-      else: recurse(pair, context, mutators)
+    cond do
+      not Syntax.block_key?(key) -> recurse(pair, context, mutators)
+      stab_clause_block?(value) -> {key, analyze_stab_clause_block(value, context, mutators)}
+      true -> {key, analyze(value, context, mutators)}
+    end
   end
 
   # anything else — a node in a non-runtime context, or a container/leaf:
@@ -843,7 +854,7 @@ defmodule Mutare.Transform.Analyze do
       {key, value} ->
         cond do
           AST.key_atom(key) == :uniq -> {key, value}
-          stab_clause_block?(value) -> {key, analyze_stab_clause_block(value, mutators)}
+          stab_clause_block?(value) -> {key, analyze_stab_clause_block(value, :runtime, mutators)}
           true -> {key, analyze(value, :runtime, mutators)}
         end
 
@@ -860,16 +871,19 @@ defmodule Mutare.Transform.Analyze do
   defp analyze_for_arg(arg, mutators),
     do: MatchPatterns.analyze_match_statement(__MODULE__, arg, mutators)
 
-  # A `reduce:` `do:` body: a block whose sole child is a non-empty list of `->`
-  # clauses. Only do-blocks with arrow clauses parse to this shape, and every other
-  # clause-bearing construct (`case`/`fn`/`cond`/`receive`/`try`) is intercepted by a
-  # dedicated `analyze/3` clause before reaching here, so this is the lone runtime spot
-  # a raw stab-clause block surfaces.
+  # A block whose sole child is a non-empty list of `->` clauses — indistinguishable in
+  # shape from a list literal, but only arrow clauses parse to it (`[a -> b]` is a syntax
+  # error, so a *genuine* list literal never contains a `->`). It surfaces at exactly two
+  # runtime spots: a `for` `reduce:` `do:` body, and a construct tail written in *keyword
+  # form* (`with …, else: (_ -> …)` / `case x, do: (…)`) — the block-form constructs are
+  # intercepted by their own `analyze/3` clauses with the clause list arriving bare.
+  # Each clause descends normally (the `->` clause keeps patterns `:pattern` and applies
+  # `body_context/1` to the body); the wrapper is never offered.
   defp stab_clause_block?({:__block__, _meta, [[{:->, _, _} | _]]}), do: true
   defp stab_clause_block?(_), do: false
 
-  defp analyze_stab_clause_block({:__block__, meta, [clauses]}, mutators),
-    do: {:__block__, meta, [Enum.map(clauses, &analyze(&1, :runtime, mutators))]}
+  defp analyze_stab_clause_block({:__block__, meta, [clauses]}, context, mutators),
+    do: {:__block__, meta, [Enum.map(clauses, &analyze(&1, context, mutators))]}
 
   # One entry of a struct's field map: keep the key (a compile-time field name) raw and
   # descend only the value. A struct update (`%S{base | a: 1}`) carries a `:|` node

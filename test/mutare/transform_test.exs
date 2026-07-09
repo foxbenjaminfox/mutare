@@ -585,6 +585,54 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "keyword-form clause tails (`else: (_ -> …)`)" do
+    # A construct tail written in *keyword form* — `with …, else: (_ -> fallback)` — is the
+    # other spot a stab-clause block surfaces (the same `{:__block__, _, [[…]]}` shape as a
+    # list literal; the block form arrives as a bare clause list instead). Before the fix
+    # `Mutare.Mutators.List` collapsed it to `[]` — and even the selector `case` is illegal
+    # there ("expected -> clauses for :else in \"with\"") — poisoning the single build. As
+    # with `reduce:`, the metamutant parses fine either way, so these compile it.
+    @with_kw """
+    defmodule WKw do
+      def go(x) do
+        with {:ok, v} <- x, do: v + 1, else: (:error -> 0; other -> other)
+      end
+    end
+    """
+
+    test "the List family never collapses a keyword `else:` to []" do
+      {meta, sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(@with_kw, mutators: [Mutare.Mutators.List])
+
+      assert sites == []
+      refute meta =~ "else: []"
+      assert_compiles(meta)
+    end
+
+    test "clause bodies still mutate, patterns stay patterns, and the full set compiles" do
+      {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(@with_kw)
+
+      # The `do:` body `v + 1` is ordinary runtime and still mutates...
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic and &1.original_form == :+))
+      # ...while the else-clause left side stays a pattern (`:error` is never atom-mutated).
+      refute Enum.any?(sites, &(&1.original_code == ":error"))
+      assert_compiles(meta)
+    end
+
+    test "keyword-form case and try tails compile under the full set" do
+      source = """
+      defmodule KwTails do
+        def pick(x), do: case(x, do: (1 -> :one; _ -> :other))
+        def guard(f), do: try(do: f.(), rescue: (_e -> :err), catch: (:throw, v -> v))
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
+      refute Enum.any?(sites, &(&1.mutator == :list))
+      assert_compiles(meta)
+    end
+  end
+
   test "a cond-clause condition is runtime and still mutates" do
     source = """
     defmodule C do
