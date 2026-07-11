@@ -5186,15 +5186,27 @@ On by default; a plain node→node in-place mutation, so it needs no new `Site`
 constructor and no `Transform` change — `mutate/1` returns the transposed node and
 the existing in-place/lift routing delivers it.
 
-The infix operators (`-`/`/`/`**`/`<>`/`++`/`--`) are always arity 2, never piped, so
-`mutate/1` handles them arity-blind. `div`/`rem` are bare `Kernel` *calls*, so they go
-through the pipe-aware `mutate/2` gated on **effective arity 2** — the same bare-`Kernel`
-safeguard `Numeric` uses (confirms the builtin over a same-named user `div/3`), which
-also guarantees the node holds *both* operands. A piped `x |> div(b)` draws its first
-operand from the pipe, so there's nothing local to transpose — skipped (it has only one
-visible arg, failing the `[left, right]` match). This differs from `Arithmetic`'s
-`div`↔`rem`, a *rename* that keeps the arg list and so works piped too; both share the
-arity gate, but only Arithmetic's variant is pipe-valid.
+The infix operators (`-`/`/`/`**`/`<>`/`++`/`--`) are always arity 2 written infix, so the
+context-free helper handles them arity-blind. `div`/`rem` are bare `Kernel` *calls*, so they
+go through the pipe-aware `mutate/2` gated on **effective arity 2** — the same bare-`Kernel`
+safeguard `Numeric` uses (confirms the builtin over a same-named user `div/3`), which also
+guarantees the node holds *both* operands.
+
+**Piped stages transpose via a capture** (was: skipped). A pipe supplies the effective first
+operand from *outside* the stage node, so a plain rebuild can't reach it — and a pipe expresses
+an operator as its `Kernel` call form (`foo |> Kernel.++(bar)`). Both are handled by wrapping
+the swapped call in a one-argument capture invoked on the piped value —
+`foo |> (&Kernel.++(bar, &1)).()`, where the `.()` receives the piped value and binds it to
+`&1`, so the operands end up transposed (`Kernel.++(bar, foo)`). Everything resolvable through
+`Calls` is covered — the operator `Kernel.op` forms, `Kernel.div`/`rem`, and the remote calls —
+keyed by `{module, fun}` in a `@piped_swaps` table (the `@remote_swaps` set plus the `[:Kernel]`
+operator/`div`/`rem` forms). Three sharp edges: (1) a *bare* `Kernel` call (`x |> div(b)`) carries
+no import stamp, so `Calls` leaves it unresolved and it stays skipped — only the explicit
+`Kernel.div` form transposes (this differs from `Arithmetic`'s `div`↔`rem` *rename*, which keeps
+the arg list and needs no capture); (2) the `same?` no-op guard can't run — the piped operand
+isn't in the node — so an identical-operand pipe yields a harmless equivalent transpose rather
+than being pruned; (3) `:piped` offers are runtime-only (set by `Analyze`'s `:|>` clause), so the
+capture — an expression, not guard-legal — is never lifted into a `when`.
 
 **Compile-safe by construction** — the mutant reuses both original operand subtrees,
 just transposed, so whatever type-checked still does. Guard-safety is free the usual

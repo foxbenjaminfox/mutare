@@ -30,9 +30,17 @@ defmodule Mutare.Mutators.OperandSwap do
 
   Aliased and imported calls are supported. An alias that resolves to another module does not match.
 
+  ## Piped calls
+
+  A piped stage supplies its effective first operand from the pipe, so it is not present in the call node. The transpose is still produced by wrapping the swapped call in a one-argument capture invoked on the piped value, which routes that value into the second position:
+
+      foo |> Kernel.++(bar)  →  foo |> (&Kernel.++(bar, &1)).()
+
+  This covers the operator forms (`Kernel.++`, `Kernel.-`, `Kernel.<>`, …), `Kernel.div`/`rem`, and the remote calls above. A bare `Kernel` call (`a |> div(b)`) is not resolved and stays untouched.
+
   ## Skipped cases
 
-  Identical operands are not swapped. Piped calls are skipped because their first operand is supplied outside the call node. Unary minus has no second operand and is handled by `Mutare.Mutators.Arithmetic`.
+  Identical operands are not swapped (in direct calls — a piped stage cannot see its piped operand, so an identical-operand pipe yields an equivalent transpose). Unary minus has no second operand and is handled by `Mutare.Mutators.Arithmetic`.
 
   Guard-safe operators and calls are also mutated in guards.
   """
@@ -80,6 +88,17 @@ defmodule Mutare.Mutators.OperandSwap do
                   {[:MapSet], :subset?}
                 ])
 
+  # Everything transposable in a **piped** stage, keyed by the resolved `{module, fun}` the
+  # same way `@remote_swaps` is. A pipe expresses an operator as its `Kernel` call form
+  # (`foo |> Kernel.++(bar)`), so the piped table is the remote-swap table plus the operator
+  # and `div`/`rem` forms under `[:Kernel]`. The unpiped path never consults this — it reads
+  # infix operators structurally (`operator_mutations/1`) and bare `Kernel` `div`/`rem` by
+  # effective arity — so the two paths stay independent.
+  @piped_swaps MapSet.union(
+                 @remote_swaps,
+                 MapSet.new(for op <- @operators ++ @call_operators, do: {[:Kernel], op})
+               )
+
   @impl Mutare.Mutator
   def name, do: :operand_swap
 
@@ -112,8 +131,9 @@ defmodule Mutare.Mutators.OperandSwap do
   # transpose the first two arguments, keeping the rest (`diff`'s trailing unit rides
   # along — ModeSwap owns it). Resolved through `Mutare.Transform.Calls`, so direct,
   # aliased, and imported forms all match and a shadowing alias resolves elsewhere.
-  # Non-piped only: a piped stage draws its first operand from the pipe, so it has only
-  # one local operand to swap — the `[a, b | rest]` destructure fails and it is skipped.
+  # Non-piped only: a piped stage has only one local operand here (its first comes from
+  # the pipe), so it is routed to the `:piped` clause below, which recovers the swap via a
+  # capture on the piped value.
   defp contextual_mutate(node, :unpiped) do
     with {module, fun, [a, b | rest], rebuild} <- Calls.resolved_call(node),
          true <- MapSet.member?(@remote_swaps, {module, fun}),
@@ -124,11 +144,37 @@ defmodule Mutare.Mutators.OperandSwap do
     end
   end
 
-  # A piped stage holds only one local operand (its first comes from the pipe), so there is
-  # nothing to transpose — skip it. Matched explicitly as `:piped` (not a `_context`
-  # wildcard) so an unrecognised pipe mode raises a FunctionClauseError rather than
-  # silently skipping.
-  defp contextual_mutate(_node, :piped), do: :skip
+  # A piped stage supplies its **effective first operand** from the pipe, so the node holds
+  # only the second operand (and any trailing args — `diff/3`'s unit). We still transpose the
+  # two operands by wrapping the swapped call in a one-argument capture invoked on the piped
+  # value, so the pipe feeds that value into the *second* position:
+  #
+  #     foo |> Kernel.++(bar)          →  foo |> (&Kernel.++(bar, &1)).()
+  #     a   |> DateTime.diff(b, :second) → a |> (&DateTime.diff(b, &1, :second)).()
+  #
+  # `&1` stands in for the piped value, which the pipe supplies as the `.()` call's argument,
+  # so `Kernel.++(bar, foo)` is computed — the operands transposed. The swap is rebuilt through
+  # `Calls` (matched explicitly as `:piped`, not a `_context` wildcard, so an unknown pipe mode
+  # raises rather than silently skipping), so aliased and imported forms are covered and a
+  # shadowing alias resolves elsewhere; a **bare** `Kernel` call (`a |> div(b)`) is not resolved
+  # by `Calls`, so it stays skipped as it always has. The `same?` no-op guard the direct paths
+  # apply cannot run here — the piped first operand is not in the node — so an identical-operand
+  # pipe (`x |> Kernel.++(x)`) yields a (harmless, equivalent) transpose rather than being pruned.
+  defp contextual_mutate(node, :piped) do
+    with {module, fun, [second | rest], rebuild} <- Calls.resolved_call(node),
+         true <- MapSet.member?(@piped_swaps, {module, fun}) do
+      [pipe_capture(rebuild.(fun, [second, piped_placeholder() | rest]))]
+    else
+      _ -> :skip
+    end
+  end
+
+  # `&1` — the capture placeholder standing in for the piped value.
+  defp piped_placeholder, do: {:&, [], [1]}
+
+  # Wrap a swapped call in a zero-argument anonymous-call `(&call).()`. In the pipe stage the
+  # `.()` receives the piped value as its argument, which the capture binds to `&1`.
+  defp pipe_capture(call), do: {{:., [], [{:&, [], [call]}]}, [], []}
 
   # Structural equality ignoring metadata — a transpose of identical operands is an
   # equivalent no-op (`x - x`, `5 / 5`, `-2 - -2`), so we suppress it rather than count it.

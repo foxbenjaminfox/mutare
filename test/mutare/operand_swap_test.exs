@@ -12,6 +12,7 @@ defmodule Mutare.OperandSwapTest do
   @compile {:no_warn_undefined,
             [
               Mutare.OperandSwapFixture,
+              Mutare.OperandSwapPipedFixture,
               Mutare.OperandSwapDateTimeFixture,
               Mutare.OperandSwapMapSetFixture
             ]}
@@ -60,11 +61,18 @@ defmodule Mutare.OperandSwapTest do
       assert swap_sites("rem(a, b, c)") == []
     end
 
-    test "a piped div/rem is skipped — its first operand comes from the pipe" do
-      # `a |> div(b)` is `div(a, b)`, but the stage node holds only `b`; the first
-      # operand is supplied by the pipe, so there is nothing local to transpose.
+    test "a bare piped div/rem is skipped — a bare Kernel call is not resolved" do
+      # `a |> div(b)` is `div(a, b)`; a *bare* `Kernel` call carries no import stamp, so
+      # `Calls` does not resolve it (as it never has), and there is nothing to transpose.
       assert swap_sites("a |> div(b)") == []
       assert swap_sites("a |> rem(b)") == []
+    end
+
+    test "an explicit piped Kernel.div/rem transposes via a capture on the piped value" do
+      # `a |> Kernel.div(b)` is `Kernel.div(a, b)`; the piped `a` is routed to the second
+      # position by the capture, so the mutant computes `Kernel.div(b, a)`.
+      assert mutated_codes("a |> Kernel.div(b)") == ["(&Kernel.div(b, &1)).()"]
+      assert mutated_codes("a |> Kernel.rem(b)") == ["(&Kernel.rem(b, &1)).()"]
     end
 
     test "describe/1 renders the transpose" do
@@ -93,9 +101,11 @@ defmodule Mutare.OperandSwapTest do
       assert mutated_codes("Date.diff(a, b)") == ["Date.diff(b, a)"]
     end
 
-    test "a piped stage is skipped — its first operand comes from the pipe" do
-      assert swap_sites("a |> DateTime.before?(b)") == []
-      assert swap_sites("a |> DateTime.diff(b, :second)") == []
+    test "a piped stage transposes via a capture, keeping any trailing unit" do
+      assert mutated_codes("a |> DateTime.before?(b)") == ["(&DateTime.before?(b, &1)).()"]
+
+      assert mutated_codes("a |> DateTime.diff(b, :second)") ==
+               ["(&DateTime.diff(b, &1, :second)).()"]
     end
 
     test "structurally identical first two operands are not swapped" do
@@ -161,9 +171,9 @@ defmodule Mutare.OperandSwapTest do
       assert swap_sites("MapSet.intersection(a, b)") == []
     end
 
-    test "a piped stage is skipped — its first operand comes from the pipe" do
-      assert swap_sites("a |> Version.compare(b)") == []
-      assert swap_sites("a |> MapSet.difference(b)") == []
+    test "a piped stage transposes via a capture on the piped value" do
+      assert mutated_codes("a |> Version.compare(b)") == ["(&Version.compare(b, &1)).()"]
+      assert mutated_codes("a |> MapSet.difference(b)") == ["(&MapSet.difference(b, &1)).()"]
     end
 
     test "structurally identical operands are not swapped" do
@@ -225,6 +235,69 @@ defmodule Mutare.OperandSwapTest do
 
       assert [%Site{mutator: :operand_swap, kind: :lifted, original_code: "a - b"}] =
                Enum.filter(sites, &(&1.mutator == :operand_swap))
+    end
+  end
+
+  describe "swaps piped operator forms (a pipe expresses an operator as its Kernel call)" do
+    test "each operator's Kernel call form transposes via a capture on the piped value" do
+      # `foo |> Kernel.++(bar)` is `Kernel.++(foo, bar)`; the capture routes the piped `foo`
+      # into the second position, so the mutant computes `Kernel.++(bar, foo)`.
+      assert mutated_codes("foo |> Kernel.++(bar)") == ["(&Kernel.++(bar, &1)).()"]
+      assert mutated_codes("foo |> Kernel.--(bar)") == ["(&Kernel.--(bar, &1)).()"]
+      assert mutated_codes("foo |> Kernel.<>(bar)") == ["(&Kernel.<>(bar, &1)).()"]
+      assert mutated_codes("foo |> Kernel.-(bar)") == ["(&Kernel.-(bar, &1)).()"]
+      assert mutated_codes("foo |> Kernel./(bar)") == ["(&Kernel./(bar, &1)).()"]
+      assert mutated_codes("foo |> Kernel.**(bar)") == ["(&Kernel.**(bar, &1)).()"]
+    end
+
+    test "a piped swap is delivered in place (as an in-pipe selector, hoisted at emit)" do
+      assert [%Site{kind: :in_place}] = swap_sites("foo |> Kernel.++(bar)")
+    end
+
+    test "an aliased Kernel still matches and reuses the written alias" do
+      {_meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(
+          """
+          defmodule T do
+            alias Kernel, as: K
+            def f(foo, bar), do: foo |> K.++(bar)
+          end
+          """,
+          mutators: @only
+        )
+
+      assert [%Site{mutated_code: "(&K.++(bar, &1)).()"}] =
+               Enum.filter(sites, &(&1.mutator == :operand_swap))
+    end
+
+    test "a non-swap or commutative piped call is left alone" do
+      assert swap_sites("foo |> Enum.map(bar)") == []
+      assert swap_sites("foo |> MapSet.union(bar)") == []
+      assert swap_sites("foo |> Kernel.+(bar)") == []
+    end
+  end
+
+  describe "runtime semantics of a piped swap (one compile, flip the selector)" do
+    setup do
+      source = """
+      defmodule Mutare.OperandSwapPipedFixture do
+        def cat(foo, bar), do: foo |> Kernel.++(bar)
+      end
+      """
+
+      {metamutant, [site], _} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: @only)
+
+      Mutare.Test.Compile.string(metamutant)
+      Selector.put(Selector.baseline())
+      on_exit(fn -> Selector.put(Selector.baseline()) end)
+      %{site: site}
+    end
+
+    test "baseline computes foo ++ bar; the mutant computes bar ++ foo", %{site: site} do
+      assert Mutare.OperandSwapPipedFixture.cat([1, 2], [3, 4]) == [1, 2, 3, 4]
+      Selector.put(site.id)
+      assert Mutare.OperandSwapPipedFixture.cat([1, 2], [3, 4]) == [3, 4, 1, 2]
     end
   end
 
