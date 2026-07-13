@@ -177,6 +177,11 @@ defmodule Mutare.CasePatternTest do
     end
 
     test "a string-literal pattern mutant re-targets the clause", %{sites: sites} do
+      assert [site] =
+               Enum.filter(sites, &(&1.mutator == :string and &1.original_code == ~s("go")))
+
+      assert site.mutated_code == ~s("mutare")
+
       Selector.put(id(sites, :string, ~s("mutare"), 26))
       assert F.label("go") == :unknown
     end

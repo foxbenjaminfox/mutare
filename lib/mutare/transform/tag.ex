@@ -26,6 +26,7 @@ defmodule Mutare.Transform.Tag do
 
   alias Mutare.{AST, Mutator}
   alias Mutare.Mutator.Dispatch
+  alias Mutare.Mutators.StringLiteral
   alias Mutare.Transform.{Meta, NodeRange, Suppression}
 
   # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
@@ -50,12 +51,15 @@ defmodule Mutare.Transform.Tag do
   @doc """
   Tag every mutatable scalar literal in one pattern (a head arg or a clause
   pattern), keeping only literal-valued mutations so the mutant pattern is always
-  legal. Same `acc`/return contract as `guard_targets/3`.
+  legal. An ordinary exact string pattern keeps one canonical retargeting mutant;
+  strings below a binary-composing `<>` or `<<>>` keep both the empty and sentinel
+  variants because emptying a segment can remove a structural constraint. Same
+  `acc`/return contract as `guard_targets/3`.
   """
   @spec pattern_literal_targets(Macro.t(), {non_neg_integer(), list()}, [Mutator.Spec.t()]) ::
           {Macro.t(), {non_neg_integer(), list()}}
   def pattern_literal_targets(pattern, acc, mutators),
-    do: tag_pattern_targets(pattern, acc, mutators)
+    do: tag_pattern_targets(pattern, acc, mutators, :exact)
 
   @doc """
   Expand a clause's accumulated `{tag, original, [%Mutare.Mutator.Dispatch.Result{}]}` targets into
@@ -303,9 +307,9 @@ defmodule Mutare.Transform.Tag do
   # === pattern-literal tagging ===============================================
 
   # A scalar literal — the only thing mutated in a pattern. No children to descend.
-  defp tag_pattern_targets({:__block__, _meta, [value]} = node, acc, mutators)
+  defp tag_pattern_targets({:__block__, _meta, [value]} = node, acc, mutators, context)
        when is_integer(value) or is_float(value) or is_binary(value) or is_atom(value),
-       do: tag_node(node, literal_pattern_mutations(node, mutators), acc)
+       do: tag_node(node, literal_pattern_mutations(node, mutators, context), acc)
 
   # A negative numeric literal `-n` parses as a unary minus over its positive
   # magnitude (`{:-, _, [{:__block__, _, [n]}]}`). Descending to mutate the *magnitude*
@@ -317,23 +321,41 @@ defmodule Mutare.Transform.Tag do
   # never a nested `-(-x)`. Guards keep the in-place magnitude walk (`guard_targets/3`),
   # where the nested minus compiles fine.
   # mutare:ignore[guard_drop] equivalent — in a pattern, unary minus only ever wraps a numeric literal, so `is_number(n)` always holds and removing it can't change which inputs match.
-  defp tag_pattern_targets({:-, _meta, [{:__block__, _bmeta, [n]}]} = node, acc, mutators)
+  defp tag_pattern_targets(
+         {:-, _meta, [{:__block__, _bmeta, [n]}]} = node,
+         acc,
+         mutators,
+         _context
+       )
        when is_number(n),
        do: tag_node(node, value_literal_mutations(-n, mutators), acc)
+
+  # A string nested below binary-composing pattern syntax has two meaningfully
+  # different replacements: `""` can remove a prefix/segment constraint, while
+  # `"mutare"` keeps a non-empty constraint and retargets it. Mark every descendant
+  # of `<>` / `<<>>` as binary-composing; other literal families are unchanged by
+  # the context, and a conservative singleton `<<"foo">>` keeps both string mutants.
+  defp tag_pattern_targets({form, meta, args}, acc, mutators, _context)
+       when form in [:<>, :<<>>] and is_list(args) do
+    {args, acc} =
+      Enum.map_reduce(args, acc, &tag_pattern_targets(&1, &2, mutators, :binary_composition))
+
+    {{form, meta, args}, acc}
+  end
 
   # A bitstring segment `value :: spec`: descend the value, keep the spec raw — a
   # spec is not a runtime value and a `size`/`unit` literal swap risks an illegal
   # specifier (`unit(0)`) that would compile-poison the single build.
-  defp tag_pattern_targets({:"::", meta, [value, spec]}, acc, mutators) do
-    {value, acc} = tag_pattern_targets(value, acc, mutators)
+  defp tag_pattern_targets({:"::", meta, [value, spec]}, acc, mutators, context) do
+    {value, acc} = tag_pattern_targets(value, acc, mutators, context)
     {{:"::", meta, [value, spec]}, acc}
   end
 
   # A default argument `pattern \\ default`: descend the *pattern* (a literal there
   # is a head literal mutated by lifting), but keep the default value raw — the
   # default is a runtime position, mutated in place elsewhere.
-  defp tag_pattern_targets({:\\, meta, [pattern, default]}, acc, mutators) do
-    {pattern, acc} = tag_pattern_targets(pattern, acc, mutators)
+  defp tag_pattern_targets({:\\, meta, [pattern, default]}, acc, mutators, context) do
+    {pattern, acc} = tag_pattern_targets(pattern, acc, mutators, context)
     {{:\\, meta, [pattern, default]}, acc}
   end
 
@@ -342,45 +364,56 @@ defmodule Mutare.Transform.Tag do
   # against the map's other keys (`map_key_values/1`) before tagging. Values mutate
   # normally (duplicate values are legal).
   # mutare:ignore[guard_drop] equivalent — a `%{}` node's args are always a list, so this guard never fails for valid input.
-  defp tag_pattern_targets({:%{}, meta, pairs}, acc, mutators) when is_list(pairs) do
+  defp tag_pattern_targets({:%{}, meta, pairs}, acc, mutators, context) when is_list(pairs) do
     key_values = map_key_values(pairs)
-    {pairs, acc} = Enum.map_reduce(pairs, acc, &tag_map_pair(&1, key_values, &2, mutators))
+
+    {pairs, acc} =
+      Enum.map_reduce(pairs, acc, &tag_map_pair(&1, key_values, &2, mutators, context))
+
     {{:%{}, meta, pairs}, acc}
   end
 
   # A keyword/map-key pair: skip the key (a structural label), descend only the
   # value. A non-label pair — a tuple `{1, 2}` or an arrow entry `1 => 2` — has no
   # `format: :keyword` key, so both sides descend and both literals mutate.
-  defp tag_pattern_targets({key, value}, acc, mutators) do
+  defp tag_pattern_targets({key, value}, acc, mutators, context) do
     if AST.keyword_label?(key) do
-      {value, acc} = tag_pattern_targets(value, acc, mutators)
+      {value, acc} = tag_pattern_targets(value, acc, mutators, context)
       {{key, value}, acc}
     else
-      {key, acc} = tag_pattern_targets(key, acc, mutators)
-      {value, acc} = tag_pattern_targets(value, acc, mutators)
+      {key, acc} = tag_pattern_targets(key, acc, mutators, context)
+      {value, acc} = tag_pattern_targets(value, acc, mutators, context)
       {{key, value}, acc}
     end
   end
 
   # Structural descent over an n-ary node (lists, tuples, maps, structs, nested
   # patterns): re-tag every child in order.
-  defp tag_pattern_targets({form, meta, args}, acc, mutators) when is_list(args) do
-    {args, acc} = Enum.map_reduce(args, acc, &tag_pattern_targets(&1, &2, mutators))
+  defp tag_pattern_targets({form, meta, args}, acc, mutators, context) when is_list(args) do
+    {args, acc} =
+      Enum.map_reduce(args, acc, &tag_pattern_targets(&1, &2, mutators, context))
+
     {{form, meta, args}, acc}
   end
 
-  defp tag_pattern_targets(list, acc, mutators) when is_list(list),
-    do: Enum.map_reduce(list, acc, &tag_pattern_targets(&1, &2, mutators))
+  defp tag_pattern_targets(list, acc, mutators, context) when is_list(list),
+    do: Enum.map_reduce(list, acc, &tag_pattern_targets(&1, &2, mutators, context))
 
   # A var (`{:x, _, nil}`), a bare leaf, or anything else: no literal to tag.
-  defp tag_pattern_targets(other, acc, _mutators), do: {other, acc}
+  defp tag_pattern_targets(other, acc, _mutators, _context), do: {other, acc}
 
   # The literal-valued mutations a node admits — the local `mutations/2` (mark-aware) filtered to
   # those whose replacement is itself a scalar literal. A literal is legal in any
   # pattern sub-position, so this both selects the literal families (no other
   # built-in matches a scalar-literal node) and fences out a custom mutator that
   # would emit a pattern-illegal replacement.
-  defp literal_pattern_mutations(node, mutators) do
+  defp literal_pattern_mutations(node, mutators, context) do
+    node
+    |> raw_literal_pattern_mutations(mutators)
+    |> collapse_exact_string_mutations(context)
+  end
+
+  defp raw_literal_pattern_mutations(node, mutators) do
     node
     |> mutations(mutators)
     |> Enum.filter(fn %Dispatch.Result{node: mutated} -> literal_node?(mutated) end)
@@ -425,38 +458,75 @@ defmodule Mutare.Transform.Tag do
   # One pair of a map pattern. A label key (`a:`) is left raw; a value-position key
   # (an arrow literal `1 =>`) is tagged with its mutations filtered so none equals a
   # sibling key. The value always descends normally.
-  defp tag_map_pair({key, value}, key_values, acc, mutators) do
+  defp tag_map_pair({key, value}, key_values, acc, mutators, context) do
     {key, acc} =
       if AST.keyword_label?(key),
         do: {key, acc},
-        else: tag_pattern_key(key, key_values, acc, mutators)
+        else: tag_pattern_key(key, key_values, acc, mutators, context)
 
-    {value, acc} = tag_pattern_targets(value, acc, mutators)
+    {value, acc} = tag_pattern_targets(value, acc, mutators, context)
     {{key, value}, acc}
   end
 
   # mutare:ignore[clause_drop] equivalent — a map pattern's entries are always `{key, value}` pairs, so this fallback is unreachable for valid input.
-  defp tag_map_pair(other, _key_values, acc, mutators),
-    do: tag_pattern_targets(other, acc, mutators)
+  defp tag_map_pair(other, _key_values, acc, mutators, context),
+    do: tag_pattern_targets(other, acc, mutators, context)
 
   # A scalar-literal map key, tagged only with collision-free mutations. A
   # structured key (`{1, 2}`, `[1]`) descends generically — its collisions are rarer
   # and stay poison-backstopped.
-  defp tag_pattern_key({:__block__, _meta, [value]} = node, key_values, acc, mutators)
+  defp tag_pattern_key(
+         {:__block__, _meta, [value]} = node,
+         key_values,
+         acc,
+         mutators,
+         context
+       )
        when is_integer(value) or is_float(value) or is_binary(value) or is_atom(value),
-       do: tag_node(node, key_pattern_mutations(node, key_values, mutators), acc)
+       do: tag_node(node, key_pattern_mutations(node, key_values, mutators, context), acc)
 
-  defp tag_pattern_key(other, _key_values, acc, mutators),
-    do: tag_pattern_targets(other, acc, mutators)
+  defp tag_pattern_key(other, _key_values, acc, mutators, context),
+    do: tag_pattern_targets(other, acc, mutators, context)
 
   # Literal key mutations minus any whose replacement value already names a key in
   # the same map (which would compile-error on the duplicate). The original value is
   # never re-emitted, so membership in the full key-value set means "equals a sibling".
-  defp key_pattern_mutations(node, key_values, mutators) do
+  defp key_pattern_mutations(node, key_values, mutators, context) do
     node
-    |> literal_pattern_mutations(mutators)
+    |> raw_literal_pattern_mutations(mutators)
     |> Enum.reject(fn %Dispatch.Result{node: mutated} ->
       literal_value_in?(mutated, key_values)
+    end)
+    |> collapse_exact_string_mutations(context)
+  end
+
+  # In an ordinary exact pattern, `"foo" -> ""` and `"foo" -> "mutare"` both
+  # retarget the same scalar match and are usually killed by the same execution of
+  # the original pattern. Keep the sentinel as the canonical replacement because
+  # it is least likely to collide with a real sibling key/clause. Map-key legality
+  # runs before this helper, so if the sentinel collides, the empty replacement is
+  # retained as a deterministic fallback. A source equal to either replacement
+  # already produces only the other one and therefore passes through unchanged.
+  defp collapse_exact_string_mutations(mutations, :binary_composition), do: mutations
+
+  defp collapse_exact_string_mutations(mutations, :exact) do
+    sentinel_specs =
+      for %Dispatch.Result{
+            spec: %Mutator.Spec{module: StringLiteral} = spec,
+            variant: "sentinel"
+          } <- mutations,
+          into: MapSet.new(),
+          do: spec
+
+    Enum.reject(mutations, fn
+      %Dispatch.Result{
+        spec: %Mutator.Spec{module: StringLiteral} = spec,
+        variant: "empty"
+      } ->
+        MapSet.member?(sentinel_specs, spec)
+
+      _other ->
+        false
     end)
   end
 

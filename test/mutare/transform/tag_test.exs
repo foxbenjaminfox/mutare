@@ -341,6 +341,77 @@ defmodule Mutare.Transform.TagTest do
     end
   end
 
+  describe "string-literal redundancy in patterns" do
+    test "an ordinary exact string pattern keeps only the sentinel retarget" do
+      {_meta, sites} =
+        transform(
+          """
+          def f("foo"), do: :ok
+          def f(_), do: :no
+          """,
+          [Mutators.StringLiteral]
+        )
+
+      assert Enum.filter(triples(sites), fn {family, _original, _mutated} -> family == :string end) ==
+               [{:string, ~s("foo"), ~s("mutare")}]
+    end
+
+    test "a map-key pattern keeps one retarget, falling back to empty after collision filtering" do
+      {_meta, sites} =
+        transform(
+          """
+          def f(%{"foo" => value, "mutare" => _sentinel}), do: value
+          def f(_), do: :no
+          """,
+          [Mutators.StringLiteral]
+        )
+
+      foo_mutants =
+        Enum.filter(triples(sites), fn {_family, original, _mutated} ->
+          original == ~s("foo")
+        end)
+
+      # The preferred `"mutare"` retarget would duplicate the sibling key and is
+      # removed first; exact-pattern collapsing therefore retains the legal empty
+      # replacement instead of dropping this key's mutation altogether.
+      assert foo_mutants == [{:string, ~s("foo"), ~s("")}]
+    end
+
+    test "binary-composing patterns retain both empty and sentinel replacements" do
+      {meta, sites} =
+        transform(
+          """
+          def prefix("foo" <> rest), do: rest
+          def segment(<<"bar", rest::binary>>), do: rest
+          def singleton(<<"baz">>), do: :ok
+          """,
+          [Mutators.StringLiteral]
+        )
+
+      for original <- [~s("foo"), ~s("bar"), ~s("baz")] do
+        mutations =
+          for {:string, ^original, mutated} <- triples(sites),
+              do: mutated
+
+        assert mutations == [~s(""), ~s("mutare")]
+      end
+
+      # The conservative singleton boundary is intentional: every string below
+      # written `<<>>` pattern syntax stays in the binary-composition class.
+      assert [_ | _] = Mutare.Test.Compile.string(meta)
+    end
+
+    test "runtime strings still retain both replacements" do
+      {_meta, sites} =
+        transform("def f, do: \"foo\"", [Mutators.StringLiteral])
+
+      assert triples(sites) == [
+               {:string, ~s("foo"), ~s("")},
+               {:string, ~s("foo"), ~s("mutare")}
+             ]
+    end
+  end
+
   describe "keyword-label keys are labels, not values (lines 314, 389)" do
     test "a keyword-list pattern key is not mutated; its value is" do
       {meta, sites} =

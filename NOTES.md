@@ -3288,6 +3288,21 @@ unoffered, with map-key-collision filtering) were extracted from `FunctionPlan` 
 those subtleties. `replace_tag/3` materialises one mutant from the tagged copy (leftover tags on
 sibling nodes are stripped by `Render`).
 
+**Exact string patterns keep one retarget; binary-composing patterns keep both.** `StringLiteral`'s
+runtime `""` / `"mutare"` pair probes a real empty-vs-non-empty property, but an ordinary exact
+pattern (`def f("foo")`, `%{"foo" => value}`, a tuple/list element, or a clause pattern) usually
+turns both into the same signal: exercising the original `"foo"` makes either replacement stop
+matching. They are not semantically identical — another clause or a map containing one replacement
+can distinguish them — so this is deliberate redundancy suppression, not an equivalence claim.
+`Tag.tag_pattern_targets/4` now threads an `:exact | :binary_composition` context. Exact positions
+keep the sentinel as the canonical low-collision retarget and fall back to empty when the sentinel
+is the source or map-key collision filtering removed it. Descendants of written `<>` / `<<>>`
+pattern syntax keep both: emptying a prefix/segment may remove a structural constraint, whereas the
+sentinel keeps a non-empty constraint and changes its content. The boundary is intentionally
+conservative — even singleton `<<"foo">>` keeps both — and lives in the positional tagger rather
+than `StringLiteral`, preserving the rule that a mutator produces candidates without choosing its
+delivery context. Runtime and guard offers are unchanged.
+
 Deferred (still routed `:pattern`, unmutated): the `<-` generator/`with`-clause LHS, the `with`/`try`
 `else` clause pattern, and `try` patterns.
 

@@ -4,6 +4,8 @@ defmodule Mutare.Mutators.StringLiteral do
 
   Both plain and interpolated strings are mutated. A plain literal parses as `{:__block__, _, [binary]}` and gets the value-based no-op drop above. An interpolated string (`"a\#{x}b"`) — and an interpolated heredoc — parses instead as a `<<>>` carrying a `delimiter` meta key; the whole thing is replaced by `""`/`"mutare"` (its runtime value can never be statically either, so both variants apply), while the interpolation's own sub-expressions still mutate independently underneath. A real `<<…>>` bitstring (no `delimiter`) is *not* a string — it is left to `Mutare.Mutators.BitstringLiteral`.
 
+  Pattern delivery removes one low-signal duplicate: an ordinary exact string pattern keeps only the sentinel retarget (`"foo"` → `"mutare"`; with `""` as the fallback when the sentinel is the source or would duplicate a sibling map key). A string below binary-composing pattern syntax (`<>` or `<<>>`) keeps both variants because emptying a segment can remove a structural constraint while the sentinel preserves a non-empty constraint. Runtime positions always keep both. This positional policy lives in `Mutare.Transform.Tag`; this mutator continues to produce the complete pair without deciding where it will be delivered.
+
   Add project-specific positions to leave alone with the `:skip_arguments` option (a list of `{module, function, arity, positions}`, as in `Mutare.Mutators.IntegerLiteral`).
 
   Filterable variants — qualify a `# mutare:ignore` filter with `:label` to suppress just one half (`c:Mutare.Mutator.variants/0`): `empty` (the `""`) or `sentinel` (the `"mutare"`).
