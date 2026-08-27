@@ -12,8 +12,11 @@ defmodule Mutare.Sandbox do
   instead of surviving as an orphan. Everything injected is plain Erlang/Elixir
   with no dependency on Mutare, so the sandbox needs nothing added to its deps.
 
-  Full-copy isolation is the simplest correct choice; swapping it for a shared
-  build path is an open question to settle by measuring on a large umbrella.
+  One copy serves every concurrent mutant run: they share this sandbox and its
+  `_build`, and Mix's build lock serialises only their `--no-compile` boot check —
+  a small, fixed fraction of a run (measured in `NOTES.md`,
+  "Per-worker `MIX_BUILD_PATH` vs the shared sandbox build") — so there is no
+  per-worker isolation to configure.
 
   Two materialisation modes, chosen by `:keep_sandbox`:
 

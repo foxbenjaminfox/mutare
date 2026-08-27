@@ -696,7 +696,7 @@ re-render — rejected for the same reason `Site`'s moduledoc gives for not keep
 subtrees — substantial heap for a handful of eventual reads). Re-rendering the few survivor files
 is cheaper than the heap.
 
-### Sandbox isolation & dependencies `[M4 / open question]`
+### Sandbox isolation & dependencies `[M4, done; isolation question settled]`
 `Mutare.Sandbox` copies the whole project (excluding `_build`/`.git`, keeping
 `deps`) to a temp dir. Consequences:
 - **Path deps outside the copied root don't resolve in the copy.** The old claim
@@ -717,8 +717,10 @@ is cheaper than the heap.
   as appropriate, explains the external-path-dep case, and preserves Mix's raw
   diagnostic. Fetching stays a user action: it can use network credentials,
   modify `mix.lock`, and would otherwise write into a disposable sandbox.
-- The design's open question stands: full source copy vs per-worker
-  `MIX_BUILD_PATH` against one shared schema build — measure on a large umbrella.
+- The design's open question — one shared copy + `_build` for every worker (as
+  now) vs per-worker isolation (N source copies, or one copy with a per-worker
+  `MIX_BUILD_PATH`) — is **settled: not worth it**. Measured 2026-08-27; see
+  "Per-worker `MIX_BUILD_PATH` vs the shared sandbox build" below.
 
 ### Seed the deps' `_build` so "compile once" doesn't recompile deps `[done]`
 `@excluded` keeps `_build` out of the project copy, so a *fresh* sandbox's one
@@ -1094,6 +1096,65 @@ whole test suite. That replaces the fragile parser with ~30 lines and lets the
 rest of the abandoned design (marker file, restore snippet, conditional argv)
 stand as written.
 
+### Per-worker `MIX_BUILD_PATH` vs the shared sandbox build `[measured; not pursued]`
+The design's oldest open question (M4): the `:workers` concurrent per-mutant
+`mix test` processes all run in the one sandbox against its one `_build`, and
+contend on Mix's build lock at boot ("Waiting for lock on the build directory").
+The proposed fix was per-worker isolation — N full source copies, or one copy
+with a per-worker `MIX_BUILD_PATH` — "to be measured on a large target".
+Measured 2026-08-27 on phoenix_live_view (34 deps): **the contention costs
+≤ 1 % of a mutant run. Not worth any of it.**
+
+What the lock guards on the per-mutant path: `Mix.Tasks.Compile.All` takes
+`Mix.Project.with_build_lock/2` *before* honouring `--no-compile`, and `mix test`
+reaches it twice per boot (`compile`, then `app.start`). The critical section is
+the app-cache staleness check plus loading every dependency's `.app` file —
+**59 ms** uncontended for 34 deps (`MIX_DEBUG=1`, `<- Ran mix compile.all`),
+against a ~2.5 s boot-dominated run. The lock key is `Mix.Project.build_path/0`,
+so a per-worker `MIX_BUILD_PATH` would sidestep it without disabling anything —
+but each worker then needs a complete `_build/<env>` of its own (Mix loads every
+dep from `<build_path>/lib/<dep>`), refreshed after every compile, poison-recovery
+rebuilds included.
+
+The measurement: 4 workers × 5 rounds of `mix test --no-compile --no-deps-check
+--no-archives-check` on a 3-test file (boot-dominated — the *worst* case for lock
+cost), shared `_build` vs per-worker `MIX_BUILD_PATH` copies, interleaved twice,
+with per-run attribution from `MIX_DEBUG=1` task timings:
+
+- shared: 5–11 of 20 boots printed "Waiting for lock"; `compile.all` (both calls,
+  wait included) mean 135–138 ms, max 280 ms, of a 2.9–3.1 s run.
+- per-worker paths: no waits by construction; `compile.all` mean 105–131 ms,
+  max 275 ms, of a 2.9–3.0 s run.
+
+So the whole lock phase is ~4–5 % of a run, and the *contention* share of it —
+the only part isolation could recover — is 0–33 ms per run, ≤ 1 %, inside the
+noise. Wall-clock throughput differences were inside the noise too (the host was
+heavily loaded by unrelated work throughout, load 40–90 on 16 cores — which is
+why the per-run attribution is the load-bearing number, not the totals). Cost is
+not the objection — a `_build/test` copy is 13 MB / 805 files here, 67 ms with
+`cp -a`, 38 ms hard-linked — there is simply nothing to buy. The critical section
+grows with dependency count, but so does such an app's boot (Ecto, Repo,
+endpoint); the ratio holds. And the worker pathology this question was filed
+against (false `:timeout`s, OOM `:sigkilled`s at 16 workers — "Parallel workers",
+"Timeouts") was CPU oversubscription, not the lock, closed by the worker clamp
+and `:confirm_timeouts`.
+
+Why not build it anyway, for hygiene: `MIX_BUILD_PATH` leaks into nested `mix`
+calls from the suite exactly as `MIX_OS_CONCURRENCY_LOCK=false` did (the
+`[dead end]` above) — and worse, since it is a hard override "including the
+environment": a suite that runs `mix` in a generated project (installer-style
+tests) would have that child's build redirected into our lane's `_build`. The
+same restore-from-config machinery the dead end drowned in would be needed, and
+the lock's accidental boot stagger (the dead end had to add a `LaunchStagger` to
+replace it) would go too. If a future target ever shows a real lock cost, the
+lane identity already exists — `Mutare.Runner.Partitions` checks one token out
+per concurrent run — so a per-lane build path is that token mapped to
+`<sandbox>/_build/<env>_w<n>`, seeded from the master build after every compile
+(`Runner.Compile`, poison loop included) and appended to the slot env as
+`MIX_BUILD_PATH`; deps could be symlinked and only the mutated app's dir copied,
+since a `--no-compile` run writes nothing beyond ExUnit's failures manifest (the
+app cache is fresh after the one compile).
+
 ### Early stop: survivor cap and time budget `[done]`
 `--max-survivors N` is for the iterate-and-fix loop: surface a handful of concrete test gaps, not a
 full score. `--time-budget "10m"` (added later) is the sibling for a fixed wall-clock window: "see
@@ -1354,8 +1415,9 @@ Subtleties the sync handles that a naive "don't wipe" wouldn't:
 CI pattern: `--sandbox <cache-dir> --keep-sandbox`, and cache `<cache-dir>/_build`
 and `<cache-dir>/deps` keyed on `mix.lock`. tar-based caches (e.g. GitHub
 `actions/cache`) preserve mtimes, which is what makes the cross-run incremental
-compile work. Still out of scope: `mix deps.get` in the sandbox (unchanged), and
-the `MIX_BUILD_PATH` worker-isolation question below.
+compile work. Still out of scope: `mix deps.get` in the sandbox (unchanged). (The
+`MIX_BUILD_PATH` worker-isolation question is settled — not pursued; see
+"Per-worker `MIX_BUILD_PATH` vs the shared sandbox build" above.)
 
 ### Keyword-`do:` normalization (Sourceror workaround) `[done, watch]`
 Sourceror's formatter raises when rendering `def f, do: <case>` (keyword block
@@ -4012,10 +4074,11 @@ too-low-default (slower) is a far kinder failure than too-high (false timeouts,
 OOM kills, confirmation tails). A future root fix — trimming each worker BEAM to
 `schedulers/workers` via `+S` — would remove the oversubscription itself, but it
 changes the target suite's own async concurrency semantics, too invasive for a
-default. The design's other open question — per-worker `MIX_BUILD_PATH` vs full
-source copy — would remove the lock contention; deferred. (Disabling the lock
-outright was tried and abandoned — see "Bypassing Mix's build lock per mutant"
-above.)
+default. The lock contention itself is measured and negligible — per-worker
+isolation (`MIX_BUILD_PATH` or full source copies) was not pursued; see
+"Per-worker `MIX_BUILD_PATH` vs the shared sandbox build" above. (Disabling the
+lock outright was tried and abandoned — see "Bypassing Mix's build lock per
+mutant" above.)
 
 ### Per-worker DB partitioning (`:partition_env`) `[done]`
 A suite with shared mutable state — the common case: an Ecto repo — can't have N
