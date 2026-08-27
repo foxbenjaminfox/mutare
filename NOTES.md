@@ -7158,6 +7158,28 @@ aliased `Context` vs `RunCtx` to keep them apart in `Runner`.
   two invocation sites, and its hand-written error prose, replaced by a one-line
   `required_modules`.
 
+- **`Mutare.AST.numeric_alternatives/3` — the off-by-one/zero table published value-level (done).**
+  A host that mutates a literal core can't reach (`mutare_ecto`'s `Fragment`: an integer/float
+  written *raw* into an SQL condition, not under a `^` pin — so neither core's own families nor the
+  sub-contract seam below apply) had to hand-mirror `Helpers.numeric_mutations/3` byte for byte:
+  the `succ`/`pred`/`zero` candidate table, the equal-to-original drop, and the label-merging
+  collapse (`1` → one `0` tagged `["pred", "zero"]`). That mirror is the drift hazard, not the
+  ~25 lines: the plugin's `# mutare:ignore[ecto:zero]` vocabulary and collapse semantics only agree
+  with core's `[integer:zero]` by accident of copying. `Helpers` is `@moduledoc false` on purpose,
+  so the fix is the same move `sentinel_string/0`/`sentinel_atom/0` already made — publish the
+  *convention* on `Mutare.AST`, next to the sentinels, and make the built-ins consume it:
+  `Helpers.numeric_mutations/3` is now a two-line wrapper (`Mutation.tagged(literal(v), labels)`
+  over the pairs), so there is one table. Decisions baked in: it is **value-level**
+  (`[{value, [label]}]`), not `Mutation`-level — a plugin wraps values in its own tag shape and can
+  filter *before* building nodes (the JSON-path case must drop a negative index, which
+  `literal_value/1` can't read back from the unary-minus `literal(-1)` node); labels are always a
+  list at this layer (`Helpers` keeps its `one_or_many/1` when tagging, so the built-ins' emitted
+  variants and ids are byte-identical); and it is deliberately *numeric only* — no type-dispatching
+  `literal_alternatives/1`, because the string/atom/boolean arms are one-liners with no shared logic
+  and their ownership splits (`nil`, `true`/`false`, convention atoms) are policy each side must
+  own for itself. Downstream this deletes `mutare_ecto`'s `Fragment.value_mutants/3` and its three
+  inline candidate tables.
+
 ## Host sub-contracting of fragment interiors (pin islands)
 
 A `:hosted` argument is left entirely raw by core and every mutant there comes from the host —

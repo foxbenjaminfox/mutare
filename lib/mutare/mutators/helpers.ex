@@ -221,30 +221,16 @@ defmodule Mutare.Mutators.Helpers do
   off-by-one collapses onto the zero sentinel (`n = 1` ⇒ `n - 1 = 0`) the deduped mutant carries
   *both* labels (`["pred", "zero"]`), so either qualifier suppresses it.
 
+  The values and labels come from the published `Mutare.AST.numeric_alternatives/3` — the
+  value-level table a custom mutator shares — and this wraps each into a tagged literal mutation.
   Shared by `Mutare.Mutators.IntegerLiteral` (`step` 1, `zero` 0) and
   `Mutare.Mutators.FloatLiteral` (`step` 1.0, `zero` 0.0).
   """
   @spec numeric_mutations(number(), number(), number()) :: [Mutation.t()]
   def numeric_mutations(value, step, zero) do
-    [{value + step, "succ"}, {value - step, "pred"}, {zero, "zero"}]
-    |> Enum.reject(fn {v, _label} -> v == value end)
-    |> merge_labels_by_value()
+    value
+    |> Mutare.AST.numeric_alternatives(step, zero)
     |> Enum.map(fn {v, labels} -> Mutation.tagged(Mutare.AST.literal(v), one_or_many(labels)) end)
-  end
-
-  # Group `{value, label}` pairs by value, preserving first-seen order and collecting *all* labels
-  # for a value — so a dedup collapse (`value + step == zero`, or `value - step == zero`) yields a
-  # single mutant carrying both kinds, while position is the first occurrence (matching the old
-  # `Enum.uniq` order the ids depend on).
-  defp merge_labels_by_value(pairs) do
-    {order, labels} =
-      Enum.reduce(pairs, {[], %{}}, fn {value, label}, {order, labels} ->
-        if Map.has_key?(labels, value),
-          do: {order, Map.update!(labels, value, &(&1 ++ [label]))},
-          else: {[value | order], Map.put(labels, value, [label])}
-      end)
-
-    order |> Enum.reverse() |> Enum.map(&{&1, labels[&1]})
   end
 
   # A lone label rides as a bare string (the common case — `succ`); only a collapse carries the

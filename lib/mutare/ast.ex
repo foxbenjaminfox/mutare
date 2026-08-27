@@ -4,7 +4,7 @@ defmodule Mutare.AST do
 
   These helpers are the supported way for custom mutators to build AST. `literal/1` is the most important one: it builds literal nodes with fresh metadata, so Sourceror renders the new value rather than stale source text. It also handles string delimiters, numeric token metadata, and negative-number shape correctly.
 
-  `literal_value/1` reads supported literal nodes back to their values. The `sentinel_*` helpers return the same survivor markers used by the built-in families. `absolute_alias/1`, `absolute_call/3`, and `remote_call/3` build references that are not affected by aliases or imports in the target source. `keyword_key/1` and `clean_var/1` cover the remaining node shapes a mutator emits into existing source: fresh keyword keys and re-declared bindings.
+  `literal_value/1` reads supported literal nodes back to their values. The `sentinel_*` helpers return the same survivor markers used by the built-in families, and `numeric_alternatives/3` the same off-by-one/zero alternatives (with their variant labels and collapse rule) the numeric literal families produce. `absolute_alias/1`, `absolute_call/3`, and `remote_call/3` build references that are not affected by aliases or imports in the target source. `keyword_key/1` and `clean_var/1` cover the remaining node shapes a mutator emits into existing source: fresh keyword keys and re-declared bindings.
 
   `parse!/1` and `to_string/1` expose the Sourceror round trip without requiring custom mutators to depend on Sourceror directly.
   """
@@ -334,4 +334,48 @@ defmodule Mutare.AST do
   @doc "The survivor sentinel as a module-alias path (`Mutare.Mutant`)."
   @spec sentinel_alias() :: [atom()]
   def sentinel_alias, do: [:Mutare, :Mutant]
+
+  @doc """
+  The "off-by-one + zero sentinel" alternatives for a numeric literal `value`, exactly as the
+  built-in `Mutare.Mutators.IntegerLiteral` (`step` 1, `zero` 0) and `Mutare.Mutators.FloatLiteral`
+  (`step` 1.0, `zero` 0.0) produce them: `value + step` (labelled `"succ"`), `value - step`
+  (`"pred"`), and `zero` (`"zero"`), as ordered `{value, labels}` pairs.
+
+  Two rules ride along, so a custom mutator that mints the same alternatives somewhere core can't
+  reach (a literal inside a DSL fragment it hosts) stays in step with the built-ins and their
+  `# mutare:ignore` variant vocabulary: an alternative equal to `value` is dropped (`0` is never
+  re-emitted for `0`), and alternatives that collapse onto one value are **merged** into a single
+  pair carrying every label, positioned at the first occurrence — so `1`'s `pred` and its `zero`
+  sentinel become one `{0, ["pred", "zero"]}` that either qualifier suppresses.
+
+      iex> Mutare.AST.numeric_alternatives(5, 1, 0)
+      [{6, ["succ"]}, {4, ["pred"]}, {0, ["zero"]}]
+      iex> Mutare.AST.numeric_alternatives(1, 1, 0)
+      [{2, ["succ"]}, {0, ["pred", "zero"]}]
+      iex> Mutare.AST.numeric_alternatives(0.0, 1.0, 0.0)
+      [{1.0, ["succ"]}, {-1.0, ["pred"]}]
+
+  Values, not nodes — build each with `literal/1` (and filter first if a position can't take
+  some of them, e.g. a negative index).
+  """
+  @spec numeric_alternatives(number(), number(), number()) :: [{number(), [String.t()]}]
+  def numeric_alternatives(value, step, zero) do
+    [{value + step, "succ"}, {value - step, "pred"}, {zero, "zero"}]
+    |> Enum.reject(fn {v, _label} -> v == value end)
+    |> merge_labels_by_value()
+  end
+
+  # Group `{value, label}` pairs by value, preserving first-seen order and collecting *all* labels
+  # for a value — so a collapse (`value ± step == zero`) yields one pair carrying both kinds,
+  # positioned at the first occurrence (the order the built-in families' mutant ids depend on).
+  defp merge_labels_by_value(pairs) do
+    {order, labels} =
+      Enum.reduce(pairs, {[], %{}}, fn {value, label}, {order, labels} ->
+        if Map.has_key?(labels, value),
+          do: {order, Map.update!(labels, value, &(&1 ++ [label]))},
+          else: {[value | order], Map.put(labels, value, [label])}
+      end)
+
+    order |> Enum.reverse() |> Enum.map(&{&1, labels[&1]})
+  end
 end
