@@ -8190,3 +8190,38 @@ wanted. A second, smaller one falls straight out of the reader rule: `Convention
 alternative is a bespoke exception to the "reader set = the `:skip_arguments` set" rule, which is
 the maintainable part. Exercised in `transform_duration_test.exs` ("the shared :structural label");
 the flagship declarer is `mutare_ecto`'s `argument_marks/1` (`apply_action`/`apply_action!`).
+
+### Sourceror comments leak into `original_code`/`mutated_code` — strip at the render boundary `[fixed]`
+
+Sourceror attaches every comment to exactly one node, and the node it picks is the first one
+*opening* the comment's line: a trailing `# mutare:ignore[…]` on `p.a > ^x and` lands as a
+`:leading_comments` on the leftmost **leaf** `p`, a comment before `end` as a
+`:trailing_comments` on the enclosing `def`. `Sourceror.to_string/1` renders whatever the
+subtree carries, so the comment surfaced at every ancestor's render (the comparison, the whole
+`and` chain) — and, because a swap reuses the original's operands, in `mutated_code` too. That
+last part made it more than cosmetic: `Mutare.Report` splices `mutated_code` over the site's
+range, so the survivor diff showed the directive twice (once on its own line above, once still
+trailing the patched line). The directive itself keyed fine — `Mutare.Ignore` reads
+`previous_eol_count`, not the bucket.
+
+Fixed at the **render boundary**, not the parse: `Mutare.AST.to_string/1` now
+`strip_comments/1`s the whole subtree (both keys, `Macro.prewalk`) before rendering, and `Site`'s
+four renders route through it. Two alternatives weighed and rejected:
+
+- **Strip after parsing, once per file.** Cheaper on paper and it would make
+  `MatchPatterns`' pre-strip unnecessary, but it changes what every mutator sees and what the
+  metamutant renders to fix a report-only problem, and it has to be sequenced after
+  `Ignore.directives_from_ast/1`, which harvests from the same tree. The report renderer is the
+  thing that was wrong; "two renderers, on purpose" says fix it there.
+- **Strip only the top node's meta.** Doesn't work — the comment sits on the leaf, so every
+  ancestor's render must strip *its subtree*.
+
+Cost is nil: `Sourceror.to_string/1` already walks the tree to extract comments
+(`extract_comments`, `collapse_comments: true`), so this is one walk in place of another, only on
+the sites `Hydrate` actually renders. `Analyze.MatchPatterns` keeps its own pre-strip (now the
+shared `AST.strip_comments/1`) — the `=`-match pattern is re-emitted per dispatcher clause, and
+that strip is what stops the generated branches each repeating the statement's comment; the
+recorded site no longer depends on it. `Mutare.Test`'s rendering and any custom mutator's
+`AST.to_string/1` pick up the same behaviour for free. Exercised in `site_test.exs` ("comment
+metadata in the rendered code") — the clause-drop case is what kills the `:trailing_comments`
+deletion, which the pre-hoist helper had documented as an equivalent survivor.

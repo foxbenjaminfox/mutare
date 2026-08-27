@@ -7,6 +7,8 @@ defmodule Mutare.Site do
   A runner may defer rendering `original_code` and `mutated_code`, leaving them `nil` until the result needs to be displayed. `summary` may hold a cheaper one-line description for live progress. `Mutare.transform_string/2` renders the code fields by default.
   """
 
+  alias Mutare.AST
+
   @type t :: %__MODULE__{
           id: pos_integer(),
           file: String.t(),
@@ -238,11 +240,12 @@ defmodule Mutare.Site do
   end
 
   # The `original_code` renderer shared by both delete-site constructors
-  # (`clause_drop/4`, `in_place_drop/5`), via `Sourceror.to_string/1`. Lazy mode (`render?` false)
+  # (`clause_drop/4`, `in_place_drop/5`), via `AST.to_string/1` (Sourceror, minus the comments
+  # the clause's nodes carry — see `Mutare.AST.strip_comments/1`). Lazy mode (`render?` false)
   # records no diff text — the scan defers it, and the report re-derives it for the few sites it
   # actually shows (see `Mutare.Runner.Hydrate`).
   defp clause_code(_node, false), do: nil
-  defp clause_code(node, true), do: clause_form(node, &Sourceror.to_string/1)
+  defp clause_code(node, true), do: clause_form(node, &AST.to_string/1)
 
   # Render a clause-shaped node to a one-line source fragment with the given `renderer`
   # (`Sourceror.to_string/1` for the report diff, `Macro.to_string/1` for the live summary). A
@@ -399,16 +402,21 @@ defmodule Mutare.Site do
   # move the colon to render the keyword form the source — and the colon-corrected range —
   # uses (`"k#{x}":`).
   defp render_code({{:., _, [:erlang, :binary_to_atom]}, _meta, _args} = node, true, true) do
-    ":" <> content = Sourceror.to_string(node)
+    ":" <> content = AST.to_string(node)
     content <> ":"
   end
 
   defp render_code(node, _keyword_key?, true), do: render_source_code(node)
 
+  # `AST.to_string/1`, not `Sourceror.to_string/1` directly: the node's subtree carries the
+  # comments Sourceror parked on it (a trailing `# mutare:ignore` on the leftmost leaf of its
+  # line), and the mutated node inherits them via the reused operands. The code fields are the
+  # source *at the site* — and the report splices `mutated_code` over the range, so a comment
+  # here would land in the diff twice.
   defp render_source_code(node) do
     case keyword_pair(node) do
-      {:ok, key, value} -> keyword_pair_code(key, value, &Sourceror.to_string/1)
-      :error -> Sourceror.to_string(node)
+      {:ok, key, value} -> keyword_pair_code(key, value, &AST.to_string/1)
+      :error -> AST.to_string(node)
     end
   end
 

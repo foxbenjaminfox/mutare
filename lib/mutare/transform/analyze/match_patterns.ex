@@ -15,6 +15,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   #   * a runtime block's non-final statement / a `with` clause → `analyze_statement/3`
   #   * a `for` qualifier                                       → `analyze_match_statement/3`
 
+  alias Mutare.AST
   alias Mutare.Transform.{Candidate, Meta, NodeRange, PatternStructure}
   alias Mutare.Transform.Analyze.Attach
 
@@ -323,9 +324,9 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   defp pattern_export_context(raw_pattern) do
     # Sourceror attaches the *statement's* leading comment to its leftmost leaf — which, for a
     # `<pat> = e` or a piped `<pat> |> macro(…)`, is inside the pattern. Strip it so the
-    # recorded `original`/`mutated` (rendered by `Site` via `Sourceror.to_string`) and the
-    # generated branches don't carry it. The range/diff is unaffected (it reads positions).
-    pattern = strip_comments(raw_pattern)
+    # generated branches (the pattern re-emitted per dispatcher clause) don't each repeat it.
+    # (`Site` strips its own render; the range/diff is unaffected, it reads positions.)
+    pattern = AST.strip_comments(raw_pattern)
 
     with %{} = range <- NodeRange.get(pattern),
          [_ | _] = names <- PatternStructure.bound_var_names(pattern) do
@@ -349,25 +350,6 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
     else
       _ -> nil
     end
-  end
-
-  # Drop `:leading_comments`/`:trailing_comments` from every node's metadata. Used on the
-  # `=`-match LHS, whose leftmost leaf carries the statement's leading comment (Sourceror
-  # parks it there), so neither the recorded site nor the generated pattern repeats it.
-  defp strip_comments(ast) do
-    Macro.prewalk(ast, fn
-      # NOTE: the `:trailing_comments` deletion is an equivalent survivor (deliberately not
-      # ignored): Sourceror attaches no trailing comment to the discarded-pattern LHS nodes
-      # this cleans, so swapping that key out leaks nothing. The `:leading_comments` deletion
-      # *is* killed (a leading comment would otherwise leak into the recorded diff).
-      # mutare:ignore[guard_drop] equivalent — every node `Macro.prewalk` visits is `{form, meta, args}` with keyword-list meta, so the guard never excludes a real node.
-      {form, meta, args} when is_list(meta) ->
-        {form, meta |> Keyword.delete(:leading_comments) |> Keyword.delete(:trailing_comments),
-         args}
-
-      other ->
-        other
-    end)
   end
 
   # The tuple of bound-variable nodes (with per-variable multiplicity, see above) shared by

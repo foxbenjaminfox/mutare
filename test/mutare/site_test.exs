@@ -41,6 +41,43 @@ defmodule Mutare.SiteTest do
     end
   end
 
+  describe "comment metadata in the rendered code" do
+    # Sourceror parks each comment on one node — a trailing `# …` on the leftmost *leaf* of its
+    # line, a comment before `end` on the enclosing `def` — and renders whatever a subtree
+    # carries. The code fields are the source *at the site*, and a swap reuses the original's
+    # operands, so without `AST.strip_comments/1` both fields leak it (and the report, which
+    # splices `mutated_code` over the range, would show the directive twice).
+    test "a trailing `# mutare:ignore` on a comparison in a multi-line chain is not rendered" do
+      source = """
+      defmodule Mutare.SiteCommentFixture do
+        def f(a, b, x, y) do
+          a > x and # mutare:ignore[relational:<]
+            b > y
+        end
+      end
+      """
+
+      {_meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Logical]
+        )
+
+      codes = Enum.map(sites, &{&1.mutator, &1.original_code, &1.mutated_code})
+
+      # The leaf-parked comment would surface at every ancestor: the comparison and the chain.
+      assert {:relational, "a > x", "a >= x"} in codes
+      assert {:logical, "a > x and\n  b > y", "a > x or\n  b > y"} in codes
+      refute Enum.any?(codes, fn {_, original, mutated} -> original <> mutated =~ "#" end)
+    end
+
+    test "a comment before a dropped clause's `end` is not rendered" do
+      clause = Sourceror.parse_string!("def f(x) do\n  x\n  # trailing\nend")
+      site = Site.clause_drop(7, "lib/x.ex", @range, clause)
+
+      assert site.original_code == "def f(x) do\n  x\nend"
+    end
+  end
+
   describe "in_place_drop/6 variant threading" do
     # An attribution `at_drop/1` (a whole-node rewrite reported as a clause deletion — e.g.
     # mutare_ecto's filter/bound drop) must carry its family/kind label onto the delete Site, so a

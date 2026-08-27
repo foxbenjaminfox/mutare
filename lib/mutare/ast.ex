@@ -29,11 +29,43 @@ defmodule Mutare.AST do
   @doc """
   Render an AST node back to formatted source, the inverse of `parse!/1`.
 
+  Comment metadata is stripped first (`strip_comments/1`), so a node taken from parsed
+  source renders as its code alone — never the `# …` text Sourceror parked on it.
+
       iex> Mutare.AST.to_string(Mutare.AST.literal("mutare"))
       ~s("mutare")
+      iex> "a > x # note" |> Mutare.AST.parse!() |> Mutare.AST.to_string()
+      "a > x"
   """
   @spec to_string(Macro.t()) :: String.t()
-  def to_string(ast), do: Sourceror.to_string(ast)
+  def to_string(ast), do: ast |> strip_comments() |> Sourceror.to_string()
+
+  @doc """
+  Drops Sourceror's `:leading_comments`/`:trailing_comments` from every node of `ast`.
+
+  Sourceror attaches each comment to one node — a trailing `# …` to the leftmost leaf of
+  its line, a comment before `end` to the enclosing form — and `Sourceror.to_string/1`
+  renders whatever the subtree carries. Since a mutation reuses the original's operands,
+  the comment would ride into the mutated node too. `to_string/1` strips it for you; call
+  this directly when a parsed node is re-emitted into generated code where the comment
+  should not repeat.
+
+      iex> {:a, meta, nil} = "# note\\na" |> Mutare.AST.parse!() |> Mutare.AST.strip_comments()
+      iex> Keyword.take(meta, [:leading_comments, :trailing_comments])
+      []
+  """
+  @spec strip_comments(Macro.t()) :: Macro.t()
+  def strip_comments(ast) do
+    Macro.prewalk(ast, fn
+      # mutare:ignore[guard_drop] equivalent — every node `Macro.prewalk` visits is `{form, meta, args}` with keyword-list meta, so the guard never excludes a real node.
+      {form, meta, args} when is_list(meta) ->
+        {form, meta |> Keyword.delete(:leading_comments) |> Keyword.delete(:trailing_comments),
+         args}
+
+      other ->
+        other
+    end)
+  end
 
   @doc """
   Builds a scalar-literal node with fresh metadata.
