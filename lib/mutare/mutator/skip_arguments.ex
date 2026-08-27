@@ -6,7 +6,9 @@ defmodule Mutare.Mutator.SkipArguments do
   argument, so "leave this position alone" is a natural per-project option. `use
   Mutare.Mutator.SkipArguments` injects the two callbacks that wire it up — `c:Mutare.Mutator.argument_marks/1`
   (declaring the configured positions) and a `c:Mutare.Mutator.mutate/2` gate that declines at a
-  self-marked position and otherwise delegates to the family's own `mutate/1`:
+  *pinned* position — one this instance's `:skip_arguments` configured, or one any mutator marked
+  with the shared `Mutare.Mutator.structural_label/0` (`Mutare.Mutator.pinned?/1`) — and otherwise
+  delegates to the family's own `mutate/1`:
 
       defmodule Mutare.Mutators.TupleLiteral do
         @behaviour Mutare.Mutator
@@ -28,7 +30,7 @@ defmodule Mutare.Mutator.SkipArguments do
 
   A family that needs *extra* logic in `mutate/2` — `Mutare.Mutators.IntegerLiteral`/`AtomLiteral` also gate
   on the built-in `:timeout`/`:infinity` marks — doesn't use this mixin; it calls
-  `Mutare.Mutator.skip_arguments_marks/1` and `Mutare.Mutator.self_marked?/1` by hand instead.
+  `Mutare.Mutator.skip_arguments_marks/1` and `Mutare.Mutator.pinned?/1` by hand instead.
   """
 
   @doc false
@@ -41,7 +43,7 @@ defmodule Mutare.Mutator.SkipArguments do
       # family's own `mutate/1` clauses stay the source of the mutation (and directly callable).
       @impl Mutare.Mutator
       def mutate(node, context) do
-        if Mutare.Mutator.self_marked?(context), do: :skip, else: mutate(node)
+        if Mutare.Mutator.pinned?(context), do: :skip, else: mutate(node)
       end
     end
   end

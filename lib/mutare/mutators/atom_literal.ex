@@ -13,7 +13,7 @@ defmodule Mutare.Mutators.AtomLiteral do
 
   `:infinity` in a known **timeout/duration position** (e.g. the `Task.await/2` or `GenServer.stop/3` timeout) is left unmutated. This family reuses `Mutare.Mutators.IntegerLiteral`'s timeout table (via `c:Mutare.Mutator.argument_marks/1`) so the two value families agree on which positions hold an opaque timeout literal, and declines when the `:timeout` mark is present. A *non-duration* sibling atom in the same call still mutates: `GenServer.stop(s, :normal, :infinity)` mutates the `:normal` reason but not the `:infinity` timeout.
 
-  Add project-specific positions to leave alone with the `:skip_arguments` option (a list of `{module, function, arity, positions}`, as in `Mutare.Mutators.IntegerLiteral`) — an atom at such a position is skipped outright, since the position, not the value, is what the user pinned.
+  Add project-specific positions to leave alone with the `:skip_arguments` option (a list of `{module, function, arity, positions}`, as in `Mutare.Mutators.IntegerLiteral`) — an atom at such a position is skipped outright, since the position, not the value, is what the user pinned. A position any mutator pinned with the shared `Mutare.Mutator.structural_label/0` mark is skipped the same way, as in every `:skip_arguments`-honouring family.
 
   Interpolated quoted atoms (`:"a\#{x}b"`) are mutated as a whole to the sentinel — their runtime value can never statically be `:mutare`, so the swap always applies — while the expressions inside the interpolation stay eligible for their own mutations, mirroring how `Mutare.Mutators.StringLiteral` treats interpolated strings.
   """
@@ -53,12 +53,12 @@ defmodule Mutare.Mutators.AtomLiteral do
 
   # Decline for `:infinity` at a marked timeout position — the "wait forever" duration, not a value
   # to perturb (a *different* atom there is not a duration and still mutates, e.g.
-  # `Task.shutdown(t, :brutal_kill)`) — and for *any* atom at a user-configured `:skip_arguments`
-  # position (the user pinned the position, whatever the value). `mutate/2` takes precedence at
-  # dispatch.
+  # `Task.shutdown(t, :brutal_kill)`) — and for *any* atom at a pinned position (a user-configured
+  # `:skip_arguments`, or any mutator's shared `:structural` mark — the position, not the value, is
+  # what was pinned). `mutate/2` takes precedence at dispatch.
   @impl Mutare.Mutator
   def mutate(node, context) do
-    if Mutare.Mutator.self_marked?(context) or infinity_timeout?(node, context),
+    if Mutare.Mutator.pinned?(context) or infinity_timeout?(node, context),
       do: :skip,
       else: mutate(node)
   end

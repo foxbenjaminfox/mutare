@@ -388,7 +388,10 @@ defmodule Mutare.Mutator do
 
   Two mutators marking the same position union their labels; the label is a shared vocabulary, so a
   family can react to a label another declared (declare it too if that must survive the declarer
-  being disabled). A mutator without this callback asks for no marks. `argument_marks_from/2` turns a
+  being disabled). One label carries a core-defined meaning: `structural_label/0` — every value
+  family that honours `:skip_arguments` declines outright at a position so marked (`pinned?/1`), so
+  a domain-owning mutator can hold a structural literal back from all of them with a single
+  declaration. A mutator without this callback asks for no marks. `argument_marks_from/2` turns a
   user-facing `{module, function, arity, positions}` list into declarations under a label.
   """
   @callback argument_marks(config :: term()) :: [
@@ -464,6 +467,40 @@ defmodule Mutare.Mutator do
   def marked?(%{marks: marks}, label), do: MapSet.member?(marks, label)
   def marked?(_context, _label), do: false
 
+  # The shared mark label for a *structural* argument position (see `structural_label/0`).
+  # Deliberately in the public label space — any mutator may declare it, and every
+  # `:skip_arguments`-honouring value family reacts (`pinned?/1`).
+  @structural_label :structural
+
+  @doc """
+  The shared mark label for a **structural** argument position — one whose literal *names* something
+  (a mode atom such as `Ecto.Changeset.apply_action/2`'s action, an identifier drawn from a small
+  conventional vocabulary) rather than holding a value the program computes with. Perturbing such a
+  literal is noise by construction: the observable behaviour barely forks, so a kill demands an
+  assertion on the label itself rather than on what the code does.
+
+  Every value family that honours `:skip_arguments` also declines outright at a
+  `:structural`-marked position (the shared `pinned?/1` gate), so a mutator that owns the domain
+  knowledge — typically a plugin — can hold a position back from **every value family that honours
+  `:skip_arguments`** with one `c:argument_marks/1` declaration, instead of every user configuring
+  `:skip_arguments` per family:
+
+      @impl true
+      def argument_marks(_config) do
+        [{Ecto.Changeset, :apply_action, 2, [1], Mutare.Mutator.structural_label()}]
+      end
+
+  Unlike `:timeout` — whose readers react *value-aware* (only a duration-shaped literal is held
+  back) — a `:structural` mark is unconditional: the position, not the value, is what the declarer
+  pinned. `Mutare.Mutators.ConventionAtom` deliberately does not react, the same stance as its
+  `:skip_arguments` exclusion (its `:ok`↔`:error` swaps are high-signal, the opposite of an opaque
+  structural literal) — so a `:structural` position whose value happens to be a convention atom
+  (`:ok`/`:error`, `:cont`/`:halt`, `:lt`/`:gt`) still gets that family's sibling swap. Pin a mode
+  vocabulary that overlaps those and expect one mutant through.
+  """
+  @spec structural_label() :: atom()
+  def structural_label, do: @structural_label
+
   # The label a `:skip_arguments` mark carries until `Mutare.Transform.Resolve.ArgumentMarks` relabels
   # it (via `self_label/1`) at build. The relabel is to a *reserved, namespaced* label derived from
   # the instance name — not the bare name — so two `:as` copies still don't collide with each other,
@@ -493,6 +530,16 @@ defmodule Mutare.Mutator do
   @spec self_marked?(context()) :: boolean()
   def self_marked?(%{name: name, marks: marks}), do: MapSet.member?(marks, self_label(name))
   def self_marked?(_context), do: false
+
+  @doc """
+  Whether the offered node sits at a position pinned against value mutation — by *this instance's*
+  `:skip_arguments` option (`self_marked?/1`) or by any enabled mutator's shared
+  `structural_label/0` mark. The one gate a value family runs before mutating
+  (`use Mutare.Mutator.SkipArguments` injects it; `Mutare.Mutators.IntegerLiteral`/`AtomLiteral`
+  call it by hand next to their `:timeout` reaction). Total over a context without marks.
+  """
+  @spec pinned?(context()) :: boolean()
+  def pinned?(context), do: self_marked?(context) or marked?(context, @structural_label)
 
   @doc """
   The `c:argument_marks/1` declarations for a configurable mutator's `:skip_arguments` option — the

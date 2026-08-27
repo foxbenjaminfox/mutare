@@ -35,6 +35,26 @@ defmodule Mutare.TransformDurationTest do
     def mutate(_node), do: :skip
   end
 
+  # A mutator that only *declares*: it pins `Widget.render/2`'s arg 1 (and `Widget.stream/2`'s
+  # `:mode` option) with the shared structural label and produces nothing itself — the way a plugin
+  # ships "a literal here names something" knowledge for every value family to honour.
+  defmodule StructuralDeclarer do
+    @behaviour Mutare.Mutator
+    @impl true
+    def name, do: :declarer
+
+    @impl true
+    def argument_marks(_config) do
+      [
+        {Widget, :render, 2, [1], Mutare.Mutator.structural_label()},
+        {Widget, :stream, 2, [{:keyword, :mode}], Mutare.Mutator.structural_label()}
+      ]
+    end
+
+    @impl true
+    def mutate(_node), do: :skip
+  end
+
   # A mutator whose *shared* label collides with a built-in family's report name (`:integer`). Used
   # to prove a public/shared mark is never mistaken for that family's own `:skip_arguments` self
   # request — the self-mark is namespaced, not the bare instance name.
@@ -555,6 +575,80 @@ defmodule Mutare.TransformDurationTest do
       {_m, triples} = value_triples("def f(e), do: Widget.stream(e, mode: 1)", [MarkingMutator])
 
       refute Enum.any?(triples, fn {m, original, _} -> m == :marking and original == "1" end)
+    end
+  end
+
+  describe "the shared :structural label (a declarer pins a position for every value family)" do
+    test "IntegerLiteral and AtomLiteral decline at a :structural-marked position" do
+      # The pinned arg 1 is held back while the unmarked arg 0 still mutates — positional, like
+      # every mark.
+      {_m, ints} =
+        value_triples("def f, do: Widget.render(1, 2)", [
+          StructuralDeclarer,
+          Mutare.Mutators.IntegerLiteral
+        ])
+
+      assert {:integer, "1", "2"} in ints
+      refute Enum.any?(ints, fn {_m, original, _} -> original == "2" end)
+
+      # An atom there is held back too — unconditional, unlike `:timeout`'s `:infinity`-only
+      # reaction: the position, not the value, is what the declarer pinned.
+      {_m, atoms} =
+        value_triples("def f, do: Widget.render(1, :mode)", [
+          StructuralDeclarer,
+          Mutare.Mutators.AtomLiteral
+        ])
+
+      assert atoms == []
+    end
+
+    test "the mixin families honour it, and only with the declarer enabled (not vacuous)" do
+      body = ~S|def f, do: Widget.render(1, "tag")|
+
+      {_m, marked} =
+        value_triples(body, [StructuralDeclarer, Mutare.Mutators.StringLiteral])
+
+      assert marked == []
+
+      # Without the declarer the same literal mutates — the suppression is the mark, not the call.
+      {_m, plain} = value_triples(body, [Mutare.Mutators.StringLiteral])
+      assert {:string, ~S("tag"), ~S("")} in plain
+    end
+
+    test "a :structural keyword-option mark pins the option value" do
+      {_m, triples} =
+        value_triples("def f(e), do: Widget.stream(e, mode: 1)", [
+          StructuralDeclarer,
+          Mutare.Mutators.IntegerLiteral
+        ])
+
+      assert triples == []
+    end
+
+    test "ConventionAtom deliberately does not react — the documented exception to the rule" do
+      # The reader set is *exactly* the `:skip_arguments`-honouring families, and `ConventionAtom`
+      # is excluded from that set on purpose (its sibling swaps are high-signal, the opposite of an
+      # opaque structural literal). So a pinned position whose value happens to be a convention atom
+      # still gets the swap — the one leak in "pins it for every value family", locked here so the
+      # stance can't drift silently into the mixin.
+      body = """
+      def f, do: Widget.render(1, :ok)
+        def g, do: Widget.render(1, :mode)
+      """
+
+      {_m, triples} =
+        value_triples(body, [
+          StructuralDeclarer,
+          Mutare.Mutators.AtomLiteral,
+          Mutare.Mutators.ConventionAtom
+        ])
+
+      # `:ok` is ConventionAtom's by the ownership split, and it swaps through the mark.
+      assert {:convention, ":ok", ":error"} in triples
+
+      # The mark *is* live at that same position in the same run — the sibling `:mode`, which is
+      # AtomLiteral's, is held back. Without this half the assertion above proves nothing.
+      refute Enum.any?(triples, fn {mutator, _original, _} -> mutator == :atom end)
     end
   end
 

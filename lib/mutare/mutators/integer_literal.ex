@@ -123,13 +123,14 @@ defmodule Mutare.Mutators.IntegerLiteral do
   end
 
   # Decline at a marked timeout position (an integer there is a magic duration constant the suite
-  # can't pin — a near-unkillable equivalent mutant) or a user-configured `:skip_arguments` position;
-  # otherwise mutate the node normally. `mutate/2` takes precedence over `mutate/1` at dispatch, so
-  # the gate applies to every offer while the node-level `mutate/1` clauses below stay reusable (and
-  # directly callable in tests).
+  # can't pin — a near-unkillable equivalent mutant) or a pinned position (a user-configured
+  # `:skip_arguments`, or any mutator's shared `:structural` mark); otherwise mutate the node
+  # normally. `mutate/2` takes precedence over `mutate/1` at dispatch, so the gate applies to every
+  # offer while the node-level `mutate/1` clauses below stay reusable (and directly callable in
+  # tests).
   @impl Mutare.Mutator
   def mutate(node, context) do
-    if Mutare.Mutator.marked?(context, @timeout_mark) or Mutare.Mutator.self_marked?(context),
+    if Mutare.Mutator.marked?(context, @timeout_mark) or Mutare.Mutator.pinned?(context),
       do: :skip,
       else: mutate(node)
   end

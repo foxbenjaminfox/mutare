@@ -8062,3 +8062,46 @@ idiomatic `order_by:`-value flip), which renders cleanly. Regression coverage:
 `attribution_test.exs` (location, clause-level diff, per-clause `# mutare:ignore`, the
 mis-attribution fallback) with fixtures `Mutare.Test.AttributedQueryMutator` /
 `MisattributedQueryMutator`.
+
+### The `:structural` shared mark — a mutator pins a position for every value family `[done]`
+
+The motivating case is `mutare_ecto`'s: `Ecto.Changeset.apply_action/2`'s action atom is never
+consulted on the success path and only stamps `changeset.action` on the error path — metadata, not
+behaviour — so `AtomLiteral` mutating `:update` there mints a near-equivalent mutant whose only
+kill is a test asserting the label itself. The plugin owns that knowledge and could already
+*declare* it (`argument_marks/1` is folded from every enabled mutator, alias/import/pipe-resolved),
+but no reader existed: the one shared label, `:timeout`, is read **value-aware** (`AtomLiteral`
+holds back only `:infinity`, so even mislabeling wouldn't have worked), and the exact semantics
+wanted — "the position, not the value, is what was pinned; skip outright" — lived only behind the
+`:skip_arguments` self label, which is per-instance and deliberately unforgeable by other mutators
+(see the namespacing note under "Argument marks").
+
+The closing move is a promotion, not new machinery: `Mutator.structural_label/0` (`:structural`)
+is public shared vocabulary with a core-defined meaning, and `Mutator.pinned?/1`
+(`self_marked?/1` or the `:structural` check) is the one gate every `:skip_arguments`-honouring
+value family runs — the `SkipArguments` mixin picked it up in one line, and
+`IntegerLiteral`/`AtomLiteral` swapped their hand-rolled `self_marked?/1` calls. The reader set is
+*exactly* the `:skip_arguments` set, so "which families react" is a rule, not a list to maintain
+(`ConventionAtom` stays excluded, the same high-signal stance as its `:skip_arguments` exclusion).
+
+Two properties kept deliberately:
+
+- **Still opt-in per label.** The label's meaning is core-defined but the reaction lives in each
+  reader's gate — a custom value family that neither uses the mixin nor calls `pinned?/1` still
+  fires at the position. The alternative — enforcing a reserved label at the offer layer, the way
+  macro-routing `:skip` is transform-enforced — was rejected: it would turn marks from shared
+  vocabulary into a cross-mutator veto, contradicting the facility's founding inversion ("the
+  meaning of a mark lives entirely in the mutator").
+- **Declarer-scoped, like every mark.** Disable the declaring mutator and the positions mutate
+  again — correct, because the knowledge is the declarer's, not the transform's.
+
+Known limit, on purpose: a `:structural` mark pins the *named value node* only (the general
+mark-the-value-node rule above), so an identifier **list** (`validate_required(cs, [:name])`)
+isn't coverable this way — the mark would land on the list node while the value families are
+offered the interior atoms unmarked. Descent-propagating marks are a separate feature if ever
+wanted. A second, smaller one falls straight out of the reader rule: `ConventionAtom` isn't in the
+`:skip_arguments` set, so a `:structural` position whose value happens to be a convention atom
+(`:ok`/`:error`, `:cont`/`:halt`, `:lt`/`:gt`) still gets that family's sibling swap. Accepted — the
+alternative is a bespoke exception to the "reader set = the `:skip_arguments` set" rule, which is
+the maintainable part. Exercised in `transform_duration_test.exs` ("the shared :structural label");
+the flagship declarer is `mutare_ecto`'s `argument_marks/1` (`apply_action`/`apply_action!`).
