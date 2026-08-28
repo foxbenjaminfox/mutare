@@ -415,5 +415,72 @@ defmodule Mutare.RunnerTest do
       assert length(run.results) == 1
       assert run.stopped_early == false
     end
+
+    test "never reports a result the survivor cap discarded" do
+      # Mutant 1 (`a`) is slow *and* unasserted, so it survives — and while it sleeps the
+      # second lane runs the fast mutants behind it to completion, parking their results in
+      # the ordered stream's buffer. When mutant 1 finally lands it trips `--max-survivors 1`
+      # and those buffered stragglers are discarded, so a reporter fed from the worker would
+      # have already emitted live/verbose lines for mutants absent from `run.results`.
+      %{project: project, sandbox: sandbox} =
+        Project.build(:straggler_report, %{
+          "lib/straggler_report.ex" => """
+          defmodule StragglerReport do
+            def a(x, y), do: x + y
+            def b(x, y), do: x + y
+            def c(x, y), do: x + y
+            def d(x, y), do: x + y
+          end
+          """,
+          "test/straggler_report_test.exs" => """
+          defmodule StragglerReportTest do
+            use ExUnit.Case
+
+            test "covers every arithmetic site" do
+              if System.get_env("MUTARE_ACTIVE_MUTANT", "0") == "1" do
+                Process.sleep(2_000)
+              end
+
+              # Covered but unasserted: mutant 1 survives.
+              StragglerReport.a(2, 2)
+              assert StragglerReport.b(2, 2) == 4
+              assert StragglerReport.c(2, 2) == 4
+              assert StragglerReport.d(2, 2) == 4
+            end
+          end
+          """
+        })
+
+      {:ok, seen} = Agent.start_link(fn -> %{started: 0, reported: []} end)
+
+      on_start = fn _site -> Agent.update(seen, &%{&1 | started: &1.started + 1}) end
+
+      reporter = fn %Result{site: site} ->
+        Agent.update(seen, &%{&1 | reported: [site.id | &1.reported]})
+      end
+
+      assert {:ok, run} =
+               Mutare.run(project,
+                 sandbox: sandbox,
+                 mutators: [Mutare.Mutators.Arithmetic],
+                 workers: 2,
+                 timeout: 15_000,
+                 max_survivors: 1,
+                 on_start: on_start,
+                 reporter: reporter
+               )
+
+      %{started: started, reported: reported} = Agent.get(seen, & &1)
+
+      assert run.stopped_early == true
+      assert [%Result{status: :survived, site: %{id: 1}}] = run.results
+
+      # The second lane launched alongside mutant 1, so at least one run past the cap really
+      # was drained and discarded — without that the assertion below is vacuous.
+      assert started > length(run.results)
+
+      assert Enum.sort(reported) == [1],
+             "reported #{inspect(Enum.sort(reported))} but kept #{inspect(Enum.map(run.results, & &1.site.id))}"
+    end
   end
 end

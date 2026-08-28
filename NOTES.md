@@ -681,8 +681,8 @@ Three load-bearing choices (mirroring the dep-seed's "never produce a wrong resu
   `--dry-run`/`--list-ignores` info commands stay eager (they `describe` every site).
 - **Hydrate in the worker, not after the run.** The live reporter consumes a survivor's diff *as
   it streams*, so deferral can't wait for a post-run batch; `Hydrate.result/2` runs in the
-  per-mutant task just before `reporter.(result)`, and the hydrated result is what's collected, so
-  the final report needs no second pass. Killed/no-coverage results (no `leave_behind`) are never
+  per-mutant task, on the result the collector then reports and keeps, so the final report needs
+  no second pass. Killed/no-coverage results (no `leave_behind`) are never
   hydrated — that's the whole win.
 - **A miss is a warned no-op, not a crash.** If the deterministic re-render ever failed to cover
   an id, `Hydrate` emits a `Logger.warning` naming the mutant (the tripwire for a broken
@@ -1191,7 +1191,21 @@ conditions into the one drain trigger. Several decisions make it well-behaved:
   rather than halting — the already-in-flight stragglers (≤ one per worker, the same handful that ran
   before) finish cleanly and are discarded; every later site is a trivial skip. So no extra mutant is
   actually run, and no live subprocess outlives the run to race teardown. See
-  `Mutare.Runner.collect_until_stop/4`.
+  `Mutare.Runner.Stream.collect_until_stop/4`.
+
+- **Report from the collector, not the worker.** Calling `:reporter` in the `Task.async_stream` task
+  that produced the result (as the loop originally did) leaked exactly those drained stragglers: a
+  discarded result had already reached the reporter, so live/`--verbose` stderr showed KILLED /
+  SURVIVED lines for mutants absent from `run.results`. It is not a race a post-run `capped` check in
+  the worker could close, either — an ordered stream *buffers* the results that finished ahead of the
+  trigger, and those are reported long before the collector reaches the trigger at all. So
+  `collect_until_stop/4` reports each result as it **accepts** it. Two things fall out: the live line
+  order becomes deterministic (source order — the order the final report prints, no longer "whichever
+  worker finished first"), and a custom `:reporter` hook gets one calling process instead of
+  `:workers` of them. `:on_start` still fires from every worker, so the live reporter stays a
+  `GenServer`. The cost is bounded and lands where it doesn't show: the counter advances in ordered
+  batches (≤ one per lane) rather than on each completion, while the spinner and the in-flight mutant
+  line — both driven by `:on_start` — keep moving.
 
 - **The budget clock is read per-landing, not on a timer.** `collect_until_stop/4` checks the
   deadline in the same reduce that receives each result. That looks like it could miss the deadline
@@ -4219,6 +4233,10 @@ bounded by the per-mutant timeout watcher, and the default sandbox is a throwawa
 (cleanup is best-effort `rm_rf` anyway). The live reporter's running "survived" tally may
 likewise flash a couple above N before the halt — cosmetic; the final report is exactly N.
 
+*Both costs were later paid off* — see "Early stop: survivor cap and time budget", where the
+halt becomes a **drain** (nothing is killed, nothing orphaned) and reporting moves to the ordered
+collector (a discarded straggler is never reported, so the live tally can no longer overshoot).
+
 **Early stop is exploratory, not CI.** A stopped run tested only a *prefix* of the
 mutants, so its score is over a partial denominator (and artificially low — we stopped
 *because* survivors piled up). The run is flagged `stopped_early`; on that flag the runner
@@ -6500,9 +6518,10 @@ product) plus timeouts and harness errors (problems worth surfacing live), and �
 a tty — a bottom status block (spinner + the in-flight mutant + a counter with an
 ETA) that animates via an internal tick timer. Design decisions worth remembering:
 
-- **It's a `GenServer`, because the hooks fire concurrently.** `:reporter`/`:on_start`
-  are called from many `Task.async_stream` workers at once, so every terminal write
-  must funnel through one owner. Reports/starts/phases are `cast`s (workers never
+- **It's a `GenServer`, because the hooks fire concurrently.** `:on_start` is called
+  from many `Task.async_stream` workers at once (as `:reporter` was too, until it moved
+  to the ordered collector — see "Early stop: survivor cap and time budget"), so every
+  terminal write must funnel through one owner. Reports/starts/phases are `cast`s (workers never
   block on rendering); `finish/1` is a `call`, and since all casts were *sent* (mailbox
   delivery complete) before the stream returned, FIFO guarantees `finish` sees the
   final state and clears the block before the after-the-fact `Mutare.Report` prints.

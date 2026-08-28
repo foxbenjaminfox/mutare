@@ -104,8 +104,13 @@ defmodule Mutare.Runner do
 
   Live progress hooks:
 
-    * `:reporter` — called with each `Mutare.Result` as it completes.
+    * `:reporter` — called with each `Mutare.Result` the run keeps, in source order.
+      Every reported result appears in the returned run's `:results` (an early stop
+      discards the runs still in flight when it trips — those are never reported), and
+      the calls are serialized, so the hook needs no synchronization of its own.
     * `:on_start` — called with each `Mutare.Site` just before its test run starts.
+      Unlike `:reporter`, this fires concurrently from every worker, and a site whose
+      run is later discarded by an early stop still announces its start.
     * `:on_phase` — called as the run enters `:compiling`, `:baseline`,
       `:coverage_probe`, and `{:running, total}`.
 
