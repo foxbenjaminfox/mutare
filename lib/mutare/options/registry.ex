@@ -485,17 +485,25 @@ defmodule Mutare.Options.Registry do
   # list and the CLI flag get the same check; the remediation names `--report FORMAT:PATH`
   # because giving the extra formats a file is the fix on either side.
   defp validate_distinct_destinations!(reporters) do
-    destinations = Enum.map(reporters, fn {_format, path} -> path end)
+    destinations = Enum.map(reporters, &normalized_destination/1)
 
     Enum.each(Enum.uniq(destinations), fn destination ->
-      case Enum.filter(reporters, fn {_format, path} -> path == destination end) do
+      case Enum.filter(reporters, &(normalized_destination(&1) == destination)) do
         [_only_one] -> :ok
-        clashing -> colliding_reporters!(clashing, destination)
+        [{_format, path} | _] = clashing -> colliding_reporters!(clashing, path)
       end
     end)
 
     reporters
   end
+
+  # Two spellings of one file (`"r.json"` and `"./r.json"`) are one destination, so the
+  # comparison is on the expanded path rather than the string as written — comparing those
+  # raw would let the pair through to `Mutare.CLI.Outcome`, which is exactly where the
+  # silent overwrite this guard exists to prevent happens. Only the key is normalized: the
+  # error still quotes the path as the user wrote it. `nil` is stdout, not a path.
+  defp normalized_destination({_format, nil}), do: nil
+  defp normalized_destination({_format, path}), do: Path.expand(path)
 
   @spec colliding_reporters!([{atom(), String.t() | nil}], String.t() | nil) :: no_return()
   defp colliding_reporters!(clashing, destination) do

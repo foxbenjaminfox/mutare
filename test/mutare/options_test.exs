@@ -835,6 +835,23 @@ defmodule Mutare.OptionsTest do
                    fn -> Options.new(reporters: [{:json, "out.txt"}, {:sarif, "out.txt"}]) end
     end
 
+    test "rejects two reporters whose paths differ only in spelling" do
+      # `File.write!` resolves both to one file, so the raw strings differing is no
+      # protection — the later report would silently overwrite the earlier one.
+      assert_raise ArgumentError,
+                   ~r/"out.txt" is claimed by json and sarif — only the last one written/,
+                   fn -> Options.new(reporters: [{:json, "out.txt"}, {:sarif, "./out.txt"}]) end
+
+      assert_raise ArgumentError, ~r/claimed by json and sarif/, fn ->
+        Options.new(reporters: [{:json, "out.txt"}, {:sarif, "nested/../out.txt"}])
+      end
+    end
+
+    test "allows file reporters that resolve to distinct paths" do
+      reporters = [{:json, "out.txt"}, {:sarif, "nested/out.txt"}]
+      assert Options.new(reporters: reporters).reporters == reporters
+    end
+
     test "allows one stdout reporter alongside distinct file reporters" do
       reporters = [{:json, nil}, {:sarif, "out.sarif"}, {:html, "out.html"}]
       assert Options.new(reporters: reporters).reporters == reporters
