@@ -289,7 +289,7 @@ defmodule Mutare.IgnoreTest do
       refute Ignore.directive_for(directives, 1, :relational)
     end
 
-    test "the filter also matches non-family mutator names (clause_drop, custom)" do
+    test "the filter matches a transform-managed family name (clause_drop)" do
       directives = Ignore.directives("x = 1 # mutare:ignore[clause_drop]")
       assert Ignore.directive_for(directives, 1, :clause_drop)
     end
@@ -1219,13 +1219,15 @@ defmodule Mutare.IgnoreTest do
     @specs Mutare.Mutators.resolve([:builtins])
     @vocab Mutare.Mutators.vocabulary(@specs)
 
-    test "opted-in families expose labels; others and clause_drop are :none" do
+    test "opted-in families expose labels; the rest are :none" do
       assert @vocab["relational"] == MapSet.new(~w(> >= < <= == != === !==))
       assert @vocab["return_value"] == MapSet.new(~w(empty sentinel))
       assert @vocab["integer"] == MapSet.new(~w(zero succ pred))
       assert @vocab["boolean"] == MapSet.new(~w(negate))
       assert @vocab["collection"] == :none
+      # Transform-managed families come from the registry like any other — no special-casing.
       assert @vocab["clause_drop"] == :none
+      assert @vocab["guard_drop"] == :none
     end
 
     test "every declared built-in label is wire-safe (no [],() , whitespace, or quotes)" do

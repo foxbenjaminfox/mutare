@@ -83,7 +83,7 @@ def passthrough(x), do: x + 0
 def parity(n), do: rem(n, 2) == 0  # mutare:ignore[arithmetic] only `rem` will be skipped
 ```
 
-A filter accepts any built-in family name (the full list is [`Mutare.Mutators.families/0`](https://hexdocs.pm/mutare/Mutare.Mutators.html#families/0) — `arithmetic`, `relational`, `integer`, `collection`, …), plus `clause_drop` and any custom mutator's `name/0`. Filtering fails safe: an unknown name (a typo) or an empty `[]` matches nothing, so the mutant runs rather than being silently hidden.
+A filter accepts any built-in family name (the full list is [`Mutare.Mutators.families/0`](https://hexdocs.pm/mutare/Mutare.Mutators.html#families/0) — `arithmetic`, `relational`, `integer`, `collection`, …) or any custom mutator's `name/0`. Filtering fails safe: an unknown name (a typo) or an empty `[]` matches nothing, so the mutant runs rather than being silently hidden.
 
 Qualify a family with `:label` to suppress just one *kind* of its mutants. Here `x < 0` and `x <= 0` are equivalent — the boundary `0` returns `0` down either branch — so that one mutant can never be killed; suppress it while every other relational mutant (`>`, `>=`, `==`, …) keeps running:
 

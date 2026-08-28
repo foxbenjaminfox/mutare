@@ -7,7 +7,7 @@ defmodule Mutare.TestTest do
 
   alias Mutare.MutationSite
   alias Mutare.Mutator.Spec
-  alias Mutare.Mutators.{Arithmetic, CollectionArity, Relational, ReturnValue}
+  alias Mutare.Mutators.{Arithmetic, ClauseDrop, CollectionArity, Relational, ReturnValue}
 
   doctest Mutare.Test
 
@@ -50,12 +50,23 @@ defmodule Mutare.TestTest do
       assert Enum.any?(diffs, &match?({:return_value, "a + b", _}, &1))
     end
 
-    test "a multi-clause function surfaces the unregistered clause_drop family" do
-      diffs = diffs("def f(0), do: :zero\ndef f(n), do: n + 1", [Arithmetic])
+    test "a multi-clause function surfaces the clause_drop family" do
+      source = "def f(0), do: :zero\ndef f(n), do: n + 1"
+      diffs = diffs(source, [Arithmetic, ClauseDrop])
 
       assert {:clause_drop, "def f(0), do: :zero", ""} in diffs
       assert {:clause_drop, "def f(n), do: n + 1", ""} in diffs
       assert {:arithmetic, "n + 1", "n - 1"} in diffs
+    end
+
+    test "clause_drop is a registered family: narrowing the set switches it off" do
+      # It is transform-managed (no producing callback), so it is discovered by module identity
+      # rather than invoked — the gate is easy to lose. Pin that asking for one family really
+      # does exclude it.
+      source = "def f(0), do: :zero\ndef f(n), do: n + 1"
+
+      assert diffs(source, [Arithmetic]) == [{:arithmetic, "n + 1", "n - 1"}]
+      assert Enum.all?(diffs(source, [ClauseDrop]), &match?({:clause_drop, _, ""}, &1))
     end
 
     test "resolution runs: an imported call is matched like a qualified one" do

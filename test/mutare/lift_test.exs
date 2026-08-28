@@ -62,7 +62,11 @@ defmodule Mutare.LiftTest do
   # (guard swaps, clause drops, in-place bodies), so the default literal mutator —
   # which would also lift `0`/`1` constants in the guards and bodies — is excluded
   # to keep the asserted site counts about lifting, not constants.
-  @probe [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
+  # ClauseDrop is included so the narrowed probe still lifts multi-clause groups: clause drops are
+  # a lifted-only mutation, and this suite asserts on both the dispatcher structure and the drop
+  # sites themselves. It is a registered family like any other, so a probe that wants drops must
+  # ask for them.
+  @probe [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational, Mutare.Mutators.ClauseDrop]
 
   setup_all do
     {metamutant, sites, _next_id} =

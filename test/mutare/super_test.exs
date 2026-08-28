@@ -58,14 +58,15 @@ defmodule Mutare.SuperTest do
       # Pinned mutator set: this test asserts the *exact* super-forwarding count, and
       # OperandSwap would mutate the `<>` operators wrapping `super(name)`, duplicating
       # it into selector branches (correctly forwarded, but perturbing the raw count).
-      # clause_drop (structural, always on) still lifts the group and forwards super.
+      # clause_drop is what lifts the group here (the guard holds no relational operator), so it
+      # must be in the pinned set; it forwards super like any other lifted mutant.
       {meta, _sites, _mod} =
         transform(
           """
             def greet(name) when is_binary(name), do: "[" <> super(name) <> "]"
             def greet(_), do: super("anon")
           """,
-          [Mutare.Mutators.Relational]
+          [Mutare.Mutators.Relational, Mutare.Mutators.ClauseDrop]
         )
 
       # The dispatcher (the overriding function) binds the forwarding closure...

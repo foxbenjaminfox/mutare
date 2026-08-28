@@ -65,6 +65,7 @@ defmodule Mutare.Mutators do
     pattern_wildcard: Mutare.Mutators.PatternWildcard,
     rescue_type: Mutare.Mutators.RescueType,
     guard_drop: Mutare.Mutators.GuardDrop,
+    clause_drop: Mutare.Mutators.ClauseDrop,
     genserver: Mutare.Mutators.GenServer
   ]
 
@@ -73,10 +74,15 @@ defmodule Mutare.Mutators do
   # them and resolution accepts them via this list rather than the producing-callback check.
   # `GuardDrop` because its "inert guard" rule is relative to the whole enabled set (only the
   # transform sees that); `RescueType` because its clause-restructuring doesn't fit a
-  # `node -> [mutation]` callback. The transform discovers each by module identity
+  # `node -> [mutation]` callback; `ClauseDrop` because dropping a whole clause is decided over a
+  # clause group, not at any single node. The transform discovers each by module identity
   # (`Spec.find/2`). Must be a subset of the registry's modules, and disjoint from the
   # `implemented_by?` mutators — both pinned by `mutators_test`.
-  @transform_managed [Mutare.Mutators.GuardDrop, Mutare.Mutators.RescueType]
+  @transform_managed [
+    Mutare.Mutators.GuardDrop,
+    Mutare.Mutators.RescueType,
+    Mutare.Mutators.ClauseDrop
+  ]
 
   @doc "The ordered `family => module` registry of every built-in mutator."
   @spec registry() :: [{atom(), module()}]
@@ -121,7 +127,7 @@ defmodule Mutare.Mutators do
   # The variant vocabulary for `active_specs`: a map `family_name => :none | MapSet(labels)`, the
   # labels a `# mutare:ignore[family:label]` qualifier may use. Covers every built-in family (from
   # the registry, regardless of whether it is active this run — a directive may legitimately name a
-  # `--mutators`-disabled family), the unregistered `clause_drop`, and each active custom/renamed
+  # `--mutators`-disabled family) and each active custom/renamed
   # spec (keyed by its downcased recorded `name`; an `:as`-rename that collides with a built-in
   # overrides it). A family that declares no `variants/0` maps to `:none` (bare `[family]` only).
   # Raises `Mutare.Ignore.SpecError` for a wire-unsafe declared label (`:wire_unsafe_label`) or a
@@ -148,7 +154,7 @@ defmodule Mutare.Mutators do
           into: %{},
           do: {check_family!(module, Mutator.normalize_label(name)), variants_of(module)}
 
-    builtins |> Map.put("clause_drop", :none) |> Map.merge(customs)
+    Map.merge(builtins, customs)
   end
 
   @doc false

@@ -31,7 +31,7 @@ defmodule Mutare.Ignore do
       # mutare:ignore[relational:>]                suppress only the `i > j` swap
       # mutare:ignore[integer] off-by-one is fine  a filter and a reason together
 
-  Filter entries are mutator family names from `Mutare.Mutators.families/0`, `clause_drop`, or a custom mutator's `c:Mutare.Mutator.name/0`. Without a filter, the directive suppresses every mutant on the line.
+  Filter entries are mutator family names from `Mutare.Mutators.families/0` or a custom mutator's `c:Mutare.Mutator.name/0`. Without a filter, the directive suppresses every mutant on the line.
 
   ## Scoped directives: regions and whole files
 

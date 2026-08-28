@@ -81,7 +81,7 @@ defmodule Mutare.Transform.FunctionPlan do
     {tagged_clauses, lifted, inert_guards} = build_lifted(clauses, mutators)
     pattern_structures = build_pattern_structures(clauses, mutators)
     guard_drops = build_guard_drops(clauses, inert_guards, mutators)
-    drops = build_drops(clauses)
+    drops = build_drops(clauses, mutators)
 
     if (lifted != [] or pattern_structures != [] or guard_drops != [] or drops != []) and
          liftable?(name) do
@@ -446,6 +446,11 @@ defmodule Mutare.Transform.FunctionPlan do
   # Drop one clause of a multi-clause function. Inputs the dropped clause handled
   # now fall to a later clause (or raise FunctionClauseError) — killed if tested.
   #
+  # Gated on the `clause_drop` family being enabled. Like `GuardDrop`, `ClauseDrop` is
+  # transform-managed: it has no producing callback, so it is discovered by module identity
+  # (`Spec.find/2`) rather than invoked, and narrowing `:mutators` switches it off like any
+  # other family.
+  #
   # Only *body-bearing* clauses are droppable, and at least two must remain in play:
   # a **bodiless head** (`def f(a, b)` with no `do` — a header declaration, e.g. for
   # default args or docs) is not a clause to drop. Dropping it is a no-op, and
@@ -453,18 +458,18 @@ defmodule Mutare.Transform.FunctionPlan do
   # no body → "implementation not provided" (a poison). The `clause_index` stays the
   # position in the *full* clause list (what `drop_clause/2` deletes by), so the
   # header is simply never offered as a drop and never left as the lone clause.
-  defp build_drops(clauses) do
+  defp build_drops(clauses, mutators) do
     droppable =
       for {clause, index} <- Enum.with_index(clauses),
           ClauseAST.body_bearing?(clause),
           do: {clause, index}
 
-    if length(droppable) < 2 do
-      []
-    else
+    if Spec.find(mutators, Mutare.Mutators.ClauseDrop) && length(droppable) >= 2 do
       Enum.map(droppable, fn {clause, index} ->
         %Candidate.Drop{clause_index: index, original: clause, range: NodeRange.get(clause)}
       end)
+    else
+      []
     end
   end
 

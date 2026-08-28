@@ -373,7 +373,7 @@ most structural) is bare-only, and the call/structural half-broken tokens simply
 The big win is **static, strict validation where the mistake is certain** (composing with the
 fail-loud grammar decision): because the vocabulary is finite and declared,
 `Mutare.Mutators.vocabulary/1` harvests `family → :none | MapSet(labels)` (full registry +
-`clause_drop` + active custom/renamed specs, keyed case-folded; an `:as`-renamed custom overrides
+active custom/renamed specs, keyed case-folded; an `:as`-renamed custom overrides
 the shadowed built-in — validate names a known family's labels against *all* built-ins, not the
 `--mutators`-active subset, so a directive on a *disabled built-in* isn't a false typo), and
 `Ignore.validate!/3` rejects a **qualified** `[family:label]` whose family **is in the vocabulary**
@@ -5401,9 +5401,9 @@ below for the export-discovery generalization. The module still implements the b
 `:return_value`, `mutate/1` is `:skip` — purely so it sits in the `Mutare.Mutators`
 registry and inherits everything that follows from membership: on-by-default,
 named in reports, selectable/validatable via `:mutators`, filterable by
-`# mutare:ignore[return_value]`. (Contrast `clause_drop`, the *other* structural
-built-in, which is always-on and not in the registry — return-value is registered
-because it is high-volume and users will reasonably want to toggle it.)
+`# mutare:ignore[return_value]`. `clause_drop`, the *other* structural built-in,
+is registered on the same terms — see "clause_drop was always-on and unregistered"
+below for why it stopped being the exception.
 
 **Delivery reuses the in-place selector.** A tail is a body position, so the
 constant goes behind the same tail-position `case` as an operator swap — no new
@@ -8304,3 +8304,34 @@ recorded site no longer depends on it. `Mutare.Test`'s rendering and any custom 
 `AST.to_string/1` pick up the same behaviour for free. Exercised in `site_test.exs` ("comment
 metadata in the rendered code") — the clause-drop case is what kills the `:trailing_comments`
 deletion, which the pre-hoist helper had documented as an equivalent survivor.
+
+### `clause_drop` was always-on and unregistered `[fixed]`
+`clause_drop` shipped as the one structural built-in outside the `Mutare.Mutators` `@registry`,
+generated unconditionally by `FunctionPlan.build_drops/1`. The original reasoning (recorded under
+"Return-value mutators") was that `return_value` earned registry membership because it is
+high-volume and users would want to toggle it, and `clause_drop` did not.
+
+That reasoning didn't survive contact with the rest of the surface. Being unregistered meant:
+
+  * `mutators: [:arithmetic]` still emitted clause drops — silently contradicting the documented
+    "without `:builtins`, the list replaces the defaults" contract, with no way to opt out.
+  * The family was absent from `mix mutare --list-mutators`, yet appeared in reports as
+    `clause_drop` and was a legal `# mutare:ignore[clause_drop]` token — undiscoverable but not
+    unused. Mutare's own `report.ex` carries four such directives, which is the evidence that
+    users *do* want the toggle the original note assumed they wouldn't.
+  * `Mutators.vocabulary/1` needed a `Map.put("clause_drop", :none)` special case to keep the
+    ignore filter working, and the property suite needed `families() ++ [:clause_drop]`.
+
+Registering it removed all three. There was never a structural obstacle: `GuardDrop` is
+transform-managed too — no producing callback, discovered by module identity via `Spec.find/2` —
+and had been registered and gated three lines above `build_drops` the whole time. `ClauseDrop` now
+follows that exact shape, so `@transform_managed` holds all three of `GuardDrop` / `RescueType` /
+`ClauseDrop`.
+
+**The consequence worth knowing:** a clause drop is the *only* mutation a plain unguarded
+multi-clause group admits, and mutations are what make a group lift. So disabling `clause_drop`
+also stops such groups being lifted at all. Three tests were pinning lifted-path behaviour
+(`super` forwarding through the dispatcher closure, return mutants landing in a lifted group's
+original clauses, `:skip_lifting`) while narrowing `:mutators` to a set that no longer lifts —
+they now name `ClauseDrop` explicitly as the thing that lifts the group. A narrowed run that wants
+the lifted path must ask for a family that produces a lifted mutation.

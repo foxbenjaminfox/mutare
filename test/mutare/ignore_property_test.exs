@@ -24,8 +24,9 @@ defmodule Mutare.IgnorePropertyTest do
   # The variant vocabulary for the built-in set — the same map `Mutare.Transform` validates against.
   @vocab Mutare.Mutators.vocabulary(Mutare.Mutators.resolve([:builtins]))
 
-  # Every filter-token name space: the built-in family atoms plus the unregistered `clause_drop`.
-  @families Mutare.Mutators.families() ++ [:clause_drop]
+  # Every filter-token name space: the built-in family atoms (which include the
+  # transform-managed `clause_drop` / `guard_drop` / `rescue_type`).
+  @families Mutare.Mutators.families()
 
   # A wire-safe, colon-free filter-token alphabet: lowercase letters, digits, and the operator
   # symbols real labels use (`>`, `>=`, `!==`, `&&&`, `++`, …). Excludes every char the grammar

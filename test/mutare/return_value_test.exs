@@ -183,8 +183,15 @@ defmodule Mutare.ReturnValueTest do
       end
       """
 
+      # ClauseDrop is what lifts this group: with return-value alone there is no guard swap,
+      # head-literal swap or drop to lift for, so the clauses would stay in place and the test
+      # would not exercise the lifted path at all.
       {meta, sites, _} =
-        with_log(fn -> Mutare.Transform.transform_string_with_sites(source, mutators: @only) end)
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source,
+            mutators: @only ++ [Mutare.Mutators.ClauseDrop]
+          )
+        end)
         |> elem(0)
 
       returns = Enum.filter(sites, &(&1.mutator == :return_value))
