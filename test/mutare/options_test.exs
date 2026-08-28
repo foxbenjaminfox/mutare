@@ -784,15 +784,53 @@ defmodule Mutare.OptionsTest do
     end
 
     test "accepts a list of {format, path | nil} tuples" do
-      reporters = [{:human, nil}, {:json, "out.json"}, {:sarif, nil}]
+      reporters = [{:human, nil}, {:json, "out.json"}, {:sarif, "out.sarif"}]
       assert Options.new(reporters: reporters).reporters == reporters
     end
 
-    test "normalizes bare format atoms to stdout entries" do
-      assert Options.new(reporters: [:human, :json]).reporters == [
+    test "normalizes a bare format atom to a stdout entry" do
+      assert Options.new(reporters: [:json]).reporters == [{:json, nil}]
+    end
+
+    test "normalizes a bare format atom alongside file entries" do
+      assert Options.new(reporters: [:human, {:json, "out.json"}]).reporters == [
                {:human, nil},
-               {:json, nil}
+               {:json, "out.json"}
              ]
+    end
+
+    test "rejects a second reporter on stdout" do
+      # Two whole documents concatenated on one stream is neither format — the
+      # case behind `--report json --report sarif`.
+      assert_raise ArgumentError,
+                   ~r/may name each destination only once, but stdout is claimed by json and sarif/,
+                   fn -> Options.new(reporters: [{:json, nil}, {:sarif, nil}]) end
+    end
+
+    test "rejects the human report sharing stdout with a machine format" do
+      assert_raise ArgumentError, ~r/stdout is claimed by human and json/, fn ->
+        Options.new(reporters: [:human, :json])
+      end
+    end
+
+    test "rejects two reporters writing to the same path" do
+      assert_raise ArgumentError,
+                   ~r/"out.txt" is claimed by json and sarif — only the last one written/,
+                   fn -> Options.new(reporters: [{:json, "out.txt"}, {:sarif, "out.txt"}]) end
+    end
+
+    test "allows one stdout reporter alongside distinct file reporters" do
+      reporters = [{:json, nil}, {:sarif, "out.sarif"}, {:html, "out.html"}]
+      assert Options.new(reporters: reporters).reporters == reporters
+    end
+
+    test "collision errors name every colliding entry and the remediation" do
+      assert_raise ArgumentError,
+                   ":reporters may name each destination only once, but stdout is claimed by " <>
+                     "human and json and sarif — the concatenated output is valid in none of " <>
+                     "them. Give all but one an output path (e.g. `--report json:mutare.json`), " <>
+                     "got: [human: nil, json: nil, sarif: nil]",
+                   fn -> Options.new(reporters: [:human, :json, :sarif]) end
     end
 
     test "rejects an unknown format" do

@@ -262,6 +262,8 @@ defmodule Mix.Tasks.Mutare do
 
   `--report` takes `FORMAT[:PATH]`, where `FORMAT` is one of `human` (the default console report), `json` (the mutation-testing-elements / Stryker report schema), `html` (that JSON embedded in the interactive report viewer), or `sarif` (survivors as findings for GitHub code scanning).
 
+  Each destination takes one report: at most one may omit `:PATH` (two documents on stdout would be valid in neither format), and no two may name the same path (only the last written would survive). Either collision is a startup error naming the clashing formats.
+
   ## Configuration file (`.mutare.exs`)
 
   Configuration may also live in `.mutare.exs` (a keyword list); a CLI flag overrides the matching key. Every option is optional — the block below lists all the file-settable keys with their defaults:

@@ -110,8 +110,11 @@ defmodule Mutare.Config do
   # `.mutare.exs` `reporters:` list. The flag is repeatable (`:keep`); an entry
   # without a `:PATH` writes to stdout. With only file outputs, the human report still
   # prints to the console; if any machine format takes stdout the human report is
-  # dropped (they would collide). The valid-format check is left to `Mutare.Options`,
-  # so a typo'd `--report jsoon:out.json` gets the descriptive error there.
+  # dropped (they would collide). Every *check* is left to `Mutare.Options` — the
+  # valid-format one, so a typo'd `--report jsoon:out.json` gets the descriptive error
+  # there, and the one-report-per-destination one, so `--report json --report sarif`
+  # (two documents concatenated on one stream) is rejected by the same validator that
+  # guards a `.mutare.exs` `reporters:` list.
   defp resolve_reporters(config, flags) do
     case Keyword.get_values(flags, :report) do
       [] ->

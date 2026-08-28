@@ -186,7 +186,7 @@ mix mutare --report json:mutare.json --report sarif:mutare.sarif
 - `html` — the same JSON embedded in a single interactive HTML report.
 - `sarif` — surviving mutants as SARIF 2.1.0 findings for GitHub code scanning.
 
-When every machine format is written to a file, the human report still prints to the console; when any report takes stdout (no `:PATH`), the human report is suppressed to avoid a collision.
+When every machine format is written to a file, the human report still prints to the console; when any report takes stdout (no `:PATH`), the human report is suppressed to avoid a collision. Only one report may take stdout, and no two may share a path — a second document on the same destination would corrupt or overwrite the first, so `--report json --report sarif` is rejected rather than run.
 
 ### Skipping macro arguments
 

@@ -379,9 +379,16 @@ defmodule Mutare.ConfigTest do
       assert merged[:reporters] == [{:json, "out.json"}, {:sarif, nil}]
     end
 
-    test "repeated stdout --report flags send every machine format to stdout" do
+    test "repeated stdout --report flags pass through for Options to reject" do
+      # Two formats on stdout would concatenate into a stream that is neither. `Config`
+      # stays a pure parser and lets the one validator in `Options.Registry` say so —
+      # asserted end-to-end in `Mutare.OptionsTest`.
       assert Config.merge([], report: "json", report: "sarif")[:reporters] ==
                [{:json, nil}, {:sarif, nil}]
+
+      assert_raise ArgumentError, ~r/stdout is claimed by json and sarif/, fn ->
+        Mutare.Options.new(Config.merge([], report: "json", report: "sarif"))
+      end
     end
 
     test "without --report, .mutare.exs reporters pass through for Options to normalize" do

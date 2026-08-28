@@ -429,7 +429,9 @@ defmodule Mutare.Options.Registry do
   # always stores the tuple form. The valid format set is `Mutare.Options.formats/0`
   # (read at runtime, so the formats can stay homed in `Mutare.Options`).
   defp validate_reporters!(reporters) when is_list(reporters) do
-    Enum.map(reporters, &validate_reporter_entry!/1)
+    reporters
+    |> Enum.map(&validate_reporter_entry!/1)
+    |> validate_distinct_destinations!()
   end
 
   defp validate_reporters!(other) do
@@ -454,6 +456,43 @@ defmodule Mutare.Options.Registry do
         bad_reporter_entry!(entry, formats)
     end
   end
+
+  # Every reporter renders a *whole document*, so two of them sharing a destination is
+  # never what was meant: two stdout reports concatenate into a stream that is neither
+  # format (`--report json --report sarif` is a JSON document glued to a SARIF one), and
+  # two reports on one path silently leave only whichever `Mutare.CLI.Outcome` wrote last.
+  # Both are rejected here rather than in `Mutare.Config` so the `.mutare.exs` `reporters:`
+  # list and the CLI flag get the same check; the remediation names `--report FORMAT:PATH`
+  # because giving the extra formats a file is the fix on either side.
+  defp validate_distinct_destinations!(reporters) do
+    destinations = Enum.map(reporters, fn {_format, path} -> path end)
+
+    Enum.each(Enum.uniq(destinations), fn destination ->
+      case Enum.filter(reporters, fn {_format, path} -> path == destination end) do
+        [_only_one] -> :ok
+        clashing -> colliding_reporters!(clashing, destination)
+      end
+    end)
+
+    reporters
+  end
+
+  @spec colliding_reporters!([{atom(), String.t() | nil}], String.t() | nil) :: no_return()
+  defp colliding_reporters!(clashing, destination) do
+    formats = Enum.map_join(clashing, " and ", fn {format, _path} -> to_string(format) end)
+
+    raise ArgumentError,
+          ":reporters may name each destination only once, but " <>
+            "#{describe_destination(destination)} is claimed by #{formats} — " <>
+            "#{collision_consequence(destination)}. Give all but one an output path " <>
+            "(e.g. `--report json:mutare.json`), got: #{inspect(clashing)}"
+  end
+
+  defp describe_destination(nil), do: "stdout"
+  defp describe_destination(path), do: inspect(path)
+
+  defp collision_consequence(nil), do: "the concatenated output is valid in none of them"
+  defp collision_consequence(_path), do: "only the last one written would survive"
 
   @spec bad_reporter_entry!(term(), [atom()]) :: no_return()
   defp bad_reporter_entry!(entry, formats) do
