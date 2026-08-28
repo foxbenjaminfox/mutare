@@ -82,8 +82,9 @@ defmodule Mutare.Coverage do
   Read and decode the probe's coverage dump at `path`.
 
   Returns `{:error, _}` on anything unusable (missing file, truncated/garbled
-  payload, unexpected shape) — the caller degrades such uncertainty to running the
-  whole suite, never to a false `:no_coverage`.
+  payload, unexpected shape — including a well-formed outer map whose *nested* keys,
+  ids or collections are the wrong type) — the caller degrades such uncertainty to
+  running the whole suite, never to a false `:no_coverage`. It raises for no input.
   """
   @spec read_dump(Path.t()) :: {:ok, t()} | {:error, term()}
   def read_dump(path) do
@@ -118,21 +119,44 @@ defmodule Mutare.Coverage do
   end
 
   # The decoded payload must be a map carrying the keys and field types the rest of the module
-  # assumes (the id lists and the per-file map). A valid-but-wrong-shaped term (e.g. an atom, or
-  # a map missing `:aggregate`/`:by_file`) routes to `:bad_shape` → the caller's run-all fallback,
-  # never a false `:no_coverage` and never an unhandled `{:ok, term}` crashing the `with`.
+  # assumes. A valid-but-wrong-shaped term (e.g. an atom, or a map missing `:aggregate`/`:by_file`)
+  # routes to `:bad_shape` → the caller's run-all fallback, never a false `:no_coverage` and never
+  # an unhandled `{:ok, term}` crashing the `with`.
+  #
+  # The check goes all the way *into* the collections, not just their outer type, because the
+  # elements are what the rest of the pipeline consumes: `MapSet.new/1` raises
+  # `Protocol.UndefinedError` on a non-enumerable `by_file` value, and a non-binary `by_file` key or
+  # `by_test` name reaches `mix test` argv in `Mutare.Runner.CoverageProbe` (`"test:" <> name`
+  # raises on a non-binary). Either would escape `read_dump/1` as an exception, contradicting the
+  # documented `{:error, _}` contract. The traversal is O(dump) and runs once, right after a full
+  # instrumented suite — free next to what it guards.
   defp valid_shape(%{aggregate: aggregate, by_file: by_file} = decoded) do
-    unlabeled = Map.get(decoded, :unlabeled, [])
-    by_test = Map.get(decoded, :by_test, %{})
-    wholefile = Map.get(decoded, :wholefile, [])
-
-    if is_list(aggregate) and is_map(by_file) and is_list(unlabeled) and is_map(by_test) and
-         is_list(wholefile),
+    if ids?(aggregate) and
+         ids?(Map.get(decoded, :unlabeled, [])) and
+         ids?(Map.get(decoded, :wholefile, [])) and
+         map_of?(by_file, &is_binary/1, &ids?/1) and
+         map_of?(Map.get(decoded, :by_test, %{}), &id?/1, &names?/1),
        do: :ok,
        else: :bad_shape
   end
 
   defp valid_shape(_other), do: :bad_shape
+
+  # Mutant ids are assigned from 1 upward by `Mutare.Schema`'s prefix-sum, so `pos_integer()` is
+  # the real contract, matching `t:t/0`.
+  defp id?(id), do: is_integer(id) and id > 0
+
+  defp ids?(list), do: is_list(list) and Enum.all?(list, &id?/1)
+
+  defp names?(list), do: is_list(list) and Enum.all?(list, &is_binary/1)
+
+  # `Map.to_list/1` rather than enumerating `map` directly: a struct is a map, and enumerating one
+  # that implements `Enumerable` (a `MapSet`, say) yields bare elements the `{k, v}` clause would
+  # crash on. Expanding the struct to its fields instead lets it fail the key check like any other
+  # wrong shape.
+  defp map_of?(map, key?, value?) do
+    is_map(map) and Enum.all?(Map.to_list(map), fn {k, v} -> key?.(k) and value?.(v) end)
+  end
 
   # `:erlang.binary_to_term` raises on a truncated/garbage payload — turn that
   # into an `{:error, _}` like every other unusable-dump case.

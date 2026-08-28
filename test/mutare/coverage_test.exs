@@ -119,6 +119,38 @@ defmodule Mutare.CoverageTest do
     end
 
     @tag :tmp_dir
+    test "errors (for run-all fallback) on a nested value of the wrong type", %{tmp_dir: dir} do
+      # The outer map is well-formed, so only a check that descends *into* the collections
+      # catches these. Un-checked, the first two raised `Protocol.UndefinedError` out of
+      # `read_dump/1` (`MapSet.new(:not_a_list)`) and the binary cases fed non-strings to
+      # `mix test` argv — either way an exception instead of the documented run-all fallback.
+      for {label, payload} <- [
+            {"by_file-value-not-a-list",
+             %{aggregate: [1], by_file: %{"test/a_test.exs" => :not_a_list}}},
+            {"by_test-value-not-a-list", %{aggregate: [1], by_file: %{}, by_test: %{1 => :nope}}},
+            {"by_file-key-not-a-string", %{aggregate: [1], by_file: %{:atom_key => [1]}}},
+            {"by_test-name-not-a-string",
+             %{aggregate: [1], by_file: %{}, by_test: %{1 => [:atom_name]}}},
+            {"by_test-key-not-an-id", %{aggregate: [1], by_file: %{}, by_test: %{"1" => ["t"]}}},
+            {"aggregate-element-not-an-id", %{aggregate: [:a, {:b}], by_file: %{}}},
+            {"id-not-positive", %{aggregate: [0], by_file: %{}}},
+            {"unlabeled-element-not-an-id", %{aggregate: [1], by_file: %{}, unlabeled: ["x"]}},
+            {"wholefile-element-not-an-id", %{aggregate: [1], by_file: %{}, wholefile: [nil]}},
+            {"by_file-nested-id-not-an-id",
+             %{aggregate: [1], by_file: %{"test/a_test.exs" => [1, :two]}}},
+            {"by_file-is-a-struct", %{aggregate: [1], by_file: MapSet.new([1])}}
+          ] do
+        path = Path.join(dir, "nested_#{label}.terms")
+        File.write!(path, :erlang.term_to_binary(payload))
+
+        assert capture_log(fn ->
+                 assert {:error, :bad_shape} = Coverage.read_dump(path),
+                        "expected #{label} to degrade to :bad_shape"
+               end) =~ "unexpected shape"
+      end
+    end
+
+    @tag :tmp_dir
     test "errors (for run-all fallback) on a missing dump", %{tmp_dir: dir} do
       assert capture_log(fn ->
                assert {:error, _} = Coverage.read_dump(Path.join(dir, "absent.terms"))
