@@ -264,6 +264,33 @@ defmodule Mutare.SandboxTest do
     refute File.exists?(Path.join(sandbox, "test/test_helper.exs"))
   end
 
+  test "steps the generated support app aside from a real app at its name" do
+    %{umbrella: umbrella, sandbox: sandbox} =
+      Umbrella.build(:support_name_taken, %{
+        core: %{files: %{"lib/core.ex" => "defmodule Core do\n  def f, do: 1\nend\n"}},
+        mutare_support: %{
+          files: %{"lib/support.ex" => "defmodule Support do\n  def h, do: 3\nend\n"}
+        }
+      })
+
+    project = Project.resolve(umbrella)
+    schema = Schema.build(umbrella, project: project)
+
+    assert Sandbox.prepare(umbrella, schema, sandbox: sandbox, project: project) == sandbox
+
+    # The real app is mutated and bootstrapped like any other…
+    assert Map.has_key?(schema.metamutants, "apps/mutare_support/lib/support.ex")
+
+    assert File.read!(Path.join(sandbox, "apps/mutare_support/test/test_helper.exs")) =~
+             "injected by Mutare: select the active mutant"
+
+    refute File.exists?(Path.join(sandbox, "apps/mutare_support/lib/mutare_cov.ex"))
+
+    # …and the generated coverage app lands at the next free name.
+    assert File.regular?(Path.join(sandbox, "apps/mutare_support_1/mix.exs"))
+    assert File.regular?(Path.join(sandbox, "apps/mutare_support_1/lib/mutare_cov.ex"))
+  end
+
   @selector_comment "select the active mutant from the environment"
   @owner_watch_comment "halt when the spawning Mutare process dies"
 

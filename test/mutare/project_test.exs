@@ -61,6 +61,34 @@ defmodule Mutare.ProjectTest do
       assert app_names(resolved.mutate_scope) == [:core, :web]
     end
 
+    test "a real app that merely starts like the generated support app is kept" do
+      %{umbrella: umbrella} =
+        Umbrella.build(:prefixed, %{
+          core: %{files: %{"lib/core.ex" => "defmodule Core do\nend\n"}},
+          mutare_support_api: %{
+            files: %{"lib/api.ex" => "defmodule Api do\nend\n"}
+          }
+        })
+
+      resolved = Project.resolve(umbrella)
+
+      assert app_names(resolved.apps) == [:core, :mutare_support_api]
+      assert app_names(resolved.mutate_scope) == [:core, :mutare_support_api]
+    end
+
+    test "a real app named exactly like the generated support app is kept too" do
+      %{umbrella: umbrella} =
+        Umbrella.build(:exact, %{
+          core: %{files: %{"lib/core.ex" => "defmodule Core do\nend\n"}},
+          mutare_support: %{files: %{"lib/support.ex" => "defmodule Support do\nend\n"}}
+        })
+
+      resolved = Project.resolve(umbrella)
+
+      assert app_names(resolved.apps) == [:core, :mutare_support]
+      assert app_names(resolved.mutate_scope) == [:core, :mutare_support]
+    end
+
     test "an unknown --app raises" do
       %{umbrella: umbrella} = demo_umbrella()
 

@@ -340,12 +340,14 @@ defmodule Mutare.Sandbox do
   defp support_app_rel(root), do: Path.join("apps", support_app_name(root))
 
   # The umbrella coverage helper lives in a generated child app under `apps/`, named
-  # to avoid colliding with a real app (`Mutare.Project` reserves the `mutare_support`
-  # prefix so it is never mutated). Probed against the **project root** as the single
-  # source of truth for both modes: in kept mode the name must stay stable across runs
-  # (the sandbox accumulates the previous run's app, so probing *it* would drift the
-  # name and defeat the `_build` cache), and in fresh mode the sandbox is a copy of
-  # root, so the two agree.
+  # to step aside from any real app at that name (`Mutare.Project` discovers apps from
+  # the root, where this app never exists, so it carries no copy of the family: a real
+  # `apps/mutare_support` is just a real app, and the helper lands at
+  # `mutare_support_1`). Probed against the **project root** as the single source of
+  # truth for both modes: in kept mode the name must stay stable across runs (the
+  # sandbox accumulates the previous run's app, so probing *it* would drift the name
+  # and defeat the `_build` cache), and in fresh mode the sandbox is a copy of root, so
+  # the two agree.
   defp support_app_name(root) do
     first_free(
       "mutare_support",

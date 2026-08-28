@@ -36,10 +36,6 @@ defmodule Mutare.Project do
 
   defstruct copy_root: ".", umbrella?: false, mutate_scope: [], apps: []
 
-  # The generated coverage-support app (see `Mutare.Sandbox`) lives under `apps/`
-  # in an umbrella but is never itself a mutation target.
-  @reserved_prefix "mutare_support"
-
   @doc """
   Resolve `target` (+ scope flags) into a `t:t/0`.
 
@@ -150,6 +146,11 @@ defmodule Mutare.Project do
     }
   end
 
+  # Every `apps/*` carrying a `mix.exs` is an app — deliberately including one that
+  # shares the name `Mutare.Sandbox` generates for its coverage-support app. This reads
+  # the *target* root, where that generated app never exists (it lives only in the
+  # sandbox copy), and `Sandbox` steps its name aside from whatever is here; a real
+  # `apps/mutare_support` is simply a real app, mutated and bootstrapped like the rest.
   defp discover_apps(umbrella_root) do
     apps_dir = Path.join(umbrella_root, "apps")
 
@@ -158,7 +159,6 @@ defmodule Mutare.Project do
         entries
         |> Enum.sort()
         |> Enum.filter(&app_dir?(Path.join(apps_dir, &1)))
-        |> Enum.reject(&reserved?/1)
         |> Enum.map(&app_entry/1)
 
       _ ->
@@ -195,7 +195,6 @@ defmodule Mutare.Project do
   defp app_entry(name), do: %{app: String.to_atom(name), dir: Path.join("apps", name)}
   defp app_name(%{app: app}), do: to_string(app)
   defp app_dir?(path), do: File.regular?(Path.join(path, "mix.exs"))
-  defp reserved?(name), do: String.starts_with?(name, @reserved_prefix)
 
   # Reverse the declared graph: `%{app => [apps that directly depend on it]}`, over
   # umbrella apps only (`forward` may carry nodes and edges outside `names`).
