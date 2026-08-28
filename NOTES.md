@@ -1464,8 +1464,8 @@ file produces a byte-identical metamutant.
 - `default_sandbox/2` returns a **stable** per-project temp dir (a SHA-256 of the
   expanded root) instead of a random one, so `mix mutare --keep-sandbox` alone
   reuses the same path. CI usually pins `--sandbox <cache>` instead.
-- `sync/3` re-materialises in place: `put_if_changed/2` rewrites a file **only
-  when its bytes differ** (size-check, then compare), so an unchanged file keeps
+- `sync/4` re-materialises in place: `put_sandbox_file_if_changed/3` rewrites a
+  file **only when its bytes differ** (size-check, then compare), so an unchanged file keeps
   its mtime — which is the whole trick, since mix keys staleness on source mtime
   vs. the compile manifest (`File.cp_r!`/`File.write!` both bump mtime to now,
   verified, which is why a plain copy would defeat the cache even with `_build`
@@ -1487,6 +1487,23 @@ Subtleties the sync handles that a naive "don't wipe" wouldn't:
   no-op).
 - Poison recovery (which re-`prepare`s the same path) becomes incremental too:
   only the dropped mutants' metamutant files change, so only those recompile.
+- The mirror copies each source's **shape**, not just its bytes: permission modes
+  (a suite may invoke a project script or native helper, which needs its
+  executable bit) and symlinks (recreated with the same raw target, never
+  followed, so a link out of the tree is copied rather than chased). Fresh mode
+  gets both free from `File.cp_r!`, so a content-only sync was a silent
+  behavioural fork between the two modes — an executable arriving `0644`, a
+  symlink simply absent. Two sharp edges it has to dodge:
+  - `File.chmod/2` is `write_file_info` with only the mode filled in, which
+    resets **mtime to now** (verified). A blind chmod pass would therefore hand
+    mix a changed file on every sync and undo the byte-aware mirror it sits next
+    to, so the mode is re-applied only when it actually differs, and the mtime
+    restored afterwards.
+  - Generated overrides are overlaid **after** the mirror, so a path Mutare owns
+    always replaces a copied link (or a copied symlinked parent dir) instead of
+    being written *through* it into the real project — the same guarantee
+    `put_sandbox_file_if_changed/3` gives fresh mode, which needs the ordering
+    because the mirror now recreates those links in the first place.
 
 CI pattern: `--sandbox <cache-dir> --keep-sandbox`, and cache `<cache-dir>/_build`
 and `<cache-dir>/deps` keyed on `mix.lock`. tar-based caches (e.g. GitHub

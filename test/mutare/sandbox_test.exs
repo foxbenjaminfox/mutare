@@ -267,6 +267,23 @@ defmodule Mutare.SandboxTest do
   @selector_comment "select the active mutant from the environment"
   @owner_watch_comment "halt when the spawning Mutare process dies"
 
+  # The fresh path gets modes and symlinks free from `File.cp_r!`; kept mode has to
+  # mirror them by hand (see the `keep_sandbox` tests). Pin the free half so a future
+  # rewrite of `copy_project/2` can't quietly regress one side of that parity.
+  test "the fresh copy preserves permission bits and symlinks", context do
+    script = Path.join(context.project, "bin/run.sh")
+    File.mkdir_p!(Path.dirname(script))
+    File.write!(script, "#!/bin/sh\necho hi\n")
+    File.chmod!(script, 0o755)
+    :ok = File.ln_s("keep.txt", Path.join(context.project, "linked.txt"))
+
+    sandbox = Path.join(context.base, "sandbox")
+    Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
+
+    assert mode(Path.join(sandbox, "bin/run.sh")) == 0o755
+    assert File.read_link!(Path.join(sandbox, "linked.txt")) == "keep.txt"
+  end
+
   describe "config injection (owner-death watcher)" do
     test "prefixes an existing config, preserving the target's own content", context do
       config = Path.join(context.project, "config/config.exs")
@@ -474,6 +491,122 @@ defmodule Mutare.SandboxTest do
 
       assert first == second
       assert String.starts_with?(first, System.tmp_dir!())
+    end
+
+    test "mirrors source permission bits, and re-syncs a changed mode in place", context do
+      script = Path.join(context.project, "bin/run.sh")
+      File.mkdir_p!(Path.dirname(script))
+      File.write!(script, "#!/bin/sh\necho hi\n")
+      File.chmod!(script, 0o755)
+
+      sandbox = Path.join(context.base, "sandbox")
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+
+      copied = Path.join(sandbox, "bin/run.sh")
+      assert mode(copied) == 0o755
+      assert mode(Path.join(sandbox, "keep.txt")) == mode(context.marker)
+
+      # A mode-only change is picked up without rewriting content: chmod leaves mtime
+      # alone, so mix still skips the recompile.
+      past = 1_700_000_000
+      File.touch!(copied, past)
+      File.chmod!(script, 0o644)
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+
+      assert mode(copied) == 0o644
+      assert File.stat!(copied, time: :posix).mtime == past
+    end
+
+    test "recreates source symlinks as symlinks, never following them", context do
+      outside = Path.join(context.base, "outside.txt")
+      File.write!(outside, "outside")
+      File.write!(Path.join(context.project, "plain.txt"), "plain")
+      :ok = File.ln_s("plain.txt", Path.join(context.project, "linked.txt"))
+      :ok = File.ln_s(outside, Path.join(context.project, "escape.txt"))
+
+      sandbox = Path.join(context.base, "sandbox")
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+
+      linked = Path.join(sandbox, "linked.txt")
+      escape = Path.join(sandbox, "escape.txt")
+
+      # The raw target is mirrored verbatim: a relative link stays relative (resolving
+      # inside the sandbox), an absolute one still points out of the tree — and is
+      # copied, not chased, so nothing outside is touched.
+      assert File.read_link!(linked) == "plain.txt"
+      assert File.read!(linked) == "plain"
+      assert File.read_link!(escape) == outside
+      assert File.read!(outside) == "outside"
+
+      # Re-syncing is idempotent; a retargeted source link is re-pointed, not stacked.
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+      assert File.read_link!(linked) == "plain.txt"
+
+      File.rm!(Path.join(context.project, "linked.txt"))
+      :ok = File.ln_s("keep.txt", Path.join(context.project, "linked.txt"))
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+
+      assert File.read_link!(linked) == "keep.txt"
+      assert File.read!(linked) == "keep"
+    end
+
+    test "prunes a symlink removed from the source since the last run", context do
+      :ok = File.ln_s("keep.txt", Path.join(context.project, "alias.txt"))
+
+      sandbox = Path.join(context.base, "sandbox")
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+      assert File.read_link!(Path.join(sandbox, "alias.txt")) == "keep.txt"
+
+      File.rm!(Path.join(context.project, "alias.txt"))
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+
+      # `File.exists?/1` follows links, so check the link itself is gone.
+      assert File.lstat(Path.join(sandbox, "alias.txt")) == {:error, :enoent}
+    end
+
+    test "replaces a mirrored symlink where a generated file must land", context do
+      original = "import Config\n\nconfig :shared, key: :value\n"
+      outside = Path.join(context.base, "shared_config.exs")
+      File.write!(outside, original)
+
+      config = Path.join(context.project, "config/config.exs")
+      File.mkdir_p!(Path.dirname(config))
+      :ok = File.ln_s(outside, config)
+
+      sandbox = Path.join(context.base, "sandbox")
+      sandbox_config = Path.join(sandbox, "config/config.exs")
+
+      # Twice: the generated overlay must win over the mirrored link on every sync,
+      # never be written *through* it.
+      for _ <- 1..2 do
+        Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+
+        assert %File.Stat{type: :regular} = File.lstat!(sandbox_config)
+        assert File.read!(outside) == original
+
+        injected = File.read!(sandbox_config)
+        assert String.starts_with?(injected, "# ---- injected by Mutare: #{@owner_watch_comment}")
+        assert injected =~ "config :shared, key: :value"
+      end
+    end
+
+    test "replaces a mirrored symlinked directory a generated file must land in", context do
+      outside_dir = Path.join(context.base, "shared_config_dir")
+      File.mkdir_p!(outside_dir)
+      File.write!(Path.join(outside_dir, "config.exs"), "import Config\n\nconfig :shared, d: 1\n")
+
+      :ok = File.ln_s(outside_dir, Path.join(context.project, "config"))
+
+      sandbox = Path.join(context.base, "sandbox")
+      sandbox_config_dir = Path.join(sandbox, "config")
+
+      for _ <- 1..2 do
+        Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+
+        assert %File.Stat{type: :directory} = File.lstat!(sandbox_config_dir)
+        assert File.read!(Path.join(outside_dir, "config.exs")) =~ "config :shared, d: 1"
+        assert File.read!(Path.join(sandbox_config_dir, "config.exs")) =~ @owner_watch_comment
+      end
     end
 
     test "materializes umbrella helpers and support app without accumulating" do
@@ -958,6 +1091,9 @@ defmodule Mutare.SandboxTest do
     File.mkdir_p!(ebin)
     File.write!(Path.join(ebin, "#{name}.app"), "{application, #{name}, []}.")
   end
+
+  # A path's permission bits, with the file-type bits masked off.
+  defp mode(path), do: Bitwise.band(File.lstat!(path).mode, 0o7777)
 
   defp assert_refused(root, sandbox, schema) do
     error =
