@@ -84,6 +84,29 @@ defmodule Mutare.ChangesTest do
               ])}
   end
 
+  test "reports a non-ASCII path verbatim, not git's octal-escaped form", %{repo: repo} do
+    # Git C-quotes non-ASCII pathnames by default (`"b/lib/caf\303\251.ex"`),
+    # which no discovered file matches — so `--since` would silently mutate
+    # nothing in this file.
+    File.write!(Path.join(repo, "lib/café.ex"), "defmodule Cafe do\n  def f, do: 1\nend\n")
+    git!(repo, ["add", "lib/café.ex"])
+
+    assert Changes.since(repo, "HEAD") ==
+             {:ok, MapSet.new([{"lib/café.ex", 1}, {"lib/café.ex", 2}, {"lib/café.ex", 3}])}
+  end
+
+  test "decodes a path git quotes even with core.quotePath off", %{repo: repo} do
+    # `core.quotePath=false` only spares non-ASCII bytes; a name containing a
+    # quote, a backslash, or a control character is C-quoted regardless, so the
+    # header still has to be decoded.
+    name = ~S(lib/we"ir\d.ex)
+    File.write!(Path.join(repo, name), "defmodule W do\n  def f, do: 1\nend\n")
+    git!(repo, ["add", name])
+
+    assert Changes.since(repo, "HEAD") ==
+             {:ok, MapSet.new([{name, 1}, {name, 2}, {name, 3}])}
+  end
+
   test "a pure deletion contributes no lines (the file drops out of scope)", %{repo: repo} do
     # Delete line 2 of a.ex, leaving only additions elsewhere absent — the diff
     # is a pure deletion, so there is no new-side line to mutate.

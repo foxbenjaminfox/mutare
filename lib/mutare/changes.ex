@@ -22,7 +22,8 @@ defmodule Mutare.Changes do
   Uses `git diff -U0 --relative`, run with `root` as the working dir, so it
   reports working-tree changes (committed and uncommitted) since `ref`, scoped
   to and relative to `root`. The diff command disables presentation/user hooks
-  and pins prefixes because the output is parsed. `-U0` drops context lines so
+  and pins prefixes because the output is parsed, and turns off `core.quotePath`
+  so a non-ASCII pathname arrives verbatim rather than octal-escaped. `-U0` drops context lines so
   only genuinely-added lines land in the set; pure deletions contribute nothing
   (their file drops out entirely if it has no other changes). Returns
   `{:error, detail}` if git fails (no repo, bad ref, git missing).
@@ -34,6 +35,8 @@ defmodule Mutare.Changes do
            [
              "-C",
              root,
+             "-c",
+             "core.quotePath=false",
              "diff",
              "--no-ext-diff",
              "--no-color",
@@ -82,9 +85,13 @@ defmodule Mutare.Changes do
     do: {file, add, rem - 1, acc}
 
   # Header region (no hunk body pending). New-side file name, then hunk headers.
-  defp parse_line("+++ /dev/null", {_file, 0, 0, acc}), do: {nil, 0, 0, acc}
-  defp parse_line("+++ b/" <> path, {_file, 0, 0, acc}), do: {path, 0, 0, acc}
-  defp parse_line("+++ " <> path, {_file, 0, 0, acc}), do: {path, 0, 0, acc}
+  defp parse_line("+++ " <> path, {_file, 0, 0, acc}) do
+    case unquote_path(path) do
+      "/dev/null" -> {nil, 0, 0, acc}
+      "b/" <> file -> {file, 0, 0, acc}
+      file -> {file, 0, 0, acc}
+    end
+  end
 
   defp parse_line("@@" <> _ = line, {file, 0, 0, acc} = state) do
     case Regex.named_captures(@hunk, line) do
@@ -108,4 +115,46 @@ defmodule Mutare.Changes do
 
   defp count(""), do: 1
   defp count(n), do: String.to_integer(n)
+
+  # Git C-quotes a pathname it won't print raw: the whole name (prefix included)
+  # is wrapped in double quotes, with `\`-escapes for the specials and `\nnn`
+  # *octal byte* escapes for the rest. `core.quotePath=false` above spares the
+  # common case (a UTF-8 name), but a name containing `"`, `\`, or a control
+  # character is quoted regardless — so unquote before stripping the `b/` prefix,
+  # which git puts *inside* the quotes. Decoding is byte-wise: the octal escapes
+  # of a UTF-8 name reassemble into exactly that name's bytes, so the result
+  # matches the discovered file it names.
+  defp unquote_path(<<?", rest::binary>> = path) do
+    size = byte_size(rest)
+
+    if size > 0 and :binary.last(rest) == ?" do
+      unescape(binary_part(rest, 0, size - 1), "")
+    else
+      path
+    end
+  end
+
+  defp unquote_path(path), do: path
+
+  defp unescape(<<>>, acc), do: acc
+
+  defp unescape(<<?\\, a, b, c, rest::binary>>, acc)
+       when a in ?0..?3 and b in ?0..?7 and c in ?0..?7 do
+    unescape(rest, <<acc::binary, (a - ?0) * 64 + (b - ?0) * 8 + (c - ?0)>>)
+  end
+
+  defp unescape(<<?\\, escape, rest::binary>>, acc),
+    do: unescape(rest, <<acc::binary, escaped(escape)>>)
+
+  defp unescape(<<char, rest::binary>>, acc), do: unescape(rest, <<acc::binary, char>>)
+
+  # The named escapes; anything else (`\"`, `\\`) stands for the byte itself.
+  defp escaped(?a), do: 0x07
+  defp escaped(?b), do: 0x08
+  defp escaped(?f), do: 0x0C
+  defp escaped(?n), do: ?\n
+  defp escaped(?r), do: ?\r
+  defp escaped(?t), do: ?\t
+  defp escaped(?v), do: 0x0B
+  defp escaped(char), do: char
 end
