@@ -1033,15 +1033,35 @@ defmodule Mutare.MutatorsLiteralTest do
                ["~U[2020-01-02T00:00:00Z]"]
     end
 
-    test "every shifted result is a real, re-parseable sigil" do
+    test "shifts backwards at the end of the sigil-supported year range" do
+      # `+1` would render `10000-01-01`, which the sigil rejects at compile time (ISO 8601
+      # wants a four-digit year), so the boundary nudge runs the other way instead.
+      assert render(DateTimeLiteral.mutate(parse("~D[9999-12-31]"))) == ["~D[9999-12-30]"]
+
+      assert render(DateTimeLiteral.mutate(parse("~N[9999-12-31 23:00:00]"))) ==
+               ["~N[9999-12-30T23:00:00]"]
+
+      assert render(DateTimeLiteral.mutate(parse("~U[9999-12-31 23:00:00Z]"))) ==
+               ["~U[9999-12-30T23:00:00Z]"]
+    end
+
+    test "every shifted result is a real, compilable sigil" do
       for src <- [
             "~D[2020-12-31]",
             "~T[12:00:00]",
             "~N[2020-02-28 23:59:59]",
-            "~U[1999-12-31 23:59:59Z]"
+            "~U[1999-12-31 23:59:59Z]",
+            "~D[9999-12-31]",
+            "~T[23:59:59]",
+            "~N[9999-12-31 23:59:59]",
+            "~U[9999-12-31 23:59:59Z]"
           ] do
-        [mutated] = DateTimeLiteral.mutate(parse(src))
-        assert {:ok, _} = Code.string_to_quoted(Sourceror.to_string(mutated))
+        [rendered] = render(DateTimeLiteral.mutate(parse(src)))
+
+        # `string_to_quoted` would accept `~D[10000-01-01]` — quoting doesn't expand the
+        # sigil. Only evaluating it runs the calendar validation the compiler runs.
+        assert {%struct{}, _} = Code.eval_string(rendered)
+        assert struct in [Date, Time, NaiveDateTime, DateTime]
       end
     end
 

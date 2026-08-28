@@ -11,6 +11,8 @@ defmodule Mutare.Mutators.DateTimeLiteral do
 
   Why a shift, not a sentinel. Calendar sigils are validated at compile time (`~D[2020-13-99]` is a compile error), so a mutation must stay a valid date/time. The literal is parsed, shifted by one unit, and re-serialised, so the result is always a real calendar value.
 
+  At the end of the sigil-supported year range that forward shift would itself be a compile error (`~D[9999-12-31]` renders as `10000-01-01`, which the sigil rejects — ISO 8601 wants four digits), so the nudge runs backwards there instead and the mutant is still a one-unit boundary shift. Each candidate is re-parsed before it is offered, which is the same check the compiler performs; a literal no direction can shift produces no mutant.
+
   Only non-interpolated sigils are reached (calendar sigils require literal content).
   """
   @behaviour Mutare.Mutator
@@ -21,6 +23,9 @@ defmodule Mutare.Mutators.DateTimeLiteral do
   # One day in seconds — the `:sigil_N`/`:sigil_U` shift, whose `add/2` defaults to seconds
   # (Date/Time shift by their own `+1` unit, a day / a second, below).
   @day_seconds 86_400
+
+  # Forward first; backwards only where forward leaves the supported range (see `nudge/2`).
+  @directions [1, -1]
 
   @impl Mutare.Mutator
   def name, do: :datetime
@@ -38,23 +43,54 @@ defmodule Mutare.Mutators.DateTimeLiteral do
 
   def mutate(_node), do: :skip
 
-  # Parse → +1 unit → re-serialise. Any parse failure degrades to a non-`{:ok, …}`
+  # Parse → ±1 unit → re-serialise. Any parse failure degrades to a non-`{:ok, …}`
   # value (handled above), so a sigil we can't read never produces invalid source.
   defp shift(:sigil_D, s) do
-    with {:ok, d} <- Date.from_iso8601(s), do: {:ok, Date.to_iso8601(Date.add(d, 1))}
+    with {:ok, d} <- Date.from_iso8601(s) do
+      nudge(&Date.to_iso8601(Date.add(d, &1)), &Date.from_iso8601/1)
+    end
   end
 
   defp shift(:sigil_T, s) do
-    with {:ok, t} <- Time.from_iso8601(s), do: {:ok, Time.to_iso8601(Time.add(t, 1))}
+    with {:ok, t} <- Time.from_iso8601(s) do
+      nudge(&Time.to_iso8601(Time.add(t, &1)), &Time.from_iso8601/1)
+    end
   end
 
   defp shift(:sigil_N, s) do
-    with {:ok, n} <- NaiveDateTime.from_iso8601(s),
-         do: {:ok, NaiveDateTime.to_iso8601(NaiveDateTime.add(n, @day_seconds))}
+    with {:ok, n} <- NaiveDateTime.from_iso8601(s) do
+      nudge(
+        &NaiveDateTime.to_iso8601(NaiveDateTime.add(n, &1 * @day_seconds)),
+        &NaiveDateTime.from_iso8601/1
+      )
+    end
   end
 
   defp shift(:sigil_U, s) do
-    with {:ok, dt, _offset} <- DateTime.from_iso8601(s),
-         do: {:ok, DateTime.to_iso8601(DateTime.add(dt, @day_seconds))}
+    with {:ok, dt, _offset} <- DateTime.from_iso8601(s) do
+      nudge(
+        &DateTime.to_iso8601(DateTime.add(dt, &1 * @day_seconds)),
+        &DateTime.from_iso8601/1
+      )
+    end
+  end
+
+  # Keep the first direction whose serialised form parses back. Re-parsing is exactly the
+  # validation the sigil performs at compile time, so this is what keeps a boundary literal
+  # (`~D[9999-12-31]` → `10000-01-01`) from becoming a mutant that can't compile — it takes
+  # `9999-12-30` instead. Negative years are legal (`~D[-0001-12-31]` compiles), so only the
+  # upper end is known to overflow today; the check is direction-agnostic so a future range
+  # change can't reintroduce the bug. `nil` — no direction survives — reaches `mutate/1` as
+  # "no mutant", the same as an unreadable literal.
+  defp nudge(serialise, parse) do
+    Enum.find_value(@directions, fn n ->
+      shifted = serialise.(n)
+
+      case parse.(shifted) do
+        {:ok, _} -> {:ok, shifted}
+        {:ok, _, _} -> {:ok, shifted}
+        _ -> nil
+      end
+    end)
   end
 end
