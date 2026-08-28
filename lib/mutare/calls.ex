@@ -132,20 +132,27 @@ defmodule Mutare.Calls do
   For a piped call, the left side of the pipe is not included. A call that has no
   registered macro route returns `nil`.
 
-  ## Routing describes arguments; `nil` identifies ownership
+  ## Routing describes arguments; registration identifies ownership
 
   A route says how to treat a registered macro's *arguments*. It does not stop a mutator's own
   catalog from matching the **call**, which the expression walk still offers — so a macro
   registered `:skip` is opaque in its interior and exposed in its name.
 
-  That is the third use of this reader, and it matters for a catalog keyed on a bare
-  function-name atom. Inside a DSL whose API functions are never imported — the library's own
-  builder interprets the name — there is no module to resolve, so a name is all a catalog has to
-  match on. A name is not an identity: an author's DSL may define a macro wearing it, and
-  rewriting that call to a sibling name emits a call nobody defines, which the library rejects
-  while expanding. Since having a treatment is exactly what being registered means,
-  `macro_treatment(node) != nil` is the ownership test — decline a node that is somebody else's
-  macro.
+  That matters for a catalog keyed on a bare function-name atom — all there is to match on
+  inside a DSL whose API functions are never imported. A name is not an identity: rewriting
+  somebody else's macro to a sibling name emits a call nobody defines, which the library rejects
+  while expanding. Having a treatment is exactly what being registered means, so a non-`nil`
+  result is the ownership test — decline the node:
+
+      def mutate(node) do
+        if Mutare.Calls.macro_treatment(node), do: :skip, else: swap(node)
+      end
+
+  Test for `nil`, not for a non-empty list: `[]` is a registered macro with no visible
+  arguments, and it is just as much somebody else's. The test recognises a *registered* macro —
+  including one registered by name only, the route for calls whose module cannot be resolved —
+  and nothing beyond that. An unregistered macro is indistinguishable from an ordinary call, so
+  a catalog still needs whatever arity and import gating it already applies.
 
   A catalog that matches through `resolved_call/1` needs no such test: it keys on
   `{module, function}` and gets `nil` for a call it cannot resolve.

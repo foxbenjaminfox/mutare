@@ -2658,6 +2658,37 @@ The name-only hatch is documented as deliberately non-standard and broad (it ski
 that name, function or macro, in any module) — that's the user's explicit opt-in for the case where
 proper module resolution isn't available.
 
+### A name-keyed catalog and somebody else's macro `[documented; built-ins unguarded]`
+A registered macro's route describes its **arguments**. The call node itself is still offered —
+NOTES "Whole-call mutants on a binding macro" records why, since the whole `macro_routes/0` feature
+depends on it. So a `:skip` registration hides a DSL's interior and leaves its *name* exposed to
+every enabled mutator, which is the intended asymmetry and also a trap.
+
+It is harmless for a catalog keyed on `{module, function}` through `Calls.resolved_call/1`, which
+returns `nil` for anything it cannot resolve. It is not harmless for a catalog keyed on a **bare
+name** — what a DSL forces when its API functions are never imported and the library's own builder
+interprets the name, so there is no module to resolve and the name is the only key. Rewrite somebody
+else's `max(a, b)` to `min(a, b)` and you emit a call the DSL doesn't define; the library rejects it
+while expanding, and the single metamutant build takes the whole thing as poison.
+
+The test is `macro_treatment(node) != nil` — having a treatment is exactly what being registered
+means — documented on `Mutare.Calls.macro_treatment/1` for adapter authors. Two properties to keep
+straight: `[]` is a *registered* macro with no visible arguments (truthy, and pinned as distinct from
+`nil` by the reader's own tests), so the check is against `nil` and never against emptiness; and the
+name-only `{:*, name, …}` route (previous entry) is what makes the test fire at all in the
+unresolvable-module case it exists to serve. An *unregistered* macro is invisible to it.
+
+**The built-ins do not apply it, deliberately-for-now.** `Helpers.swap_bare_kernel/3` and
+`remove_bare_kernel/3` gate only on effective arity and `Imports.kernel_displaced?/1` (the
+`import Kernel, except:/only:` stamp); no mutator family consults macro routing at all. A
+third-party macro registered as `max/2` would be offered and swapped to `min`. Nothing collides
+today only because the bare tables are small and arity-pinned — `Numeric`'s `{min,2}`/`{max,2}`/
+rounding, `Arithmetic`'s `{div,2}`/`{rem,2}`, `CallRemoval`'s `{abs,1}`/`binary_slice`/`binary_part`
+— and the DSL names that would plausibly wear those spellings are registered at other arities. Left
+unguarded rather than fixed speculatively: the fix is one `macro_treatment/1` check in each
+bare-`Kernel` helper, and it should land with a test that registers a genuinely colliding macro
+rather than on the strength of this note.
+
 ### Mutating inside a foreign-semantics DSL — the selector host (Ecto `from`/`where`)
 The hard case a *deep* custom mutator hits: mutating **inside** a compile-time DSL (Ecto's
 `from`/`where`) where you can't reach `:persistent_term` with a bare selector (the `case` would
