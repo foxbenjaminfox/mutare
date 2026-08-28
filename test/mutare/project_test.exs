@@ -68,6 +68,14 @@ defmodule Mutare.ProjectTest do
         Project.resolve(umbrella, apps: ["nope"])
       end
     end
+
+    test "a partially-valid --app raises rather than silently narrowing" do
+      %{umbrella: umbrella} = demo_umbrella()
+
+      assert_raise ArgumentError, ~r/no umbrella apps match \["nope"\]/, fn ->
+        Project.resolve(umbrella, apps: ["core", "nope"])
+      end
+    end
   end
 
   describe "umbrella_root?/1 — static mix.exs detection" do

@@ -175,16 +175,19 @@ defmodule Mutare.Project do
         all
 
       true ->
-        wanted = MapSet.new(opts[:apps], &to_string/1)
+        names = MapSet.new(all, &app_name/1)
 
-        case Enum.filter(all, &MapSet.member?(wanted, app_name(&1))) do
+        # Every requested app must exist: a partially-valid scope would silently
+        # mutate a subset, so a CI typo would report an incomplete run as a clean one.
+        case Enum.reject(opts[:apps], &MapSet.member?(names, to_string(&1))) do
           [] ->
-            raise ArgumentError,
-                  "no umbrella apps match #{inspect(opts[:apps])}; available: " <>
-                    inspect(Enum.map(all, &app_name/1))
+            wanted = MapSet.new(opts[:apps], &to_string/1)
+            Enum.filter(all, &MapSet.member?(wanted, app_name(&1)))
 
-          scoped ->
-            scoped
+          unknown ->
+            raise ArgumentError,
+                  "no umbrella apps match #{inspect(unknown)}; available: " <>
+                    inspect(Enum.map(all, &app_name/1))
         end
     end
   end
