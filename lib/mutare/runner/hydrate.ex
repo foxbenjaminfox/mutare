@@ -16,11 +16,17 @@ defmodule Mutare.Runner.Hydrate do
   # rendering up front instead, so this module is bypassed for them.)
   #
   # Re-derivation is a per-file re-render (`Mutare.Transform.render_sites/2`) at the file's
-  # original `:start_id`, **memoised once per file** (an `Agent`): the pipeline is deterministic
-  # for one source, so the re-rendered ids and code line up with the schema's exactly. Building
-  # sites without code never changed any id/tree/count, so this re-render reproduces the eager
-  # result byte-for-byte. A miss renders outside the agent (so concurrent workers don't
-  # serialise on it); a benign race just re-renders a file twice to the identical map.
+  # original `:start_id` — read from `schema.start_ids`, the origin the scan recorded *before*
+  # `:only_lines`/`:max_mutants` narrowed `schema.sites` — **memoised once per file** (an
+  # `Agent`): the pipeline is deterministic for one source, so the re-rendered ids and code
+  # line up with the schema's exactly. Building sites without code never changed any
+  # id/tree/count, so this re-render reproduces the eager result byte-for-byte. A miss renders
+  # outside the agent (so concurrent workers don't serialise on it); a benign race just
+  # re-renders a file twice to the identical map.
+  #
+  # The start must come from the schema, never from the visible sites: under `--line` the
+  # smallest surviving id is not the file's first mutant, and a re-render started there pairs
+  # every id with another site's code (NOTES "Defer the per-mutant diff render to report time").
 
   require Logger
 
@@ -52,7 +58,7 @@ defmodule Mutare.Runner.Hydrate do
     %__MODULE__{
       options: options,
       sources: schema.sources,
-      starts: file_starts(schema.sites),
+      starts: schema.start_ids,
       cache: cache
     }
   end
@@ -129,14 +135,5 @@ defmodule Mutare.Runner.Hydrate do
     source
     |> Transform.render_sites(opts)
     |> Map.new(&{&1.id, {&1.original_code, &1.mutated_code}})
-  end
-
-  # Each file's `:start_id` — the smallest mutant id among its sites (ids are claimed in
-  # ascending order within a file, so the first site's id is the start id; `min` is robust
-  # regardless of ordering). Poisoned sites keep their id, so they're included.
-  defp file_starts(sites) do
-    Enum.reduce(sites, %{}, fn %Site{file: file, id: id}, acc ->
-      Map.update(acc, file, id, &min(&1, id))
-    end)
   end
 end

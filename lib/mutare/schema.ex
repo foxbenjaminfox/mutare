@@ -46,6 +46,12 @@ defmodule Mutare.Schema do
   original type and stacktrace, in the parent — so a tool bug still surfaces
   faithfully across the process hop, not as an opaque `Task` exit.
 
+  Each sited file's `:start_id` is recorded under `:start_ids` — the origin of the
+  file's id range *before* `:only_lines`/`:max_mutants` narrow `:sites`. A
+  report-time re-render (`render_opts/3`) reads it from there, never from the
+  visible sites: under `--line` the smallest surviving id is not the file's first
+  mutant, and a re-render started from it would hand every id another site's code.
+
   We store each file's rendered metamutant source (under `:metamutants`) but not
   a precomputed `Mutare.Manifest`: the manifest (generated line ranges, for
   mapping a compile error back to a mutant) is read *only* on a failed compile,
@@ -64,6 +70,7 @@ defmodule Mutare.Schema do
           sites: [Site.t()],
           metamutants: %{optional(String.t()) => String.t()},
           sources: %{optional(String.t()) => String.t()},
+          start_ids: %{optional(String.t()) => pos_integer()},
           skipped: [{String.t(), term()}],
           ineffective_ignores: [{String.t(), Directive.t(), pos_integer() | nil}],
           unknown_directives: [{String.t(), pos_integer(), String.t()}],
@@ -74,6 +81,7 @@ defmodule Mutare.Schema do
             sites: [],
             metamutants: %{},
             sources: %{},
+            start_ids: %{},
             skipped: [],
             ineffective_ignores: [],
             unknown_directives: [],
@@ -330,7 +338,8 @@ defmodule Mutare.Schema do
   end
 
   # Emit + render every sited file in parallel throwaway workers (`render_one/5`),
-  # returning `%{rel => {metamutant, sites}}`. The dominant `Sourceror.to_string` heap
+  # returning `%{rel => {start_id, metamutant, sites}}` — the `start_id` rides along so
+  # `assemble/3` can record it under `:start_ids`. The dominant `Sourceror.to_string` heap
   # dies with each worker. A tool bug captured by a worker is re-raised here.
   defp render_files(jobs, options, skip_ids, render_site_code, summarize_sites) do
     jobs
@@ -347,7 +356,7 @@ defmodule Mutare.Schema do
       )
     end)
     |> Enum.map(&reraise_if_raised/1)
-    |> Map.new(fn {:rendered, rel, meta, sites} -> {rel, {meta, sites}} end)
+    |> Map.new(fn {:rendered, rel, start_id, meta, sites} -> {rel, {start_id, meta, sites}} end)
   end
 
   # Render one file at its assigned `:start_id`. The file already parsed in phase 1, so any
@@ -382,7 +391,7 @@ defmodule Mutare.Schema do
     try do
       {meta, sites, next_id} = Mutare.Transform.transform_string_with_sites(source, opts)
       verify_count!(rel, next_id - start_id, count)
-      {:rendered, rel, meta, sites}
+      {:rendered, rel, start_id, meta, sites}
     rescue
       other -> {:raise, other, __STACKTRACE__}
     catch
@@ -403,21 +412,22 @@ defmodule Mutare.Schema do
   # === assembly ==============================================================
 
   # Fold the phase-1 outcomes (in input order) into the schema, slotting each sited file's
-  # rendered metamutant + sites (from `rendered`), keeping a site-less but parsed file as
-  # sources-only, and recording an unparseable file under `:skipped`. Sites accumulate
+  # rendered metamutant + sites + `:start_id` (from `rendered`), keeping a site-less but
+  # parsed file as sources-only, and recording an unparseable file under `:skipped`. Sites accumulate
   # reversed (O(1) prepend per file); `finalize/1` flips them back to order once. We store
   # the rendered metamutant but no precomputed manifest — that's read only on a failed
   # compile, so `Mutare.Poison` re-derives it lazily (see `Mutare.Poison.ids/2`).
   defp assemble(rel_files, counted, rendered) do
     Enum.reduce(counted, %__MODULE__{files: rel_files}, fn
       {:counted, rel, source, {:sites, _count}, _skips}, schema ->
-        {meta, sites} = Map.fetch!(rendered, rel)
+        {start_id, meta, sites} = Map.fetch!(rendered, rel)
 
         %{
           schema
           | sites: Enum.reverse(sites, schema.sites),
             metamutants: Map.put(schema.metamutants, rel, meta),
-            sources: Map.put(schema.sources, rel, source)
+            sources: Map.put(schema.sources, rel, source),
+            start_ids: Map.put(schema.start_ids, rel, start_id)
         }
 
       {:counted, rel, source, :no_sites, _skips}, schema ->
@@ -501,8 +511,9 @@ defmodule Mutare.Schema do
   `Mutare.Runner.Hydrate` uses it when a scan deferred site-code rendering and a
   report later needs the original/mutated code for one displayed site.
 
-  The `:start_id` must match the schema's recorded id range for `file`, so the
-  re-rendered sites line up with the original scan. `:skip_ids` and
+  The `:start_id` must be the schema's recorded `:start_ids` entry for `file` —
+  the pre-filter origin of its id range — so the re-rendered sites line up with
+  the original scan even when `:only_lines`/`:max_mutants` narrowed `:sites`. `:skip_ids` and
   `:render_site_code` are intentionally left to `Mutare.Transform.render_sites/2`;
   neither changes the id-to-code mapping.
   """

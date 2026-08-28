@@ -231,6 +231,42 @@ defmodule Mutare.SchemaTest do
     assert Enum.all?(schema.sites, &(&1.file == "lib/b.ex"))
   end
 
+  test ":start_ids records each sited file's id-range origin, prefix-summed in path order",
+       %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/empty.ex", "defmodule Empty do\n  def h, do: nil\nend\n")
+    write(root, "lib/sub/b.ex", "defmodule B do\n  def g(a, b), do: a >= b\nend\n")
+
+    schema = Schema.build(root, mutators: @probe)
+
+    # a.ex claims id 1; sub/b.ex starts where a.ex's range ends. A site-less file has no
+    # range and no entry.
+    assert schema.start_ids == %{"lib/a.ex" => 1, "lib/sub/b.ex" => 2}
+  end
+
+  test ":start_ids is the pre-filter origin, unchanged by :only_lines and :max_mutants",
+       %{root: root} do
+    write(
+      root,
+      "lib/a.ex",
+      "defmodule A do\n  def f(x), do: x + 1\n  def g(a, b), do: a >= b\nend\n"
+    )
+
+    write(root, "lib/b.ex", "defmodule B do\n  def h(x), do: x - 2\nend\n")
+
+    # `--line lib/a.ex:3` keeps only a.ex's `>=` sites (ids 2, 3) — the smallest *visible*
+    # id is 2, but the file's range still starts at 1. A report-time re-render must start
+    # there, or id 2 would be handed id 1's code.
+    lined = Schema.build(root, mutators: @probe, only_lines: MapSet.new([{"lib/a.ex", 3}]))
+    assert Enum.map(lined.sites, & &1.id) == [2, 3]
+    assert lined.start_ids == %{"lib/a.ex" => 1}
+
+    # `--max-mutants 1` drops b.ex from `:sites` entirely, but its range was still assigned.
+    capped = Schema.build(root, mutators: @probe, max_mutants: 1)
+    assert Enum.map(capped.sites, & &1.id) == [1]
+    assert capped.start_ids == %{"lib/a.ex" => 1, "lib/b.ex" => 4}
+  end
+
   test ":only_lines keeps only the sites on the named file:line(s) (--line)", %{root: root} do
     write(
       root,

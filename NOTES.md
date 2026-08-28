@@ -689,6 +689,17 @@ Three load-bearing choices (mirroring the dep-seed's "never produce a wrong resu
   determinism/`:start_id` invariant) and leaves the site's code `nil` — the reporter degrades to
   an empty diff — rather than raising in a reporting path after the whole run's work is done.
   Poisoned sites keep `nil` code (never displayed, never read).
+- **The file's `:start_id` is recorded by the scan, not reconstructed from the sites.** The
+  first cut derived it in `Hydrate` as `min(site.id)` over `schema.sites` — sound for a full
+  run, wrong for a narrowed one: `:only_lines` (`--line`) and `:max_mutants` filter `:sites`
+  *after* ids are assigned, so a `--line` on anything but a file's first mutant left a min that
+  wasn't the range's origin. The re-render then started from the visible min and assigned that
+  id to the file's *first* mutant, so every hydrated survivor showed an unrelated diff (a
+  `--line` on arithmetic site 5 reported site 1's `optional_suffix` clause) — and the miss
+  tripwire above stayed silent, because the offset ids were all present. `Schema` now records
+  each sited file's prefix-sum origin under `:start_ids` at render time, and `render_opts/3`
+  documents that as the only valid `:start_id`. A re-render is deterministic only *given* the
+  right start; the start itself must come from the pass that assigned it.
 
 Not pursued: retaining the mutated/original AST nodes on the `Site` to render lazily without a
 re-render — rejected for the same reason `Site`'s moduledoc gives for not keeping trees at all
