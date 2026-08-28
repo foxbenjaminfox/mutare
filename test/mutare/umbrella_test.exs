@@ -256,4 +256,40 @@ defmodule Mutare.UmbrellaTest do
     assert Enum.all?(run.results, &(&1.status == :killed))
     assert Enum.all?(run.results, &(&1.output =~ "==> web"))
   end
+
+  test "an application-only sibling is still a dependent whose tests can kill" do
+    # web names core only through application/0, so it has no Mix dependency-tree
+    # edge. Broad narrowing must still include web when mutating core.
+    over =
+      Mutare.Test.Umbrella.build(:application_only_umbrella, %{
+        core: %{
+          files: %{"lib/core.ex" => "defmodule Core do\n  def double(x), do: x * 2\nend\n"}
+        },
+        web: %{
+          application: [extra_applications: [:core]],
+          files: %{
+            "lib/web.ex" => "defmodule Web do\n  def run(x), do: Core.double(x)\nend\n",
+            "test/web_test.exs" => """
+            defmodule WebTest do
+              use ExUnit.Case
+              test "run", do: assert(Web.run(3) == 6)
+            end
+            """
+          }
+        }
+      })
+
+    assert {:ok, run} =
+             Mutare.run(over.umbrella,
+               sandbox: over.sandbox,
+               mutators: @probe,
+               test_selection: :full,
+               project: Mutare.Project.resolve(over.umbrella, apps: ["core"])
+             )
+
+    assert [_ | _] = run.results
+    assert Enum.all?(run.results, &(&1.site.file == "apps/core/lib/core.ex"))
+    assert Enum.all?(run.results, &(&1.status == :killed))
+    assert Enum.all?(run.results, &(&1.output =~ "==> web"))
+  end
 end

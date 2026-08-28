@@ -47,11 +47,11 @@ defmodule Mutare.Runner.AppGraphTest do
       assert AppGraph.read(%Project{umbrella?: false}, "/nonexistent/sandbox") == {:ok, %{}}
     end
 
-    # One real `mix eval` against a generated (uncompiled) umbrella: the declared
-    # graph must carry the `runtime: false` edge the compiled `.app` would omit.
+    # One real `mix eval` against a generated (uncompiled) umbrella: the graph
+    # must carry both dependency declarations and application-level declarations.
     @tag :runner
     @tag timeout: 120_000
-    test "reads the declared graph from an umbrella, runtime: false edges included" do
+    test "merges deps with applications declared by each umbrella child" do
       over =
         Mutare.Test.Umbrella.build(:graph_umbrella, %{
           core: %{files: %{"lib/core.ex" => "defmodule Core do\nend\n"}},
@@ -59,12 +59,21 @@ defmodule Mutare.Runner.AppGraphTest do
             deps: [{:core, runtime: false}],
             files: %{"lib/web.ex" => "defmodule Web do\nend\n"}
           },
+          extra: %{
+            application: [extra_applications: [:core]],
+            files: %{"lib/extra.ex" => "defmodule Extra do\nend\n"}
+          },
+          explicit: %{
+            application: [applications: [:kernel, :stdlib, :core]],
+            files: %{"lib/explicit.ex" => "defmodule Explicit do\nend\n"}
+          },
           solo: %{files: %{"lib/solo.ex" => "defmodule Solo do\nend\n"}}
         })
 
       project = Project.resolve(over.umbrella)
 
-      assert AppGraph.read(project, over.umbrella) == {:ok, %{core: [], web: [:core], solo: []}}
+      assert AppGraph.read(project, over.umbrella) ==
+               {:ok, %{core: [], explicit: [:core], extra: [:core], solo: [], web: [:core]}}
     end
   end
 end

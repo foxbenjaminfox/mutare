@@ -19,10 +19,11 @@ defmodule Mutare.Test.Umbrella do
   Build an umbrella named `name` from `apps` and register its cleanup.
 
   `apps` is `%{app_atom => spec}` where `spec` is `%{files: %{rel => contents},
-  deps: [app_atom | {app_atom, opts}]}` — `deps` (other apps it depends on, wired
-  as `in_umbrella`; an `{app, opts}` entry adds `opts` to the dep tuple, e.g.
-  `{:core, runtime: false}`) defaults to `[]`, and a `test/test_helper.exs`
-  defaulting to `ExUnit.start()` is supplied unless `files` lists one. A root `mix.exs` (`apps_path: "apps"`) and a
+  deps: [app_atom | {app_atom, opts}], application: keyword()}` — `deps` (other
+  apps it depends on, wired as `in_umbrella`; an `{app, opts}` entry adds `opts`
+  to the dep tuple, e.g. `{:core, runtime: false}`) and `application` both default
+  to `[]`. A `test/test_helper.exs` defaulting to `ExUnit.start()` is supplied
+  unless `files` lists one. A root `mix.exs` (`apps_path: "apps"`) and a
   `config/config.exs` are generated automatically.
 
   Returns `%{base, umbrella, sandbox}` where `umbrella` is ready to hand to
@@ -43,7 +44,12 @@ defmodule Mutare.Test.Umbrella do
 
     Enum.each(apps, fn {app, spec} ->
       app_dir = Path.join("apps", to_string(app))
-      write(umbrella, Path.join(app_dir, "mix.exs"), child_mix_exs(app, Map.get(spec, :deps, [])))
+
+      write(
+        umbrella,
+        Path.join(app_dir, "mix.exs"),
+        child_mix_exs(app, Map.get(spec, :deps, []), Map.get(spec, :application, []))
+      )
 
       spec
       |> Map.fetch!(:files)
@@ -67,7 +73,7 @@ defmodule Mutare.Test.Umbrella do
     """
   end
 
-  defp child_mix_exs(app, deps) do
+  defp child_mix_exs(app, deps, application) do
     module = app |> to_string() |> Macro.camelize()
     deps_list = Enum.map_join(deps, ", ", &dep_entry/1)
 
@@ -88,7 +94,7 @@ defmodule Mutare.Test.Umbrella do
         ]
       end
 
-      def application, do: []
+      def application, do: #{inspect(application)}
       defp deps, do: [#{deps_list}]
     end
     """

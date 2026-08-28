@@ -5,12 +5,13 @@ defmodule Mutare.Runner.AppGraph do
   `Mutare.Project.app_test_scopes/3` narrows a broad (whole-umbrella) mutant run
   to the mutant's owning app plus its transitive dependents, which needs the
   forward graph `%{app => [sibling apps it depends on]}`. This module gets it from
-  Mix: one `mix eval` in the sandbox (no compile, no deps check) prints
-  `Mix.Project.deps_tree/0` from the umbrella root, where every child's `deps/0`
-  has been evaluated under `MIX_ENV=test` exactly as the test runs see it — so a
-  `runtime: false` sibling counts as a dependent (its tests can call the mutated
-  code, though the compiled `.app`'s `applications` list omits it) and an `only:`
-  that excludes the test env does not. Why the graph is read this way rather than
+  Mix: one `mix eval` in the sandbox (no compile, no deps check) merges
+  `Mix.Project.deps_tree/0` from the umbrella root with sibling applications named
+  by each child's `application/0`. Every child's `deps/0` and `application/0` are
+  evaluated under `MIX_ENV=test` exactly as the test runs see them. Consequently,
+  a `runtime: false` sibling and one named only through `:extra_applications` or
+  explicit `:applications` all count as dependencies, while an `only:` that
+  excludes the test env does not. Why the graph is read this way rather than only
   off the build: NOTES "Umbrella narrowing must follow the declared graph".
 
   ## Output contract
@@ -39,8 +40,28 @@ defmodule Mutare.Runner.AppGraph do
   @end_marker "mutare-dep-end"
 
   @snippet """
+  paths = Mix.Project.apps_paths()
+
   for {app, deps} <- Mix.Project.deps_tree() do
-    IO.puts(Enum.join(["#{@sentinel}", app | deps], " "))
+    application_deps =
+      case Map.fetch(paths, app) do
+        {:ok, path} ->
+          Mix.Project.in_project(app, path, fn project ->
+            application =
+              if function_exported?(project, :application, 0),
+                do: project.application(),
+                else: []
+
+            Keyword.get(application, :applications, []) ++
+              Keyword.get(application, :extra_applications, [])
+          end)
+
+        :error ->
+          []
+      end
+
+    merged = Enum.uniq(deps ++ application_deps)
+    IO.puts(Enum.join(["#{@sentinel}", app | merged], " "))
   end
 
   IO.puts("#{@end_marker}")

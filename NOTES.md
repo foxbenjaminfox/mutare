@@ -1326,10 +1326,12 @@ suite alone: a false survivor. (Verified on Elixir 1.19.5; `Mutare.UmbrellaTest`
 pins the case.)
 
 The graph is now the **declared** one, read from Mix itself: `Mutare.Runner.AppGraph`
-runs one `mix eval --no-compile --no-deps-check` in the sandbox that prints
-`Mix.Project.deps_tree/0` from the umbrella root — every child's `deps/0`
-evaluated under `MIX_ENV=test`, so `runtime:` is ignored and `only:` applies
-exactly as the test run applies it. The output is sentinel lines
+runs one `mix eval --no-compile --no-deps-check` in the sandbox that merges
+`Mix.Project.deps_tree/0` from the umbrella root with sibling names in every
+child's `application/0` (`:applications` and `:extra_applications`). Both callbacks
+are evaluated under `MIX_ENV=test`, so `runtime:` is ignored, `only:` applies
+exactly as the test run applies it, and application-only sibling relationships
+that the compiled `.app` records are not lost. The output is sentinel lines
 (`mutare-dep <app> <deps…>`, then `mutare-dep-end`) matched by *name* against the
 discovered apps (never `String.to_atom/1` on subprocess output); a missing app or
 end marker is `:error` → no narrowing, since a missing node would silently hide
