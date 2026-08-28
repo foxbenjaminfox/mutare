@@ -182,15 +182,35 @@ defmodule Mutare.Options.Registry do
   # `:partition_env` (default `nil` = off) names an env var each concurrent worker
   # is given a distinct partition id under (e.g. `MIX_TEST_PARTITION`), so a
   # stateful suite can pick a per-worker database. A non-empty string enables it;
-  # `nil` disables. It must also not collide with a name Mutare itself sets on the
-  # sandbox `mix` (the partition entry is *appended* to that env, so a duplicate key
-  # would silently clobber e.g. `MIX_ENV`). See `Mutare.Runner.Partitions`.
+  # `nil` disables. Two further constraints, both checked here so a bad name fails
+  # at config time rather than mid-run:
+  #
+  #   * It must be a syntactically valid env var name. The name is handed to
+  #     `System.cmd(env: ...)`, which *raises* on a `=` or a NUL byte in a key — a
+  #     crash deep inside the first sandbox `mix` (`Invocation.mix/4`), long after
+  #     the option was accepted. The portable-POSIX shape below is stricter than
+  #     that minimum on purpose: a name with a space or a leading digit survives
+  #     `System.cmd` but no shell or `config/test.exs` can read it back, so it is a
+  #     mistake either way.
+  #   * It must not collide with a name Mutare itself sets on the sandbox `mix`
+  #     (the partition entry is *appended* to that env, so a duplicate key would
+  #     silently clobber e.g. `MIX_ENV`).
+  #
+  # See `Mutare.Runner.Partitions`.
   defp validate_partition_env!(value) do
     name =
       validate_nullable!(
         value,
         &(is_binary(&1) and &1 != ""),
         ":partition_env must be a non-empty string (an env var name) or nil"
+      )
+
+    name =
+      validate_nullable!(
+        name,
+        &Regex.match?(~r/\A[A-Za-z_][A-Za-z0-9_]*\z/, &1),
+        ":partition_env must be a valid environment variable name " <>
+          "(a letter or underscore, then letters, digits or underscores)"
       )
 
     validate_nullable!(

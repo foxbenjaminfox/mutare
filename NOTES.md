@@ -4205,7 +4205,10 @@ vars…) would land a duplicate key in the `System.cmd` env list, where Erlang's
 resolution is unspecified — silently clobbering, say, `MIX_ENV`. So `Options`
 rejects such a name up front, validated against the authoritative
 `Invocation.reserved_env_names/0` (sourced from the very accessors that build the env,
-so it can't drift). The pool-size↔`max_concurrency` coupling the non-blocking
+so it can't drift). The same validator also requires portable-POSIX env-name syntax,
+for the same "fail at config time" reason: `System.cmd(env: ...)` *raises* on a `=` or
+a NUL byte in a key, so a name like `"A=B"` used to pass `Options.new/1` and then blow
+up deep inside the first sandbox `mix`. The pool-size↔`max_concurrency` coupling the non-blocking
 checkout depends on is the other thing a future refactor could break silently —
 flagged with an `INVARIANT:` comment at the `Task.async_stream` call.
 

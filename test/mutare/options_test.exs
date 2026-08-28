@@ -271,6 +271,22 @@ defmodule Mutare.OptionsTest do
       end
     end
 
+    test "rejects a name that is not valid env var syntax" do
+      # `=` and NUL make `System.cmd(env: ...)` raise; the rest are unreadable by any
+      # shell or `System.get_env`. All must fail at option construction, not mid-run.
+      for bad <- ["A=B", "A\0B", "MY SLOT", "1SLOT", "MY-SLOT", "MY.SLOT", "SLÖT"] do
+        assert_raise ArgumentError,
+                     ~r/:partition_env must be a valid environment variable name/,
+                     fn -> Options.new(partition_env: bad) end
+      end
+    end
+
+    test "accepts underscored and digit-suffixed names" do
+      for good <- ["_SLOT", "MY_SLOT_2", "s"] do
+        assert Options.new(partition_env: good).partition_env == good
+      end
+    end
+
     test "rejects a name Mutare itself reserves (would clobber the sandbox env)" do
       for reserved <- Mutare.Sandbox.Command.Invocation.reserved_env_names() do
         assert_raise ArgumentError,
