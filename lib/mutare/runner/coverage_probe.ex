@@ -177,6 +177,18 @@ defmodule Mutare.Runner.CoverageProbe do
     %{covered: covered, no_coverage: no_coverage, run_all?: false}
   end
 
+  @doc """
+  Does `selection` hold a whole-suite run — `:run_all`, or any `{:run, []}` outcome
+  (`:full` mode's covered mutants; an id covered only from an unlabeled process)?
+  `Mutare.Runner` reads the umbrella dependency graph (a Mix boot) only when it does,
+  since that graph narrows nothing else. Pure.
+  """
+  @spec broad_runs?(selection()) :: boolean()
+  def broad_runs?(:run_all), do: true
+
+  def broad_runs?({:selective, outcomes}),
+    do: Enum.any?(outcomes, &match?({_id, {:run, []}}, &1))
+
   # Run the probe, retrying a failed attempt while attempts remain. A cap overrun
   # (`Command.timeout_exit/0`) is NOT retried: the overrun is systematic — the
   # retry would just burn another full cap and overrun again. Each attempt clears

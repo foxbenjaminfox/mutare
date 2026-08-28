@@ -1275,14 +1275,14 @@ by `apps/<app>/test/...`, and per-mutant runs already route to the owning app
 **(4, done)** narrow the broad (`[]`, whole-umbrella) runs — `:run_all`, the
 unattributed coverage case, and `:full` mode — to the mutant's owning app **plus
 its transitive dependents**, passing those `apps/<app>/test` dirs instead of
-running every app. The dependency graph is read **authoritatively** from the
-compiled `.app` files' runtime `applications` lists (`:file.consult`), which
-capture both `in_umbrella` and `path:` siblings, so it can't under-report a sibling
-edge the way regex-parsing `mix.exs` could; an unreadable `.app` degrades to no
-narrowing (whole umbrella). A killer must execute the mutant's code, and a sibling
-only reaches it through a declared dep, so owning-app + dependents is a safe
-superset — we never narrow below it. Attributed coverage selections (step 3) are
-left untouched.
+running every app. The dependency graph is the **declared** inter-app graph, read
+by asking Mix (`Mutare.Runner.AppGraph`: one `mix eval` printing
+`Mix.Project.deps_tree/0`); it was first read off the compiled `.app` files'
+`applications` lists, which under-report — see "Umbrella narrowing must follow the
+declared graph" below. An unreadable graph degrades to no narrowing (whole
+umbrella). A killer must execute the mutant's code, and a sibling only reaches it
+through a declared dep, so owning-app + dependents is a safe superset — we never
+narrow below it. Attributed coverage selections (step 3) are left untouched.
 
 Former cosmetic artifact, now silenced `[done]`: because a mutated app does
 **not** declare a dep on `mutare_support`, the umbrella may compile the app before
@@ -1310,6 +1310,55 @@ compile-once intact).
 umbrella-root-relative coverage keys → coverage selection works. **(4)** scope
 broad (`:run_all`/unattributed/`:full`) runs to the owning app + its dependents via
 the umbrella dep graph, never below (a cross-app killer must live in a dependent).
+
+### Umbrella narrowing must follow the declared graph, not the `.app` files `[done]`
+Step (4) of umbrella support first read the inter-app graph off each compiled
+`.app`'s `applications` list, reasoning that Mix derives it from the deps and so
+it can't under-report a sibling edge the way parsing `mix.exs` could. It can:
+`Mix.Tasks.Compile.App` builds `applications` from the **runtime** deps only —
+`runtime: false` is dropped, as are `app: false` and any dep whose
+`only:`/`targets:` misses the env — while `Mix.Tasks.Compile.All.project_apps/1`
+puts **all** declared deps on the code path ("include all deps by design"). So
+with `{:core, in_umbrella: true, runtime: false}` in web, `web.app` shows no edge
+to core, yet `WebTest` calls `Core.double/1` fine — and a broad run of a core
+mutant (`:run_all`, `:full`, an unlabeled-coverage id) narrowed to core's own
+suite alone: a false survivor. (Verified on Elixir 1.19.5; `Mutare.UmbrellaTest`
+pins the case.)
+
+The graph is now the **declared** one, read from Mix itself: `Mutare.Runner.AppGraph`
+runs one `mix eval --no-compile --no-deps-check` in the sandbox that prints
+`Mix.Project.deps_tree/0` from the umbrella root — every child's `deps/0`
+evaluated under `MIX_ENV=test`, so `runtime:` is ignored and `only:` applies
+exactly as the test run applies it. The output is sentinel lines
+(`mutare-dep <app> <deps…>`, then `mutare-dep-end`) matched by *name* against the
+discovered apps (never `String.to_atom/1` on subprocess output); a missing app or
+end marker is `:error` → no narrowing, since a missing node would silently hide
+its dependents. Cost: one Mix boot (~2s on a small umbrella), paid only when the
+selection actually holds a broad run (`CoverageProbe.broad_runs?/1`) — under
+`:tests`/`:coverage` with full attribution it never runs.
+
+Discarded: parsing `apps/*/mix.exs` statically (a computed `deps/0` is invisible —
+the same reason we never rewrite one, see the `mutare_support` note above);
+`_build/…/.mix/compile.app_cache` (it *does* hold the apps loaded at compile
+time, `runtime: false` included, but it is a versioned internal manifest);
+dumping `Mix.Project.config()[:deps]` from the injected `test_helper.exs`
+bootstrap (free, but an app with no tests never runs its helper, so an
+intermediate node could go missing, and it would couple the graph to the
+bootstrap contract).
+
+Two Mix mechanics verified along the way, both load-bearing for the narrowing:
+- From the umbrella root, `mix test` leaves **every** sibling's `ebin` on the
+  code path, so a test can call a sibling with **no** declared dep at all (an
+  undeclared cross-app call passes). Owning-app + declared dependents is a
+  superset only for projects that declare the deps they use — the convention
+  `mix xref` and releases rest on too — not a Mix-enforced boundary.
+- A narrowed run may name an app's `test/` dir that holds no test files (only a
+  `test_helper.exs`, or a dependent without tests). Under umbrella recursion Mix
+  reports "Paths given to mix test did not match any directory/file" as an *info*
+  line and exits 0 (`raise_or_error_at_exit` checks `Mix.Task.recursing?/0`), so
+  it cannot manufacture a false kill; only a non-recursing single-app run treats
+  it as an error, and that path never receives dir args (a single project's
+  broad run is the bare whole suite).
 
 ### Sandbox ownership marker `[done]`
 `prepare/3` used to `File.rm_rf!` the sandbox path unconditionally — fine for the

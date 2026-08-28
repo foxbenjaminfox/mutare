@@ -217,4 +217,43 @@ defmodule Mutare.UmbrellaTest do
     assert Enum.all?(run.results, &(&1.status == :killed))
     assert Enum.all?(run.results, &(&1.site.file == "apps/core/lib/core.ex"))
   end
+
+  test "a runtime: false sibling dep is still a dependent whose tests can kill" do
+    # web depends on core with `runtime: false`: Mix omits core from web's compiled
+    # `.app` `applications`, yet Web.run calls Core.double and WebTest exercises it.
+    # core has no tests of its own, so narrowing this broad (:full) run by the
+    # *runtime* graph would run core's empty suite alone and report a false
+    # survivor. The declared graph keeps web as a dependent: killed, through web.
+    over =
+      Mutare.Test.Umbrella.build(:runtime_false_umbrella, %{
+        core: %{
+          files: %{"lib/core.ex" => "defmodule Core do\n  def double(x), do: x * 2\nend\n"}
+        },
+        web: %{
+          deps: [{:core, runtime: false}],
+          files: %{
+            "lib/web.ex" => "defmodule Web do\n  def run(x), do: Core.double(x)\nend\n",
+            "test/web_test.exs" => """
+            defmodule WebTest do
+              use ExUnit.Case
+              test "run", do: assert(Web.run(3) == 6)
+            end
+            """
+          }
+        }
+      })
+
+    assert {:ok, run} =
+             Mutare.run(over.umbrella,
+               sandbox: over.sandbox,
+               mutators: @probe,
+               test_selection: :full,
+               project: Mutare.Project.resolve(over.umbrella, apps: ["core"])
+             )
+
+    assert [_ | _] = run.results
+    assert Enum.all?(run.results, &(&1.site.file == "apps/core/lib/core.ex"))
+    assert Enum.all?(run.results, &(&1.status == :killed))
+    assert Enum.all?(run.results, &(&1.output =~ "==> web"))
+  end
 end

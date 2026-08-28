@@ -75,45 +75,45 @@ defmodule Mutare.Project do
   safe superset of A's possible killers; narrowing below it would risk a false
   survivor, so we never do.
 
-  The graph is read **authoritatively** from the compiled `.app` files' runtime
-  `applications` lists (which capture both `in_umbrella` and `path:` siblings), so
-  it requires a compiled `build_lib` (`<sandbox>/_build/<env>/lib`). Only dirs that
-  actually exist under `sandbox` are returned. Returns `%{}` (⇒ no narrowing, run
-  the whole umbrella) for a single app or if the graph can't be read — degrading
-  safe, never narrow on doubt.
+  `forward` is the **declared** inter-app graph, `%{app => [apps it depends on]}`,
+  as `Mutare.Runner.AppGraph.read/2` reads it from Mix (nodes and deps outside the
+  umbrella are ignored). Declared, not runtime: a `runtime: false` sibling dep is
+  absent from the compiled `.app`'s `applications` yet fully callable from the
+  dependent's tests. Only dirs that actually exist under `sandbox` are returned.
+  Returns `%{}` (⇒ no narrowing, run the whole umbrella) for a single app, or when
+  `forward` lacks an umbrella app — a missing node would hide that app's
+  dependents, so degrade safe rather than narrow on doubt.
   """
-  @spec app_test_scopes(t(), Path.t(), Path.t()) :: %{atom() => [String.t()]}
-  def app_test_scopes(project, sandbox, build_lib)
+  @spec app_test_scopes(t(), Path.t(), %{atom() => [atom()]}) :: %{atom() => [String.t()]}
+  def app_test_scopes(project, sandbox, forward)
 
   def app_test_scopes(
         %__MODULE__{umbrella?: true, apps: apps, mutate_scope: scope},
         sandbox,
-        build_lib
+        forward
       ) do
     names = MapSet.new(apps, & &1.app)
     dir_of = Map.new(apps, fn %{app: app, dir: dir} -> {app, dir} end)
 
-    case forward_deps(apps, build_lib, names) do
-      {:ok, forward} ->
-        reverse = invert(forward, names)
+    if Enum.all?(names, &Map.has_key?(forward, &1)) do
+      reverse = invert(forward, names)
 
-        Map.new(scope, fn %{app: app} ->
-          dirs =
-            reverse
-            |> closure(app)
-            |> Enum.map(&Path.join(dir_of[&1], "test"))
-            |> Enum.filter(&File.dir?(Path.join(sandbox, &1)))
-            |> Enum.sort()
+      Map.new(scope, fn %{app: app} ->
+        dirs =
+          reverse
+          |> closure(app)
+          |> Enum.map(&Path.join(dir_of[&1], "test"))
+          |> Enum.filter(&File.dir?(Path.join(sandbox, &1)))
+          |> Enum.sort()
 
-          {app, dirs}
-        end)
-
-      :error ->
-        %{}
+        {app, dirs}
+      end)
+    else
+      %{}
     end
   end
 
-  def app_test_scopes(_project, _sandbox, _build_lib), do: %{}
+  def app_test_scopes(_project, _sandbox, _forward), do: %{}
 
   # --- internals -----------------------------------------------------------
 
@@ -194,38 +194,18 @@ defmodule Mutare.Project do
   defp app_dir?(path), do: File.regular?(Path.join(path, "mix.exs"))
   defp reserved?(name), do: String.starts_with?(name, @reserved_prefix)
 
-  # Forward runtime deps (among umbrella apps) from each app's compiled `.app`. Any
-  # unreadable/unparsable `.app` makes the whole graph untrustworthy → `:error`, so
-  # the caller degrades to the safe whole-umbrella run rather than guess.
-  defp forward_deps(apps, build_lib, names) do
-    Enum.reduce_while(apps, {:ok, %{}}, fn %{app: app}, {:ok, acc} ->
-      case app_runtime_deps(build_lib, app, names) do
-        {:ok, deps} -> {:cont, {:ok, Map.put(acc, app, deps)}}
-        :error -> {:halt, :error}
-      end
-    end)
-  end
-
-  defp app_runtime_deps(build_lib, app, names) do
-    path = Path.join([build_lib, to_string(app), "ebin", "#{app}.app"])
-
-    case :file.consult(to_charlist(path)) do
-      {:ok, [{:application, ^app, props}]} ->
-        deps = props |> Keyword.get(:applications, []) |> Enum.filter(&MapSet.member?(names, &1))
-        {:ok, deps}
-
-      _ ->
-        :error
-    end
-  end
-
-  # Reverse the forward graph: `%{app => [apps that directly depend on it]}`.
+  # Reverse the declared graph: `%{app => [apps that directly depend on it]}`, over
+  # umbrella apps only (`forward` may carry nodes and edges outside `names`).
   defp invert(forward, names) do
     base = Map.new(names, &{&1, []})
 
-    Enum.reduce(forward, base, fn {app, deps}, acc ->
-      Enum.reduce(deps, acc, fn dep, acc -> Map.update(acc, dep, [app], &[app | &1]) end)
-    end)
+    for {app, deps} <- forward,
+        MapSet.member?(names, app),
+        dep <- deps,
+        MapSet.member?(names, dep),
+        reduce: base do
+      acc -> Map.update(acc, dep, [app], &[app | &1])
+    end
   end
 
   # `app` plus every app transitively reachable through `reverse` (its dependents).

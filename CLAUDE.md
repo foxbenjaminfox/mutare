@@ -93,11 +93,14 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   exit-code contract**: it runs a mutant `mix test` and decodes the exit code into a typed outcome
   (`:passed`/`:failed`/`:timeout`/`:sigkilled`/`:harness_error`, refined from output into
   `:suite_compile_error`/`:atom_exhausted`/`:boot_failure`).
-- **`Mutare.Runner`** (+ `Compile`, `Baseline`, `CoverageProbe`, `Stream`, `MutantRun`,
+- **`Mutare.Runner`** (+ `Compile`, `Baseline`, `CoverageProbe`, `AppGraph`, `Stream`, `MutantRun`,
   `Partitions`, `RunCtx`) — the orchestrator, now thin: it sequences the phases and owns sandbox
   lifecycle + the run-level harness-error abort guard, delegating the heavy concerns to submodules.
   `Compile` is the one compile + poison-recovery loop; `Baseline` checks the suite is green;
-  `CoverageProbe` builds test selection; `Stream` streams `:workers` mutants concurrently with the
+  `CoverageProbe` builds test selection; `AppGraph` asks Mix (one `mix eval`) for an umbrella's
+  **declared** inter-app graph, which `Project.app_test_scopes/3` turns into the per-app narrowing of
+  broad runs — the compiled `.app` lists omit `runtime: false` siblings, NOTES "Umbrella narrowing must
+  follow the declared graph"; `Stream` streams `:workers` mutants concurrently with the
   early-stop caps (`:max_survivors`/`:time_budget`) and the `:confirm_timeouts` sequential re-run;
   `MutantRun` runs one mutant with the retry policy (`:harness_retries`, the dedicated
   `:boot_failure` budget, the never-retried `:sigkilled` OOM-kill case + `:max_heap_mb` containment,

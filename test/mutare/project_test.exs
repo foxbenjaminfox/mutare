@@ -128,24 +128,14 @@ defmodule Mutare.ProjectTest do
     end
   end
 
-  describe "app_test_scopes/3 — narrowing by the dependency graph" do
+  describe "app_test_scopes/3 — narrowing by the declared dependency graph" do
     # core <- web (web depends on core); solo is independent.
-    defp scoped_sandbox(app_deps) do
+    @graph %{core: [], web: [:core], solo: []}
+
+    defp scoped_sandbox(apps) do
       sandbox = Mutare.Test.Project.tmp_dir(:scopes)
       ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(sandbox) end)
-
-      for {app, deps} <- app_deps do
-        File.mkdir_p!(Path.join([sandbox, "apps", to_string(app), "test"]))
-        ebin = Path.join([sandbox, "_build/test/lib", to_string(app), "ebin"])
-        File.mkdir_p!(ebin)
-        apps = [:kernel, :stdlib | deps] |> Enum.map_join(", ", &to_string/1)
-
-        File.write!(
-          Path.join(ebin, "#{app}.app"),
-          "{application, #{app}, [{applications, [#{apps}]}]}.\n"
-        )
-      end
-
+      for app <- apps, do: File.mkdir_p!(Path.join([sandbox, "apps", to_string(app), "test"]))
       sandbox
     end
 
@@ -155,34 +145,56 @@ defmodule Mutare.ProjectTest do
       %Project{umbrella?: true, copy_root: "u", apps: apps, mutate_scope: mutate}
     end
 
-    test "scopes a mutant to its owning app plus its (transitive) dependents" do
-      sandbox = scoped_sandbox(%{core: [], web: [:core], solo: []})
+    test "scopes a mutant to its owning app plus its dependents" do
+      sandbox = scoped_sandbox([:core, :web, :solo])
 
-      scopes = Project.app_test_scopes(project([:core]), sandbox, build_lib(sandbox))
+      scopes = Project.app_test_scopes(project([:core]), sandbox, @graph)
 
       # web depends on core, so it can kill a core mutant; solo cannot and is excluded.
       assert scopes == %{core: ["apps/core/test", "apps/web/test"]}
     end
 
-    test "an independent app scopes to itself only" do
-      sandbox = scoped_sandbox(%{core: [], web: [:core], solo: []})
+    test "dependents are followed transitively" do
+      sandbox = scoped_sandbox([:core, :web, :solo])
+      # core <- web <- solo: solo reaches core's code through web.
+      graph = %{core: [], web: [:core], solo: [:web]}
 
-      scopes = Project.app_test_scopes(project([:solo]), sandbox, build_lib(sandbox))
+      assert Project.app_test_scopes(project([:core]), sandbox, graph) ==
+               %{core: ["apps/core/test", "apps/solo/test", "apps/web/test"]}
+    end
+
+    test "an independent app scopes to itself only" do
+      sandbox = scoped_sandbox([:core, :web, :solo])
+
+      scopes = Project.app_test_scopes(project([:solo]), sandbox, @graph)
       assert scopes == %{solo: ["apps/solo/test"]}
     end
 
-    test "degrades to no narrowing (%{}) when a .app cannot be read" do
-      sandbox = scoped_sandbox(%{core: [], web: [:core], solo: []})
-      File.rm_rf!(Path.join([sandbox, "_build/test/lib/web"]))
+    test "nodes and edges outside the umbrella (Hex packages) are ignored" do
+      sandbox = scoped_sandbox([:core, :web, :solo])
+      graph = %{core: [:jason], web: [:core, :plug], solo: [], jason: [], mutare_support: []}
 
-      assert Project.app_test_scopes(project([:core]), sandbox, build_lib(sandbox)) == %{}
+      assert Project.app_test_scopes(project([:core]), sandbox, graph) ==
+               %{core: ["apps/core/test", "apps/web/test"]}
+    end
+
+    test "an app without a test dir contributes no path" do
+      sandbox = scoped_sandbox([:core, :solo])
+
+      assert Project.app_test_scopes(project([:core]), sandbox, @graph) ==
+               %{core: ["apps/core/test"]}
+    end
+
+    test "degrades to no narrowing (%{}) when the graph lacks an umbrella app" do
+      sandbox = scoped_sandbox([:core, :web, :solo])
+
+      # web's node is missing: its dependents are unknown, so nothing may be narrowed.
+      assert Project.app_test_scopes(project([:core]), sandbox, %{core: [], solo: []}) == %{}
     end
 
     test "a single (non-umbrella) project has no scopes" do
-      assert Project.app_test_scopes(%Project{umbrella?: false}, "x", "y") == %{}
+      assert Project.app_test_scopes(%Project{umbrella?: false}, "x", %{}) == %{}
     end
-
-    defp build_lib(sandbox), do: Path.join(sandbox, "_build/test/lib")
   end
 
   describe "discovery is scoped to the mutate-scope apps" do

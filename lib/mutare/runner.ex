@@ -62,7 +62,18 @@ defmodule Mutare.Runner do
   }
 
   alias Mutare.Run.Context
-  alias Mutare.Runner.{Baseline, Compile, CoverageProbe, Hydrate, Partitions, RunCtx, Stream}
+
+  alias Mutare.Runner.{
+    AppGraph,
+    Baseline,
+    Compile,
+    CoverageProbe,
+    Hydrate,
+    Partitions,
+    RunCtx,
+    Stream
+  }
+
   alias Mutare.Sandbox.Command.Invocation
 
   # `sandbox` is where the run *was* materialised. For a default (throwaway) run it
@@ -349,9 +360,9 @@ defmodule Mutare.Runner do
     on_phase.({:coverage_done, Map.put(CoverageProbe.summarize(selection), :cap_ms, cap)})
 
     # Per owning app, the test dirs a whole-suite run may be narrowed to (the app +
-    # its dependents). Empty for a single project — see `Mutare.Runner.MutantRun`'s broadening.
-    scopes =
-      Project.app_test_scopes(context.project, sandbox, Path.join(sandbox, "_build/test/lib"))
+    # its declared dependents). Empty for a single project, and when nothing broad
+    # will run — see `app_scopes/3` and `Mutare.Runner.MutantRun`'s broadening.
+    scopes = app_scopes(context.project, sandbox, selection)
 
     %RunCtx{
       sandbox: sandbox,
@@ -364,6 +375,21 @@ defmodule Mutare.Runner do
       heap_env: Invocation.heap_cap_env(options.max_heap_mb)
     }
   end
+
+  # The umbrella narrowing map. Reading the declared inter-app graph costs one Mix
+  # boot (`Mutare.Runner.AppGraph`), so it is paid only when the selection actually
+  # holds a broad run to narrow. An unreadable graph means no narrowing: every
+  # broad run covers the whole umbrella — never narrowed on doubt.
+  defp app_scopes(%Project{umbrella?: true} = project, sandbox, selection) do
+    with true <- CoverageProbe.broad_runs?(selection),
+         {:ok, forward} <- AppGraph.read(project, sandbox) do
+      Project.app_test_scopes(project, sandbox, forward)
+    else
+      _ -> %{}
+    end
+  end
+
+  defp app_scopes(_project, _sandbox, _selection), do: %{}
 
   # A complete run applies the harness-error abort guard; an early stop
   # (`--max-survivors`) skips it. Aborting on an early stop would discard the very
