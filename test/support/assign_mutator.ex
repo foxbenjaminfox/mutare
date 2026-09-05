@@ -8,7 +8,7 @@ defmodule Mutare.Test.AssignMutator do
   mutator is inert or disabled.
 
   This is the asymmetry with the *macro* path: a macro node is offered (`analyze_known_macro` →
-  `offer`), so a `macro_routes/0` mutator can mutate the whole call and the transform must re-home that
+  `offer`), so a `call_routes/0` mutator can mutate the whole call and the transform must re-home that
   mutation into the tuple-export selector (`Transform.Analyze.rehome_call_mutations/2`). A `=`
   has no such entry point. If a `=` site ever appears here, that has changed and a whole-`=`
   mutation of a value-discarded binding match would need the same re-home.

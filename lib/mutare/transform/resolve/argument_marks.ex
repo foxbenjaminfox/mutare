@@ -66,17 +66,19 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   def empty, do: %__MODULE__{}
 
   @doc """
-  Fold the enabled mutators' `c:Mutare.Mutator.argument_marks/1` declarations into a registry keyed
-  by the resolved `{module_key, function, arity}`, encoding each declared module the same way
-  `Mutare.Transform.Calls.resolved_call/1` keys on it (so a written `Process` matches a resolved
-  `[:Process]`). A mutator without the callback contributes nothing; two mutators marking the same
-  position union their labels.
+  Fold the enabled mutators' `c:Mutare.Mutator.argument_marks/1` declarations — plus the user's
+  `argument_marks:` configuration, a run-level declarer with the same declaration shape — into a
+  registry keyed by the resolved `{module_key, function, arity}`, encoding each declared module the
+  same way `Mutare.Transform.Calls.resolved_call/1` keys on it (so a written `Process` matches a
+  resolved `[:Process]`). A mutator without the callback contributes nothing; two declarers marking
+  the same position union their labels.
   """
-  @spec build([Mutator.Spec.t() | module()]) :: t()
-  def build(mutators) do
+  @spec build([Mutator.Spec.t() | module()], [Mutator.mark_declaration()]) :: t()
+  def build(mutators, configured \\ []) do
     by_call =
       mutators
       |> Enum.flat_map(&declarations/1)
+      |> Kernel.++(configured)
       |> Enum.reduce(%{}, &add_declaration/2)
 
     receiver_funs =
@@ -106,6 +108,18 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   end
 
   def stamp(args, _module_key, _fun, _pipe_mode, _registry), do: args
+
+  @doc """
+  Stamp a call's meta with the `{module_key, fun, effective_arity}` key of the mark declaration it
+  matched (`Mutare.Transform.Meta.stamp_mark_call/2`), or return `meta` unchanged when none does.
+  Read back by `Mutare.Transform.ConfigMatches` so a configured `argument_marks:` entry that
+  reached no call can be reported. `arity` is the *effective* arity (pipe counted).
+  """
+  @spec stamp_call(keyword(), Aliases.module_key(), atom(), arity(), t()) :: keyword()
+  def stamp_call(meta, module_key, fun, arity, %__MODULE__{by_call: by_call}) do
+    key = {module_key, fun, arity}
+    if Map.has_key?(by_call, key), do: Meta.stamp_mark_call(meta, key), else: meta
+  end
 
   @doc """
   Whether the registry declares any mark for `{module_key, fun, arity}` — the probe behind
@@ -165,7 +179,7 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   # Stamp a marked argument node with `labels`, reaching *inside* a unary-signed numeric literal. A
   # negative (or explicitly `+`) literal parses as `{:-/:+, _, [positive_literal]}`, and the value
   # families (`IntegerLiteral`/`FloatLiteral`) fire on that *inner* literal — so a bare outer stamp
-  # would let `MyApp.put(c, -300)` slip past a `:skip_arguments` that catches `MyApp.put(c, 300)`.
+  # would let `MyApp.put(c, -300)` slip past a mark that catches `MyApp.put(c, 300)`.
   # Marks both the sign node and the inner literal; every other node is stamped as-is. Used by the
   # positional/keyword stamping and the piped-receiver stamping alike.
   defp mark_argument({op, _meta, [{:__block__, _, [n]}]} = node, labels)
@@ -179,16 +193,13 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   # --- registry build --------------------------------------------------------
 
   # Ask each mutator for its declarations, passing the instance's `config` so a configurable mutator
-  # can fold in options-driven positions (e.g. `IntegerLiteral`'s `:skip_arguments`). A bare module
-  # carries no config; the `init/1`-normalized `config` is used when present, else the raw `opts`. The
-  # instance's `:skip_arguments` marks are relabeled to a reserved, per-instance self label
-  # (`relabel_self/2`) so two `:as` copies don't collide and no public/shared label can be misread as
-  # an instance's own skip request.
+  # can fold in options-driven positions. A bare module carries no config; the `init/1`-normalized
+  # `config` is used when present, else the raw `opts`.
   defp declarations(mutator) do
     module = module_of(mutator)
 
     if function_exported?(module, :argument_marks, 1),
-      do: relabel_self(module.argument_marks(config_of(mutator)), name_of(mutator)),
+      do: module.argument_marks(config_of(mutator)),
       else: []
   end
 
@@ -197,24 +208,6 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
 
   defp config_of(%Mutator.Spec{config: config}), do: config
   defp config_of(_module), do: []
-
-  defp name_of(%Mutator.Spec{name: name}), do: name
-  defp name_of(module) when is_atom(module), do: module.name()
-
-  # Relabel the `:skip_arguments` self-marks (`Mutator.self_mark/0`) to this instance's reserved,
-  # namespaced `Mutator.self_label/1`, leaving shared-vocabulary labels (`:timeout`, a custom
-  # mutator's own) untouched — so a self-mark suppresses only *this* instance
-  # (`Mutator.self_marked?/1`), never a sibling `:as` copy of the same module, and can't be confused
-  # with a public label that happens to equal the instance's report name.
-  defp relabel_self(declarations, instance_name) do
-    self_mark = Mutator.self_mark()
-    self_label = Mutator.self_label(instance_name)
-
-    Enum.map(declarations, fn
-      {mod, fun, arity, positions, ^self_mark} -> {mod, fun, arity, positions, self_label}
-      other -> other
-    end)
-  end
 
   # One declaration `{module, fun, arity, positions, label}` → labelled positions folded onto the
   # resolved-call key. `positions` is a list of visible-argument *effective* indices and

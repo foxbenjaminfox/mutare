@@ -101,7 +101,7 @@ defmodule Mutare.TestTest do
   end
 
   describe "options passthrough (diffs/3, diffs_for/4, metamutant_source/3)" do
-    # A source whose diff depends on a transform option: the declarative `:macro_routes`
+    # A source whose diff depends on a transform option: the declarative `:call_routes`
     # skip suppresses the mutation inside the routed call, so the option observably arrived.
     @routed_source """
     defmodule M do
@@ -109,16 +109,16 @@ defmodule Mutare.TestTest do
       def f(x), do: opaque(x + 1)
     end
     """
-    @skip_route [{Mutare.Test.Fixtures.RoutingExtension, :opaque, 1, :skip}]
+    @skip_route [{Mutare.Test.Fixtures.RoutingExtension, :opaque, 1, :raw}]
 
     test "diffs/3 forwards transform options" do
       assert {:arithmetic, "x + 1", "x - 1"} in diffs(@routed_source, [Arithmetic])
-      assert diffs(@routed_source, [Arithmetic], macro_routes: @skip_route) == []
+      assert diffs(@routed_source, [Arithmetic], call_routes: @skip_route) == []
     end
 
     test "diffs_for/4 forwards transform options" do
       assert diffs_for(@routed_source, [Arithmetic], :arithmetic) == [{"x + 1", "x - 1"}]
-      assert diffs_for(@routed_source, [Arithmetic], :arithmetic, macro_routes: @skip_route) == []
+      assert diffs_for(@routed_source, [Arithmetic], :arithmetic, call_routes: @skip_route) == []
     end
 
     test "the mutators argument overrides a :mutators passed in opts" do
@@ -139,7 +139,7 @@ defmodule Mutare.TestTest do
     end
 
     test "forwards transform options" do
-      refute metamutant_source(@routed_source, [Arithmetic], macro_routes: @skip_route) =~
+      refute metamutant_source(@routed_source, [Arithmetic], call_routes: @skip_route) =~
                "x - 1"
     end
   end

@@ -155,7 +155,9 @@ defmodule Mutare.Lifting do
   # `Mutare.Transform.Aliases` documents the same keep-the-doubled-prefix-whole rule.
   defp module_from_text(text), do: Module.concat(String.split(text, "."))
 
-  defp function_name?(name), do: Regex.match?(@function_name, name)
+  @doc "Whether `name` is a function-name string (`\"parse\"`, `\"valid?\"`, `\"save!\"`)."
+  @spec function_name?(String.t()) :: boolean()
+  def function_name?(name), do: Regex.match?(@function_name, name)
 
   # An `Elixir.`-led head is absolute — it escapes both nesting and aliases. Keep the
   # *whole* path: `Module.concat/1` folds exactly one canonical `Elixir` prefix, so

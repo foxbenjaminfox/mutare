@@ -6,14 +6,19 @@ defmodule Mutare.Mutators.IntegerLiteral do
 
   An integer literal in a known **timeout/duration position** (`Process.sleep/1`, the third argument of `Process.send_after/3`, the `GenServer.call/3` timeout, `Task.async_stream`'s `:timeout` option, …) is left unmutated — a near-unkillable equivalent mutant that also risks minting false `:timeout` kills. This family owns that knowledge: `c:Mutare.Mutator.argument_marks/1` asks the transform to mark those positions with the `:timeout` label, and `mutate/2` declines when the mark is present. A *computed* duration (`base * 2`) is not a literal at the marked node, so it still mutates. (`Mutare.Mutators.AtomLiteral` reuses the same table to leave `:infinity` alone there.)
 
-  **Configuring extra positions.** Add project-specific positions to leave alone with the `:skip_arguments` option — a list of `{module, function, arity, positions}`, where `positions` is a list of effective argument indices and `{:keyword, key}` option keys (the same shape as the built-in table):
+  **Configuring extra positions.** Add project-specific timeout positions with the `argument_marks:`
+  option in `.mutare.exs` — entries have the declaration shape this table is written in
+  (`{module, function, arity, positions, label}`; `positions` lists effective argument indices and
+  `{:keyword, key}` option keys), and the `:timeout` label gives them exactly this family's reaction:
 
-      [mutators: [{Mutare.Mutators.IntegerLiteral, skip_arguments: [
-        {MyApp.Cache, :put, 3, [2]},                      # a TTL argument
-        {MyApp.Http, :get, 2, [{:keyword, :recv_timeout}]}
-      ]}]]
+      [argument_marks: [
+        {MyApp.Cache, :put, 3, [2], :timeout},                       # a TTL argument
+        {MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout}
+      ]]
 
-  These are marked with this family's own label, so they suppress only *this* family (integers) at those positions; `Mutare.Mutators.AtomLiteral` takes the same option independently.
+  `Mutare.Mutators.AtomLiteral` reacts to the same label, so a configured position also keeps its
+  `:infinity` alone. To leave a position alone for *every* family regardless of value, route it
+  `:raw` in `call_routes:` instead (see `Mutare.CallRouting`).
 
   Integer literals are pervasive, so this is the highest-volume built-in — the cost is paid in the denominator, the benefit is catching constants the suite never pins down. The integer sibling of `Mutare.Mutators.FloatLiteral` (`step` 1, `zero` 0); the boolean flip that used to share this family now lives in `Mutare.Mutators.BooleanLiteral`.
 
@@ -115,24 +120,19 @@ defmodule Mutare.Mutators.IntegerLiteral do
       end)
   end
 
-  # The built-in timeout table plus any `:skip_arguments` positions the user configured
-  # (per-instance, read back by `Mutare.Mutator.self_marked?/1`).
+  # The built-in timeout table. Project-specific positions arrive through the `argument_marks:`
+  # option (a run-level declarer in `Mutare.Transform.Resolve.ArgumentMarks`), not through this
+  # family's own config.
   @impl Mutare.Mutator
-  def argument_marks(config) do
-    timeout_marks() ++ Mutare.Mutator.skip_arguments_marks(config)
-  end
+  def argument_marks(_config), do: timeout_marks()
 
   # Decline at a marked timeout position (an integer there is a magic duration constant the suite
-  # can't pin — a near-unkillable equivalent mutant) or a pinned position (a user-configured
-  # `:skip_arguments`, or any mutator's shared `:structural` mark); otherwise mutate the node
-  # normally. `mutate/2` takes precedence over `mutate/1` at dispatch, so the gate applies to every
-  # offer while the node-level `mutate/1` clauses below stay reusable (and directly callable in
-  # tests).
+  # can't pin — a near-unkillable equivalent mutant); otherwise mutate the node normally. `mutate/2`
+  # takes precedence over `mutate/1` at dispatch, so the gate applies to every offer while the
+  # node-level `mutate/1` clauses below stay reusable (and directly callable in tests).
   @impl Mutare.Mutator
   def mutate(node, context) do
-    if Mutare.Mutator.marked?(context, @timeout_mark) or Mutare.Mutator.pinned?(context),
-      do: :skip,
-      else: mutate(node)
+    if Mutare.Mutator.marked?(context, @timeout_mark), do: :skip, else: mutate(node)
   end
 
   @impl Mutare.Mutator

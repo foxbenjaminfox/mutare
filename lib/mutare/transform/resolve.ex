@@ -31,34 +31,34 @@ defmodule Mutare.Transform.Resolve do
   # arity), and `module` (the enclosing module, `nil` at the top level — the one piece of module
   # scope this pass tracks, so `Mutare.Transform.ModuleScope` can fold the implicit alias a nested
   # `defmodule` introduces; a call to a sibling nested module by short name then resolves to the
-  # module Elixir defines, matching a `:macro_routes` entry keyed on it). Bare function captures
+  # module Elixir defines, matching a `:call_routes` entry keyed on it). Bare function captures
   # (`&fun/N`) are not calls syntactically, but when
   # `fun/N` resolves to an import they get the same import stamp a synthesized `fun(args…)` probe
   # needs for capture mutation.
 
   alias Mutare.AST
-  alias Mutare.MacroRouting.Registry, as: Macros
+  alias Mutare.CallRouting.Registry, as: Routes
   alias Mutare.Mutator
   alias Mutare.Transform.{Aliases, Calls, Imports, MetaKeys, ModuleScope, Uses}
-  alias Mutare.Transform.Resolve.{ArgumentMarks, MacroStamp, NodeIds}
+  alias Mutare.Transform.Resolve.{ArgumentMarks, RouteStamp, NodeIds}
 
   @doc "Stamp remote calls, bare imported calls, and bare imported captures with their resolved module."
   @spec annotate(Macro.t()) :: Macro.t()
-  def annotate(ast), do: annotate(ast, %Macros{routes: %{}, hosts: []})
+  def annotate(ast), do: annotate(ast, %Routes{routes: %{}, hosts: []})
 
   @doc """
   As `annotate/1`, plus stamp each call that resolves to a **known macro** (in the
-  `registry` built by `Mutare.MacroRouting.Registry.build/3`) with its per-argument routing under
-  `meta[:mutare_macro]`, so the analyzer routes a pattern/opaque argument correctly
+  `registry` built by `Mutare.CallRouting.Registry.build/3`) with its per-argument routing under
+  `meta[:mutare_route]`, so the analyzer routes a pattern/opaque argument correctly
   instead of mutating it. The registry is carried in the env (read-only) and
   consulted at each remote and bare call.
 
   `opts` carries the pass's diagnostics wiring: `:warnings` (default `true`) gates the
-  advisory classifier warnings `MacroStamp` may print, and `:file` labels them. The
+  advisory classifier warnings `RouteStamp` may print, and `:file` labels them. The
   transform's two-phase callers disable warnings on re-runs of the same source so each
   prints once (see `Mutare.Transform`'s `:warnings` option).
   """
-  @spec annotate(Macro.t(), Macros.registry(), keyword()) :: Macro.t()
+  @spec annotate(Macro.t(), Routes.registry(), keyword()) :: Macro.t()
   def annotate(ast, registry, opts \\ []) do
     ast
     |> walk(%{
@@ -70,7 +70,7 @@ defmodule Mutare.Transform.Resolve do
       # implicit alias Elixir introduces for a nested module — a sibling nested module referred to
       # by short name then resolves to what the compiler defines (`Outer.Foo`, not the bare `Foo`).
       module: nil,
-      macro_routes: registry,
+      call_routes: registry,
       marks: Keyword.get(opts, :marks, ArgumentMarks.empty()),
       diag: %{
         warn?: Keyword.get(opts, :warnings, true),
@@ -120,7 +120,7 @@ defmodule Mutare.Transform.Resolve do
   # counterpart of the visible-arg stamping the RHS clause did.
   defp walk({:|>, meta, [lhs, rhs]}, env) do
     rhs = walk(rhs, %{env | pipe_mode: :piped})
-    lhs = mark_pipe_receiver(walk(lhs, %{env | pipe_mode: :unpiped}), rhs, env)
+    {lhs, rhs} = mark_pipe_receiver(walk(lhs, %{env | pipe_mode: :unpiped}), rhs, env)
     {:|>, meta, [lhs, rhs]}
   end
 
@@ -157,17 +157,18 @@ defmodule Mutare.Transform.Resolve do
     call_node = {{:., dot_meta, [aliases, fun]}, call_meta, args}
 
     call_meta =
-      MacroStamp.stamp(
+      RouteStamp.stamp(
         call_meta,
         module_key,
         fun,
         args,
         call_node,
-        env.macro_routes,
+        env.call_routes,
         env.pipe_mode,
         env.diag
       )
 
+    call_meta = stamp_mark_call(call_meta, module_key, fun, args, env)
     {{:., dot_meta, [stamped, fun]}, call_meta, descend_marked(args, module_key, fun, env)}
   end
 
@@ -200,17 +201,18 @@ defmodule Mutare.Transform.Resolve do
         call_node = {{:., dot_meta, [mod, fun]}, call_meta, args}
 
         call_meta =
-          MacroStamp.stamp(
+          RouteStamp.stamp(
             call_meta,
             module_key,
             fun,
             args,
             call_node,
-            env.macro_routes,
+            env.call_routes,
             env.pipe_mode,
             env.diag
           )
 
+        call_meta = stamp_mark_call(call_meta, module_key, fun, args, env)
         {{:., dot_meta, [mod, fun]}, call_meta, descend_marked(args, module_key, fun, env)}
     end
   end
@@ -290,18 +292,18 @@ defmodule Mutare.Transform.Resolve do
     module_key = bare_module_key(fun, arity, meta, env)
 
     meta =
-      MacroStamp.stamp(
+      RouteStamp.stamp(
         meta,
         module_key,
         fun,
         args,
         {fun, meta, args},
-        env.macro_routes,
+        env.call_routes,
         env.pipe_mode,
         env.diag
       )
 
-    {meta, module_key}
+    {stamp_mark_call(meta, module_key, fun, args, env), module_key}
   end
 
   defp descend(args, env), do: Enum.map(args, &walk(&1, %{env | pipe_mode: :unpiped}))
@@ -342,23 +344,42 @@ defmodule Mutare.Transform.Resolve do
   defp descend_marked(args, module_key, fun, env),
     do: args |> ArgumentMarks.stamp(module_key, fun, env.pipe_mode, env.marks) |> descend(env)
 
+  # Record on the call's own meta that a mark declaration matched it (`:mutare_mark_call`) — the
+  # side channel `Mutare.Transform.ConfigMatches` reads to find configured `argument_marks:` entries
+  # that reached no call. Keyed exactly as `ArgumentMarks.stamp/5` looks the declaration up.
+  defp stamp_mark_call(meta, module_key, fun, args, env) do
+    arity = Mutator.effective_arity(args, env.pipe_mode)
+    ArgumentMarks.stamp_call(meta, module_key, fun, arity, env.marks)
+  end
+
   # Mark a pipe's left side — the RHS call's effective argument 0, which `descend_marked/4` can't
   # reach because it isn't in the RHS's visible args — when the RHS's marks reach the receiver
   # (an index-0 positional mark, or an arity-1 call's keyword marks on a piped options list). The
   # cheap `receiver_fun?` pre-filter runs first; only then is the RHS target resolved.
+  #
+  # Returns `{lhs, rhs}`: when a receiver mark applies, the RHS call is stamped `:mutare_mark_call`
+  # too (a parenless RHS never went through `stamp_bare_call/4`, so this is the one place the match
+  # can be recorded for the ineffective-entry diagnostic).
   defp mark_pipe_receiver(lhs, rhs, env) do
     if ArgumentMarks.receiver_fun?(rhs, env.marks) do
       case pipe_target(rhs, env) do
         {module_key, fun, effective_arity} ->
-          ArgumentMarks.stamp_receiver(lhs, module_key, fun, effective_arity, env.marks)
+          {ArgumentMarks.stamp_receiver(lhs, module_key, fun, effective_arity, env.marks),
+           stamp_rhs_mark_call(rhs, module_key, fun, effective_arity, env)}
 
         nil ->
-          lhs
+          {lhs, rhs}
       end
     else
-      lhs
+      {lhs, rhs}
     end
   end
+
+  defp stamp_rhs_mark_call({form, rhs_meta, args}, module_key, fun, arity, env)
+       when is_list(rhs_meta),
+       do: {form, ArgumentMarks.stamp_call(rhs_meta, module_key, fun, arity, env.marks), args}
+
+  defp stamp_rhs_mark_call(rhs, _module_key, _fun, _arity, _env), do: rhs
 
   # The resolved `{module_key, function, effective_arity}` of a walked pipe RHS call, or `nil`. A
   # remote/erlang head resolves via `Calls.resolved_call/1` (reading the stamps this pass just
@@ -472,11 +493,11 @@ defmodule Mutare.Transform.Resolve do
   # `Imports.stamp` resolves a whole `import Mod` by **reflection** (`Code.ensure_loaded?` +
   # `function_exported?`), so a DSL module defined **only in the target project** — which the
   # Mutare process can't load — leaves a bare macro call's `meta[:mutare_import]` unstamped, and
-  # `bare_module_key/4` then returns `nil`. But the user's `:macro_routes` entry *asserts* the module
+  # `bare_module_key/4` then returns `nil`. But the user's `:call_routes` entry *asserts* the module
   # provides that macro, and the compile-unambiguity rule means a bare call under a whole import
   # of that module is unambiguously its macro. So when reflection can't resolve the call, consult
   # the registry directly: among the **whole**-imported modules in scope, find one that registers
-  # `fun/arity` as a known macro. This is the positive fix for a registered `:skip`/`:pattern` DSL
+  # `fun/arity` as a known macro. This is the positive fix for a registered `:raw`/`:pattern` DSL
   # macro whose module Mutare can't see — without it the unstamped block is classified *unknown*
   # and mutated as an ordinary runtime body, which can poison the very DSL the registration meant
   # to exclude (and `Runner.escalate_block_poison/3` can then drop every sibling mutant in the block).
@@ -485,7 +506,7 @@ defmodule Mutare.Transform.Resolve do
   #
   # `env.imports` is a **map**, so its iteration order is undefined; sort the candidates before
   # picking, so the chosen module is **deterministic** across runs (the stamped identity feeds
-  # `meta[:mutare_macro_call]`, and a `:hosted`/`:routing` mutator may key on it — a run-to-run
+  # `meta[:mutare_route_call]`, and a `:hosted`/`:routing` mutator may key on it — a run-to-run
   # flip would be a non-reproducible result, and the **mutant-id stability** Mutare relies on for
   # poison recovery assumes a stable analysis). More than one match is itself degenerate: a bare
   # call under two whole imports that *both* genuinely export `fun/arity` is an ambiguous call that
@@ -497,14 +518,14 @@ defmodule Mutare.Transform.Resolve do
     env.imports
     |> Enum.sort()
     |> Enum.find_value(fn {module_key, selector} ->
-      if Imports.whole?(selector) and Macros.lookup(env.macro_routes, module_key, fun, arity),
+      if Imports.whole?(selector) and Routes.lookup(env.call_routes, module_key, fun, arity),
         do: module_key
     end)
   end
 
   # The marks-registry twin of `registered_macro_module/3`: a bare call under a whole import of a
   # module the Mutare process can't reflect on, whose `{module, fun, arity}` some mutator *declared*
-  # an argument mark for (`argument_marks/1` — e.g. a `:skip_arguments` entry naming a target-project
+  # an argument mark for (`argument_marks/1`, or an `argument_marks:` config entry naming a target-project
   # module). The declaration asserts the module provides `fun/arity`, and the compile-unambiguity
   # rule does the rest, so `descend_marked/4` (and the piped-receiver path, via `pipe_target/2`) can
   # stamp the configured positions on the imported bare form just as on the remote/selective-import

@@ -288,7 +288,7 @@ defmodule Mutare.Transform.Aliases do
   module becomes its segment path (`Ecto.Query` → `[:Ecto, :Query]`), an Erlang-module
   atom stays itself (`:binary` → `:binary`). The one encoding of the key representation,
   published to authors as `Mutare.Calls.module_key/1` so they can compare configured
-  modules against resolved calls. (`Mutare.Macro.Spec.normalize_module/1` mirrors it for
+  modules against resolved calls. (`Mutare.CallRouting.Spec.normalize_module/1` mirrors it for
   registry input — kept separate, like the `module_key` type, because that layer stays
   free of any dependency on the transform.)
   """

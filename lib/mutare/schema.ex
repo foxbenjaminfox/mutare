@@ -74,7 +74,9 @@ defmodule Mutare.Schema do
           skipped: [{String.t(), term()}],
           ineffective_ignores: [{String.t(), Directive.t(), pos_integer() | nil}],
           unknown_directives: [{String.t(), pos_integer(), String.t()}],
-          ineffective_skip_lifting: [Lifting.skip_entry()]
+          ineffective_skip_lifting: [Lifting.skip_entry()],
+          ineffective_call_routes: [Mutare.CallRouting.Spec.t()],
+          ineffective_argument_marks: [Mutare.Mutator.mark_declaration()]
         }
 
   defstruct files: [],
@@ -85,7 +87,9 @@ defmodule Mutare.Schema do
             skipped: [],
             ineffective_ignores: [],
             unknown_directives: [],
-            ineffective_skip_lifting: []
+            ineffective_skip_lifting: [],
+            ineffective_call_routes: [],
+            ineffective_argument_marks: []
 
   @doc """
   Build a schema by discovering files under `root`.
@@ -212,6 +216,7 @@ defmodule Mutare.Schema do
     |> finalize()
     |> detect_directive_diagnostics()
     |> detect_ineffective_skip_lifting(counted, options)
+    |> detect_ineffective_config(counted, options)
     |> restrict_lines(options.only_lines)
     |> limit(options.max_mutants)
   end
@@ -291,12 +296,12 @@ defmodule Mutare.Schema do
       report = Mutare.Transform.count_report(source, count_opts(options, rel))
 
       case report.mutants do
-        0 -> {:counted, rel, source, :no_sites, report.skip_lifting_matches}
-        n -> {:counted, rel, source, {:sites, n}, report.skip_lifting_matches}
+        0 -> {:counted, rel, source, :no_sites, matches(report)}
+        n -> {:counted, rel, source, {:sites, n}, matches(report)}
       end
     rescue
       error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
-        {:counted, rel, nil, {:error, error}, MapSet.new()}
+        {:counted, rel, nil, {:error, error}, matches(nil)}
 
       other ->
         {:raise, other, __STACKTRACE__}
@@ -311,6 +316,18 @@ defmodule Mutare.Schema do
   # independent of both (a skipped id still advances the counter).
   # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
   defp count_opts(%Options{} = options, rel), do: transform_opts(options) ++ [file: rel]
+
+  # The count pass's side-channel matches, one map per file (the 5th element of a `:counted`
+  # tuple): what the file's `:skip_lifting` entries, call routes, and mark declarations reached.
+  # An unparseable file contributes nothing to any of them.
+  defp matches(nil), do: %{skip_lifting: MapSet.new(), routes: MapSet.new(), marks: MapSet.new()}
+
+  defp matches(report),
+    do: %{
+      skip_lifting: report.skip_lifting_matches,
+      routes: report.route_matches,
+      marks: report.mark_matches
+    }
 
   # The mutant count an outcome contributes to the running `:on_scan` tally (0 for a
   # no-site or skipped file), summed per file as `count_files/3` consumes the stream.
@@ -476,32 +493,35 @@ defmodule Mutare.Schema do
   # `mix test` OS processes (a different resource).
   defp scan_concurrency, do: System.schedulers_online()
 
-  # Forward `:mutators` (when set), `:macro_routes`, `:skip_lifting`, and `:extensions` to
+  # Forward `:mutators` (when set), `:call_routes`, `:skip_lifting`, and `:extensions` to
   # the transform. A `nil` `:mutators` lets `Mutare.Transform` use its default set (we never hard-code that default
   # here); when set it carries the resolved `Mutare.Mutator.Spec`s — including any
-  # `{module, opts}` config (e.g. a mutator's `call_option_keys: false`). `:macro_routes` carries the
-  # resolved `Mutare.Macro.Spec`s (known-macro argument routing), `[]` when none; `:extensions`
-  # carries non-mutating modules implementing `Mutare.MacroRouting`, `Mutare.UseExpansion`, or both;
+  # `{module, opts}` config (e.g. a mutator's `call_option_keys: false`). `:call_routes` carries the
+  # resolved `Mutare.CallRouting.Spec`s (known-macro argument routing), `[]` when none; `:extensions`
+  # carries non-mutating modules implementing `Mutare.CallRouting`, `Mutare.UseExpansion`, or both;
   # the transform merges those capabilities with built-ins and enabled mutator capabilities.
   # `:expand_uses` carries the `use`-expansion toggle (default `true`).
   defp transform_opts(%Options{
          mutators: mutators,
-         macro_routes: macros,
+         call_routes: macros,
+         argument_marks: argument_marks,
          skip_lifting: skip_lifting,
          extensions: extensions,
          expand_uses: expand_uses
        }) do
     mutator_opts = if mutators == nil, do: [], else: [mutators: mutators]
 
-    # `macro_opts`'s `if false` mutant is equivalent (`[macro_routes: []]` behaves as no `:macro_routes`), but
+    # `macro_opts`'s `if false` mutant is equivalent (`[call_routes: []]` behaves as no `:call_routes`), but
     # `if true` is a real kill (macros then never reach the transform) on the same [conditional]
     # family/line — so it is deliberately *not* ignored (a line filter would hide the kill).
-    macro_opts = if macros == [], do: [], else: [macro_routes: macros]
+    macro_opts = if macros == [], do: [], else: [call_routes: macros]
     extension_opts = if extensions == [], do: [], else: [extensions: extensions]
 
     # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
     mutator_opts ++
-      macro_opts ++ extension_opts ++ [skip_lifting: skip_lifting, expand_uses: expand_uses]
+      macro_opts ++
+      extension_opts ++
+      [argument_marks: argument_marks, skip_lifting: skip_lifting, expand_uses: expand_uses]
   end
 
   @doc """
@@ -607,16 +627,51 @@ defmodule Mutare.Schema do
     if MapSet.size(configured) == 0 or options.only_files != nil or options.only_lines != nil do
       schema
     else
-      matched =
-        Enum.reduce(counted, MapSet.new(), fn {:counted, _rel, _src, _outcome, matches}, acc ->
-          MapSet.union(acc, matches)
-        end)
+      matched = union_matches(counted, :skip_lifting)
 
       ineffective =
         configured |> MapSet.difference(matched) |> Enum.sort_by(&Lifting.format_entry/1)
 
       %{schema | ineffective_skip_lifting: ineffective}
     end
+  end
+
+  # The same diagnostic for the two configuration facilities: a declarative `call_routes:` entry
+  # whose key (`Mutare.CallRouting.Spec.key/1`, wildcards included — a concrete call reaching a
+  # wildcard route through the lookup cascade counts as that route's match) no resolved call hit,
+  # and an `argument_marks:` entry whose `{module, function, arity}` no resolved call carried a mark
+  # for. Both are read off the resolver's stamps by `Mutare.Transform.ConfigMatches` in the count
+  # pass, and both are gated on a full scan exactly like `:skip_lifting` above.
+  defp detect_ineffective_config(schema, counted, %Options{} = options) do
+    if (options.call_routes == [] and options.argument_marks == []) or options.only_files != nil or
+         options.only_lines != nil do
+      schema
+    else
+      matched_routes = union_matches(counted, :routes)
+      matched_marks = union_matches(counted, :marks)
+
+      routes =
+        Enum.reject(
+          options.call_routes,
+          &MapSet.member?(matched_routes, Mutare.CallRouting.Spec.key(&1))
+        )
+
+      marks =
+        Enum.reject(options.argument_marks, fn {module, fun, arity, _positions, _label} ->
+          MapSet.member?(
+            matched_marks,
+            {Mutare.Transform.Aliases.from_module(module), fun, arity}
+          )
+        end)
+
+      %{schema | ineffective_call_routes: routes, ineffective_argument_marks: marks}
+    end
+  end
+
+  defp union_matches(counted, kind) do
+    Enum.reduce(counted, MapSet.new(), fn {:counted, _rel, _src, _outcome, matches}, acc ->
+      MapSet.union(acc, Map.fetch!(matches, kind))
+    end)
   end
 
   # Cap the schema to at most `max` mutants (`--max-mutants`), keeping the first

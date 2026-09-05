@@ -1,37 +1,38 @@
-defmodule Mutare.Transform.Analyze.Macros do
+defmodule Mutare.Transform.Analyze.Routed do
   @moduledoc false
 
-  # The known-macro routing of the analyze pass: once `Mutare.Transform.Resolve` has
-  # stamped a call's per-argument routing (`meta[:mutare_macro]`, from `Mutare.MacroRouting.Registry`),
+  # The call routing of the analyze pass: once `Mutare.Transform.Resolve` has
+  # stamped a call's per-argument routing (`meta[:mutare_route]`, from `Mutare.CallRouting.Registry`),
   # this module routes each argument by its declared treatment instead of the default
   # all-runtime descent — a pattern arg (`match?`/`destructure`) isn't mutated in place,
   # an opaque DSL body (`Ecto.Query.from`) is left raw, and a `:hosted` fragment is handed
   # to the registering mutator's selector host.
   #
-  # `Mutare.Transform.Analyze` reads the stamp (`Meta.macro_routing/1`, the shared `:mutare_macro`
-  # contract reader) and routes a recognised call here: `analyze_known_macro/5` for a
+  # `Mutare.Transform.Analyze` reads the stamp (`Meta.routing/1`, the shared `:mutare_route`
+  # contract reader) and routes a recognised call here: `analyze_routed_call/5` for a
   # written/piped stage, `analyze_piped_value/4` for the `|>` LHS that reaches back into a known
   # macro's argument-0 treatment. It drives the descent back through the **injected `descent`**
   # (the `Mutare.Transform.Analyze` module, passed in as the first argument —
   # `descent.annotate/2`, `descent.pattern/2`) rather than naming it statically, with the
   # whole-node offer on the dependency-neutral `Attach`.
 
+  alias Mutare.AST
   alias Mutare.Mutator.Dispatch
   alias Mutare.Transform.{Candidate, Meta, NodeRange}
   alias Mutare.Transform.Analyze.{Attach, CallOptions}
 
-  # Analyze a known-macro call: offer the *whole* node to mutators (so a custom mutator
+  # Analyze a routed call: offer the *whole* node to mutators (so a custom mutator
   # registered for the macro still fires — e.g. an Ecto query mutator on `from(...)`),
   # then route each *visible* argument by its declared treatment instead of the default
   # all-runtime descent. `context` carries the pipe flag (so a pipe-aware custom mutator sees
-  # the effective arity); `CallOptions.mark/1` still runs (harmless for `:skip`/`:pattern`
+  # the effective arity); `CallOptions.mark/1` still runs (harmless for `:raw`/`:pattern`
   # args, which carry no candidates; correct for `:expression` args, preserving option-key gating).
   #
   # The context is enriched with `:mutators` — the run's enabled specs, **hosts included** —
   # before both deliveries here: the whole-call offer and the selector hosts
   # (`attach_hosted_candidates/5`). That is the sub-contract seam
   # (`Mutare.Analyze.expression_mutations/3`): a mutator whose routing left a region of this
-  # call core-raw (`:skip`, a `{:keyword, …}` `:skip` value, `:hosted`) may hand an
+  # call core-raw (`:raw`, a `{:keyword, …}` `:raw` value, `:hosted`) may hand an
   # ordinary-Elixir island inside it back to core's generation and relay the rebuilds with
   # `producer:`. Injected for registered macro calls only, NOT on ordinary `mutate/1,2` offers:
   # an ordinary node is fully core-descended, so sub-contracting inside one would produce the
@@ -43,7 +44,14 @@ defmodule Mutare.Transform.Analyze.Macros do
   # nested `:hosted` stamp's `host/2` through this same attachment but *lowers* each target
   # mutant to a whole-call rebuild (`splice(wrap(mutant))` — the woven selector degenerated to
   # its selected branch), so hosted semantics participate while no selector ever nests.
-  def analyze_known_macro(descent, node, routing, mutators, context \\ %{pipe_mode: :unpiped}) do
+  def analyze_routed_call(descent, node, routing, mutators, context \\ %{pipe_mode: :unpiped})
+
+  # The call-level `:skip` (an inert leaf) is normally intercepted by the dispatch before it reaches
+  # here (`Mutare.Transform.Analyze.do_analyze_call_node/3`); this clause keeps the contract total
+  # for any other caller — no offer, no descent, no hosts.
+  def analyze_routed_call(_descent, node, :skip, _mutators, _context), do: node
+
+  def analyze_routed_call(descent, node, routing, mutators, context) do
     context = Map.put(context, :mutators, mutators)
     {form, meta, args} = Attach.offer(node, node, mutators, context)
     routed = CallOptions.mark({form, meta, route_macro_args(descent, args, routing, mutators)})
@@ -67,7 +75,7 @@ defmodule Mutare.Transform.Analyze.Macros do
   # would silently lose every config past the first.
   #
   # The context handed down already carries `:mutators` (injected once in
-  # `analyze_known_macro/5`) — so `host/2` can sub-contract Elixir islands inside its fragment
+  # `analyze_routed_call/5`) — so `host/2` can sub-contract Elixir islands inside its fragment
   # (a pin interior) back to core's families via `Mutare.Analyze.expression_mutations/3`, under
   # the user's actual configuration (`:as` names and opts included).
   defp attach_hosted_candidates(routed, raw_node, routing, mutators, context) do
@@ -91,7 +99,7 @@ defmodule Mutare.Transform.Analyze.Macros do
   # fragment isn't rangeable (no `Mutare.Site` could be recorded). `range` defaults to the
   # logical fragment's own range.
   defp host_candidates(spec, raw_node, context) do
-    call = Mutare.Transform.Calls.resolved_macro_call(raw_node)
+    call = Mutare.Transform.Calls.resolved_routed_call(raw_node)
 
     spec
     |> Dispatch.host_targets(call, Map.take(context, [:pipe_mode, :mutators]))
@@ -120,23 +128,66 @@ defmodule Mutare.Transform.Analyze.Macros do
     end)
   end
 
-  # Route one macro argument by its declared treatment — shared by the visible-arg routing
+  # Route one argument by its declared treatment — shared by the visible-arg routing
   # (`route_macro_args/4`) and the piped-value reach-back (`analyze_piped_value/4`), so the
   # piped LHS is treated identically to a written first argument: `:expression` → ordinary
   # runtime (mutate); `:pattern`/`:binding_pattern` → a match context (descend for nested
-  # runtime escapes, never mutate the pattern *in place*); `:skip` → leave the argument **raw**
-  # (no descent, no mutation — an opaque value the macro may accept even though it is neither a
-  # valid expression nor a valid pattern). `:binding_pattern` routes identically to `:pattern`
-  # here; its *extra* structural-mutant offering is delivered separately (the macro call sits in
-  # a value-discarded position — see `binding_pattern_macro/1` / `attach_macro_pattern_candidates/4`).
-  defp route_macro_arg(_descent, arg, :skip, _mutators), do: arg
+  # runtime escapes, never mutate the pattern *in place*); `:raw` → leave the argument **as
+  # written** (no descent, no mutation — an opaque DSL value the macro accepts even though it is
+  # neither a valid expression nor a valid pattern, or a value the user simply wants left alone);
+  # `:interior` → descend as an expression but offer nothing on the argument's own node (its
+  # contents mutate, the container doesn't — the "an emptied assigns map is a crash-kill, its
+  # values are the signal" shape); a keyed refinement → the leading treatment, with named
+  # keyword values routed by their own position. `:binding_pattern` routes identically to
+  # `:pattern` here; its *extra* structural-mutant offering is delivered separately (the macro
+  # call sits in a value-discarded position — see `binding_pattern_macro/1` /
+  # `attach_macro_pattern_candidates/4`).
+  defp route_macro_arg(_descent, arg, :raw, _mutators), do: arg
+
+  # `:interior`: analyze the argument as ordinary runtime, then drop the in-place candidates that
+  # landed on the argument node *itself* — the mirror image of `:interpolated`'s
+  # `pin_inplace_candidates/1` (which touches only that same set). Descendants keep theirs.
+  defp route_macro_arg(descent, arg, :interior, mutators),
+    do: arg |> descent.annotate(mutators) |> strip_own_inplace_candidates()
+
+  # A keyed refinement `{:keyed, leading, pairs}`: when the argument is written as a literal
+  # keyword list (the trailing sugar or an explicit `[k: v]`), route the whole argument by the
+  # leading treatment *and then* substitute each named key's value, routed from the raw source by
+  # its own position. Step one attaches the container's and the unnamed pairs' candidates exactly
+  # as the leading treatment alone would (analysis only adds metadata, so the analyzed and raw
+  # lists stay in lockstep pair for pair); step two replaces the named values wholesale, so a
+  # `:raw` value carries nothing and an `:expression` value under a `:raw` leading treatment is
+  # analyzed on its own. A non-keyword argument (a variable, a `Keyword.merge/2` call, a map) has
+  # no keys to refine and takes the leading treatment alone — exactly the "if it is a literal
+  # keyword list with a literal key" contract.
+  defp route_macro_arg(descent, arg, {:keyed, leading, pairs}, mutators) do
+    analyzed = route_macro_arg(descent, arg, leading, mutators)
+
+    with {:ok, raw_pairs, _rewrap} <- keyword_pairs(arg),
+         {:ok, analyzed_pairs, rewrap} <- keyword_pairs(analyzed),
+         true <- length(raw_pairs) == length(analyzed_pairs) do
+      raw_pairs
+      |> Enum.zip_with(analyzed_pairs, fn {key, raw_value}, {analyzed_key, analyzed_value} ->
+        case List.keyfind(pairs, AST.key_atom(key), 0) do
+          {_key, position} ->
+            {analyzed_key, route_macro_arg(descent, raw_value, position, mutators)}
+
+          nil ->
+            {analyzed_key, analyzed_value}
+        end
+      end)
+      |> rewrap.()
+    else
+      _ -> analyzed
+    end
+  end
 
   # A `:hosted` position (stamped `{:hosted, host}` by `Mutare.Transform.Resolve`) is left
-  # **raw** like `:skip` — core mutates nothing in place here (a bare selector would poison
+  # **raw** like `:raw` — core mutates nothing in place here (a bare selector would poison
   # the DSL); the hosting mutator weaves its own selector via `attach_hosted_candidates/5`.
   defp route_macro_arg(_descent, arg, {:hosted, _hosts}, _mutators), do: arg
 
-  # A *bare* `:hosted` should never reach routing — `Resolve.MacroStamp` rewrites hosted treatments
+  # A *bare* `:hosted` should never reach routing — `Resolve.RouteStamp` rewrites hosted treatments
   # to `{:hosted, host}` recursively. Leave it raw anyway, never the runtime catch-all below:
   # splicing a bare selector into an unknown macro position is the one outcome the "never poison"
   # stance forbids, so a future path that slipped a bare `:hosted` through degrades safely.
@@ -144,18 +195,18 @@ defmodule Mutare.Transform.Analyze.Macros do
 
   # **Per-keyword-pair** routing for a keyword-list argument (classifier-only — produced by a
   # recursive keyword routing from either a static route or
-  # `c:Mutare.MacroRouting.route_arguments/2`).
+  # `c:Mutare.CallRouting.route_arguments/2`).
   # For each `key: value` pair the **key is left raw** (a keyword key in a DSL is a field/option
   # *name*, not a value to mutate) and the **value is routed by its own treatment** from
   # `value_treatments`, positionally. The motivating case is Ecto's keyword-shorthand `where`
   # (`where(q, category: "Foo", deleted_at: nil)`): mutate `"Foo"` (its value `:expression`) but
   # not the column name `category`, and skip the `deleted_at: nil` pair (`IS NULL`, not `= nil`)
-  # by routing its value `:skip`. A value treatment may itself be `{:keyword, …}`, so a *nested*
+  # by routing its value `:raw`. A value treatment may itself be `{:keyword, …}`, so a *nested*
   # shorthand — a keyword list whose values are keyword lists, e.g. `from(S, where: [x: v])` —
   # routes too. The treatment list is strict: exactly one treatment per pair, or routing raises
   # (`validate_keyword_treatments!/2`) — no silent padding or truncation. A non-keyword argument
   # falls back to raw, so a mis-shaped classification can never splice into a non-pair; when a
-  # `:routing` classifier caused that fallback, `Mutare.Transform.Resolve.MacroStamp` already
+  # `:routing` classifier caused that fallback, `Mutare.Transform.Resolve.RouteStamp` already
   # printed an advisory warning at stamp time (a static route stays silent — its non-keyword
   # call sites are legitimate alternate macro forms).
   defp route_macro_arg(descent, arg, {:keyword, value_treatments}, mutators)
@@ -218,7 +269,7 @@ defmodule Mutare.Transform.Analyze.Macros do
             "an :interpolated macro-routing treatment requires a scalar value (its " <>
               "mutation must pin in place), but `#{Macro.to_string(original)}` is compound — its " <>
               "inner mutations cannot be ^-pinned and would poison the DSL. Route a compound " <>
-              "value :skip, or split it into scalar pairs. (A value the source already " <>
+              "value :raw, or split it into scalar pairs. (A value the source already " <>
               "^-interpolates is fine: it is descended as plain Elixir.)"
     end
   end
@@ -269,8 +320,36 @@ defmodule Mutare.Transform.Analyze.Macros do
 
   defp route_keyword(_descent, arg, _value_treatments, _mutators), do: arg
 
+  # The pairs of a literal keyword-list argument in either shape — the bare trailing sugar
+  # (`f(x, timeout: 5)`) or the Sourceror `{:__block__, _, [list]}` wrap an explicit `[k: v]`
+  # takes — plus a `rewrap` that puts a routed pair list back into the same shape (so the
+  # rendering metadata survives). `:error` for anything that isn't a keyword literal. The keyed
+  # refinement's shape probe.
+  defp keyword_pairs({:__block__, meta, [list]}) when is_list(list) do
+    case keyword_pairs(list) do
+      {:ok, pairs, _rewrap} -> {:ok, pairs, fn routed -> {:__block__, meta, [routed]} end}
+      :error -> :error
+    end
+  end
+
+  defp keyword_pairs(list) when is_list(list) do
+    if CallOptions.keyword_list_shaped?(list),
+      do: {:ok, list, fn routed -> routed end},
+      else: :error
+  end
+
+  defp keyword_pairs(_arg), do: :error
+
+  # Drop the in-place candidates on a node's *own* metadata, keeping every descendant's. The
+  # `:interior` treatment; same move as `Mutare.Transform.Analyze.QuoteEscape`'s strip.
+  defp strip_own_inplace_candidates(node),
+    do:
+      Candidate.update_candidates(node, fn candidates ->
+        Enum.reject(candidates, &match?(%Candidate.InPlace{}, &1))
+      end)
+
   # A `{:keyword, value_treatments}` routing is a per-pair contract: a list shorter than the pairs
-  # would silently leave the unnamed values raw (an author who *meant* `:skip` can write it), and a
+  # would silently leave the unnamed values raw (an author who *meant* `:raw` can write it), and a
   # longer one names positions that don't exist — either way the route and the call disagree about
   # the argument's shape, so fail loud rather than under- or over-route. A static route can only
   # satisfy this when every call site has the same pair count; variable shapes belong to `:routing`,
@@ -280,22 +359,22 @@ defmodule Mutare.Transform.Analyze.Macros do
       raise ArgumentError,
             "a {:keyword, value_treatments} macro routing must name exactly one treatment per " <>
               "pair, but #{length(value_treatments)} treatment(s) were declared for the " <>
-              "#{length(pairs)}-pair `#{Macro.to_string(pairs)}`. Name every pair (use :skip to " <>
-              "leave a value raw); when call sites vary in pair count, register the macro with " <>
+              "#{length(pairs)}-pair `#{Macro.to_string(pairs)}`. Name every pair (use :raw to " <>
+              "leave a value as written); when call sites vary in pair count, register the macro with " <>
               ":routing and classify each call's shape in route_arguments/2."
     end
   end
 
   # The left side of a `|>` whose right side is a known macro: the piped value is the macro's
   # *effective argument 0*, so it inherits position 0's treatment, which `Resolve` recorded on
-  # the stage as `:mutare_macro_piped` (stamped only when it isn't the `:expression` default —
+  # the stage as `:mutare_route_piped` (stamped only when it isn't the `:expression` default —
   # so the common runtime LHS carries no stamp and falls through unchanged). Routing it through
   # the same `route_macro_arg/4` as the visible args keeps the piped position in lockstep with
-  # a written first argument: a `1 |> match?(1)` LHS routes as `:pattern`, a `:skip` macro's LHS
+  # a written first argument: a `1 |> match?(1)` LHS routes as `:pattern`, a `:raw` macro's LHS
   # is left raw, and any other LHS stays ordinary runtime.
   def analyze_piped_value(descent, lhs, {_form, rhs_meta, _args}, mutators)
       when is_list(rhs_meta) do
-    case Meta.piped_macro_routing(rhs_meta) do
+    case Meta.piped_routing(rhs_meta) do
       nil -> descent.annotate(lhs, mutators)
       treatment -> route_macro_arg(descent, lhs, treatment, mutators)
     end

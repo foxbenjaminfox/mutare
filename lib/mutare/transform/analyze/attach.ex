@@ -5,7 +5,7 @@ defmodule Mutare.Transform.Analyze.Attach do
   # output into a node's in-place candidates, built **on top of** `Mutare.Transform.Meta` (the
   # raw `:mutare_*` read/write surface) and with **no dependency on the descent**. The dispatch
   # (`Mutare.Transform.Analyze`) and every handler submodule
-  # (`Captures`/`ClausePatterns`/`Conditions`/`Returns`/`MatchPatterns`/`Macros`/`DefClause`)
+  # (`Captures`/`ClausePatterns`/`Conditions`/`Returns`/`MatchPatterns`/`Routed`/`DefClause`)
   # build and attach candidates through here, so the attachment vocabulary is one
   # dependency-neutral leaf rather than a back-edge into `Analyze`:
   #
@@ -31,7 +31,7 @@ defmodule Mutare.Transform.Analyze.Attach do
   # node whose children carry their own selectors. `subject` *is* `raw` at most sites;
   # the `<<>>`/`if`/`not in` clauses pass an analyzed/rebuilt subject distinct from the
   # raw node the candidate records. `context` carries the pipe flag (`Dispatch.mutations`).
-  # `Mutare.Transform.Analyze.Macros` offers a known-macro node through here
+  # `Mutare.Transform.Analyze.Routed` offers a known-macro node through here
   # (`offer(node, node, mutators, context)`).
   def offer(subject, raw, mutators, context \\ %{pipe_mode: :unpiped}) do
     # `Meta.context_with_marks/2` surfaces any position marks stamped on `raw` (by

@@ -505,7 +505,7 @@ defmodule Mix.Tasks.MutareTest do
       Mix.Tasks.Mutare.run([root, "--list-macros"])
       output = drain_shell_info()
 
-      # The extension's `macro_routes/0` registrations must appear in the effective registry —
+      # The extension's `call_routes/0` registrations must appear in the effective registry —
       # omitting `options.extensions` (the old `build/2` call) would hide them.
       assert output =~ "Mutare.Test.GettextLikeMacros.translate/1"
       assert output =~ "Mutare.Test.GettextLikeMacros.ntranslate/3"
@@ -690,7 +690,7 @@ defmodule Mix.Tasks.MutareTest do
 
     @tag :runner
     @tag timeout: 180_000
-    test "an escalating DSL prints the copy-pasteable macro_routes fix" do
+    test "an escalating DSL prints the copy-pasteable call_routes fix" do
       # Same hostile block macro as PoisonTest: `guarded :guard do …` splices its body
       # into a `when` guard, so the injected selector `case` poisons and the whole block
       # is escalated (skipped wholesale). --check must name it and suggest the route.
@@ -736,7 +736,7 @@ defmodule Mix.Tasks.MutareTest do
       assert out =~ "poison-recovery rebuild"
       assert out =~ "skipped wholesale"
       assert out =~ "guarded"
-      assert out =~ "{:*, :guarded, :skip}"
+      assert out =~ "{:*, :guarded, :raw}"
     end
 
     @tag :runner

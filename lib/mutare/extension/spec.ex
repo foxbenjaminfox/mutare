@@ -2,7 +2,7 @@ defmodule Mutare.Extension.Spec do
   @moduledoc """
   A resolved non-mutating extension module and its per-instance options.
 
-  A bare module in `:extensions` resolves with empty options. A `{module, opts}` entry carries configuration to `c:Mutare.UseExpansion.expand_use/3` through `context.opts`. `Mutare.MacroRouting` callbacks never receive these options.
+  A bare module in `:extensions` resolves with empty options. A `{module, opts}` entry carries configuration to `c:Mutare.UseExpansion.expand_use/3` through `context.opts`. `Mutare.CallRouting` callbacks never receive these options.
   """
 
   @enforce_keys [:module]

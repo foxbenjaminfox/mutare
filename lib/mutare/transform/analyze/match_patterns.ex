@@ -105,13 +105,13 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # The written shapes resolve to a binding-pattern arg (`Mutare.Transform.Resolve` stamps each):
   #
   #   * **direct** `destructure([x, y], v)` — the pattern is the first arg whose routing
-  #     (`meta[:mutare_macro]`) is `:binding_pattern`. Rebuilds the call with that arg replaced.
+  #     (`meta[:mutare_route]`) is `:binding_pattern`. Rebuilds the call with that arg replaced.
   #   * **piped, the LHS** `[x, y] |> destructure(v)` — the piped value is effective arg 0; when
-  #     *its* treatment is `:binding_pattern` (stamped `:mutare_macro_piped`) the pattern is the
+  #     *its* treatment is `:binding_pattern` (stamped `:mutare_route_piped`) the pattern is the
   #     `|>` LHS. Rebuilds `<mutated> |> rhs`.
   #   * **piped, a visible arg** `value |> unpack([x, y])` with routing `[:expression,
   #     :binding_pattern]` — the binding pattern is a *written* arg of the stage, not the piped
-  #     value, so it lives in the stage's own `meta[:mutare_macro]` (the visible routing). The
+  #     value, so it lives in the stage's own `meta[:mutare_route]` (the visible routing). The
   #     piped-value check misses it; fall through to the stage's visible args, rebuilding the
   #     stage with that arg replaced and re-piping the LHS. (The equivalent direct call resolves
   #     via the direct clause — the two stayed asymmetric until this clause looked past the LHS.)
@@ -125,7 +125,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # (forcing it `true`, weakening `and` to `or`) is equivalent; forcing it `false` is killed.
   defp binding_pattern_macro({:|>, meta, [lhs, {form, rhs_meta, args} = rhs]})
        when is_list(rhs_meta) and is_list(args) do
-    case Meta.piped_macro_routing(rhs_meta) do
+    case Meta.piped_routing(rhs_meta) do
       :binding_pattern ->
         {lhs, fn mutated -> {:|>, meta, [mutated, rhs]} end}
 
@@ -159,9 +159,9 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
 
   defp binding_pattern_macro(_node), do: nil
 
-  # The first visible-arg position routed `:binding_pattern` (`meta[:mutare_macro]`), or `nil`.
+  # The first visible-arg position routed `:binding_pattern` (`meta[:mutare_route]`), or `nil`.
   defp binding_pattern_index(meta) do
-    case Meta.macro_routing(meta) do
+    case Meta.routing(meta) do
       routing when is_list(routing) -> Enum.find_index(routing, &(&1 == :binding_pattern))
       _ -> nil
     end
@@ -173,7 +173,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # candidate carries the pattern before/after (the diff), the shared export tuple, and the
   # *raw* mutant call (`rebuild_mutant.(mutated)`).
   #
-  # A custom mutator that registered this macro (`macro_routes/0`) may *also* have produced a
+  # A custom mutator that registered this macro (`call_routes/0`) may *also* have produced a
   # **whole-call** mutation — `analyze(:runtime)` offered the macro node to it, attaching a
   # `Candidate.InPlace`. Such a mutation can't ride an ordinary in-place selector: the macro's
   # bindings *escape*, so a selector wrapping the call would trap them inside the branch (and
@@ -187,7 +187,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # The export tuple is computed up front (`pattern_export_context/1`) from the pattern's bound
   # vars alone — **independent of whether any structural swap/wildcard mutant fires** — so a
   # whole-call mutation is re-homed even when no pattern mutant is produced (the user enabled
-  # only their `macro_routes/0` mutator, or the pattern admits no swap/wildcard). Without that the
+  # only their `call_routes/0` mutator, or the pattern admits no swap/wildcard). Without that the
   # whole-call `Candidate.InPlace` would survive as an ordinary hoisted-pipe selector and
   # poison the build. When the pattern binds nothing (or isn't rangeable) there is no escape to
   # re-export, so an in-place selector is already safe and `analyzed` is left untouched.

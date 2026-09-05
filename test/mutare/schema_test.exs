@@ -644,7 +644,7 @@ defmodule Mutare.SchemaTest do
       assert Schema.count(off) == 0
     end
 
-    test ":macro_routes reaches the transform (a :skip routing keeps core out of the DSL body)",
+    test ":call_routes reaches the transform (a :skip routing keeps core out of the DSL body)",
          %{root: root} do
       write(root, "lib/q.ex", """
       defmodule UsesQuery do
@@ -657,14 +657,14 @@ defmodule Mutare.SchemaTest do
         Schema.build(root,
           paths: ["lib/q.ex"],
           mutators: [Mutare.Mutators.Relational, Mutare.Mutators.IntegerLiteral],
-          macro_routes: macros
+          call_routes: macros
         )
       end
 
       # Without the routing the DSL body's `1 == y` / literals mutate; with the `:skip`
       # routing forwarded, core leaves the opaque body untouched.
       assert Schema.count(build.([])) > 0
-      assert Schema.count(build.([{Mutare.Test.QueryDSL, :query, 1, :skip}])) == 0
+      assert Schema.count(build.([{Mutare.Test.QueryDSL, :query, 1, :raw}])) == 0
     end
 
     test ":defer_site_code controls diff rendering and :summarize_sites controls summaries",
@@ -830,5 +830,88 @@ defmodule Mutare.SchemaTest do
       )
 
     assert schema.ineffective_skip_lifting == []
+  end
+
+  test "records :call_routes entries that matched no call (wildcards count as their route)", %{
+    root: root
+  } do
+    write(root, "lib/a.ex", """
+    defmodule SchemaRoutesA do
+      def f(u), do: Mixpanel.track(u, "e", %{})
+      def g(x), do: Sentry.capture(x)
+      def h(x), do: x + 1
+    end
+    """)
+
+    schema =
+      Schema.build(root,
+        mutators: @probe,
+        call_routes: [
+          # Matches `Mixpanel.track/3` above — must NOT be recorded.
+          {Mixpanel, :track, 3, :skip},
+          # A whole-module wildcard reached through the lookup cascade — matched, not recorded.
+          {Sentry, :*, :skip},
+          # Wrong arity — recorded.
+          {Mixpanel, :track, 2, :skip},
+          # No such module anywhere — recorded.
+          {Mixpanel.Missing, :track, :any, :raw}
+        ]
+      )
+
+    assert Enum.map(schema.ineffective_call_routes, &Mutare.CallRouting.Spec.key/1) == [
+             {[:Mixpanel], :track, 2},
+             {[:Mixpanel, :Missing], :track, :any}
+           ]
+  end
+
+  test "records :argument_marks entries that matched no call (a piped receiver counts)", %{
+    root: root
+  } do
+    write(root, "lib/a.ex", """
+    defmodule SchemaMarksA do
+      def f(c), do: MyApp.Cache.put(c, :k, 300)
+      def g, do: 1000 |> MyApp.Clock.sleep()
+      def h(x), do: x + 1
+    end
+    """)
+
+    schema =
+      Schema.build(root,
+        mutators: @probe,
+        argument_marks: [
+          # Matches `MyApp.Cache.put/3` — must NOT be recorded.
+          {MyApp.Cache, :put, 3, [2], :timeout},
+          # Matches through the piped receiver (effective arg 0) — not recorded.
+          {MyApp.Clock, :sleep, 1, [0], :timeout},
+          # Wrong arity — recorded.
+          {MyApp.Cache, :put, 2, [1], :timeout},
+          # No such module anywhere — recorded.
+          {MyApp.Missing, :put, 3, [2], :timeout}
+        ]
+      )
+
+    assert schema.ineffective_argument_marks == [
+             {MyApp.Cache, :put, 2, [1], :timeout},
+             {MyApp.Missing, :put, 3, [2], :timeout}
+           ]
+  end
+
+  test "a narrowed scan records no ineffective routes or marks", %{root: root} do
+    write(root, "lib/a.ex", """
+    defmodule SchemaRoutesB do
+      def h(x), do: x + 1
+    end
+    """)
+
+    schema =
+      Schema.build(root,
+        mutators: @probe,
+        call_routes: [{Mixpanel, :track, 3, :skip}],
+        argument_marks: [{MyApp.Cache, :put, 3, [2], :timeout}],
+        only_files: ["lib/a.ex"]
+      )
+
+    assert schema.ineffective_call_routes == []
+    assert schema.ineffective_argument_marks == []
   end
 end

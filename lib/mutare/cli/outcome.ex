@@ -2,7 +2,7 @@ defmodule Mutare.CLI.Outcome do
   @moduledoc false
   # The run-outcome presentation of `mix mutare`, extracted from `Mix.Tasks.Mutare`: `report/2`
   # emits every configured reporter and applies the post-report CI gates (or notes an early stop);
-  # `warn_poison_recovery/1` prints the durable `:macro_routes` fix after a poison-recovered run; and
+  # `warn_poison_recovery/1` prints the durable `:call_routes` fix after a poison-recovered run; and
   # `format_error/3` renders each terminal `{:error, reason, detail}` into the message the task
   # `Mix.raise`s. All output is the task's (stdout report, stderr notes) — this only builds it.
 
@@ -12,7 +12,7 @@ defmodule Mutare.CLI.Outcome do
   alias Mutare.Sandbox.DependencyDiagnostic
 
   # After a run that recovered from compile-poisoning by escalating (skipping wholesale)
-  # one or more unknown block macros, print the durable `:macro_routes` fix — the extra
+  # one or more unknown block macros, print the durable `:call_routes` fix — the extra
   # rebuilds are in-memory only and paid again every run, so pinning the routes saves them.
   # Onto **stderr** (like the ineffective-ignore warnings), so a machine report on stdout
   # stays clean. Only escalations earn a note: an id-specific poison drop is a one-off (a

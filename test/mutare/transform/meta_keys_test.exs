@@ -17,7 +17,7 @@ defmodule Mutare.Transform.MetaKeysTest do
 
     assert Enum.all?(MetaKeys.delivery(), &(&1 in all))
     # a representative spread of the bookkeeping stamps
-    for key <- [:mutare_tag, :mutare_nid, :mutare_alias, :mutare_import, :mutare_macro] do
+    for key <- [:mutare_tag, :mutare_nid, :mutare_alias, :mutare_import, :mutare_route] do
       assert key in all
     end
 

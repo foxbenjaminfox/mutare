@@ -11,7 +11,6 @@ defmodule Mutare.Mutators.CharlistLiteral do
   Filterable variants — qualify a `# mutare:ignore` filter with `:label` to suppress just one half (`c:Mutare.Mutator.variants/0`): `empty` (the `~c""`) or `sentinel` (the `~c"mutare"`).
   """
   @behaviour Mutare.Mutator
-  use Mutare.Mutator.SkipArguments
 
   alias Mutare.AST
   alias Mutare.Mutator.Mutation

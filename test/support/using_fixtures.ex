@@ -17,7 +17,7 @@ defmodule Mutare.Test.SchemaUsing do
   @moduledoc """
   The Ecto analog: a `__using__` that injects `import Mutare.Test.SchemaDSL`, bringing the
   `schema/1` DSL macro into scope as a *bare* call. Lets a `use Mutare.Test.SchemaUsing` stand
-  in for `use Ecto.Schema` so a registered `{Mutare.Test.SchemaDSL, :schema, 1, :skip}` routing
+  in for `use Ecto.Schema` so a registered `{Mutare.Test.SchemaDSL, :schema, 1, :raw}` routing
   fires only once the injected import is surfaced.
   """
   defmacro __using__(_opts) do

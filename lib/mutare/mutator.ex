@@ -8,7 +8,7 @@ defmodule Mutare.Mutator do
 
   When both `mutate/1` and `mutate/2` are exported, Mutare calls `mutate/2`. If a mutator needs both context-free and context-aware production, call the context-free helper explicitly from `mutate/2`.
 
-  Structural positions use `Mutare.Mutator.Structural`. Macro-aware mutators use `Mutare.MacroRouting`, and mutators that emit mutations inside hosted DSL fragments also use `Mutare.Mutator.MacroHost`.
+  Structural positions use `Mutare.Mutator.Structural`. Macro-aware mutators use `Mutare.CallRouting`, and mutators that emit mutations inside hosted DSL fragments also use `Mutare.Mutator.MacroHost`.
 
   ## Writing a mutator
 
@@ -72,24 +72,41 @@ defmodule Mutare.Mutator do
 
       [mutators: [..., {Mutare.Mutators.AtomLiteral, call_option_keys: false}]]
 
-  ## Leaving argument positions alone (`:skip_arguments`)
+  ## Leaving argument positions alone
 
-  Every built-in *value-literal* family (`Literal`, `FloatLiteral`, `StringLiteral`, `AtomLiteral`, `BitstringLiteral`, `TupleLiteral`, `MapLiteral`, `List`, `CharlistLiteral`, `WordListLiteral`, `StringSigilLiteral`, `RegexLiteral`, `DateTimeLiteral`, `AliasLiteral`) accepts a `:skip_arguments` option: project-specific call-argument positions whose literal it should leave alone (the same mechanism `Literal` uses for the built-in timeout table).
+  Two user-facing facilities cover "don't mutate here", and a mutator author meets both from the
+  other side:
 
-      [mutators: [{Mutare.Mutators.IntegerLiteral, skip_arguments: [
-        {MyApp.Cache, :put, 3, [2]},                       # a positional argument
-        {MyApp.Http, :get, 2, [{:keyword, :recv_timeout}]} # a trailing-option value
-      ]}]]
+    * **Routing** (`call_routes:` in `.mutare.exs`, or `c:Mutare.CallRouting.call_routes/0`) is
+      transform-enforced and positional: `:skip` makes a whole call an inert leaf, `:raw` leaves an
+      argument as written, `:interior` mutates an argument's contents but not its own node, and a
+      keyed refinement (`[:expression, timeout: :raw]`) reaches one option value of a literal keyword
+      argument. No mutator is consulted — see `Mutare.CallRouting`.
+    * **Marks** (`argument_marks:` in `.mutare.exs`, or `c:argument_marks/1`) are labels the
+      transform stamps on positions and hands to mutators as `context.marks`; each mutator decides
+      what a label means. This is how the built-in timeout table works — `:timeout` positions make
+      `Mutare.Mutators.IntegerLiteral` decline any integer and `Mutare.Mutators.AtomLiteral` decline only
+      `:infinity`, while every other family proceeds — and a user extends the same table for their
+      own functions with the same declaration shape:
 
-  Each entry is `{module, function, arity, positions}`, where `positions` lists effective argument indices and `{:keyword, key}` option keys. The option is per-family and per-instance (two `:as` copies don't collide), and a bad index fails loudly at startup. Under the hood it is `c:argument_marks/1` + `marked?/2`; a *custom* mutator gets the same option in one line with `use Mutare.Mutator.SkipArguments`.
+          [argument_marks: [
+            {MyApp.Cache, :put, 3, [2], :timeout},                       # a positional argument
+            {MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout} # a trailing-option value
+          ]]
+
+  A mark's meaning lives entirely in the mutators that read it (`marked?/2`), so a configured label
+  must be one some enabled mutator declares positions for (`declared_labels/1`) — a typo fails at
+  startup. Reach for a route when the position should simply not mutate; reach for a mark when the
+  reaction should depend on the value (only a duration-shaped literal held back, a computed
+  duration's sub-expressions still mutating).
 
   ## Targeting a macro or DSL
 
-  A mutator whose mutation depends on a macro's arguments being routed specially implements `Mutare.MacroRouting` and registers the macros from `c:Mutare.MacroRouting.macro_routes/0`. Routes may be static or use `:routing` with `c:Mutare.MacroRouting.route_arguments/2` for shape-aware classification. Listing the mutator in `:mutators` auto-registers them.
+  A mutator whose mutation depends on a macro's arguments being routed specially implements `Mutare.CallRouting` and registers the macros from `c:Mutare.CallRouting.call_routes/0`. Routes may be static or use `:routing` with `c:Mutare.CallRouting.route_arguments/2` for shape-aware classification. Listing the mutator in `:mutators` auto-registers them.
 
-  Core still offers the *whole* registered call to `c:mutate/2`, with `context.mutators` carrying the run's enabled specs — so a mutator that keeps a DSL argument raw (`:skip`) can rewrite the call itself and sub-contract the ordinary-Elixir islands inside that raw argument back to core's generation via `Mutare.Analyze.expression_mutations/3`, relaying each rebuild as a `Mutare.Mutator.Mutation` with `producer:` set (see `Mutare.Analyze` — the island is analyzed with the full set, so another mutator's registered macro inside it is offered to *its* owner the same way).
+  Core still offers the *whole* registered call to `c:mutate/2`, with `context.mutators` carrying the run's enabled specs — so a mutator that keeps a DSL argument raw (`:raw`) can rewrite the call itself and sub-contract the ordinary-Elixir islands inside that raw argument back to core's generation via `Mutare.Analyze.expression_mutations/3`, relaying each rebuild as a `Mutare.Mutator.Mutation` with `producer:` set (see `Mutare.Analyze` — the island is analyzed with the full set, so another mutator's registered macro inside it is offered to *its* owner the same way).
 
-  A mutator that produces mutations *inside* a compile-time DSL additionally implements `Mutare.Mutator.MacroHost`, subscribes with `c:Mutare.Mutator.MacroHost.hosted_macros/0`, and delivers foreign-DSL mutations through `c:Mutare.Mutator.MacroHost.host/2`. It need not own the DSL's routing: a separate extension may declare the `:hosted` position, and several hosts may subscribe to it. See the "which behaviours do I implement?" table in `Mutare.MacroRouting`.
+  A mutator that produces mutations *inside* a compile-time DSL additionally implements `Mutare.Mutator.MacroHost`, subscribes with `c:Mutare.Mutator.MacroHost.hosted_macros/0`, and delivers foreign-DSL mutations through `c:Mutare.Mutator.MacroHost.host/2`. It need not own the DSL's routing: a separate extension may declare the `:hosted` position, and several hosts may subscribe to it. See the "which behaviours do I implement?" table in `Mutare.CallRouting`.
 
   ## Structural mutators at routed positions (`Mutare.Mutator.Structural`)
 
@@ -139,7 +156,7 @@ defmodule Mutare.Mutator do
       module.
     * `:mutators` — present for selector hosts (`c:Mutare.Mutator.MacroHost.host/2`) and for
       the whole-call `mutate/2` offer of a **registered macro call** (a call some enabled
-      mutator or extension registered via `Mutare.MacroRouting`): the run's enabled
+      mutator or extension registered via `Mutare.CallRouting`): the run's enabled
       `Mutare.Mutator.Spec`s (hosts included), for sub-contracting ordinary-Elixir islands the
       macro's routing left raw back to core's generation via
       `Mutare.Analyze.expression_mutations/3` — which lowers a nested host's targets to
@@ -215,9 +232,9 @@ defmodule Mutare.Mutator do
 
   A module listed more than once (the documented multi-instance `:as` pattern)
   runs `init/1` once **per instance**, each call receiving that entry's own
-  options. `c:Mutare.MacroRouting.route_arguments/2` is *not* config-aware: macro
+  options. `c:Mutare.CallRouting.route_arguments/2` is *not* config-aware: macro
   routing is shared by every mutator that meets the routed call, so its
-  classification stays instance-independent by design (see `Mutare.MacroRouting`).
+  classification stays instance-independent by design (see `Mutare.CallRouting`).
   """
   @callback init(opts :: term()) :: term()
 
@@ -226,7 +243,7 @@ defmodule Mutare.Mutator do
   to be valid.
 
   A DSL plugin has a deployment requirement Mutare cannot infer: the library
-  whose macros it routes (`c:Mutare.MacroRouting.macro_routes/0`) or hosts
+  whose macros it routes (`c:Mutare.CallRouting.call_routes/0`) or hosts
   (`c:Mutare.Mutator.MacroHost.hosted_macros/0`) must be loadable in the Mutare
   process — otherwise its routes register against nothing and its mutations
   silently fail to fire. Declaring those modules here turns the silent
@@ -242,7 +259,7 @@ defmodule Mutare.Mutator do
   Loadability (`Code.ensure_loaded?/1`) is the whole check — it does not verify
   that a module's application is started or that its version is compatible. A
   plugin with a requirement beyond loadability raises its own descriptive error
-  from `c:init/1` (or from `c:Mutare.MacroRouting.macro_routes/0`).
+  from `c:init/1` (or from `c:Mutare.CallRouting.call_routes/0`).
 
   A non-mutating extension may export the same function — capability discovery
   is by export, so `Mutare.Extension.validate!/1` applies the same check to
@@ -373,9 +390,7 @@ defmodule Mutare.Mutator do
   each naming a resolved call and the positions to mark with a label:
 
       @impl true
-      def argument_marks(config) do
-        builtin() ++ Mutare.Mutator.argument_marks_from(config[:skip_arguments] || [], name())
-      end
+      def argument_marks(_config), do: timeout_marks()
 
   A declaration is `{module, function, arity, positions, label}`. A `position` is an **effective**
   argument index (a piped receiver counts as index 0) or a `{:keyword, key}` for a trailing-options
@@ -388,15 +403,20 @@ defmodule Mutare.Mutator do
 
   Two mutators marking the same position union their labels; the label is a shared vocabulary, so a
   family can react to a label another declared (declare it too if that must survive the declarer
-  being disabled). One label carries a core-defined meaning: `structural_label/0` — every value
-  family that honours `:skip_arguments` declines outright at a position so marked (`pinned?/1`), so
-  a domain-owning mutator can hold a structural literal back from all of them with a single
-  declaration. A mutator without this callback asks for no marks. `argument_marks_from/2` turns a
-  user-facing `{module, function, arity, positions}` list into declarations under a label.
+  being disabled). Users extend the same tables from configuration — an `argument_marks:` entry has
+  exactly this shape, and its label must be one some enabled mutator declares (`declared_labels/1`).
+  A mutator without this callback asks for no marks. `argument_marks_from/2` turns a
+  `{module, function, arity, positions}` list into declarations under a label.
   """
-  @callback argument_marks(config :: term()) :: [
-              {module(), atom(), arity(), [non_neg_integer() | {:keyword, atom()}], atom()}
-            ]
+  @callback argument_marks(config :: term()) :: [mark_declaration()]
+
+  @typedoc """
+  One argument-mark declaration: `{module, function, arity, positions, label}` — the shape
+  `c:argument_marks/1` returns and the `argument_marks:` option accepts. `positions` lists
+  effective argument indices and `{:keyword, key}` trailing-option keys.
+  """
+  @type mark_declaration ::
+          {module(), atom(), arity(), [non_neg_integer() | {:keyword, atom()}], atom()}
 
   @optional_callbacks argument_marks: 1,
                       finalize: 2,
@@ -467,103 +487,72 @@ defmodule Mutare.Mutator do
   def marked?(%{marks: marks}, label), do: MapSet.member?(marks, label)
   def marked?(_context, _label), do: false
 
-  # The shared mark label for a *structural* argument position (see `structural_label/0`).
-  # Deliberately in the public label space — any mutator may declare it, and every
-  # `:skip_arguments`-honouring value family reacts (`pinned?/1`).
-  @structural_label :structural
-
   @doc """
-  The shared mark label for a **structural** argument position — one whose literal *names* something
-  (a mode atom such as `Ecto.Changeset.apply_action/2`'s action, an identifier drawn from a small
-  conventional vocabulary) rather than holding a value the program computes with. Perturbing such a
-  literal is noise by construction: the observable behaviour barely forks, so a kill demands an
-  assertion on the label itself rather than on what the code does.
+  Validate a user-facing list of argument-mark **declarations** — the `argument_marks:` option in
+  `.mutare.exs`, whose entries are exactly what `c:argument_marks/1` returns:
+  `{module, function, arity, positions, label}`. Shape-checked here (a bad index or a non-atom
+  label fails at startup); whether `label` is one some configured mutator declares positions for
+  is checked once the mutator set is known (`Mutare.Options.new/1`).
 
-  Every value family that honours `:skip_arguments` also declines outright at a
-  `:structural`-marked position (the shared `pinned?/1` gate), so a mutator that owns the domain
-  knowledge — typically a plugin — can hold a position back from **every value family that honours
-  `:skip_arguments`** with one `c:argument_marks/1` declaration, instead of every user configuring
-  `:skip_arguments` per family:
-
-      @impl true
-      def argument_marks(_config) do
-        [{Ecto.Changeset, :apply_action, 2, [1], Mutare.Mutator.structural_label()}]
-      end
-
-  Unlike `:timeout` — whose readers react *value-aware* (only a duration-shaped literal is held
-  back) — a `:structural` mark is unconditional: the position, not the value, is what the declarer
-  pinned. `Mutare.Mutators.ConventionAtom` deliberately does not react, the same stance as its
-  `:skip_arguments` exclusion (its `:ok`↔`:error` swaps are high-signal, the opposite of an opaque
-  structural literal) — so a `:structural` position whose value happens to be a convention atom
-  (`:ok`/`:error`, `:cont`/`:halt`, `:lt`/`:gt`) still gets that family's sibling swap. Pin a mode
-  vocabulary that overlaps those and expect one mutant through.
+      iex> Mutare.Mutator.validate_argument_marks!([{MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout}])
+      [{MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout}]
   """
-  @spec structural_label() :: atom()
-  def structural_label, do: @structural_label
-
-  # The label a `:skip_arguments` mark carries until `Mutare.Transform.Resolve.ArgumentMarks` relabels
-  # it (via `self_label/1`) at build. The relabel is to a *reserved, namespaced* label derived from
-  # the instance name — not the bare name — so two `:as` copies still don't collide with each other,
-  # while a *public* mark that happens to equal an instance's report name (a shared `:timeout`, a
-  # custom `:literal` label, an `:as` rename matching another family's label) can never be mistaken
-  # for this instance's own skip request. See NOTES "Argument marks".
-  @self_mark :__mutare_self__
-
-  @doc false
-  @spec self_mark() :: atom()
-  def self_mark, do: @self_mark
-
-  @doc false
-  # The reserved, per-instance self label a `:skip_arguments` mark is relabeled to — the
-  # `__mutare_self__` prefix keeps it out of the public label namespace (`argument_marks/1` /
-  # `marked?/2` deal in author-chosen atoms), the instance name keeps two `:as` copies distinct.
-  @spec self_label(atom()) :: atom()
-  def self_label(name), do: :"#{@self_mark}.#{name}"
-
-  @doc """
-  Whether the offered node sits at a position *this instance* asked to leave alone via its
-  `:skip_arguments` option (`skip_arguments_marks/1`). Per-instance — a second `:as` copy of the same
-  module with different `:skip_arguments` is unaffected, because the mark is resolved to this
-  instance's reserved `self_label/1`, not a bare atom another mutator (or option value) might share.
-  Total over a context without marks (the common non-configured case).
-  """
-  @spec self_marked?(context()) :: boolean()
-  def self_marked?(%{name: name, marks: marks}), do: MapSet.member?(marks, self_label(name))
-  def self_marked?(_context), do: false
-
-  @doc """
-  Whether the offered node sits at a position pinned against value mutation — by *this instance's*
-  `:skip_arguments` option (`self_marked?/1`) or by any enabled mutator's shared
-  `structural_label/0` mark. The one gate a value family runs before mutating
-  (`use Mutare.Mutator.SkipArguments` injects it; `Mutare.Mutators.IntegerLiteral`/`AtomLiteral`
-  call it by hand next to their `:timeout` reaction). Total over a context without marks.
-  """
-  @spec pinned?(context()) :: boolean()
-  def pinned?(context), do: self_marked?(context) or marked?(context, @structural_label)
-
-  @doc """
-  The `c:argument_marks/1` declarations for a configurable mutator's `:skip_arguments` option — the
-  one-liner a value family uses to expose "also leave these call positions alone". Reads the
-  `{module, function, arity, positions}` list from the instance's `config` and labels each with the
-  per-instance self-mark that `self_marked?/1` reads back.
-
-      def argument_marks(config), do: builtin() ++ Mutare.Mutator.skip_arguments_marks(config)
-  """
-  @spec skip_arguments_marks(term()) ::
+  @spec validate_argument_marks!(term()) ::
           [{module(), atom(), arity(), [non_neg_integer() | {:keyword, atom()}], atom()}]
-  def skip_arguments_marks(config), do: argument_marks_from(skip_entries(config), @self_mark)
+  def validate_argument_marks!(entries) when is_list(entries),
+    do: Enum.map(entries, &labelled_marks_entry!/1)
 
-  defp skip_entries(config) when is_list(config), do: Keyword.get(config, :skip_arguments, [])
-  defp skip_entries(_config), do: []
+  def validate_argument_marks!(other) do
+    raise ArgumentError,
+          ":argument_marks must be a list of {module, function, arity, positions, label} " <>
+            "entries, got: #{inspect(other)}"
+  end
+
+  defp labelled_marks_entry!({module, fun, arity, positions, label}) when is_atom(label) do
+    {^module, ^fun, ^arity, ^positions, ^label} =
+      marks_entry({module, fun, arity, positions}, label)
+
+    {module, fun, arity, positions, label}
+  end
+
+  defp labelled_marks_entry!(entry) do
+    raise ArgumentError,
+          "invalid :argument_marks entry #{inspect(entry)}; expected " <>
+            "{module, function, arity, positions, label} with an atom label"
+  end
 
   @doc """
-  Turns a user-facing list of `{module, function, arity, positions}` entries into
-  `c:argument_marks/1` declarations under `label`. `positions` is a list of effective argument
-  indices and `{:keyword, key}` option keys, exactly as in a declaration; an index is validated
-  against the declared arity. Raises `ArgumentError` with a pointed message on a malformed entry, so
-  a typo fails at startup rather than silently marking nothing. For the common "leave positions from
-  my `:skip_arguments` option alone" case, use `skip_arguments_marks/1` (which labels per-instance);
-  reach for this directly only when you want a *shared* label other mutators may react to.
+  The set of mark labels the given mutators declare positions for (`c:argument_marks/1`) — the
+  labels that *mean* something to some enabled family. `Mutare.Options` checks a configured
+  `argument_marks:` entry's label against this set, so a typo'd or orphaned label fails at startup
+  instead of marking positions nobody reads.
+
+      iex> Mutare.Mutator.declared_labels([Mutare.Mutators.IntegerLiteral]) |> MapSet.member?(:timeout)
+      true
+  """
+  @spec declared_labels([Mutare.Mutator.Spec.t() | module()]) :: MapSet.t(atom())
+  def declared_labels(mutators) when is_list(mutators) do
+    mutators
+    |> Enum.flat_map(fn
+      %Mutare.Mutator.Spec{module: module, config: config} -> declared_marks(module, config)
+      module when is_atom(module) -> declared_marks(module, [])
+    end)
+    |> MapSet.new(fn {_m, _f, _a, _positions, label} -> label end)
+  end
+
+  defp declared_marks(module, config) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :argument_marks, 1),
+      do: module.argument_marks(config),
+      else: []
+  end
+
+  @doc """
+  Turns a list of `{module, function, arity, positions}` entries into `c:argument_marks/1`
+  declarations under `label`. `positions` is a list of effective argument indices and
+  `{:keyword, key}` option keys, exactly as in a declaration; an index is validated against the
+  declared arity. Raises `ArgumentError` with a pointed message on a malformed entry, so a typo fails
+  at startup rather than silently marking nothing. The one-liner for a mutator that exposes its own
+  "also leave these positions alone" option under its label.
   """
   @spec argument_marks_from(term(), atom()) ::
           [{module(), atom(), arity(), [non_neg_integer() | {:keyword, atom()}], atom()}]

@@ -14,7 +14,6 @@ defmodule Mutare.Mutators.AliasLiteral do
   Only fully-literal aliases (every segment an atom) are touched; a dynamic alias like `__MODULE__.Sub` or `unquote(m).Foo` is left alone.
   """
   @behaviour Mutare.Mutator
-  use Mutare.Mutator.SkipArguments
 
   alias Mutare.AST
 

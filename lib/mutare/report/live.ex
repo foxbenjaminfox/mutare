@@ -262,7 +262,7 @@ defmodule Mutare.Report.Live do
   # The macro-expansion poison fallback fired: a mutation wouldn't compile inside an inline
   # DSL macro the compiler blamed by name, so its mutants are being skipped wholesale and the
   # metamutant rebuilt. Loud (`⚠`) and permanent in every mode — it names the macro and the
-  # copy-paste `{Module, :fun, :skip}` fix inline, so a first-run user aiming at an unknown
+  # copy-paste `{Module, :fun, :raw}` fix inline, so a first-run user aiming at an unknown
   # DSL sees *why* the compile is being retried and how to pin it, not a silent hang.
   def handle_cast({:phase, {:macro_poison, info}}, state) do
     line = macro_poison_line(info)
@@ -441,7 +441,7 @@ defmodule Mutare.Report.Live do
 
   # The escalation clause of the poison-round line: nothing when no block was widened this
   # round, else `skipped N macro(s): name, name` — the actionable part, since an escalated
-  # macro is the one a `:macro_routes` entry should target.
+  # macro is the one a `:call_routes` entry should target.
   defp escalation_parts([]), do: []
 
   defp escalation_parts(escalated) do
@@ -453,7 +453,7 @@ defmodule Mutare.Report.Live do
   @doc """
   Renders the macro-expansion poison fallback as a loud, persistent warning: names the
   inline DSL macro(s) whose argument wouldn't compile with a mutation spliced in, and the
-  copy-paste `{Module, :fun, :skip}` route to pin the skip up front.
+  copy-paste `{Module, :fun, :raw}` route to pin the skip up front.
   """
   @spec macro_poison_line(map()) :: String.t()
   def macro_poison_line(%{macros: macros}) do
@@ -461,7 +461,7 @@ defmodule Mutare.Report.Live do
     n = length(macros)
 
     routes =
-      Enum.map_join(macros, ", ", fn m -> "{#{m.module}, #{inspect(m.macro)}, :skip}" end)
+      Enum.map_join(macros, ", ", fn m -> "{#{m.module}, #{inspect(m.macro)}, :raw}" end)
 
     "  ⚠ compile-poison inside macro#{plural(n)} #{named} — a mutation there won't compile; " <>
       "skipping its mutants and rebuilding. Pin to skip up front: #{routes}"

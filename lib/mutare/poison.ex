@@ -67,7 +67,7 @@ defmodule Mutare.Poison do
 
   Returns `[{{module_string, fun_atom}, MapSet.t()}]` — one entry per blamed macro that
   matched at least one mutant — so the caller can drop the union and name each macro for the
-  narration and the `{Module, :fun, :skip}` suggestion.
+  narration and the `{Module, :fun, :raw}` suggestion.
   """
   @spec macro_poison(String.t(), %{optional(String.t()) => String.t()}) ::
           [{{String.t(), atom()}, MapSet.t()}]

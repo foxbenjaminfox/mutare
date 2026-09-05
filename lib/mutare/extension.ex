@@ -4,23 +4,23 @@ defmodule Mutare.Extension do
 
   An extension implements one or both of these behaviours:
 
-    * `Mutare.MacroRouting` — static or shape-aware macro-argument routing;
+    * `Mutare.CallRouting` — static or shape-aware macro-argument routing;
     * `Mutare.UseExpansion` — an override for a `use` that cannot be expanded normally.
 
   Extensions do not produce mutations or appear in reports. Add them to `:extensions` as modules or `{module, opts}` pairs:
 
       [extensions: [Mutare.Gettext]]
 
-  Entries may be bare modules or `{module, opts}` pairs. Options are delivered only to `c:Mutare.UseExpansion.expand_use/3`; `c:Mutare.MacroRouting.macro_routes/0` declarations and `c:Mutare.MacroRouting.route_arguments/2` classification are intentionally options-independent.
+  Entries may be bare modules or `{module, opts}` pairs. Options are delivered only to `c:Mutare.UseExpansion.expand_use/3`; `c:Mutare.CallRouting.call_routes/0` declarations and `c:Mutare.CallRouting.route_arguments/2` classification are intentionally options-independent.
 
-  Mutators may implement `Mutare.MacroRouting` too, but belong under `:mutators`. They are rejected from `:extensions` so their mutation producers cannot be enabled accidentally as routing-only modules.
+  Mutators may implement `Mutare.CallRouting` too, but belong under `:mutators`. They are rejected from `:extensions` so their mutation producers cannot be enabled accidentally as routing-only modules.
 
   An extension that routes a library's DSL may declare that library's modules by exporting `required_modules/0` (the same optional callback mutators declare — see `c:Mutare.Mutator.required_modules/0`); `validate!/1` checks each is loadable and aborts with a `Mutare.EnvironmentError` otherwise, so an external-source run fails loudly at startup instead of silently registering routes against nothing.
   """
 
   alias Mutare.Extension.Spec
 
-  @capability_callbacks [macro_routes: 0, expand_use: 3]
+  @capability_callbacks [call_routes: 0, expand_use: 3]
 
   @doc """
   Returns whether `module` is loaded and implements at least one extension
@@ -64,8 +64,8 @@ defmodule Mutare.Extension do
     unless extension?(module) do
       raise ArgumentError,
             ":extensions entries must be loaded non-mutator modules implementing " <>
-              "Mutare.MacroRouting and/or Mutare.UseExpansion " <>
-              "(exporting macro_routes/0 or expand_use/3), got: #{inspect(module)}"
+              "Mutare.CallRouting and/or Mutare.UseExpansion " <>
+              "(exporting call_routes/0 or expand_use/3), got: #{inspect(module)}"
     end
 
     Mutare.EnvironmentError.verify!(module)

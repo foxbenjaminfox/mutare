@@ -720,37 +720,37 @@ defmodule Mutare.OptionsTest do
     end
   end
 
-  describe ":macro_routes" do
+  describe ":call_routes" do
     test "defaults to an empty list" do
-      assert Options.new([]).macro_routes == []
+      assert Options.new([]).call_routes == []
     end
 
     test "coerces an explicit nil to an empty route list" do
-      assert Options.new(macro_routes: nil).macro_routes == []
+      assert Options.new(call_routes: nil).call_routes == []
     end
 
     test "resolves declarative entries to Macro.Specs (no reflection on the module)" do
-      assert Options.new(macro_routes: [{Ecto.Query, :from, :any, :skip}]).macro_routes ==
+      assert Options.new(call_routes: [{Ecto.Query, :from, :any, :raw}]).call_routes ==
                [
-                 %Mutare.Macro.Spec{
+                 %Mutare.CallRouting.Spec{
                    module: [:Ecto, :Query],
                    name: :from,
                    arity: :any,
-                   args: :skip
+                   args: :raw
                  }
                ]
     end
 
     test "rejects a non-list" do
       assert_raise ArgumentError,
-                   ":macro_routes must be a list of macro entries, got: :nope",
+                   ":call_routes must be a list of route entries, got: :nope",
                    fn ->
-                     Options.new(macro_routes: :nope)
+                     Options.new(call_routes: :nope)
                    end
     end
 
     test "rejects a malformed entry" do
-      assert_raise ArgumentError, fn -> Options.new(macro_routes: [{Kernel, :match?}]) end
+      assert_raise ArgumentError, fn -> Options.new(call_routes: [{Kernel, :match?}]) end
     end
   end
 
@@ -966,8 +966,8 @@ defmodule Mutare.OptionsTest do
       end
     end
 
-    test "rejects a mutator listed under :extensions, even one exporting macro_routes/0" do
-      # A macro-aware mutator exports `macro_routes/0`, but it is a `Mutare.Mutator`, not an extension —
+    test "rejects a mutator listed under :extensions, even one exporting call_routes/0" do
+      # A macro-aware mutator exports `call_routes/0`, but it is a `Mutare.Mutator`, not an extension —
       # listing it here would merge its routing yet never run its mutations, so it fails loudly.
       assert_raise ArgumentError,
                    ~r/:extensions entries must be loaded non-mutator modules/,
@@ -976,7 +976,7 @@ defmodule Mutare.OptionsTest do
                    end
     end
 
-    test "coerces an explicit nil to an empty list (like :macro_routes)" do
+    test "coerces an explicit nil to an empty list (like :call_routes)" do
       assert Options.new(extensions: nil).extensions == []
     end
 

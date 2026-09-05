@@ -9,7 +9,6 @@ defmodule Mutare.Mutators.FloatLiteral do
   Filterable variants — qualify a `# mutare:ignore` filter with `:label` to suppress just one kind (`c:Mutare.Mutator.variants/0`): `zero`, `succ`, `pred`.
   """
   @behaviour Mutare.Mutator
-  use Mutare.Mutator.SkipArguments
 
   alias Mutare.Mutators.Helpers
 

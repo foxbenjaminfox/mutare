@@ -21,7 +21,7 @@ defmodule Mutare.Options.Registry do
   # Only *configuration* lives here. The runtime-wiring fields (`project` + the live-progress hooks)
   # are **not** options — they live on `Mutare.Run.Context`, validated there.
   #
-  # The validators that resolve through other modules (`Mutare.Mutators`/`Mutare.MacroRouting.Registry`/
+  # The validators that resolve through other modules (`Mutare.Mutators`/`Mutare.CallRouting.Registry`/
   # `Mutare.UseExpansion`, `Invocation.reserved_env_names/0`, and the reporters' `Mutare.Options.formats/0`)
   # do so at *runtime*, inside the validator bodies — so there is no compile cycle with `Mutare.Options`
   # (which compile-depends on `defaults/0` here; this module never compile-depends on it).
@@ -85,31 +85,39 @@ defmodule Mutare.Options.Registry do
           ":mutators must be omitted or set to a list of mutators, got: #{inspect(other)}"
   end
 
-  # Resolve and validate `:macro_routes` through `Mutare.MacroRouting.Registry` into `Mutare.Macro.Spec`s. The
+  # Resolve and validate `:call_routes` through `Mutare.CallRouting.Registry` into `Mutare.CallRouting.Spec`s. The
   # resolution is purely syntactic (no reflection), so an entry naming a module that is not a
   # dependency of the Mutare process (e.g. `Ecto.Query`) is accepted. `nil`/absent means none;
   # the built-ins (`Kernel.match?`/`destructure`) and mutator-provided macros are merged later,
-  # in `Mutare.Transform`. `Mutare.MacroRouting.Registry.resolve/1` raises a descriptive error on a bad entry.
-  defp validate_macro_routes!(nil), do: []
+  # in `Mutare.Transform`. `Mutare.CallRouting.Registry.resolve/1` raises a descriptive error on a bad entry.
+  defp validate_call_routes!(nil), do: []
 
-  defp validate_macro_routes!(macros) when is_list(macros),
-    do: Mutare.MacroRouting.Registry.resolve(macros)
+  defp validate_call_routes!(macros) when is_list(macros),
+    do: Mutare.CallRouting.Registry.resolve(macros)
 
-  defp validate_macro_routes!(other) do
-    raise ArgumentError, ":macro_routes must be a list of macro entries, got: #{inspect(other)}"
+  defp validate_call_routes!(other) do
+    raise ArgumentError, ":call_routes must be a list of route entries, got: #{inspect(other)}"
   end
 
   defp validate_skip_lifting!(entries), do: Lifting.validate_skip_lifting!(entries)
 
-  # `:extensions` (default `[]`) lists non-mutating modules implementing `Mutare.MacroRouting`,
+  # `:argument_marks` (default `[]`): user-declared position marks, in the exact shape
+  # `c:Mutare.Mutator.argument_marks/1` returns — `{module, function, arity, positions, label}`.
+  # Shape-validated here (`Mutare.Mutator.validate_argument_marks!/1`); the label's *meaning* check —
+  # that some enabled mutator declares positions under it — needs the resolved mutator set, so
+  # `Mutare.Options.new/1` runs it after every field is built. `nil` means none.
+  defp validate_argument_marks!(nil), do: []
+  defp validate_argument_marks!(entries), do: Mutare.Mutator.validate_argument_marks!(entries)
+
+  # `:extensions` (default `[]`) lists non-mutating modules implementing `Mutare.CallRouting`,
   # `Mutare.UseExpansion`, or both, e.g. a Gettext integration. Each entry is a bare module or a
   # `{module, opts}` pair (opts delivered to `expand_use/3`'s context), resolved to a
   # `Mutare.Extension.Spec`; the module must be a loaded extension. Resolution is by reflection (a
-  # module *is* on the Mutare process path, unlike a `:macro_routes` module which is only
+  # module *is* on the Mutare process path, unlike a `:call_routes` module which is only
   # named). `Mutare.Extension.validate!/1` is the single home for the check — shared with
   # `Mutare.Transform`, so a non-extension fails loudly on either entry path. Extensions are not
   # mutators — they make the built-in mutators' work land, never produce mutations themselves.
-  # An explicit `nil` (like `:macro_routes`) means "none", coerced to `[]` rather than raising.
+  # An explicit `nil` (like `:call_routes`) means "none", coerced to `[]` rather than raising.
   defp validate_extensions!(nil), do: []
   defp validate_extensions!(extensions), do: Mutare.Extension.validate!(extensions)
 
@@ -594,6 +602,14 @@ defmodule Mutare.Options.Registry do
     if MapSet.size(set) == 0, do: "(none)", else: Lifting.format(set)
   end
 
+  defp show_argument_marks([]), do: "(none)"
+
+  defp show_argument_marks(entries) do
+    Enum.map_join(entries, ", ", fn {module, fun, arity, positions, label} ->
+      "#{inspect(module)}.#{fun}/#{arity} #{inspect(positions)} -> #{inspect(label)}"
+    end)
+  end
+
   # --- the registry --------------------------------------------------------
 
   @doc """
@@ -619,7 +635,13 @@ defmodule Mutare.Options.Registry do
       spec(key: :paths, default: ["lib"], validate: &validate_paths!/1),
       spec(key: :exclude, default: [], validate: &validate_exclude!/1),
       spec(key: :mutators, default: nil, show: &show_mutators/1, validate: &validate_mutators!/1),
-      spec(key: :macro_routes, default: [], validate: &validate_macro_routes!/1),
+      spec(key: :call_routes, default: [], validate: &validate_call_routes!/1),
+      spec(
+        key: :argument_marks,
+        default: [],
+        show: &show_argument_marks/1,
+        validate: &validate_argument_marks!/1
+      ),
       spec(
         key: :skip_lifting,
         default: MapSet.new(),

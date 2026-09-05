@@ -191,12 +191,16 @@ defmodule Mutare.Transform do
     * `:file` — path recorded on each site (default `"nofile"`)
     * `:mutators` — list of mutator entries (family atoms, modules, `{module, opts}`
       pairs, or `Mutare.Mutator.Spec`s); defaults to the full built-in set
-    * `:macro_routes` — list of known-macro entries (`{module, name, arity, treatment}` /
-      `{module, name, treatment}`, see `Mutare.MacroRouting.Registry`) that route a macro's
-      arguments specially; merged with the built-ins and routing capabilities on enabled
-      mutators/extensions. Defaults to `[]`.
+    * `:call_routes` — list of call-route entries (`{module, name, arity, treatment}` /
+      `{module, name, treatment}`, see `Mutare.CallRouting`) that route a call's arguments
+      specially, or skip the call outright; merged with the built-ins and routing capabilities on
+      enabled mutators/extensions. Defaults to `[]`.
+    * `:argument_marks` — list of `{module, function, arity, positions, label}` declarations
+      (the shape `c:Mutare.Mutator.argument_marks/1` returns) marking extra positions for the
+      mutators that read `label`; merged with the enabled mutators' own declarations. Defaults to
+      `[]`.
     * `:extensions` — list of non-mutating extension modules, each implementing
-      `Mutare.MacroRouting`, `Mutare.UseExpansion`, or both; entries may be bare modules or
+      `Mutare.CallRouting`, `Mutare.UseExpansion`, or both; entries may be bare modules or
       `{module, opts}` pairs. Static routes merge into the registry and `expand_use/3` overrides
       feed `use`-expansion (the
       extension's `opts` ride along to `expand_use/3`'s context). Defaults to `[]`.
@@ -261,13 +265,15 @@ defmodule Mutare.Transform do
     do: count_report(source, opts).mutants
 
   @doc false
-  # `count_string/2` plus the count pass's side-channel diagnostics: the `:skip_lifting`
-  # entries the source matched, so `Mutare.Schema` can union them across all files and
-  # surface the configured entries that matched nothing anywhere (see
-  # `Mutare.Schema.detect_ineffective_skip_lifting/3`).
+  # `count_string/2` plus the count pass's side-channel diagnostics: the `:skip_lifting` entries,
+  # the call-route keys, and the mark-declaration keys the source matched, so `Mutare.Schema` can
+  # union them across all files and surface the configured entries that matched nothing anywhere
+  # (see `Mutare.Schema.detect_ineffective_skip_lifting/3` and `detect_ineffective_config/3`).
   @spec count_report(String.t(), keyword()) :: %{
           mutants: non_neg_integer(),
-          skip_lifting_matches: MapSet.t(Lifting.skip_entry())
+          skip_lifting_matches: MapSet.t(Lifting.skip_entry()),
+          route_matches: MapSet.t(tuple()),
+          mark_matches: MapSet.t(tuple())
         }
   def count_report(source, opts \\ []) when is_binary(source) do
     # The `:count` sink runs the same analyze → plan → emit pipeline but builds and retains no
@@ -286,7 +292,12 @@ defmodule Mutare.Transform do
     if String.contains?(source, "mutare:ignore"),
       do: validate_ignore_qualifiers!(Mutare.Ignore.directives_from_ast(parsed), ctx)
 
-    %{mutants: ClaimState.total(ctx.claim), skip_lifting_matches: ctx.claim.skip_matches}
+    %{
+      mutants: ClaimState.total(ctx.claim),
+      skip_lifting_matches: ctx.claim.skip_matches,
+      route_matches: ctx.claim.route_matches,
+      mark_matches: ctx.claim.mark_matches
+    }
   end
 
   @doc """
@@ -354,7 +365,7 @@ defmodule Mutare.Transform do
     config = build_config(opts, names)
     ctx = build_ctx(config, opts)
 
-    # Non-mutating extensions implement `Mutare.MacroRouting`, `Mutare.UseExpansion`, or both:
+    # Non-mutating extensions implement `Mutare.CallRouting`, `Mutare.UseExpansion`, or both:
     # routes extend the registry below and `expand_use/3` overrides `use`-expansion. They make the built-in
     # mutators' work land on a library's DSL (the Gettext case). Validated + resolved here at the
     # boundary (like `:mutators`) to `Mutare.Extension.Spec`s — carrying each extension's `opts`,
@@ -363,8 +374,8 @@ defmodule Mutare.Transform do
     # way, so the `Mutare.run/2` path is covered too.
     extensions = opts |> Keyword.get(:extensions, []) |> Mutare.Extension.validate!()
 
-    # The known-macro registry (`Mutare.MacroRouting.Registry`): built-ins (`Kernel.match?`/`destructure`)
-    # merged with declarative `:macro_routes` and routes from enabled mutators/extensions. It tells
+    # The known-macro registry (`Mutare.CallRouting.Registry`): built-ins (`Kernel.match?`/`destructure`)
+    # merged with declarative `:call_routes` and routes from enabled mutators/extensions. It tells
     # the resolution pass how to route a recognised
     # macro's arguments (a pattern, an opaque DSL body). Built from the resolved mutator specs
     # in `config`, so a library's mutator/extension auto-registers the macros it relies on. Extension
@@ -372,23 +383,45 @@ defmodule Mutare.Transform do
     # opts-independent library facts, so the `opts` they carry are ignored there
     # and ride along separately to `expand_use/3`'s context.
     macros =
-      Mutare.MacroRouting.Registry.build(
-        Keyword.get(opts, :macro_routes, []),
+      Mutare.CallRouting.Registry.build(
+        Keyword.get(opts, :call_routes, []),
         config.mutators,
         extensions
       )
 
     # The argument-mark registry (`Mutare.Transform.Resolve.ArgumentMarks`): the positions the
-    # enabled mutators asked the transform to mark (`c:Mutare.Mutator.argument_marks/1`), stamped
-    # at each resolved call so those mutators can recognise and decline them. Domain-agnostic here —
-    # the meaning of each mark lives in the requesting mutator (e.g. `IntegerLiteral`'s timeout table).
-    marks = Mutare.Transform.Resolve.ArgumentMarks.build(config.mutators)
+    # enabled mutators asked the transform to mark (`c:Mutare.Mutator.argument_marks/1`), plus the
+    # user's `:argument_marks` declarations (same shape, a run-level declarer), stamped at each
+    # resolved call so the reading mutators can recognise and decline them. Domain-agnostic here —
+    # the meaning of each mark lives in the mutator that reads it (e.g. `IntegerLiteral`'s timeout
+    # table; a user entry under `:timeout` borrows exactly that reaction).
+    marks =
+      Mutare.Transform.Resolve.ArgumentMarks.build(
+        config.mutators,
+        opts |> Keyword.get(:argument_marks, []) |> Mutare.Mutator.validate_argument_marks!()
+      )
 
-    {transformed, ctx} =
-      transform_node(annotate_tree(parsed, opts, extensions, macros, marks), ctx)
+    annotated = annotate_tree(parsed, opts, extensions, macros, marks)
+    ctx = record_config_matches(ctx, annotated, macros)
+    {transformed, ctx} = transform_node(annotated, ctx)
 
     {transformed, ctx, parsed}
   end
+
+  # The count pass's side channel for the ineffective-configuration diagnostic: which route keys
+  # and mark-declaration keys this source's resolved calls hit (`Mutare.Transform.ConfigMatches`),
+  # read back by `count_report/2`. Count-sink only — the render pass re-walks a source the count
+  # pass already reported, and the diagnostic needs one full scan, not two.
+  defp record_config_matches(
+         %Ctx{claim: %ClaimState{sink: :count} = claim} = ctx,
+         annotated,
+         macros
+       ) do
+    %{routes: routes, marks: marks} = Mutare.Transform.ConfigMatches.collect(annotated, macros)
+    %{ctx | claim: %{claim | route_matches: routes, mark_matches: marks}}
+  end
+
+  defp record_config_matches(ctx, _annotated, _macros), do: ctx
 
   # The immutable transform config for one source: generated names + the resolved/validated
   # `:mutators`, `:skip_ids`, and `:skip_lifting`. `:mutators` may arrive as family atoms / bare modules (tests,
@@ -791,9 +824,9 @@ defmodule Mutare.Transform do
   # injected selector `case` may be illegal in the DSL and poison the single build.
   # Tag every site the body produces with this invocation's identity so poison
   # recovery can skip the *whole* block at once (`Mutare.Runner.escalate_block_poison/3`,
-  # on the block's second strike) — the runtime-stable equivalent of `:skip` — rather than
+  # on the block's second strike) — the runtime-stable equivalent of a `:raw` route — rather than
   # dropping one mutant at a time and re-hitting the next selector. A *registered* macro is left
-  # untagged (`tag` is `nil`), so the user's `:macro_routes` choice is honoured and never auto-skipped.
+  # untagged (`tag` is `nil`), so the user's `:call_routes` choice is honoured and never auto-skipped.
   #
   # Sites accumulate newest-first (`SelectorEmit.claim_items/4` prepends), so the ones
   # this `emit` created are exactly the head of `ctx.claim.sites` above the count we held

@@ -89,7 +89,7 @@ defmodule Mutare.Transform.Uses.Harvest do
         end
 
       # An unresolvable target (aliased to something non-static, or a non-`use` shape). Not
-      # flagged as a degradation: without a concrete module there is no `:skip` route to
+      # flagged as a degradation: without a concrete module there is no `:raw` route to
       # warn about, and the false-positive risk (a module our alias env simply missed) is high.
       :error ->
         {[], [], nil}
@@ -112,8 +112,8 @@ defmodule Mutare.Transform.Uses.Harvest do
   failures are reported (a `use` that loaded and expanded to genuinely no directives is
   *not* a degradation): `:not_loadable` (the module isn't on the scan process's code path
   — an uncompiled dep, or an external-path target) and `:nonstatic_args` (`use Foo,
-  runtime_expr` — the opts aren't a compile-time literal). Both mean any `:macro_routes`
-  `:skip` keyed on what the `use` injects will silently never fire. Read by `mix mutare
+  runtime_expr` — the opts aren't a compile-time literal). Both mean any `:call_routes`
+  `:raw` keyed on what the `use` injects will silently never fire. Read by `mix mutare
   --check` (via `Mutare.Transform.Uses.degraded_uses/2`).
   """
   @type degradation :: {module(), :not_loadable | :nonstatic_args} | nil
@@ -123,7 +123,7 @@ defmodule Mutare.Transform.Uses.Harvest do
   # here — an extension override needs neither (see `run/4`). `handlers` are threaded through so a
   # `use` nested in the expanded `__using__` body is *also* offered to the extensions (see `collect`).
   # Returns `{directives, behaviours, degradation}`: the two failed gates report their reason so
-  # `--check` can name a `use` whose `:skip` route would be dead; a successful expand reports `nil`.
+  # `--check` can name a `use` whose `:raw` route would be dead; a successful expand reports `nil`.
   defp in_process(mod, args, caller_module, env, handlers) do
     # The two pre-expansion gates, opts evaluated once via the outer match: opts must be a
     # compile-time literal (`use_opts/1`), then the module must be loadable. Either failing

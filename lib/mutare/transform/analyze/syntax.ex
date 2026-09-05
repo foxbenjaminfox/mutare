@@ -5,7 +5,7 @@ defmodule Mutare.Transform.Analyze.Syntax do
   # `do_key?`/`clause_block_key?`/`block_key?` — with **no dependency on the descent**. Kept
   # here (not as `Mutare.Transform.Analyze` predicates the handlers call back into) so they are a
   # one-way leaf rather than a module cycle. (The other cross-module reader, the known-macro
-  # routing stamp, already lives in `Mutare.Transform.Meta.macro_routing/1`.)
+  # routing stamp, already lives in `Mutare.Transform.Meta.routing/1`.)
 
   alias Mutare.AST
 

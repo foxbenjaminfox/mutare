@@ -1126,7 +1126,7 @@ defmodule Mutare.TransformResolutionTest do
       {_, skipped, _} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IntegerLiteral],
-          macro_routes: [{:my_dsl, :filter, :any, :skip}]
+          call_routes: [{:my_dsl, :filter, :any, :raw}]
         )
 
       {_, control, _} =

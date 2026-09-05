@@ -74,7 +74,7 @@ end
 defmodule Mutare.Test.QueryMutator do
   @moduledoc """
   A reference **macro-aware** custom mutator, used in tests to exercise the
-  `c:Mutare.MacroRouting.macro_routes/0` extension point and the `:skip` argument treatment.
+  `c:Mutare.CallRouting.call_routes/0` extension point and the `:skip` argument treatment.
 
   It registers `Mutare.Test.QueryDSL.query/1` as a known macro whose argument is
   `:skip`ped — so Mutare core never mutates the DSL body — and mutates the query
@@ -83,13 +83,13 @@ defmodule Mutare.Test.QueryMutator do
   enables it with a single `:mutators` entry and core stays DSL-agnostic.
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   @impl Mutare.Mutator
   def name, do: :query_dsl
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.QueryDSL, :query, 1, :raw}]
 
   @impl Mutare.Mutator
   # A `query([clause, clause, ...])` with more than one clause — drop the last one.
@@ -115,7 +115,7 @@ defmodule Mutare.Test.SubcontractNodeMutator do
   family; delivery is the ordinary in-place selector on the rebuilt call.
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   alias Mutare.Mutator.Mutation
 
@@ -124,8 +124,8 @@ defmodule Mutare.Test.SubcontractNodeMutator do
   @impl Mutare.Mutator
   def name, do: :node_sub
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.QueryDSL, :dyn, 1, :skip}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.QueryDSL, :dyn, 1, :raw}]
 
   @impl Mutare.Mutator
   def mutate({:dyn, meta, [{op, cmeta, [left, right]}]}, context) when op in @comparisons do
@@ -172,7 +172,7 @@ defmodule Mutare.Test.AttributedQueryMutator do
   loadable macro (`Mutare.Test.QueryDSL.query/1`) resolves the registration by reflection.
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   alias Mutare.AST
   alias Mutare.Mutator.Mutation
@@ -185,8 +185,8 @@ defmodule Mutare.Test.AttributedQueryMutator do
   @impl Mutare.Mutator
   def variants, do: ~w(drop)
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.QueryDSL, :query, 1, :raw}]
 
   @impl Mutare.Mutator
   def mutate({:query, meta, [clauses]}) when is_list(clauses) and length(clauses) > 1 do
@@ -220,7 +220,7 @@ defmodule Mutare.Test.AttributedQueryPairMutator do
   whole pair (`where: ...`), not just its value.
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   alias Mutare.AST
   alias Mutare.Mutator.Mutation
@@ -228,8 +228,8 @@ defmodule Mutare.Test.AttributedQueryPairMutator do
   @impl Mutare.Mutator
   def name, do: :attributed_query_pair
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.QueryDSL, :query, 1, :raw}]
 
   @impl Mutare.Mutator
   def mutate({:query, meta, [[{_key, _value} = original | rest]]}) do
@@ -251,15 +251,15 @@ defmodule Mutare.Test.MisattributedQueryMutator do
   loudly-but-safely rather than mislocating a site or crashing on a nil range.
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   alias Mutare.Mutator.Mutation
 
   @impl Mutare.Mutator
   def name, do: :misattributed_query
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.QueryDSL, :query, 1, :raw}]
 
   @impl Mutare.Mutator
   def mutate({:query, meta, [clauses]}) when is_list(clauses) and length(clauses) > 1 do
@@ -295,7 +295,7 @@ defmodule Mutare.Test.UnpackMutator do
   `variant` field — the latter leaving a valid `[unpack_call:value]` directive unable to suppress it.)
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   alias Mutare.Mutator.Mutation
 
@@ -310,8 +310,8 @@ defmodule Mutare.Test.UnpackMutator do
   @impl Mutare.Mutator
   def variants, do: ~w(value)
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.QueryDSL, :unpack, 2, [:binding_pattern, :expression]}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.QueryDSL, :unpack, 2, [:binding_pattern, :expression]}]
 
   @impl Mutare.Mutator
   # `unpack(pattern, value)` (directly written) — replace the value, keeping the pattern.

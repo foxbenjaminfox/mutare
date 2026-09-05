@@ -7,7 +7,6 @@ defmodule Mutare.Mutators.TupleLiteral do
   A tuple in a *pattern* is left alone, so a match like `{:ok, v} = …` is not corrupted.
   """
   @behaviour Mutare.Mutator
-  use Mutare.Mutator.SkipArguments
 
   @empty {:{}, [], []}
 

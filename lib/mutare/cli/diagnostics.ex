@@ -16,6 +16,8 @@ defmodule Mutare.CLI.Diagnostics do
     warn_unknown_directives(schema)
     warn_ineffective_ignores(schema)
     warn_ineffective_skip_lifting(schema)
+    warn_ineffective_call_routes(schema)
+    warn_ineffective_argument_marks(schema)
     enforce_strict_ignores(schema, options)
   end
 
@@ -81,6 +83,48 @@ defmodule Mutare.CLI.Diagnostics do
 
     :ok
   end
+
+  # The `:call_routes` / `:argument_marks` mirrors of `warn_ineffective_skip_lifting/1`: a configured
+  # entry no resolved call hit anywhere in a full scan (`Mutare.Schema.detect_ineffective_config/3`).
+  # A `{Mixpanel, :track, 3, :skip}` aimed at a call that is actually `track/2`, or a module name
+  # with a typo, would otherwise leave the route silently inert — the opposite of the "nothing in
+  # config is silently inert" stance the ignore namespace already takes. Warning-only, like
+  # `:skip_lifting`: these live in config, not source, so `--strict-ignores` leaves them alone.
+  defp warn_ineffective_call_routes(%Schema{ineffective_call_routes: []}), do: :ok
+
+  defp warn_ineffective_call_routes(%Schema{ineffective_call_routes: specs}) do
+    for spec <- specs do
+      IO.puts(
+        :stderr,
+        "warning: :call_routes entry #{format_route(spec)} matched no call — check the module " <>
+          "name, the function name, and the arity (a piped receiver counts toward it)"
+      )
+    end
+
+    :ok
+  end
+
+  defp warn_ineffective_argument_marks(%Schema{ineffective_argument_marks: []}), do: :ok
+
+  defp warn_ineffective_argument_marks(%Schema{ineffective_argument_marks: entries}) do
+    for {module, fun, arity, _positions, label} <- entries do
+      IO.puts(
+        :stderr,
+        "warning: :argument_marks entry #{inspect(module)}.#{fun}/#{arity} (#{inspect(label)}) " <>
+          "matched no call — check the module name, the function name, and the arity (a piped " <>
+          "receiver counts toward it)"
+      )
+    end
+
+    :ok
+  end
+
+  # A route as the user would write it: `{Mixpanel, :track, 3}` / `{Ecto.Query, :*, :any}`.
+  defp format_route(%Mutare.CallRouting.Spec{module: module, name: name, arity: arity}),
+    do: "{#{format_route_module(module)}, #{inspect(name)}, #{inspect(arity)}}"
+
+  defp format_route_module(path) when is_list(path), do: inspect(Module.concat(path))
+  defp format_route_module(atom), do: inspect(atom)
 
   # The "directive on the pipe's first line" miss: the mutants it named sit further
   # down the *same* multi-line expression (`Mutare.Ignore.misplacement_hint/3`).

@@ -8,7 +8,7 @@ defmodule Mutare.CLI.Info do
   # to scan/compile the host itself — the task supplies it.
 
   alias Mutare.{CLI, Ignore, Mutators, Options, Project, Site}
-  alias Mutare.MacroRouting.Registry, as: Macros
+  alias Mutare.CallRouting.Registry, as: Macros
   alias Mutare.Ignore.Directive
   alias Mutare.Ignore.Directives
   alias Mutare.Options.Registry
@@ -191,14 +191,14 @@ defmodule Mutare.CLI.Info do
     Enum.each(rows, fn {k, v} -> Mix.shell().info("  #{String.pad_trailing(k, pad)}  #{v}") end)
   end
 
-  # `--list-macros`: the known-macro registry (built-ins + the `:macro_routes` option + any
+  # `--list-macros`: the known-macro registry (built-ins + the `:call_routes` option + any
   # enabled mutator/extension routing capabilities) whose arguments the
   # transform routes specially. Threads `options.extensions` into `Macros.build/3` exactly as
   # the real transform does (`Transform`), so the inspected registry is the *effective* one
   # — omitting them would hide every extension-contributed routing.
   def print_macro_registry(%Options{} = options) do
     specs = Mutators.resolve(options.mutators || Mutators.all())
-    registry = Macros.build(options.macro_routes, specs, options.extensions)
+    registry = Macros.build(options.call_routes, specs, options.extensions)
 
     Mix.shell().info(
       "Known macros (arguments routed specially, not mutated as plain expressions):\n"
@@ -345,7 +345,7 @@ defmodule Mutare.CLI.Info do
   # recovery, if any, already succeeded — an unrecoverable failure aborts before here via
   # `Mix.raise`), so this reports *how* it compiled: clean, or with recovery, naming the
   # unknown block macros escalated wholesale *and* the inline DSL macros the macro-expansion
-  # fallback skipped, each with its durable `:macro_routes` fix. `check` is
+  # fallback skipped, each with its durable `:call_routes` fix. `check` is
   # `Mutare.Runner.check_with_schema/3`'s result (`%{schema: schema, recovery: recovery | nil}`).
   def print_check(%{schema: schema, recovery: recovery}, %Project{} = project, degraded_uses) do
     mutants = length(schema.sites)
@@ -362,7 +362,7 @@ defmodule Mutare.CLI.Info do
   end
 
   # Warn about module-level `use`s the scan couldn't expand in-process (`--check` only). Each
-  # means any `:macro_routes` `:skip` keyed on what the `use` injects will silently never fire
+  # means any `:call_routes` `:raw` keyed on what the `use` injects will silently never fire
   # — the exact failure that's undiagnosable from a normal run. Nothing to say when every `use`
   # expanded (the common case, so no noise).
   defp print_degraded_uses([]), do: :ok
@@ -372,7 +372,7 @@ defmodule Mutare.CLI.Info do
 
     Mix.shell().info(
       "\n#{n} module-level `use` statement#{CLI.plural(n)} could not be expanded during the " <>
-        "scan. Mutare couldn't see the import/alias each injects, so a `:macro_routes` :skip " <>
+        "scan. Mutare couldn't see the import/alias each injects, so a `:call_routes` :raw " <>
         "keyed on those injected macros would not fire, and their DSL bodies may be mutated:\n"
     )
 
@@ -405,7 +405,7 @@ defmodule Mutare.CLI.Info do
   end
 
   # Recovery happened: name what it cost and, when it escalated unknown block macros,
-  # print the copy-pasteable `:macro_routes` fix so the next run needn't rediscover it.
+  # print the copy-pasteable `:call_routes` fix so the next run needn't rediscover it.
   defp print_check_recovery(%{rounds: rounds, dropped: dropped} = recovery) do
     Mix.shell().info(
       "Compiled after #{rounds} poison-recovery rebuild#{CLI.plural(rounds)} " <>
@@ -447,7 +447,7 @@ defmodule Mutare.CLI.Info do
 
   # The macro-expansion fallback's skips (`--check`): name each inline DSL macro whose
   # argument wouldn't compile with a mutation spliced in, and print the durable, module-
-  # qualified `{Module, :fun, :skip}` fix. This is what corrects the old misdiagnosis —
+  # qualified `{Module, :fun, :raw}` fix. This is what corrects the old misdiagnosis —
   # these drops are a routable per-macro fact, not a one-off custom-mutator bug.
   defp print_check_macro_skips([]), do: :ok
 

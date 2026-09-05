@@ -40,17 +40,17 @@ defmodule Mutare.AnalyzeTest do
 
   defmodule BothSurfaceFilterMutator do
     @behaviour Mutare.Mutator
-    @behaviour Mutare.MacroRouting
+    @behaviour Mutare.CallRouting
     @behaviour Mutare.Mutator.MacroHost
 
-    alias Mutare.MacroRouting.Call
+    alias Mutare.CallRouting.Call
     alias Mutare.Mutator.MacroHost.Target
 
     @impl Mutare.Mutator
     def name, do: :both_surface_filter
 
-    @impl Mutare.MacroRouting
-    def macro_routes,
+    @impl Mutare.CallRouting
+    def call_routes,
       do: [{Mutare.Test.HostDSL, :filter, 2, [:expression, :hosted]}]
 
     @impl Mutare.Mutator.MacroHost
@@ -126,7 +126,7 @@ defmodule Mutare.AnalyzeTest do
   describe "the descent honors macro-routing stamps" do
     test "a :skip-routed argument stays raw; an :expression argument descends" do
       {form, meta, args} = Sourceror.parse_string!("magic(1 + 1, 2 + 2)")
-      stamped = {form, Meta.stamp_macro_routing(meta, [:skip, :expression]), args}
+      stamped = {form, Meta.stamp_routing(meta, [:raw, :expression]), args}
 
       muts = Analyze.expression_mutations(stamped, specs([:arithmetic]))
 
@@ -139,15 +139,15 @@ defmodule Mutare.AnalyzeTest do
       {form, meta, args} = Sourceror.parse_string!("filter(1 + 1, x > 2)")
 
       # The full stamp a resolved known-macro call carries: per-argument routing plus the call
-      # identity (`resolved_macro_call/1` needs it to build the host's `Call`).
+      # identity (`resolved_routed_call/1` needs it to build the host's `Call`).
       stamped =
         {form,
          meta
-         |> Meta.stamp_macro_routing([
+         |> Meta.stamp_routing([
            :expression,
            {:hosted, [Mutare.Test.HostMutator, Mutare.Test.DerivedVariantHostMutator]}
          ])
-         |> Meta.stamp_macro_call({[:Mutare, :Test, :HostDSL], :filter, :unpiped}), args}
+         |> Meta.stamp_routed_call({[:Mutare, :Test, :HostDSL], :filter, :unpiped}), args}
 
       # The host runs through the same attachment the transform uses, but each target mutant
       # comes back **lowered**: `splice(wrap(mutant))` — the woven selector degenerated to its
@@ -200,8 +200,8 @@ defmodule Mutare.AnalyzeTest do
       stamped =
         {form,
          meta
-         |> Meta.stamp_macro_routing([:expression, {:hosted, [BothSurfaceFilterMutator]}])
-         |> Meta.stamp_macro_call({[:Mutare, :Test, :HostDSL], :filter, :unpiped}), args}
+         |> Meta.stamp_routing([:expression, {:hosted, [BothSurfaceFilterMutator]}])
+         |> Meta.stamp_routed_call({[:Mutare, :Test, :HostDSL], :filter, :unpiped}), args}
 
       rendered =
         stamped
@@ -222,7 +222,7 @@ defmodule Mutare.AnalyzeTest do
       # offer of its registered `:skip` macro `dyn/1`), so an island containing such a macro is
       # analyzed exactly like top-level Elixir.
       {form, meta, args} = Sourceror.parse_string!("dyn(y > min + 1)")
-      stamped = {form, Meta.stamp_macro_routing(meta, [:skip]), args}
+      stamped = {form, Meta.stamp_routing(meta, [:raw]), args}
 
       muts =
         Analyze.expression_mutations(
@@ -247,7 +247,7 @@ defmodule Mutare.AnalyzeTest do
 
     test "a :pattern-routed argument descends as a match context, never mutated in place" do
       {form, meta, args} = Sourceror.parse_string!("magic({1, x}, 2 + 2)")
-      stamped = {form, Meta.stamp_macro_routing(meta, [:pattern, :expression]), args}
+      stamped = {form, Meta.stamp_routing(meta, [:pattern, :expression]), args}
 
       muts = Analyze.expression_mutations(stamped, specs([:integer, :arithmetic]))
       rendered = Enum.map(muts, fn {_s, m, _n, _v} -> Sourceror.to_string(m) end)

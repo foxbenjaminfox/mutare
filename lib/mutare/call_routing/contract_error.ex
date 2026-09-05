@@ -1,4 +1,4 @@
-defmodule Mutare.MacroRouting.ContractError do
+defmodule Mutare.CallRouting.ContractError do
   @moduledoc """
   Raised when a macro-routing provider violates the extension contract.
 

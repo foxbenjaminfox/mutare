@@ -42,10 +42,10 @@ Initial release.
   sandbox across runs.
 - **Umbrella-aware** — target one app, several, or the whole workspace.
 - **Extension surface** — `Mutare.Mutator` (custom mutators), independent
-  `Mutare.MacroRouting` and `Mutare.UseExpansion` capabilities, `:extensions` for
-  non-mutating integrations, declarative `:macro_routes` configuration
+  `Mutare.CallRouting` and `Mutare.UseExpansion` capabilities, `:extensions` for
+  non-mutating integrations, declarative `:call_routes` configuration
   (user-tier treatments only; the adapter-grade treatments must come from a
-  module implementing `Mutare.MacroRouting`), the `Mutare.AST` node
+  module implementing `Mutare.CallRouting`), the `Mutare.AST` node
   constructors that discharge Sourceror's emission invariants for plugins, and
   the `Mutare.Calls` call-resolution readers (`resolved_call_to/3`,
   `module_key/1`) so plugins match calls without building core's key
@@ -55,3 +55,14 @@ Initial release.
   silently registering routes against nothing on an external-source run.
 - **`mix igniter.install mutare`** installer that detects frameworks and wires up
   the matching companion packages and `.mutare.exs`.
+- **Call routes** (`call_routes:` / `--skip-call Module.fun/arity`) — leave a
+  call alone: `:skip` makes a whole call an inert leaf (functions and macros
+  alike; a piped receiver and the enclosing function's return-value mutants are
+  unaffected), `:raw` leaves an argument as written, `:interior` mutates an
+  argument's contents but never its own node, and a keyed refinement
+  (`[:expression, timeout: :raw]`) reaches one option of a literal keyword
+  argument. Routes match qualified, aliased, imported, and piped forms, and an
+  entry that matches no call in a full scan is warned about.
+- **Argument marks** (`argument_marks:`) — extend the built-in timeout table (or
+  any label a mutator declares) to your own functions, with the mutators'
+  value-aware reaction: `{MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout}`.

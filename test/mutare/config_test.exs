@@ -103,6 +103,38 @@ defmodule Mutare.ConfigTest do
                [{:"Elixir.Elixir.MyUse", "f", 1}]
     end
 
+    test "--skip-call appends {Module, :fun, arity, :skip} routes to :call_routes; repeatable" do
+      assert Config.merge([], skip_call: "Mixpanel.track/3")[:call_routes] ==
+               [{Mixpanel, :track, 3, :skip}]
+
+      # `Module.fun` skips every arity; `Module.*` a whole module.
+      assert Config.merge([], skip_call: "Mixpanel.track", skip_call: "Sentry.*")[:call_routes] ==
+               [{Mixpanel, :track, :any, :skip}, {Sentry, :*, :any, :skip}]
+
+      # It extends the file's routes rather than replacing them — the one flag that does.
+      assert Config.merge([call_routes: [{Ecto.Query, :from, :raw}]],
+               skip_call: "Mixpanel.track/3"
+             )[
+               :call_routes
+             ] == [{Ecto.Query, :from, :raw}, {Mixpanel, :track, 3, :skip}]
+
+      refute Keyword.has_key?(Config.merge([], []), :call_routes)
+    end
+
+    test "--skip-call rejects malformed entries" do
+      for bad <- [
+            "track/3",
+            "Mixpanel.track/x",
+            "Mixpanel.track/-1",
+            "mixpanel.track/3",
+            "Mixpanel"
+          ] do
+        assert_raise ArgumentError, ~r/--skip-call expects Module.function\/arity/, fn ->
+          Config.merge([], skip_call: bad)
+        end
+      end
+    end
+
     test "--skip-lifting rejects malformed entries" do
       for bad <- [
             "Mutare.Test.SkipLiftFixture",

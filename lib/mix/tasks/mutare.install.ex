@@ -21,7 +21,7 @@ if Code.ensure_loaded?(Igniter) do
     | `:gettext`                                        | `mutare_gettext`           | `:extensions` — `Mutare.Gettext`                                       |
 
 
-    Each detected package is added as a `:dev`/`:test` dependency and wired into a generated `.mutare.exs`: a mutator package extends the `:mutators` list (alongside the `:builtins` group token, which keeps Mutare's own families on), while a non-mutating extension like `mutare_gettext` — which only teaches Mutare a library's compile-time vocabulary so the built-in mutators land on it correctly — joins the `:extensions` list. `mutare_phoenix` does both: its families join `:mutators`, and its front module — a `Mutare.MacroRouting` extension that keeps Phoenix's compile-time macros (the router DSL, `~H`) out of the mutation set — joins `:extensions`. Nothing detected? You still get a starter `.mutare.exs` and a ready-to-run `mix mutare`.
+    Each detected package is added as a `:dev`/`:test` dependency and wired into a generated `.mutare.exs`: a mutator package extends the `:mutators` list (alongside the `:builtins` group token, which keeps Mutare's own families on), while a non-mutating extension like `mutare_gettext` — which only teaches Mutare a library's compile-time vocabulary so the built-in mutators land on it correctly — joins the `:extensions` list. `mutare_phoenix` does both: its families join `:mutators`, and its front module — a `Mutare.CallRouting` extension that keeps Phoenix's compile-time macros (the router DSL, `~H`) out of the mutation set — joins `:extensions`. Nothing detected? You still get a starter `.mutare.exs` and a ready-to-run `mix mutare`.
 
     If you already have a `.mutare.exs`, it is left untouched and the recommended `:mutators` / `:extensions` keys are printed as a notice for you to merge in by hand.
 
@@ -70,7 +70,7 @@ if Code.ensure_loaded?(Igniter) do
           ),
         # Phoenix layers the controller surface on Plug; `mutare_phoenix` layers on
         # `mutare_plug` the same way (and arrives alongside it above). Its front module is
-        # also a `Mutare.MacroRouting` extension, so it joins `:extensions` (below) to keep
+        # also a `Mutare.CallRouting` extension, so it joins `:extensions` (below) to keep
         # Phoenix's compile-time macros (router DSL, `~H`) from poisoning the build.
         phoenix: Igniter.Project.Deps.has_dep?(igniter, :phoenix),
         live_view: Igniter.Project.Deps.has_dep?(igniter, :phoenix_live_view),
@@ -286,7 +286,7 @@ if Code.ensure_loaded?(Igniter) do
 
     # Whether any detected dependency contributes a non-mutating extension (and so an
     # `:extensions` key): Gettext, and Phoenix — a mutator package whose front module is
-    # *also* a `Mutare.MacroRouting` extension.
+    # *also* a `Mutare.CallRouting` extension.
     defp extension_package?(detected), do: detected.phoenix or detected.gettext
 
     # --- generated file bodies -----------------------------------------------

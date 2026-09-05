@@ -11,7 +11,7 @@ defmodule Mutare.Run do
     * `:sandbox` — the sandbox path where the run was materialised. For default throwaway runs this path is informational: the directory is removed before the run is returned. It remains on disk only when the caller supplied `:sandbox` or `:keep_sandbox`.
     * `:baseline_ms` — the wall-clock duration, in milliseconds, of the green baseline test run used to derive per-mutant timeout caps.
     * `:stopped_early` — whether an early-stop condition (`:max_survivors` or `:time_budget`) stopped the per-mutant phase before every mutant was evaluated, or prevented a provisional timeout from being confirmed. When true, `:results` is usually a source-order prefix rather than the full schema; if every mutant launched before the time budget elapsed, the full set may be present with one or more timeout results left unconfirmed. A survivor stop is deterministic (the first N survivors); a time-budget stop depends on how far the run got before the budget elapsed.
-    * `:recovery` — a `t:recovery/0` summary when the one compile needed compile-poison recovery (some mutation would not compile, so it was dropped and the metamutant rebuilt), or `nil` when it compiled clean on the first attempt. It records how many rebuild rounds it took, which mutant ids were dropped, and any unknown block macros that were escalated (skipped wholesale). The Mix task turns the escalations into a copy-pasteable `:macro_routes` suggestion so a second run needn't rediscover the same poison — see `Mutare.Poison.Hint`.
+    * `:recovery` — a `t:recovery/0` summary when the one compile needed compile-poison recovery (some mutation would not compile, so it was dropped and the metamutant rebuilt), or `nil` when it compiled clean on the first attempt. It records how many rebuild rounds it took, which mutant ids were dropped, and any unknown block macros that were escalated (skipped wholesale). The Mix task turns the escalations into a copy-pasteable `:call_routes` suggestion so a second run needn't rediscover the same poison — see `Mutare.Poison.Hint`.
   """
 
   alias Mutare.{Result, Schema}
@@ -34,7 +34,7 @@ defmodule Mutare.Run do
   inside a macro that rewrites its argument at compile time (an `Ecto.Query.from/2`-style
   macro), so every mutant in its calls was dropped. `:module` is the macro's module string
   (from the `expanding macro:` frame the compiler emitted, e.g. `"Ecto.Query"`) and `:macro`
-  the macro name — together the durable `{Module, :fun, :skip}` route to pin.
+  the macro name — together the durable `{Module, :fun, :raw}` route to pin.
   """
   @type macro_skip :: %{module: String.t(), macro: atom()}
 

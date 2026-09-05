@@ -8,9 +8,9 @@ defmodule Mutare.Calls do
 
   `module_key/1` encodes a real module atom into the key shape `resolved_call/1` returns, and `resolved_call_to/3` bundles the common "is this a call to module M (function F)?" match — together they save a caller from ever constructing or pattern-building the key representation itself.
 
-  `resolved_macro_call/1` is the known-macro twin. It returns a stable `Mutare.MacroRouting.Call` with a natural module atom, visible arguments, pipe information, and a source-preserving rebuild function.
+  `resolved_routed_call/1` is the routed-call twin — a call matched by a `call_routes` entry, macro or function. It returns a stable `Mutare.CallRouting.Call` with a natural module atom, visible arguments, pipe information, and a source-preserving rebuild function.
 
-  `macro_treatment/1` reads *how a node's macro is registered* — the resolved per-argument routing the merged registry (built-ins + every mutator's/extension's `macro_routes/0` + the declarative `:macro_routes` option) assigned it. A macro host uses it in two places: on its own call's `node`, to locate the positions the route marked `:hosted` (including values nested under `{:keyword, …}`); and on a nested macro inside a fragment it walks, to ask whether an argument routes `:skip` (leave it opaque) or otherwise specially. In both cases it replaces re-deriving the classification.
+  `routed_treatments/1` reads *how a node's macro is registered* — the resolved per-argument routing the merged registry (built-ins + every mutator's/extension's `call_routes/0` + the declarative `:call_routes` option) assigned it. A macro host uses it in two places: on its own call's `node`, to locate the positions the route marked `:hosted` (including values nested under `{:keyword, …}`); and on a nested macro inside a fragment it walks, to ask whether an argument routes `:raw` (left as written), whether the whole call is skipped (`:skip`), or otherwise specially. In both cases it replaces re-deriving the classification.
 
   ## Example
 
@@ -110,12 +110,12 @@ defmodule Mutare.Calls do
   defdelegate resolved_call_to(node, module, functions \\ :any), to: Transform.Calls
 
   @doc """
-  Return the stable call value for a node stamped by the known-macro resolver, or `nil` for any
+  Return the stable call value for a node the call-route resolver matched, or `nil` for any
   other node. Extension callbacks receive this value directly; the reader remains useful to a
   host walking nested macro nodes.
   """
-  @spec resolved_macro_call(Macro.t()) :: Mutare.MacroRouting.Call.t() | nil
-  defdelegate resolved_macro_call(node), to: Transform.Calls
+  @spec resolved_routed_call(Macro.t()) :: Mutare.CallRouting.Call.t() | nil
+  defdelegate resolved_routed_call(node), to: Transform.Calls
 
   @doc """
   Returns the resolved treatment for each visible argument of a registered macro
@@ -129,14 +129,16 @@ defmodule Mutare.Calls do
   the treatments that granted hosting, so a host locates its `:hosted` positions without
   re-classifying the call.
 
-  For a piped call, the left side of the pipe is not included. A call that has no
-  registered macro route returns `nil`.
+  A keyed refinement reads back in the author form it was written in (`[:expression, timeout: :raw]`).
+  For a piped call, the left side of the pipe is not included. A call routed `:skip` returns the
+  bare `:skip`; a call that has no registered route returns `nil`.
 
   ## Routing describes arguments; registration identifies ownership
 
   A route says how to treat a registered macro's *arguments*. It does not stop a mutator's own
   catalog from matching the **call**, which the expression walk still offers — so a macro
-  registered `:skip` is opaque in its interior and exposed in its name.
+  registered `:raw` is opaque in its interior and exposed in its name. (The call-level `:skip`
+  is the exception: an inert leaf is offered to nobody, and this reader returns `:skip` for it.)
 
   That matters for a catalog keyed on a bare function-name atom — all there is to match on
   inside a DSL whose API functions are never imported. A name is not an identity: rewriting
@@ -145,7 +147,7 @@ defmodule Mutare.Calls do
   result is the ownership test — decline the node:
 
       def mutate(node) do
-        if Mutare.Calls.macro_treatment(node), do: :skip, else: swap(node)
+        if Mutare.Calls.routed_treatments(node), do: :skip, else: swap(node)
       end
 
   Test for `nil`, not for a non-empty list: `[]` is a registered macro with no visible
@@ -157,6 +159,6 @@ defmodule Mutare.Calls do
   A catalog that matches through `resolved_call/1` needs no such test: it keys on
   `{module, function}` and gets `nil` for a call it cannot resolve.
   """
-  @spec macro_treatment(Macro.t()) :: [Mutare.MacroRouting.routing_treatment()] | nil
-  defdelegate macro_treatment(node), to: Transform.Calls
+  @spec routed_treatments(Macro.t()) :: [Mutare.CallRouting.routing_treatment()] | :skip | nil
+  defdelegate routed_treatments(node), to: Transform.Calls
 end

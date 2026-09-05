@@ -36,7 +36,7 @@ defmodule Mutare.Test.GettextLikeExtension do
   the literal msgids are never mutated (no poison), and the runtime arguments are.
   """
   @behaviour Mutare.UseExpansion
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   @impl Mutare.UseExpansion
   def expand_use(Mutare.Test.GettextLike, _args, _context),
@@ -44,12 +44,12 @@ defmodule Mutare.Test.GettextLikeExtension do
 
   def expand_use(_used, _args, _context), do: :decline
 
-  @impl Mutare.MacroRouting
-  def macro_routes do
+  @impl Mutare.CallRouting
+  def call_routes do
     [
-      {Mutare.Test.GettextLikeMacros, :translate, 1, [:skip]},
-      {Mutare.Test.GettextLikeMacros, :translate, 2, [:skip, :expression]},
-      {Mutare.Test.GettextLikeMacros, :ntranslate, 3, [:skip, :skip, :expression]}
+      {Mutare.Test.GettextLikeMacros, :translate, 1, [:raw]},
+      {Mutare.Test.GettextLikeMacros, :translate, 2, [:raw, :expression]},
+      {Mutare.Test.GettextLikeMacros, :ntranslate, 3, [:raw, :raw, :expression]}
     ]
   end
 end
@@ -142,36 +142,36 @@ end
 
 defmodule Mutare.Test.HostingExtension do
   @moduledoc """
-  An extension whose `macro_routes/0` illegally declares a `:hosted` treatment. An extension produces no
-  mutations, so it cannot host one — `Mutare.MacroRouting.Registry.from_extensions/1` must reject it with a
+  An extension whose `call_routes/0` illegally declares a `:hosted` treatment. An extension produces no
+  mutations, so it cannot host one — `Mutare.CallRouting.Registry.from_extensions/1` must reject it with a
   extension-specific message rather than aborting with a generic "hosting mutator" error.
   """
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.SomeDSL, :frag, 2, [:expression, :hosted]}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.SomeDSL, :frag, 2, [:expression, :hosted]}]
 end
 
 defmodule Mutare.Test.StaticRoutingExtension do
   @moduledoc "A macro-routing-only extension, with no `use` expansion capability."
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.SomeDSL, :frag, 2, [:expression, :skip]}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.SomeDSL, :frag, 2, [:expression, :raw]}]
 end
 
 defmodule Mutare.Test.KeywordInterpolatedRoutingExtension do
   @moduledoc """
   An extension statically routing `set/2`'s keyword argument with the recursive adapter grammar
-  (`{:keyword, [:interpolated, :skip]}`) — the code-provider home of the adapter-grade treatments that
-  declarative `:macro_routes` configuration rejects.
+  (`{:keyword, [:interpolated, :raw]}`) — the code-provider home of the adapter-grade treatments that
+  declarative `:call_routes` configuration rejects.
   """
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
-  @impl Mutare.MacroRouting
-  def macro_routes,
+  @impl Mutare.CallRouting
+  def call_routes,
     do: [
-      {Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:interpolated, :skip]}]}
+      {Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:interpolated, :raw]}]}
     ]
 end
 
@@ -181,10 +181,10 @@ defmodule Mutare.Test.ShortKeywordRoutingExtension do
   (one for `set/2`'s 2-pair keyword) — pins that the strict one-treatment-per-pair check raises
   rather than silently `:skip`-padding.
   """
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
-  @impl Mutare.MacroRouting
-  def macro_routes,
+  @impl Mutare.CallRouting
+  def call_routes,
     do: [{Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:interpolated]}]}]
 end
 
@@ -194,63 +194,63 @@ defmodule Mutare.Test.LongKeywordRoutingExtension do
   (three for `set/2`'s 2-pair keyword) — pins that the strict check raises rather than silently
   truncating the extras.
   """
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
-  @impl Mutare.MacroRouting
-  def macro_routes,
+  @impl Mutare.CallRouting
+  def call_routes,
     do: [
-      {Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:interpolated, :skip, :skip]}]}
+      {Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:interpolated, :raw, :raw]}]}
     ]
 end
 
 defmodule Mutare.Test.ConflictingQueryRoutingExtension do
   @moduledoc "A conflicting code-provided route used to verify deterministic conflict errors."
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
-  @impl Mutare.MacroRouting
-  def macro_routes,
+  @impl Mutare.CallRouting
+  def call_routes,
     do: [{Mutare.Test.QueryDSL, :query, 1, :expression}]
 end
 
 defmodule Mutare.Test.IdenticalQueryRoutingExtension do
   @moduledoc "An identical code-provided route used to verify declaration coalescing."
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
-  @impl Mutare.MacroRouting
-  def macro_routes,
-    do: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
+  @impl Mutare.CallRouting
+  def call_routes,
+    do: [{Mutare.Test.QueryDSL, :query, 1, :raw}]
 end
 
 defmodule Mutare.Test.ShadowingRoutingExtension do
   @moduledoc "Broad dynamic routing shadowed by an exact non-hosted route."
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
-  @impl Mutare.MacroRouting
-  def macro_routes,
+  @impl Mutare.CallRouting
+  def call_routes,
     do: [
       {Mutare.Test.HostDSL, :filter, :any, :routing},
-      {Mutare.Test.HostDSL, :filter, 2, :skip}
+      {Mutare.Test.HostDSL, :filter, 2, :raw}
     ]
 
-  @impl Mutare.MacroRouting
+  @impl Mutare.CallRouting
   def route_arguments(call, _context) do
     routes = Enum.map(call.arguments, fn _argument -> :expression end)
-    Mutare.MacroRouting.ArgumentRoutes.from_visible(call, routes)
+    Mutare.CallRouting.ArgumentRoutes.from_visible(call, routes)
   end
 end
 
 defmodule Mutare.Test.DynamicRoutingExtension do
   @moduledoc "A non-mutating extension that classifies a macro's routing per concrete call."
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.SomeDSL, :dynamic_frag, :any, :routing}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.SomeDSL, :dynamic_frag, :any, :routing}]
 
-  @impl Mutare.MacroRouting
-  def route_arguments(%Mutare.MacroRouting.Call{arguments: args} = call, _context) do
-    Mutare.MacroRouting.ArgumentRoutes.from_visible(
+  @impl Mutare.CallRouting
+  def route_arguments(%Mutare.CallRouting.Call{arguments: args} = call, _context) do
+    Mutare.CallRouting.ArgumentRoutes.from_visible(
       call,
-      Enum.map(args, fn _arg -> :skip end)
+      Enum.map(args, fn _arg -> :raw end)
     )
   end
 end
@@ -261,14 +261,14 @@ defmodule Mutare.Test.HostedRoutingExtension do
   enabled host mutator subscribing to the macro. Resolution raises at the concrete call rather
   than silently dropping the mutation.
   """
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.SomeDSL, :spoofed_frag, :any, :routing}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.SomeDSL, :spoofed_frag, :any, :routing}]
 
-  @impl Mutare.MacroRouting
-  def route_arguments(%Mutare.MacroRouting.Call{arguments: args} = call, _context) do
-    Mutare.MacroRouting.ArgumentRoutes.from_visible(
+  @impl Mutare.CallRouting
+  def route_arguments(%Mutare.CallRouting.Call{arguments: args} = call, _context) do
+    Mutare.CallRouting.ArgumentRoutes.from_visible(
       call,
       Enum.map(args, fn _arg -> :hosted end)
     )

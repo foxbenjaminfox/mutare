@@ -15,7 +15,7 @@ defmodule Mutare.Transform.Analyze do
   # `analyze_module_macro_block/2` that `Mutare.Transform.transform_statement/2` routes on.
   #
   # The pass is split across handler submodules this dispatch routes to (`Conditions`,
-  # `ClausePatterns`, `MatchPatterns`, `Macros`, `DefClause`, `Returns`, `Captures`, `CallOptions`,
+  # `ClausePatterns`, `MatchPatterns`, `Routed`, `DefClause`, `Returns`, `Captures`, `CallOptions`,
   # `QuoteEscape`), but the module graph stays **acyclic** — the abstraction is one recursive
   # walk, not a tangle of mutual references. Candidate construction/attachment lives in the
   # dependency-neutral `Analyze.Attach`, the block-key predicates in `Analyze.Syntax`, and the
@@ -42,7 +42,7 @@ defmodule Mutare.Transform.Analyze do
     ClausePatterns,
     Conditions,
     DefClause,
-    Macros,
+    Routed,
     MatchPatterns,
     QuoteEscape,
     Returns,
@@ -132,7 +132,7 @@ defmodule Mutare.Transform.Analyze do
 
   # The `:pattern` entry: a match position — descended (so default-arg values and `size()`
   # args are still reached) but never mutated *in place*. Part of the sub-walk API
-  # `Mutare.Transform.Analyze.Macros` drives the `:pattern`/`:binding_pattern` argument routing
+  # `Mutare.Transform.Analyze.Routed` drives the `:pattern`/`:binding_pattern` argument routing
   # through (the in-module counterpart to `annotate/2`).
   def pattern(node, mutators), do: analyze(node, :pattern, mutators)
 
@@ -331,7 +331,7 @@ defmodule Mutare.Transform.Analyze do
 
   # match `=`: the left side is a pattern, the right keeps the context. The `=` node itself is
   # deliberately **not** offered to mutators (no `offer/3` here) — there is no "mutate `=`" entry
-  # point, unlike the *macro* node (`analyze_known_macro` offers it so a `macro_routes/0` mutator can
+  # point, unlike the *macro* node (`analyze_routed_call` offers it so a `call_routes/0` mutator can
   # fire). This is load-bearing: it is *why* the value-discarded-`=` path
   # (`attach_match_pattern_candidates/4`) can prepend its `MatchPattern` candidates with
   # `put_candidates` without shadowing anything, and why no whole-`=` mutation can trap the
@@ -351,11 +351,11 @@ defmodule Mutare.Transform.Analyze do
   end
 
   # (`match?`/`destructure` and any other pattern-context macro are no longer a
-  # dedicated clause here: they are *known macros* (`Mutare.MacroRouting.Registry`), recognised by
+  # dedicated clause here: they are *known macros* (`Mutare.CallRouting.Registry`), recognised by
   # the lexical pre-pass via their resolved module — so a bare `match?(p, e)` is
   # routed only when it is genuinely `Kernel.match?`, and an aliased/qualified or
   # user-registered macro is handled the same way. The routing is read from the
-  # `meta[:mutare_macro]` stamp in the generic runtime clause below.)
+  # `meta[:mutare_route]` stamp in the generic runtime clause below.)
 
   # `cond`: the one `->` construct whose clause *left* is a runtime condition, not
   # a pattern — so it stays mutatable. Analyze its clauses keeping both sides
@@ -541,13 +541,13 @@ defmodule Mutare.Transform.Analyze do
   # The LHS is *usually* an ordinary runtime expression, but when the RHS is a **known
   # macro** the piped value is that macro's effective argument 0, so it inherits position
   # 0's treatment (`analyze_piped_value/4` — the "reach back"): a `1 |> match?(1)` pipes
-  # its LHS into match?'s **pattern** position, and a `:skip` macro may accept a LHS that
+  # its LHS into match?'s **pattern** position, and a `:raw` macro may accept a LHS that
   # is neither a valid expression nor a valid pattern. Treating it as runtime would splice
   # a selector `case` into pattern/opaque position and poison the build.
   defp analyze({:|>, meta, [lhs, rhs]}, :runtime, mutators) do
     {:|>, meta,
      [
-       Macros.analyze_piped_value(__MODULE__, lhs, rhs, mutators),
+       Routed.analyze_piped_value(__MODULE__, lhs, rhs, mutators),
        analyze_pipe_stage(rhs, mutators)
      ]}
   end
@@ -790,23 +790,31 @@ defmodule Mutare.Transform.Analyze do
   #
   # A piped **known-macro** stage (`q |> where([p], p.x == 1)`, the query-builder shape)
   # routes its arguments by treatment too — `Resolve` already stamped the *visible*-position
-  # routing (the piped value dropped), so a `:skip` DSL body is left raw instead of mutated.
+  # routing (the piped value dropped), so a `:raw` DSL body is left raw instead of mutated.
   defp analyze_pipe_stage({_form, _meta, args} = node, mutators) when is_list(args),
     do: do_analyze_call_node(node, mutators, %{pipe_mode: :piped})
 
   defp analyze_pipe_stage(other, mutators), do: analyze(other, :runtime, mutators)
 
   # The shared call-node dispatch behind the generic runtime `analyze/3` clause and
-  # `analyze_pipe_stage/2`: a call stamped a **known macro** (`meta[:mutare_macro]`, set by
-  # `Mutare.Transform.Resolve` from `Mutare.MacroRouting.Registry`) routes its arguments by their declared
-  # treatment (`Macros.analyze_known_macro` — so a pattern arg isn't mutated in place and an
+  # `analyze_pipe_stage/2`: a call stamped a **known macro** (`meta[:mutare_route]`, set by
+  # `Mutare.Transform.Resolve` from `Mutare.CallRouting.Registry`) routes its arguments by their declared
+  # treatment (`Routed.analyze_routed_call` — so a pattern arg isn't mutated in place and an
   # opaque DSL body is left raw) while the whole node is still offered to mutators; every other
   # node is offered and its children descended. `context` carries `:pipe_mode` (`:piped` for a
   # `|>` RHS, so an arity-changing mutator sees the effective arity) — which also gates the
   # sigil-content path: a `|>` RHS (`:piped`) is never sigil syntax, so only the generic-runtime
   # (`:unpiped`) path descends sigil content.
   defp do_analyze_call_node({form, meta, _args} = node, mutators, context) do
-    case Meta.macro_routing(meta) do
+    case Meta.routing(meta) do
+      # The call-level `:skip`: an **inert leaf** — no whole-node offer, nothing inside the
+      # parentheses descended. (A piped receiver is the `|>`'s other operand, analyzed by the
+      # pipe clause before this node is reached, so `Repo.insert!(u) |> Skipped.call()` keeps
+      # the receiver's mutants. A tail-position skipped call still gets its return-value
+      # replacements — those belong to the enclosing function, attached by `Returns`.)
+      :skip ->
+        node
+
       nil ->
         node = Attach.offer(node, node, mutators, context)
 
@@ -823,7 +831,7 @@ defmodule Mutare.Transform.Analyze do
           else: node |> recurse_runtime(mutators) |> descend_receiver(mutators)
 
       routing ->
-        Macros.analyze_known_macro(__MODULE__, node, routing, mutators, context)
+        Routed.analyze_routed_call(__MODULE__, node, routing, mutators, context)
     end
   end
 
@@ -854,12 +862,12 @@ defmodule Mutare.Transform.Analyze do
 
   # === known macros ==========================================================
 
-  # The known-macro argument *routing* lives in `Mutare.Transform.Analyze.Macros`:
-  # `Macros.analyze_known_macro/5` (a written/piped stage) and `Macros.analyze_piped_value/4`
+  # The known-macro argument *routing* lives in `Mutare.Transform.Analyze.Routed`:
+  # `Routed.analyze_routed_call/5` (a written/piped stage) and `Routed.analyze_piped_value/4`
   # (the `|>` LHS reaching back into a macro's argument-0 treatment) route each argument by its
-  # declared treatment — a pattern, an opaque `:skip` DSL body, a `:hosted` fragment — driving the
+  # declared treatment — a pattern, an opaque `:raw` DSL body, a `:hosted` fragment — driving the
   # descent back through `annotate/2`/`pattern/2`/`offer/4`. The core walk reads the stamp via
-  # `Mutare.Transform.Meta.macro_routing/1` and dispatches there.
+  # `Mutare.Transform.Meta.routing/1` and dispatches there.
 
   # One argument of a `for`: a generator/filter/match is descended as a *statement*
   # (its value is discarded — a qualifier only binds/filters), while the trailing
@@ -1064,30 +1072,36 @@ defmodule Mutare.Transform.Analyze do
   # (`:scaffold`), and the block keyword's `do`/… body is analyzed as **`:runtime`**
   # because an *unknown* DSL macro may `unquote` it into generated function bodies (so a
   # literal there could be a real runtime value). A **registered known macro** overrides
-  # that guess per argument: a `:skip` arg (`{DSL, :schema, 1, :skip}`) is left **raw** —
+  # that guess per argument: a `:raw` arg (`{DSL, :schema, 1, :raw}`) is left **raw** —
   # no descent, no mutation — so core never mutates inside an opaque DSL block body and
-  # can't poison the DSL the registry was meant to exclude. Only `:skip` is honoured here:
+  # can't poison the DSL the registry was meant to exclude. Only `:raw` (and the call-level `:skip`) is honoured here:
   # the other treatments are compile-time-context-sensitive and the default path already
   # does the right thing (`:expression` *is* the runtime-body guess, `:pattern` has no
-  # module-level use). `Resolve` stamps `meta[:mutare_macro]` for bare-imported and
+  # module-level use). `Resolve` stamps `meta[:mutare_route]` for bare-imported and
   # qualified forms alike, so both route.
-  def analyze_module_macro_block({form, meta, args}, mutators) do
-    routing = Meta.macro_routing(meta)
-    {init, [last]} = Enum.split(args, -1)
+  def analyze_module_macro_block({form, meta, args} = node, mutators) do
+    case Meta.routing(meta) do
+      # The call-level `:skip`: the whole block macro is an inert leaf.
+      :skip ->
+        node
 
-    init =
-      init
-      |> Enum.with_index()
-      |> Enum.map(fn {arg, i} ->
-        if skip_arg?(routing, i), do: arg, else: analyze(arg, :scaffold, mutators)
-      end)
+      routing ->
+        {init, [last]} = Enum.split(args, -1)
 
-    last =
-      if skip_arg?(routing, length(args) - 1),
-        do: last,
-        else: analyze_module_macro_block_arg(last, mutators)
+        init =
+          init
+          |> Enum.with_index()
+          |> Enum.map(fn {arg, i} ->
+            if raw_arg?(routing, i), do: arg, else: analyze(arg, :scaffold, mutators)
+          end)
 
-    {form, meta, init ++ [last]}
+        last =
+          if raw_arg?(routing, length(args) - 1),
+            do: last,
+            else: analyze_module_macro_block_arg(last, mutators)
+
+        {form, meta, init ++ [last]}
+    end
   end
 
   @doc """
@@ -1097,19 +1111,20 @@ defmodule Mutare.Transform.Analyze do
   An unknown DSL block is mutated on the guess that it is unquoted into a function;
   if the injected selector `case` is illegal in the DSL it poisons the single build,
   and `Mutare.Runner` skips the whole macro by this name (see `Mutare.Site`). A
-  *registered* macro (`routing != nil`) returns `nil` — the user's `:macro_routes` choice
-  (mutate or `:skip`) is honoured and never auto-skipped. Only meaningful for a node
+  *registered* macro (`routing != nil`) returns `nil` — the user's `:call_routes` choice
+  (mutate, `:raw`, or `:skip`) is honoured and never auto-skipped. Only meaningful for a node
   that `module_macro_block_statement?/1` already accepted.
   """
   @spec unknown_block_macro_name(Macro.t()) :: atom() | nil
   def unknown_block_macro_name({form, meta, _args}) do
-    if Meta.macro_routing(meta) == nil, do: form, else: nil
+    if Meta.routing(meta) == nil, do: form, else: nil
   end
 
-  # Whether the macro argument at position `i` is routed `:skip` (a known macro's opaque
+  # Whether the macro argument at position `i` is routed `:raw` (a routed macro's opaque
   # arg). No stamp (`nil`) or a position past the routing list is the `:expression` default.
-  defp skip_arg?(nil, _i), do: false
-  defp skip_arg?(routing, i), do: Enum.at(routing, i, :expression) == :skip
+  # Only `:raw` is honoured at module level (see `analyze_module_macro_block/2`).
+  defp raw_arg?(nil, _i), do: false
+  defp raw_arg?(routing, i), do: Enum.at(routing, i, :expression) == :raw
 
   defp analyze_module_macro_block_arg(kw, mutators) when is_list(kw) do
     Enum.map(kw, fn

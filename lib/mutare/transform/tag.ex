@@ -192,10 +192,34 @@ defmodule Mutare.Transform.Tag do
       else: offer_target(rebuilt, acc, mutators)
   end
 
-  # An n-ary node: descend its args (not its form), then offer the node itself.
-  defp tag_walk({form, meta, args}, acc, mutators) when is_list(args) do
-    {args, acc} = Enum.map_reduce(args, acc, &tag_walk(&1, &2, mutators))
-    offer_target({form, meta, args}, acc, mutators)
+  # An n-ary node: descend its args (not its form), then offer the node itself — honouring a
+  # call route stamped by `Mutare.Transform.Resolve` the same way the body path does, so a
+  # routed call in a `when` guard can't leak mutants the body offer would hold back (the same
+  # both-offer-paths discipline the position marks follow, NOTES "Argument marks"). A call-level
+  # `:skip` is an inert leaf (nothing offered, nothing descended); a `:raw` argument is left as
+  # written while its siblings walk. The other treatments have no guard meaning (a pattern or a
+  # DSL fragment is not guard-legal), so they fall through to the ordinary walk.
+  defp tag_walk({form, meta, args} = node, acc, mutators) when is_list(args) do
+    case Meta.routing(meta) do
+      :skip ->
+        {node, acc}
+
+      routing when is_list(routing) ->
+        {args, acc} =
+          args
+          |> Enum.with_index()
+          |> Enum.map_reduce(acc, fn {arg, i}, acc ->
+            if Enum.at(routing, i, :expression) == :raw,
+              do: {arg, acc},
+              else: tag_walk(arg, acc, mutators)
+          end)
+
+        offer_target({form, meta, args}, acc, mutators)
+
+      _unrouted ->
+        {args, acc} = Enum.map_reduce(args, acc, &tag_walk(&1, &2, mutators))
+        offer_target({form, meta, args}, acc, mutators)
+    end
   end
 
   # A 2-tuple (a keyword/map pair shape): descend both sides; never node-offered.
@@ -294,7 +318,7 @@ defmodule Mutare.Transform.Tag do
   # The mutations `node` admits, with any position marks stamped on it by
   # `Mutare.Transform.Resolve.ArgumentMarks` surfaced to the mutators as `context.marks` — the same
   # enrichment `Mutare.Transform.Analyze.Attach.offer/4` applies on the in-place path, so a
-  # guard-safe call's marked argument (`is_integer(t)` with a `:skip_arguments`/`argument_marks`
+  # guard-safe call's marked argument (`is_integer(t)` with an `argument_marks`
   # mark on arg 0) is declined here too, not only when the same call sits in a body. Guards and
   # patterns are never pipe stages, so the base context is `:unpiped`; a leaf that carries no marks
   # (the overwhelming majority) is dispatched with that base untouched.

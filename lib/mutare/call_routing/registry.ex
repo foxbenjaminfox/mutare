@@ -1,9 +1,9 @@
-defmodule Mutare.MacroRouting.Registry do
+defmodule Mutare.CallRouting.Registry do
   @moduledoc false
 
-  alias Mutare.Macro.Spec
-  alias Mutare.MacroRouting.ContractError
-  alias Mutare.MacroRouting.Registry.Entry
+  alias Mutare.CallRouting.Spec
+  alias Mutare.CallRouting.ContractError
+  alias Mutare.CallRouting.Registry.Entry
   alias Mutare.Mutator
 
   @builtin [
@@ -25,11 +25,11 @@ defmodule Mutare.MacroRouting.Registry do
   def builtin,
     do: @builtin |> resolve() |> Enum.map(&Entry.static(&1, {:builtin, __MODULE__}))
 
-  @spec resolve([Mutare.MacroRouting.route() | Spec.t()] | term()) :: [Spec.t()]
+  @spec resolve([Mutare.CallRouting.route() | Spec.t()] | term()) :: [Spec.t()]
   def resolve(entries) when is_list(entries), do: Enum.map(entries, &resolve!/1)
 
   def resolve(other) do
-    raise ArgumentError, ":macro_routes must be a list of route entries, got: #{inspect(other)}"
+    raise ArgumentError, ":call_routes must be a list of route entries, got: #{inspect(other)}"
   end
 
   defp resolve!(%Spec{} = spec), do: spec
@@ -58,7 +58,7 @@ defmodule Mutare.MacroRouting.Registry do
   end
 
   @spec build(
-          [Mutare.MacroRouting.route() | Spec.t()],
+          [Mutare.CallRouting.route() | Spec.t()],
           [Mutator.Spec.t()],
           [Mutare.Extension.Spec.t() | module()]
         ) :: registry()
@@ -121,13 +121,13 @@ defmodule Mutare.MacroRouting.Registry do
 
   defp collect_routes(modules, kind) do
     Enum.flat_map(modules, fn module ->
-      has_routes? = exports?(module, :macro_routes, 0)
+      has_routes? = exports?(module, :call_routes, 0)
       has_router? = exports?(module, :route_arguments, 2)
 
       entries =
         if has_routes? do
           module
-          |> invoke!(:macro_routes, 0, [])
+          |> invoke!(:call_routes, 0, [])
           |> resolve_provider_routes!(module)
           |> Enum.map(&prepare_route!(&1, module, kind))
         else
@@ -141,7 +141,7 @@ defmodule Mutare.MacroRouting.Registry do
           reason: :unused_callback,
           message:
             "#{inspect(module)} implements route_arguments/2 but registers no :routing route; " <>
-              "add one to macro_routes/0 or remove the callback"
+              "add one to call_routes/0 or remove the callback"
         )
       end
 
@@ -155,7 +155,7 @@ defmodule Mutare.MacroRouting.Registry do
     error in ArgumentError ->
       contract_error!(
         provider: module,
-        callback: {:macro_routes, 0},
+        callback: {:call_routes, 0},
         value: routes,
         reason: :invalid_routes,
         message: "#{inspect(module)} returned invalid macro routes: #{Exception.message(error)}"
@@ -241,7 +241,7 @@ defmodule Mutare.MacroRouting.Registry do
   defp resolve_host_selectors!(other, module), do: invalid_selector!(module, other)
 
   defp selector!(module, name, arity, provider) do
-    Spec.new(module, name, arity, :skip) |> Spec.key()
+    Spec.new(module, name, arity, :raw) |> Spec.key()
   rescue
     error in ArgumentError ->
       contract_error!(
@@ -312,15 +312,15 @@ defmodule Mutare.MacroRouting.Registry do
       cond do
         Spec.classifier?(spec) ->
           raise ArgumentError,
-                "declarative :macro_routes entry #{inspect(Spec.key(spec))} uses :routing, which " <>
-                  "requires macro_routes/0 and route_arguments/2 on an enabled provider"
+                "declarative :call_routes entry #{inspect(Spec.key(spec))} uses :routing, which " <>
+                  "requires call_routes/0 and route_arguments/2 on an enabled provider"
 
         Spec.adapter_graded?(spec) ->
           raise ArgumentError,
-                "declarative :macro_routes entry #{inspect(Spec.key(spec))} uses an " <>
+                "declarative :call_routes entry #{inspect(Spec.key(spec))} uses an " <>
                   "adapter-grade treatment (#{inspect(spec.args)}); :interpolated, :hosted, and " <>
                   "{:keyword, ...} assert DSL facts Mutare cannot check, so they must come from " <>
-                  "a module implementing Mutare.MacroRouting (a :mutators or :extensions " <>
+                  "a module implementing Mutare.CallRouting (a :mutators or :extensions " <>
                   "entry), not from configuration"
 
         true ->
@@ -339,7 +339,7 @@ defmodule Mutare.MacroRouting.Registry do
 
       if Map.has_key?(seen, key) do
         raise ArgumentError,
-              "duplicate declarative :macro_routes entries for #{inspect(key)}; one explicit " <>
+              "duplicate declarative :call_routes entries for #{inspect(key)}; one explicit " <>
                 "override per route is allowed"
       end
 
@@ -394,6 +394,11 @@ defmodule Mutare.MacroRouting.Registry do
   # constant plus one unmatched representative per wildcard dimension is exhaustive for this
   # equality/wildcard pattern language: calls within each resulting class have identical lookup
   # behaviour.
+  #
+  # A **configured** call-level `:skip` counts as reachable too: the user displaced the adapter's
+  # hosted/shape-aware route on purpose ("don't touch this call at all"), which must not surface as
+  # a contract error against the adapter. A *code-provided* `:skip` alongside a host subscription
+  # is still the genuine misconfiguration this check exists for.
   defp host_reachable?(routes, {host_module, host_name, host_arity} = host_selector) do
     modules = witness_values(routes, 0, host_module, Spec.wildcard())
     names = witness_values(routes, 1, host_name, Spec.wildcard())
@@ -406,13 +411,19 @@ defmodule Mutare.MacroRouting.Registry do
 
           selector_matches?(host_selector, concrete) and
             case lookup_route(routes, module, name, arity) do
-              %Entry{spec: spec} -> Spec.host_required?(spec) or Spec.classifier?(spec)
-              nil -> false
+              %Entry{spec: spec} = entry ->
+                Spec.host_required?(spec) or Spec.classifier?(spec) or config_skip?(entry)
+
+              nil ->
+                false
             end
         end)
       end)
     end)
   end
+
+  defp config_skip?(%Entry{spec: spec, sources: [:config]}), do: Spec.skip?(spec)
+  defp config_skip?(%Entry{}), do: false
 
   defp witness_values(_routes, _position, host_value, wildcard) when host_value != wildcard,
     do: [host_value]

@@ -5,8 +5,9 @@ defmodule Mutare.TransformDurationTest do
   # decline there, so a *literal* duration (an integer count of milliseconds, or `:infinity`) is left
   # unmutated — a near-unkillable equivalent mutant — while a *computed* duration, and every other
   # argument, still mutates. Resolution rides on the same reader the call families use, so aliased /
-  # imported / Erlang-atom forms are recognised and a shadowing alias is not. The final `describe`
-  # exercises the facility itself with a custom mutator, showing it isn't timeout-specific.
+  # imported / Erlang-atom forms are recognised and a shadowing alias is not. The last two `describe`s
+  # exercise the facility itself — with a custom mutator's own label, and through the user-facing
+  # `argument_marks:` option that extends any declared label's table from configuration.
   use ExUnit.Case, async: true
 
   # A third-party mutator exercising the general facility: it marks argument 1 of `Widget.render/2`
@@ -32,41 +33,6 @@ defmodule Mutare.TransformDurationTest do
 
     @impl true
     def mutate({:__block__, _meta, [n]}) when is_integer(n), do: [Mutare.AST.literal(n + 1)]
-    def mutate(_node), do: :skip
-  end
-
-  # A mutator that only *declares*: it pins `Widget.render/2`'s arg 1 (and `Widget.stream/2`'s
-  # `:mode` option) with the shared structural label and produces nothing itself — the way a plugin
-  # ships "a literal here names something" knowledge for every value family to honour.
-  defmodule StructuralDeclarer do
-    @behaviour Mutare.Mutator
-    @impl true
-    def name, do: :declarer
-
-    @impl true
-    def argument_marks(_config) do
-      [
-        {Widget, :render, 2, [1], Mutare.Mutator.structural_label()},
-        {Widget, :stream, 2, [{:keyword, :mode}], Mutare.Mutator.structural_label()}
-      ]
-    end
-
-    @impl true
-    def mutate(_node), do: :skip
-  end
-
-  # A mutator whose *shared* label collides with a built-in family's report name (`:integer`). Used
-  # to prove a public/shared mark is never mistaken for that family's own `:skip_arguments` self
-  # request — the self-mark is namespaced, not the bare instance name.
-  defmodule NameClashMutator do
-    @behaviour Mutare.Mutator
-    @impl true
-    def name, do: :clash
-
-    @impl true
-    def argument_marks(_config), do: [{Widget, :render, 2, [1], :integer}]
-
-    @impl true
     def mutate(_node), do: :skip
   end
 
@@ -542,34 +508,6 @@ defmodule Mutare.TransformDurationTest do
       refute {:marking, "2", "3"} in triples
     end
 
-    test "a shared mark whose label equals a family's report name doesn't trigger its self-skip" do
-      # The `:skip_arguments` self-mark is namespaced (`Mutare.Mutator.self_label/1`), not the bare
-      # instance name — otherwise a *public* mark whose label collided with a family's report name
-      # (or an `:as` rename) would be mistaken for that family's own skip request and suppress it at a
-      # position it never configured.
-
-      # Built-in name: `NameClashMutator` marks `Widget.render/2` arg 1 with a `:integer` label, which
-      # equals `IntegerLiteral`'s report name. `IntegerLiteral` must still mutate the `2` there.
-      {_m, by_name} =
-        value_triples("def f, do: Widget.render(1, 2)", [
-          NameClashMutator,
-          Mutare.Mutators.IntegerLiteral
-        ])
-
-      assert {:integer, "2", "3"} in by_name
-
-      # Same hazard via an `:as` rename colliding with a shared label: `MarkingMutator` marks arg 1
-      # with `:pinned`, and an `IntegerLiteral` instance renamed `as: :pinned` must not read that as its own
-      # skip request.
-      {_m, by_rename} =
-        value_triples(
-          "def f, do: Widget.render(1, 2)",
-          [MarkingMutator, {Mutare.Mutators.IntegerLiteral, as: :pinned}]
-        )
-
-      assert {:pinned, "2", "3"} in by_rename
-    end
-
     test "a custom keyword-option mark works too" do
       # `Widget.stream/2`'s `:mode` option value is marked, so its literal is declined.
       {_m, triples} = value_triples("def f(e), do: Widget.stream(e, mode: 1)", [MarkingMutator])
@@ -578,101 +516,58 @@ defmodule Mutare.TransformDurationTest do
     end
   end
 
-  describe "the shared :structural label (a declarer pins a position for every value family)" do
-    test "IntegerLiteral and AtomLiteral decline at a :structural-marked position" do
-      # The pinned arg 1 is held back while the unmarked arg 0 still mutates — positional, like
-      # every mark.
-      {_m, ints} =
-        value_triples("def f, do: Widget.render(1, 2)", [
-          StructuralDeclarer,
-          Mutare.Mutators.IntegerLiteral
-        ])
+  describe "configured marks (the `argument_marks:` option)" do
+    # A user extends the same tables the mutators declare, in the same declaration shape
+    # (`{module, function, arity, positions, label}`), and borrows the reading family's reaction:
+    # under `:timeout`, `IntegerLiteral` declines every integer and `AtomLiteral` only `:infinity`,
+    # while every other family proceeds. (To hold a position back from *every* family whatever its
+    # value, route it `:raw` in `call_routes:` — see `transform_call_skip_test.exs`.)
+    @int [Mutare.Mutators.IntegerLiteral]
 
-      assert {:integer, "1", "2"} in ints
-      refute Enum.any?(ints, fn {_m, original, _} -> original == "2" end)
-
-      # An atom there is held back too — unconditional, unlike `:timeout`'s `:infinity`-only
-      # reaction: the position, not the value, is what the declarer pinned.
-      {_m, atoms} =
-        value_triples("def f, do: Widget.render(1, :mode)", [
-          StructuralDeclarer,
-          Mutare.Mutators.AtomLiteral
-        ])
-
-      assert atoms == []
-    end
-
-    test "the mixin families honour it, and only with the declarer enabled (not vacuous)" do
-      body = ~S|def f, do: Widget.render(1, "tag")|
-
-      {_m, marked} =
-        value_triples(body, [StructuralDeclarer, Mutare.Mutators.StringLiteral])
-
-      assert marked == []
-
-      # Without the declarer the same literal mutates — the suppression is the mark, not the call.
-      {_m, plain} = value_triples(body, [Mutare.Mutators.StringLiteral])
-      assert {:string, ~S("tag"), ~S("")} in plain
-    end
-
-    test "a :structural keyword-option mark pins the option value" do
-      {_m, triples} =
-        value_triples("def f(e), do: Widget.stream(e, mode: 1)", [
-          StructuralDeclarer,
-          Mutare.Mutators.IntegerLiteral
-        ])
-
-      assert triples == []
-    end
-
-    test "ConventionAtom deliberately does not react — the documented exception to the rule" do
-      # The reader set is *exactly* the `:skip_arguments`-honouring families, and `ConventionAtom`
-      # is excluded from that set on purpose (its sibling swaps are high-signal, the opposite of an
-      # opaque structural literal). So a pinned position whose value happens to be a convention atom
-      # still gets the swap — the one leak in "pins it for every value family", locked here so the
-      # stance can't drift silently into the mixin.
-      body = """
-      def f, do: Widget.render(1, :ok)
-        def g, do: Widget.render(1, :mode)
-      """
-
-      {_m, triples} =
-        value_triples(body, [
-          StructuralDeclarer,
-          Mutare.Mutators.AtomLiteral,
-          Mutare.Mutators.ConventionAtom
-        ])
-
-      # `:ok` is ConventionAtom's by the ownership split, and it swaps through the mark.
-      assert {:convention, ":ok", ":error"} in triples
-
-      # The mark *is* live at that same position in the same run — the sibling `:mode`, which is
-      # AtomLiteral's, is held back. Without this half the assertion above proves nothing.
-      refute Enum.any?(triples, fn {mutator, _original, _} -> mutator == :atom end)
-    end
-  end
-
-  describe "configurable skip positions (the :skip_arguments option)" do
-    test "Literal's :skip_arguments leaves the configured integer alone; unconfigured mutates it" do
+    test "a configured :timeout position leaves the integer alone; unconfigured mutates it" do
       body = "def f(c), do: MyApp.Cache.put(c, :k, 300)"
-      config = [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp.Cache, :put, 3, [2]}]}]
+      marks = [{MyApp.Cache, :put, 3, [2], :timeout}]
 
-      {meta, configured} = value_triples(body, config)
+      {meta, configured} = value_triples(body, @int, argument_marks: marks)
       assert configured == []
       assert_compiles(meta)
 
-      {_m, plain} = value_triples(body, [Mutare.Mutators.IntegerLiteral])
+      {_m, plain} = value_triples(body, @int)
       assert {:integer, "300", "0"} in plain
+    end
+
+    test "the reaction is the reading family's — value-aware, not a blanket pin" do
+      # `:infinity` at a configured `:timeout` position is held back and a sibling atom is not; a
+      # string there is not a duration at all, so `StringLiteral` (which reads no `:timeout`) fires.
+      marks = [{MyApp.Cache, :put, 3, [2], :timeout}]
+
+      {_m, atoms} =
+        value_triples(
+          "def f(c), do: MyApp.Cache.put(c, :normal, :infinity)",
+          [Mutare.Mutators.AtomLiteral],
+          argument_marks: marks
+        )
+
+      assert atoms == [{:atom, ":normal", ":mutare"}]
+
+      {_m, strings} =
+        value_triples(
+          ~S|def f(c), do: MyApp.Cache.put(c, :k, "x")|,
+          [Mutare.Mutators.StringLiteral],
+          argument_marks: marks
+        )
+
+      assert {:string, ~S("x"), ~S("")} in strings
     end
 
     test "a mark is honored inside a `when` guard, not only in a body call" do
       # The guard/pattern tagging path (`Mutare.Transform.Tag`) offers a node to the mutators on its
       # own — separately from the in-place body offer — so it must surface the same position marks a
       # body offer does. `is_integer/1` is guard-safe, so `is_integer(123)` sits in guard position;
-      # a `:skip_arguments` mark on its argument must hold the literal back *there* just as it does in
-      # a body call. Both the def-clause guard (lifted via `FunctionPlan`) and the `case`-clause guard
+      # a configured mark on its argument must hold the literal back *there* just as it does in a
+      # body call. Both the def-clause guard (lifted via `FunctionPlan`) and the `case`-clause guard
       # (via `Analyze`) route through `Tag.guard_targets`, so both are covered.
-      config = [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{Kernel, :is_integer, 1, [0]}]}]
+      marks = [{Kernel, :is_integer, 1, [0], :timeout}]
 
       for guarded <- [
             "def f(x) when is_integer(123), do: x",
@@ -684,25 +579,19 @@ defmodule Mutare.TransformDurationTest do
               end\
             """
           ] do
-        assert value_triples(guarded, config) |> elem(1) == [],
+        assert value_triples(guarded, @int, argument_marks: marks) |> elem(1) == [],
                "expected the guard literal held back in `#{guarded}`"
       end
 
       # Non-vacuous: unconfigured, the same guard literal mutates fully.
-      {_m, plain} =
-        value_triples("def f(x) when is_integer(123), do: x", [Mutare.Mutators.IntegerLiteral])
-
+      {_m, plain} = value_triples("def f(x) when is_integer(123), do: x", @int)
       assert {:integer, "123", "0"} in plain
     end
 
     test "a configured keyword-option value is left alone" do
       {_m, triples} =
-        value_triples(
-          "def f(r), do: MyApp.get(r, recv_timeout: 500)",
-          [
-            {Mutare.Mutators.IntegerLiteral,
-             skip_arguments: [{MyApp, :get, 2, [{:keyword, :recv_timeout}]}]}
-          ]
+        value_triples("def f(r), do: MyApp.get(r, recv_timeout: 500)", @int,
+          argument_marks: [{MyApp, :get, 2, [{:keyword, :recv_timeout}], :timeout}]
         )
 
       assert triples == []
@@ -713,28 +602,28 @@ defmodule Mutare.TransformDurationTest do
       # receiver — `[timeout: 500] |> MyApp.configure()`. The receiver is effective argument 0
       # *and* the trailing argument, so the `{:keyword, :timeout}` mark must reach the piped
       # option value just as in the written `MyApp.configure(timeout: 500)`.
-      config = [
-        {Mutare.Mutators.IntegerLiteral,
-         skip_arguments: [{MyApp, :configure, 1, [{:keyword, :timeout}]}]}
-      ]
+      marks = [{MyApp, :configure, 1, [{:keyword, :timeout}], :timeout}]
 
-      assert value_triples("def f, do: MyApp.configure(timeout: 500)", config) |> elem(1) == []
+      assert value_triples("def f, do: MyApp.configure(timeout: 500)", @int,
+               argument_marks: marks
+             )
+             |> elem(1) == []
 
-      assert value_triples("def f, do: [timeout: 500] |> MyApp.configure()", config) |> elem(1) ==
-               []
+      assert value_triples("def f, do: [timeout: 500] |> MyApp.configure()", @int,
+               argument_marks: marks
+             )
+             |> elem(1) == []
 
       # Not vacuous: unconfigured, the piped option value mutates…
-      {_m, plain} =
-        value_triples("def f, do: [timeout: 500] |> MyApp.configure()", [
-          Mutare.Mutators.IntegerLiteral
-        ])
-
+      {_m, plain} = value_triples("def f, do: [timeout: 500] |> MyApp.configure()", @int)
       assert {:integer, "500", "0"} in plain
 
       # …and under the config an unmarked sibling key still does — the mark froze one value, not
       # the list.
       {_m, sibling} =
-        value_triples("def f, do: [pool: 5, timeout: 500] |> MyApp.configure()", config)
+        value_triples("def f, do: [pool: 5, timeout: 500] |> MyApp.configure()", @int,
+          argument_marks: marks
+        )
 
       assert {:integer, "5", "6"} in sibling or {:integer, "5", "0"} in sibling
       refute Enum.any?(sibling, fn {_m, original, _} -> original == "500" end)
@@ -742,127 +631,76 @@ defmodule Mutare.TransformDurationTest do
 
     test "a negative literal at a configured position is held back (mark reaches inside the unary -)" do
       # `-300` parses as `{:-, _, [300]}` and the value families fire on the inner positive literal,
-      # so the mark must reach it — otherwise `MyApp.put(c, -300)` slips past a skip that catches
-      # `MyApp.put(c, 300)`. Positional, keyword, and float alike (this applies to the built-in table
-      # too, since the fix is in the shared stamping).
-      for {body, cfg} <- [
-            {"def f(c), do: MyApp.put(c, -300)",
-             [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp, :put, 2, [1]}]}]},
+      # so the mark must reach it — otherwise `MyApp.put(c, -300)` slips past a mark that catches
+      # `MyApp.put(c, 300)`. Positional and keyword alike (this applies to the built-in table too,
+      # since the fix is in the shared stamping).
+      for {body, marks} <- [
+            {"def f(c), do: MyApp.put(c, -300)", [{MyApp, :put, 2, [1], :timeout}]},
             {"def f(c), do: MyApp.put(c, timeout: -300)",
-             [
-               {Mutare.Mutators.IntegerLiteral,
-                skip_arguments: [{MyApp, :put, 2, [{:keyword, :timeout}]}]}
-             ]},
-            {"def f(c), do: MyApp.ratio(c, -1.5)",
-             [{Mutare.Mutators.FloatLiteral, skip_arguments: [{MyApp, :ratio, 2, [1]}]}]}
+             [{MyApp, :put, 2, [{:keyword, :timeout}], :timeout}]}
           ] do
-        {_m, triples} = value_triples(body, cfg)
+        {_m, triples} = value_triples(body, @int, argument_marks: marks)
         assert triples == [], "expected -literal held back in `#{body}`, got #{inspect(triples)}"
       end
 
       # A *computed* negative (`-(x + 1)`) is not a bare literal, so its sub-literal still mutates.
       {_m, computed} =
-        value_triples(
-          "def f(c, x), do: MyApp.put(c, -(x + 1))",
-          [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp, :put, 2, [1]}]}]
+        value_triples("def f(c, x), do: MyApp.put(c, -(x + 1))", @int,
+          argument_marks: [{MyApp, :put, 2, [1], :timeout}]
         )
 
       assert {:integer, "1", "0"} in computed
     end
 
-    test "an interpolated string / atom at a configured position is held back" do
-      # Unlike a negative literal, an interpolated string/atom has no wrapper: `StringLiteral` /
-      # `AtomLiteral` fire on the argument node itself (the `<<>>` / `:erlang.binary_to_atom` call),
-      # so the mark on the argument reaches them directly — no fix needed, but pin it.
-      {_m, str} =
-        value_triples(
-          ~S|def f(c, bar), do: MyApp.put(c, "foo#{bar}")|,
-          [{Mutare.Mutators.StringLiteral, skip_arguments: [{MyApp, :put, 2, [1]}]}]
-        )
-
-      assert str == []
-
-      {_m, atom} =
-        value_triples(
-          ~S|def f(c, bar), do: MyApp.put(c, :"foo#{bar}")|,
-          [{Mutare.Mutators.AtomLiteral, skip_arguments: [{MyApp, :put, 2, [1]}]}]
-        )
-
-      assert atom == []
-
-      # A literal *inside* an interpolation (`#{5}`) is a nested sub-expression, so it still mutates
-      # — the same way `2` in `base * 2` does. (The mark froze the string's own mutation, not the
-      # computation embedded in it.)
-      {_m, inner} =
-        value_triples(
-          ~S|def f(c), do: MyApp.put(c, "x#{5}")|,
-          [
-            {Mutare.Mutators.StringLiteral, skip_arguments: [{MyApp, :put, 2, [1]}]},
-            Mutare.Mutators.IntegerLiteral
-          ]
-        )
-
-      assert {:integer, "5", "0"} in inner
-    end
-
-    test "the option is per-family: Literal's config does not silence AtomLiteral there" do
-      # Literal marks with its own label, so an atom at a Literal-configured position still mutates —
-      # AtomLiteral takes `:skip_arguments` independently.
+    test "a custom mutator's label is configurable too, once that mutator is enabled" do
+      # `MarkingMutator` declares `:pinned` positions of its own; a config entry under the same
+      # label extends its table, and the mutator reacts to it exactly as to its own declaration.
       {_m, triples} =
-        value_triples(
-          "def f(c), do: MyApp.put(c, :mode)",
-          [
-            {Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp, :put, 2, [1]}]},
-            Mutare.Mutators.AtomLiteral
-          ]
+        value_triples("def f, do: Widget.other(1, 2)", [MarkingMutator],
+          argument_marks: [{Widget, :other, 2, [1], :pinned}]
         )
 
-      assert {:atom, ":mode", ":mutare"} in triples
+      assert {:marking, "1", "2"} in triples
+      refute Enum.any?(triples, fn {_m, o, _} -> o == "2" end)
     end
 
-    test "AtomLiteral's :skip_arguments leaves an atom at the configured position alone" do
-      {_m, triples} =
-        value_triples(
-          "def f(c), do: MyApp.put(c, :mode)",
-          [{Mutare.Mutators.AtomLiteral, skip_arguments: [{MyApp, :put, 2, [1]}]}]
-        )
-
-      assert triples == []
-    end
-
-    test "a malformed :skip_arguments entry fails loudly" do
-      assert_raise ArgumentError, ~r/expected \{module, function, arity, positions\}/, fn ->
-        value_triples(
-          "def f, do: 1",
-          [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp, :put, "bad", [1]}]}]
-        )
+    test "a label no configured mutator declares is rejected at startup" do
+      assert_raise ArgumentError, ~r/no configured mutator declares positions for/, fn ->
+        Mutare.Options.new(argument_marks: [{MyApp, :put, 2, [1], :nope}])
       end
+
+      # A built-in label stays known even when the run is narrowed below its declaring family…
+      assert %Mutare.Options{} =
+               Mutare.Options.new(
+                 mutators: [:arithmetic],
+                 argument_marks: [{MyApp, :put, 2, [1], :timeout}]
+               )
+
+      # …and a custom mutator's label is known once that mutator is configured.
+      assert %Mutare.Options{} =
+               Mutare.Options.new(
+                 mutators: [MarkingMutator],
+                 argument_marks: [{Widget, :other, 2, [1], :pinned}]
+               )
+    end
+
+    test "a malformed entry fails loudly" do
+      assert_raise ArgumentError, ~r/invalid argument-mark entry/, fn ->
+        value_triples("def f, do: 1", @int, argument_marks: [{MyApp, :put, "bad", [1], :timeout}])
+      end
+
+      assert_raise ArgumentError,
+                   ~r/expected \{module, function, arity, positions, label\}/,
+                   fn ->
+                     Mutare.Options.new(argument_marks: [{MyApp, :put, 2, [1]}])
+                   end
     end
 
     test "a one-based (out-of-range) index is rejected, not silently ignored" do
       # Effective indices for arity 3 are 0..2; `[3]` is a one-based typo that would mark nothing.
       assert_raise ArgumentError, ~r/below the arity 3/, fn ->
-        value_triples(
-          "def f, do: 1",
-          [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp, :put, 3, [3]}]}]
-        )
+        value_triples("def f, do: 1", @int, argument_marks: [{MyApp, :put, 3, [3], :timeout}])
       end
-    end
-
-    test ":skip_arguments is per-instance across :as copies of the same module" do
-      # `:a` configures `put/3` arg 2; `:b` is a plain second instance. Only `:a` skips the literal
-      # there — a shared module-name label would have made `:b` skip it too.
-      {_m, triples} =
-        value_triples(
-          "def f(c), do: MyApp.put(c, :k, 300)",
-          [
-            {Mutare.Mutators.IntegerLiteral, as: :a, skip_arguments: [{MyApp, :put, 3, [2]}]},
-            {Mutare.Mutators.IntegerLiteral, as: :b}
-          ]
-        )
-
-      assert {:b, "300", "0"} in triples
-      refute Enum.any?(triples, fn {m, _o, _} -> m == :a end)
     end
 
     test "a configured effective-index-0 mark covers both the plain and piped receiver forms" do
@@ -871,21 +709,22 @@ defmodule Mutare.TransformDurationTest do
       # Kernel/import machinery as the written call. The *parenless* pipe `123 |> to_string` counts
       # too: Sourceror gives its RHS `nil` (not `[]`) args, a shape that is a variable outside pipe
       # position but always a 0-arg call as a pipe RHS.
-      config = [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{Kernel, :to_string, 1, [0]}]}]
+      marks = [{Kernel, :to_string, 1, [0], :timeout}]
 
-      assert value_triples("def f, do: to_string(123)", config) |> elem(1) == []
-      assert value_triples("def f, do: 123 |> to_string()", config) |> elem(1) == []
-      assert value_triples("def f, do: 123 |> to_string", config) |> elem(1) == []
+      assert value_triples("def f, do: to_string(123)", @int, argument_marks: marks) |> elem(1) ==
+               []
+
+      assert value_triples("def f, do: 123 |> to_string()", @int, argument_marks: marks)
+             |> elem(1) == []
+
+      assert value_triples("def f, do: 123 |> to_string", @int, argument_marks: marks) |> elem(1) ==
+               []
 
       # …while an unconfigured Kernel call is untouched, in every spelling.
-      assert {:integer, "123", "0"} in (value_triples("def f, do: to_string(123)", [
-                                          Mutare.Mutators.IntegerLiteral
-                                        ])
+      assert {:integer, "123", "0"} in (value_triples("def f, do: to_string(123)", @int)
                                         |> elem(1))
 
-      assert {:integer, "123", "0"} in (value_triples("def f, do: 123 |> to_string", [
-                                          Mutare.Mutators.IntegerLiteral
-                                        ])
+      assert {:integer, "123", "0"} in (value_triples("def f, do: 123 |> to_string", @int)
                                         |> elem(1))
     end
 
@@ -895,124 +734,65 @@ defmodule Mutare.TransformDurationTest do
       # `import Process; 1000 |> sleep` is the built-in timeout table via an imported bare name…
       assert value_triples("import Process\n  def f, do: 1000 |> sleep") |> elem(1) == []
 
-      # …and a configured `:skip_arguments` on an imported function honours the same parenless form,
-      # while the unconfigured call still mutates the receiver (not a vacuous check).
-      str = Mutare.Mutators.StringLiteral
-      body = "import String\n  def f, do: \"x\" |> trim"
+      # …and a configured mark on an imported function honours the same parenless form, while the
+      # unconfigured call still mutates the receiver (not a vacuous check).
+      body = "import Integer\n  def f, do: 123 |> to_string"
+      marks = [{Integer, :to_string, 1, [0], :timeout}]
 
-      assert value_triples(body, [{str, skip_arguments: [{String, :trim, 1, [0]}]}]) |> elem(1) ==
-               []
-
-      assert {:string, "\"x\"", "\"\""} in (value_triples(body, [str]) |> elem(1))
+      assert value_triples(body, @int, argument_marks: marks) |> elem(1) == []
+      assert {:integer, "123", "0"} in (value_triples(body, @int) |> elem(1))
     end
 
     test "a configured mark reaches a bare call through a whole import of a project module" do
       # `import MyApp.Cache` can't be resolved by reflection (the module lives only in the target
       # project, never loadable here), so `Imports.stamp` leaves the bare `put/3` unstamped — but
-      # the `:skip_arguments` declaration itself asserts `MyApp.Cache.put/3` exists, and the
-      # compile-unambiguity rule makes the bare call under the whole import unambiguously it. The
-      # resolver's marks-registry fallback (`marked_import_module/3`, the twin of the known-macro
-      # fallback) must therefore apply the mark to the imported bare form just as to the remote
-      # and selective-import forms.
-      config = [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp.Cache, :put, 3, [2]}]}]
+      # the mark declaration itself asserts `MyApp.Cache.put/3` exists, and the compile-unambiguity
+      # rule makes the bare call under the whole import unambiguously it. The resolver's
+      # marks-registry fallback (`marked_import_module/3`, the twin of the route-registry fallback)
+      # must therefore apply the mark to the imported bare form just as to the remote and
+      # selective-import forms.
+      marks = [{MyApp.Cache, :put, 3, [2], :timeout}]
       body = "import MyApp.Cache\n  def f(c), do: put(c, :k, 300)"
 
-      assert value_triples(body, config) |> elem(1) == []
+      assert value_triples(body, @int, argument_marks: marks) |> elem(1) == []
 
       # …including the pipe-shifted form (the piped receiver is effective arg 0, so the marked
       # effective index 2 is visible index 1)…
       piped = "import MyApp.Cache\n  def f(c), do: c |> put(:k, 300)"
-      assert value_triples(piped, config) |> elem(1) == []
+      assert value_triples(piped, @int, argument_marks: marks) |> elem(1) == []
 
       # …and the piped-receiver path (`pipe_target/2` resolves the RHS through the same fallback),
       # parens or parenless.
-      recv = [
-        {Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp.Cache, :sleepish, 1, [0]}]}
-      ]
+      recv = [{MyApp.Cache, :sleepish, 1, [0], :timeout}]
 
-      assert value_triples("import MyApp.Cache\n  def f, do: 300 |> sleepish()", recv) |> elem(1) ==
-               []
+      assert value_triples("import MyApp.Cache\n  def f, do: 300 |> sleepish()", @int,
+               argument_marks: recv
+             )
+             |> elem(1) == []
 
-      assert value_triples("import MyApp.Cache\n  def f, do: 300 |> sleepish", recv) |> elem(1) ==
-               []
+      assert value_triples("import MyApp.Cache\n  def f, do: 300 |> sleepish", @int,
+               argument_marks: recv
+             )
+             |> elem(1) == []
 
       # Not vacuous, and exactly keyed: unconfigured mutates, and the fallback is per-arity — a
       # 2-ary `put` matches no `{…, :put, 3, …}` declaration, so its literal mutates normally.
-      assert {:integer, "300", "0"} in (value_triples(body, [Mutare.Mutators.IntegerLiteral])
-                                        |> elem(1))
+      assert {:integer, "300", "0"} in (value_triples(body, @int) |> elem(1))
 
       assert {:integer, "300", "0"} in (value_triples(
                                           "import MyApp.Cache\n  def f(c), do: put(c, 300)",
-                                          config
+                                          @int,
+                                          argument_marks: marks
                                         )
                                         |> elem(1))
     end
-
-    test "FloatLiteral and StringLiteral honour :skip_arguments too" do
-      {_m, floats} =
-        value_triples(
-          "def f(c), do: MyApp.ratio(c, 1.5)",
-          [{Mutare.Mutators.FloatLiteral, skip_arguments: [{MyApp, :ratio, 2, [1]}]}]
-        )
-
-      assert floats == []
-
-      {_m, strings} =
-        value_triples(
-          ~s|def f(c), do: MyApp.tag(c, "x")|,
-          [{Mutare.Mutators.StringLiteral, skip_arguments: [{MyApp, :tag, 2, [1]}]}]
-        )
-
-      assert strings == []
-    end
-
-    test "every value-literal family honours :skip_arguments (via the shared mixin)" do
-      # `use Mutare.Mutator.SkipArguments` gives each literal family the option, so a whole-literal
-      # argument of any type can be frozen — including the bitstring the reviewer asked about.
-      for {family, arg} <- [
-            {Mutare.Mutators.BitstringLiteral, "<<1, 2, 3>>"},
-            {Mutare.Mutators.TupleLiteral, "{1, 2}"},
-            {Mutare.Mutators.MapLiteral, "%{a: 1}"},
-            {Mutare.Mutators.List, "[1, 2, 3]"},
-            {Mutare.Mutators.CharlistLiteral, ~S|~c"abc"|},
-            {Mutare.Mutators.WordListLiteral, "~w(a b)"},
-            {Mutare.Mutators.StringSigilLiteral, "~s(hi)"},
-            {Mutare.Mutators.RegexLiteral, "~r/ab/"},
-            {Mutare.Mutators.DateTimeLiteral, "~D[2020-01-01]"},
-            {Mutare.Mutators.AliasLiteral, "Foo.Bar"}
-          ] do
-        body = "def f(c), do: MyApp.store(c, #{arg})"
-
-        {_m, skipped} = value_triples(body, [{family, skip_arguments: [{MyApp, :store, 2, [1]}]}])
-
-        assert skipped == [],
-               "expected #{inspect(family)} to hold back `#{arg}`, got #{inspect(skipped)}"
-
-        {_m, plain} = value_triples(body, [family])
-        refute plain == [], "expected #{inspect(family)} to mutate `#{arg}` unconfigured"
-      end
-    end
-
-    test "the interpolated bitstring the reviewer asked about is held back by BitstringLiteral" do
-      # `<<"foo#{bar}">>` — the whole-bitstring collapse is BitstringLiteral's, now configurable.
-      {_m, triples} =
-        value_triples(
-          ~S|def f(c, bar), do: MyApp.store(c, <<"foo#{bar}">>)|,
-          [{Mutare.Mutators.BitstringLiteral, skip_arguments: [{MyApp, :store, 2, [1]}]}]
-        )
-
-      assert triples == []
-    end
   end
 
-  # Transform a module body and return `{meta, triples}` where each triple is
-  # `{mutator, original_code, mutated_code}` — the same shape the redundancy tests use. Defaults to
-  # the value families; the scoping tests pass `@list_and_value` to also exercise `List`.
-  defp value_triples(body, mutators \\ @value) do
+  defp value_triples(body, mutators \\ @value, opts \\ []) do
     source = "defmodule M do\n  #{String.trim_trailing(body)}\nend\n"
 
     {meta, sites, _next_id} =
-      Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
+      Mutare.Transform.transform_string_with_sites(source, [mutators: mutators] ++ opts)
 
     {meta, for(s <- sites, do: {s.mutator, s.original_code, s.mutated_code})}
   end

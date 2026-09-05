@@ -10,7 +10,6 @@ defmodule Mutare.Mutators.List do
   Filterable variants — qualify a `# mutare:ignore` filter with `:label` to suppress just one kind (`c:Mutare.Mutator.variants/0`): `++`, `--`, `empty`.
   """
   @behaviour Mutare.Mutator
-  use Mutare.Mutator.SkipArguments
 
   alias Mutare.AST
 

@@ -1,4 +1,4 @@
-defmodule Mutare.MacroRouting.Call do
+defmodule Mutare.CallRouting.Call do
   @moduledoc """
   Stable, resolved view of a known-macro call passed to routing and hosting callbacks.
 

@@ -1,7 +1,7 @@
-defmodule Mutare.MacroRouting.Registry.Entry do
+defmodule Mutare.CallRouting.Registry.Entry do
   @moduledoc false
 
-  alias Mutare.Macro.Spec
+  alias Mutare.CallRouting.Spec
 
   @type source :: {:builtin | :mutator | :extension, module()} | :config
   @type t :: %__MODULE__{

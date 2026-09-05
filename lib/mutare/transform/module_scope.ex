@@ -13,7 +13,7 @@ defmodule Mutare.Transform.ModuleScope do
   # explicit `alias`/`require …, as:` reaches later siblings; this module adds the *implicit*
   # alias a `defmodule`/`defprotocol` introduces, so a sibling/body reference to a nested module
   # by its short name resolves to the module Elixir actually defines. Without it, a call keyed on
-  # such a module (a `:macro_routes` entry, in `Resolve`) or a nested `@behaviour` (in
+  # such a module (a `:call_routes` entry, in `Resolve`) or a nested `@behaviour` (in
   # `Behaviours`) is resolved to the wrong module and silently missed.
   #
   # Tracking the implicit alias requires the **enclosing module** (the parent), so each caller

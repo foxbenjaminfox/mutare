@@ -10,8 +10,8 @@ defmodule Mutare.Poison.Hint do
   macro *call* rather than the mutation inside it, Mutare can't tell which single
   mutant to drop. The whole run aborts.
 
-  The way out is to leave that macro's arguments unmutated by marking it `:skip`
-  in `.mutare.exs` (the `:macro_routes` option). This module recognises the situation
+  The way out is to leave that macro's arguments as written by routing it `:raw`
+  in `.mutare.exs` (the `:call_routes` option). This module recognises the situation
   from the failed compile's output, identifies the macro(s) at fault, and produces
   that advice — including a copy-pasteable snippet — so the error the user sees
   explains how to get unblocked instead of just echoing the raw compiler error.
@@ -122,7 +122,7 @@ defmodule Mutare.Poison.Hint do
   defp function_name?(_), do: false
 
   @doc """
-  A copy-pasteable `:macro_routes` suggestion for the block macros a *successful* run
+  A copy-pasteable `:call_routes` suggestion for the block macros a *successful* run
   had to escalate (skip wholesale) during compile-poison recovery, or `nil` when there
   were none.
 
@@ -131,14 +131,14 @@ defmodule Mutare.Poison.Hint do
   Mutare guessed a DSL body could be mutated, hit poison, and skipped the block at
   runtime. That recovery is rediscovered from scratch on every run (the dropped ids are
   in-memory only), so we hand the user the durable, name-based fix. Each escalated macro
-  becomes a module-wildcard `{:*, :name, :skip}` route (the invocation's module is an
+  becomes a module-wildcard `{:*, :name, :raw}` route (the invocation's module is an
   unknown DSL we don't resolve), skipping that macro name wherever it appears.
 
   `escalations` is `Mutare.Run`'s `:recovery.escalated` (a list of
   `t:Mutare.Run.escalation/0`).
 
       iex> Mutare.Poison.Hint.escalation_note([%{macro: :guarded, file: "lib/x.ex", line: 3, count: 2}])
-      ...> |> String.contains?("{:*, :guarded, :skip}")
+      ...> |> String.contains?("{:*, :guarded, :raw}")
       true
   """
   @spec escalation_note([Mutare.Run.escalation()]) :: String.t() | nil
@@ -161,7 +161,7 @@ defmodule Mutare.Poison.Hint do
   end
 
   @doc """
-  A copy-pasteable `:macro_routes` suggestion for the inline DSL macros a *successful* run
+  A copy-pasteable `:call_routes` suggestion for the inline DSL macros a *successful* run
   had to skip via the macro-expansion fallback (`Mutare.Poison.macro_poison/2`), or `nil`
   when there were none.
 
@@ -169,14 +169,14 @@ defmodule Mutare.Poison.Hint do
   wouldn't compile inside a macro that rewrites its argument at compile time, so Mutare
   dropped that macro's mutants and rebuilt. Because the compiler *named* the macro (an
   `expanding macro:` frame), the module is known — so unlike the block case's `{:*, …}`
-  wildcard this suggests the precise `{Module, :fun, :skip}`. That recovery is rediscovered
+  wildcard this suggests the precise `{Module, :fun, :raw}`. That recovery is rediscovered
   (and its rebuilds repaid) on every run, so pinning it is the durable fix.
 
   `macro_skipped` is `Mutare.Run`'s `:recovery.macro_skipped` (a list of
   `%{module: module_string, macro: fun_atom}`).
 
       iex> Mutare.Poison.Hint.macro_skip_note([%{module: "Ecto.Query", macro: :from}])
-      ...> |> String.contains?("{Ecto.Query, :from, :skip}")
+      ...> |> String.contains?("{Ecto.Query, :from, :raw}")
       true
   """
   @spec macro_skip_note([%{module: String.t(), macro: atom()}]) :: String.t() | nil
@@ -197,10 +197,10 @@ defmodule Mutare.Poison.Hint do
     """
   end
 
-  # The shared closing line of both `:macro_routes` remediation notes (block + inline).
+  # The shared closing line of both `:call_routes` remediation notes (block + inline).
   defp macro_routes_footer do
     "Only these macros' arguments are left unmutated; the rest of your code is still\n" <>
-      "mutated as usual. See `mix help mutare` for the `:macro_routes` option."
+      "mutated as usual. See `mix help mutare` for the `:call_routes` option."
   end
 
   defp one_or_them([_]), do: "it"
@@ -216,17 +216,17 @@ defmodule Mutare.Poison.Hint do
   defp plural(_macros), do: "s"
 
   # A copy-pasteable `.mutare.exs` keyword list of module-wildcard skips — one
-  # `{:*, :name, :skip}` per escalated macro name, skipping it in any module (the
+  # `{:*, :name, :raw}` per escalated macro name, skipping it in any module (the
   # invocation's module is an unknown DSL Mutare doesn't resolve to a concrete name).
   defp wildcard_snippet(macros) do
     entries =
       Enum.map_join(macros, ",\n", fn macro ->
-        "        {:*, #{inspect(macro)}, :skip}"
+        "        {:*, #{inspect(macro)}, :raw}"
       end)
 
     """
         [
-          macro_routes: [
+          call_routes: [
     #{entries}
           ]
         ]\
@@ -249,7 +249,7 @@ defmodule Mutare.Poison.Hint do
 
     #{snippet(macros)}
 
-    See `mix help mutare` for the `:macro_routes` option.\
+    See `mix help mutare` for the `:call_routes` option.\
     """
   end
 
@@ -258,16 +258,16 @@ defmodule Mutare.Poison.Hint do
   end
 
   # A copy-pasteable `.mutare.exs` keyword list. One arity-agnostic 3-tuple per
-  # macro (`{Module, :fun, :skip}`), so every arity of the macro is skipped.
+  # macro (`{Module, :fun, :raw}`), so every arity of the macro is skipped.
   defp snippet(macros) do
     entries =
       Enum.map_join(macros, ",\n", fn {module, fun} ->
-        "        {#{module}, #{inspect(fun)}, :skip}"
+        "        {#{module}, #{inspect(fun)}, :raw}"
       end)
 
     """
         [
-          macro_routes: [
+          call_routes: [
     #{entries}
           ]
         ]\

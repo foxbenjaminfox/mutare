@@ -158,9 +158,9 @@ defmodule Mutare.Transform.Calls do
   end
 
   # Return the stable call value for a node stamped by the known-macro resolver, or `nil` for
-  # any other node. See `Mutare.Calls.resolved_macro_call/1` for the contract.
-  @spec resolved_macro_call(Macro.t()) :: Mutare.MacroRouting.Call.t() | nil
-  def resolved_macro_call({head, meta, args} = node) when is_list(meta) and is_list(args) do
+  # any other node. See `Mutare.Calls.resolved_routed_call/1` for the contract.
+  @spec resolved_routed_call(Macro.t()) :: Mutare.CallRouting.Call.t() | nil
+  def resolved_routed_call({head, meta, args} = node) when is_list(meta) and is_list(args) do
     # Stay **total**: the identity stamp is only ever placed (by `Mutare.Transform.Resolve`) on a
     # remote `Mod.fun`/`:mod.fun` or a bare `fun` head, the two shapes `macro_rebuild/4` handles —
     # so a node carrying the stamp on any *other* head (e.g. a `recv.()` anonymous-call head) is an
@@ -169,7 +169,7 @@ defmodule Mutare.Transform.Calls do
     # caller handing in an arbitrary node can never crash here.
     with {module_key, name, pipe_mode} <- macro_identity(meta),
          rebuild when is_function(rebuild, 2) <- macro_rebuild(head, meta, module_key, args) do
-      %Mutare.MacroRouting.Call{
+      %Mutare.CallRouting.Call{
         node: node,
         module: natural_module(module_key),
         name: name,
@@ -183,36 +183,36 @@ defmodule Mutare.Transform.Calls do
     end
   end
 
-  def resolved_macro_call(_node), do: nil
+  def resolved_routed_call(_node), do: nil
 
-  # Returns the resolved treatment for each visible argument of a registered macro call, or
-  # `nil`. See `Mutare.Calls.macro_treatment/1` for the contract.
-  @spec macro_treatment(Macro.t()) :: [Mutare.MacroRouting.routing_treatment()] | nil
-  def macro_treatment({_head, meta, _args}) when is_list(meta) do
-    case Meta.macro_routing(meta) do
-      routing when is_list(routing) -> Enum.map(routing, &author_treatment/1)
-      _ -> nil
+  # Returns the resolved treatment for each visible argument of a routed call, `:skip` for a
+  # call routed as an inert leaf, or `nil` for an unrouted node. See
+  # `Mutare.Calls.routed_treatments/1` for the contract.
+  #
+  # The stamp is mapped back to the author-facing vocabulary (`Mutare.CallRouting.Spec.author_position/1`):
+  # `Resolve` rewrites each `:hosted` to the internal `{:hosted, host_module}` (stamping the
+  # delivering mutator), normalizes a keyed refinement to `{:keyed, …}`, and recurses through
+  # `{:keyword, …}` — so a mutator reading this sees the words it wrote, not Mutare's stamp shape.
+  @spec routed_treatments(Macro.t()) :: [Mutare.CallRouting.routing_treatment()] | :skip | nil
+  def routed_treatments({_head, meta, _args}) when is_list(meta) do
+    case Meta.routing(meta) do
+      :skip ->
+        :skip
+
+      routing when is_list(routing) ->
+        Enum.map(routing, &Mutare.CallRouting.Spec.author_position/1)
+
+      _ ->
+        nil
     end
   end
 
-  def macro_treatment(_node), do: nil
-
-  # Map the resolved routing back to the author-facing treatment vocabulary
-  # (`Mutare.MacroRouting.routing_treatment/0`): `Resolve` rewrites each `:hosted` to the
-  # internal `{:hosted, host_module}` (stamping the delivering mutator) and recurses through
-  # `{:keyword, …}`, so undo that here — a mutator reading `macro_treatment/1` sees the `:hosted`
-  # word it wrote, not Mutare's stamp shape.
-  defp author_treatment({:hosted, _host}), do: :hosted
-
-  defp author_treatment({:keyword, treatments}),
-    do: {:keyword, Enum.map(treatments, &author_treatment/1)}
-
-  defp author_treatment(treatment), do: treatment
+  def routed_treatments(_node), do: nil
 
   # The resolved `{module_key, name, pipe_mode}` identity from a node's own meta, or `nil` when absent —
   # i.e. when the node was never matched against the macro registry.
   defp macro_identity(meta) do
-    case Meta.macro_call(meta) do
+    case Meta.routed_call(meta) do
       {_module, _name, pipe_mode} = identity when pipe_mode in [:piped, :unpiped] -> identity
       _ -> nil
     end
@@ -247,7 +247,7 @@ defmodule Mutare.Transform.Calls do
   #     `:bare` rests on: a renamed/re-aritied sibling may be displaced
   #     (`import Kernel, except: [destructure: 2]`) or shadowed by an overlapping provider, so a
   #     bare emit could fail to compile. Requalify it with the resolved **identity** module (the
-  #     `@macro_call_key` stamp, threaded in as `module`).
+  #     `@route_call_key` stamp, threaded in as `module`).
   #
   # A **value-only** swap (same name *and* arity) keeps the bare form in every case — it resolves
   # exactly as the (compiling) original did. A `nil` *identity module* (a name-only `{:*, name}`
@@ -262,7 +262,7 @@ defmodule Mutare.Transform.Calls do
   end
 
   # An unexpected head shape (never produced by `Mutare.Transform.Resolve`): no rebuild — the `nil`
-  # makes `resolved_macro_call/1` degrade to `nil` instead of raising a `FunctionClauseError`.
+  # makes `resolved_routed_call/1` degrade to `nil` instead of raising a `FunctionClauseError`.
   defp macro_rebuild(_head, _meta, _module, _args), do: nil
 
   # The bare rebuild closure: a value-only swap (same name *and* arity as the written head `fun`)

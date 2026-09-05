@@ -347,7 +347,7 @@ defmodule Mutare.Report.LiveTest do
       assert line ==
                "  ⚠ compile-poison inside macro Ecto.Query.from — a mutation there won't " <>
                  "compile; skipping its mutants and rebuilding. Pin to skip up front: " <>
-                 "{Ecto.Query, :from, :skip}"
+                 "{Ecto.Query, :from, :raw}"
     end
 
     test "pluralises and lists several macros with their routes" do
@@ -362,7 +362,7 @@ defmodule Mutare.Report.LiveTest do
       assert line ==
                "  ⚠ compile-poison inside macros MyDsl.query, Other.build — a mutation there " <>
                  "won't compile; skipping its mutants and rebuilding. Pin to skip up front: " <>
-                 "{MyDsl, :query, :skip}, {Other, :build, :skip}"
+                 "{MyDsl, :query, :raw}, {Other, :build, :raw}"
     end
   end
 

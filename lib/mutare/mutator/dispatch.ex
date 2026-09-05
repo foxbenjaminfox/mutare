@@ -291,7 +291,7 @@ defmodule Mutare.Mutator.Dispatch do
   """
   @spec host_targets(
           Spec.t(),
-          Mutare.MacroRouting.Call.t(),
+          Mutare.CallRouting.Call.t(),
           Mutare.Mutator.context()
         ) :: [map()]
   def host_targets(%Spec{module: module} = spec, call, context0) do
@@ -309,7 +309,7 @@ defmodule Mutare.Mutator.Dispatch do
             host_contract_error!(module, other, "host/2 must return a list of Target values")
         end
       rescue
-        error in Mutare.MacroRouting.ContractError ->
+        error in Mutare.CallRouting.ContractError ->
           reraise error, __STACKTRACE__
 
         error ->
@@ -361,7 +361,7 @@ defmodule Mutare.Mutator.Dispatch do
 
   @spec host_contract_error!(module(), term(), String.t()) :: no_return()
   defp host_contract_error!(module, value, message) do
-    raise Mutare.MacroRouting.ContractError,
+    raise Mutare.CallRouting.ContractError,
       provider: module,
       callback: {:host, 2},
       value: value,
@@ -374,7 +374,7 @@ defmodule Mutare.Mutator.Dispatch do
   # implying a bad return — and reraise with the provider's own stacktrace so the author sees where.
   @spec host_callback_raised!(module(), Exception.t(), Exception.stacktrace()) :: no_return()
   defp host_callback_raised!(module, error, stacktrace) do
-    reraise Mutare.MacroRouting.ContractError.exception(
+    reraise Mutare.CallRouting.ContractError.exception(
               provider: module,
               callback: {:host, 2},
               value: error,
@@ -472,7 +472,7 @@ defmodule Mutare.Mutator.Dispatch do
   # The mutation-producing callbacks: a module is a mutator if it exports `name/0` *and* at least
   # one of these. `mutate/1` is no longer required — a structural/pipe-only family produces its
   # mutations through `mutate/2` or a structural hook instead.
-  # (`macro_routes/0`/`mutate_call_option_keys?/1` are routing/policy, not producers, so they don't
+  # (`call_routes/0`/`mutate_call_option_keys?/1` are routing/policy, not producers, so they don't
   # qualify a module on their own.)
   #
   # `mutate/1,2` are base-behaviour, `host/2` is `MacroHost`; the structural hooks

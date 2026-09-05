@@ -58,7 +58,7 @@ Then run `mix mutare`.
 
 ## How it works
 
-1. Transform. Every in-scope source file is rewritten into a *metamutant* that embeds all of its mutants. Mutare transforms the code you write, before macro expansion—so any macros that don't accept arbitrary expressions will probably need to be marked `:skip` in your config.
+1. Transform. Every in-scope source file is rewritten into a *metamutant* that embeds all of its mutants. Mutare transforms the code you write, before macro expansion—so any macros that don't accept arbitrary expressions will probably need their arguments routed `:raw` in your config (see "Routing calls" below).
 2. Compile once. The metamutant compiles a single time. The source code doesn't change between runs, so there is no per-mutant recompilation.
 3. Run the suite per mutant. A baseline test run must pass; a coverage probe then maps each mutant to the test files that exercise it. Each mutant runs in a fresh `mix test` OS process with `MUTARE_ACTIVE_MUTANT` set, `:workers` at a time, each capped by a wall-clock timeout.
 4. Report. Surviving mutants are listed in an abbreviated format as the run progresses, and you get a full report, with diffs and a mutation score, at the end. You can also enable JSON, HTML, or SARIF format output.
@@ -146,11 +146,15 @@ Most projects can start without configuration. Add `.mutare.exs` when you want t
   # Extend the built-in mutators with one of your own.
   mutators: [:builtins, MyApp.Mutators.AccessPolicy],
 
-  # Leave DSL-only macro arguments untouched.
-  macro_routes: [
-    {Ecto.Query, :from, :skip},
-    {MyApp.Schema, :field, 2, [:expression, :skip]}
+  # Leave DSL-only macro arguments as written, or skip a call outright.
+  call_routes: [
+    {Ecto.Query, :from, :raw},
+    {MyApp.Schema, :field, 2, [:expression, :raw]},
+    {Mixpanel, :track, 3, :skip}
   ],
+
+  # Extend the built-in timeout table to your own functions.
+  argument_marks: [{MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout}],
 
   # Keep a compatibility-sensitive function in-place.
   skip_lifting: [{MyApp.Legacy, :parse, 1}],
@@ -195,47 +199,78 @@ mix mutare --report json:mutare.json --report sarif:mutare.sarif
 
 When every machine format is written to a file, the human report still prints to the console; when any report takes stdout (no `:PATH`), the human report is suppressed to avoid a collision. Only one report may take stdout, and no two may share a path — a second document on the same destination would corrupt or overwrite the first, so `--report json --report sarif` is rejected rather than run.
 
-### Skipping macro arguments
+### Routing calls: skipping calls and arguments
 
-Some macros take arguments that are not ordinary runtime code: a query DSL body, a pattern, a schema definition. Mutating inside those arguments is usually noise, and sometimes it breaks the single metamutant compile.
+Two kinds of call want leaving alone. Some are **not worth testing** — an analytics emitter, a logger, a metrics call — and every mutant inside them is noise. Some macros take **arguments that are not ordinary runtime code** — a query DSL body, a pattern, a schema definition — and mutating inside those is noise too, and sometimes breaks the single metamutant compile.
 
-When Mutare needs project-specific help, list the macro under `macro_routes:` and mark the non-runtime arguments as raw:
+Both are `call_routes:` entries. An entry names a call by module, function, and arity (macros and functions alike; Mutare matches it however it is written — directly, aliased, imported, or piped) and says how to treat it:
 
 ```elixir
-macro_routes: [
-  # every argument of `from/_` is left untouched
-  {Ecto.Query, :from, :skip},
+call_routes: [
+  # skip the whole call: nothing inside it is mutated, and the call itself is never rewritten
+  {Mixpanel, :track, 3, :skip},
 
-  # only the 2nd argument of `field/2` is skipped; the 1st mutates as normal
-  {MyApp.Schema, :field, 2, [:expression, :skip]}
+  # every argument of `from/_` is left as written
+  {Ecto.Query, :from, :raw},
+
+  # only the 2nd argument of `field/2` is left as written; the 1st mutates as normal
+  {MyApp.Schema, :field, 2, [:expression, :raw]},
+
+  # the assigns map itself is never collapsed to `%{}` (a crash, not a signal), but the values
+  # inside it still mutate
+  {Phoenix.Controller, :render, 3, [:expression, :expression, :interior]},
+
+  # one option of a literal keyword argument: `recv_timeout:` is left alone, `pool:` still mutates
+  {MyApp.Http, :get, 2, [:expression, [recv_timeout: :raw]]}
 ]
 ```
 
-An entry is `{Module, :name, arity, treatment}`, or `{Module, :name, treatment}` to match any arity. A treatment is either one atom for every argument or a per-position list:
+An entry is `{Module, :name, arity, treatment}`, or `{Module, :name, treatment}` to match any arity. The treatment is either `:skip` for the whole call, one word for every argument, or a per-position list:
 
-- `:skip` — leave the argument raw (no descent, no mutation).
+- `:skip` — the whole call is an inert leaf. A value piped *into* the call is not part of it and still mutates, and a skipped call in tail position still gets the enclosing function's return-value mutants (those test the function, not the call). `mix mutare --skip-call Mixpanel.track/3` is the same thing from the command line.
+- `:raw` — leave the argument exactly as written (no descent, no mutation).
+- `:interior` — mutate what is *inside* the argument, but never the argument's own node.
 - `:expression` — mutate it as normal runtime code (the default).
 - `:pattern` — descend as a match pattern, without mutating the pattern itself.
 - `:binding_pattern` — like `:pattern`, for macros whose bindings escape into the caller.
+- `[leading, key: treatment, …]` — a *keyed refinement* for an argument written as a literal keyword list: the argument follows `leading` (default `:expression`), except that each named key's value follows its own treatment. Refinements nest (`[retry: [max_retries: :raw]]`).
 
-A per-position list is padded with `:expression`, so `[:expression, :skip]` means “mutate the first argument, skip the second, mutate the rest”. Mutare matches the macro however it is written: directly, aliased, or imported.
+A per-position list is padded with `:expression`, so `[:expression, :raw]` means "mutate the first argument, leave the second as written, mutate the rest". `:skip` is only ever the whole treatment; inside a list, write `:raw`.
 
-Two wildcards cover the awkward cases:
+Two wildcards cover the awkward cases, and more specific entries win:
 
 ```elixir
-macro_routes: [
+call_routes: [
   # whole module
-  {MyApp.Sql, :*, :skip},
+  {Sentry, :*, :skip},
 
   # one macro name, wherever it comes from
-  {:*, :sigil_X, :skip},
+  {:*, :sigil_X, :raw},
 
-  # more specific entries win
-  {MyApp.Sql, :select, 2, [:expression, :skip]}
+  # more specific entries win: everything in MyApp.Sql is skipped except select/2
+  {MyApp.Sql, :*, :skip},
+  {MyApp.Sql, :select, 2, [:expression, :raw]}
 ]
 ```
 
 That is the whole vocabulary `.mutare.exs` accepts. Richer DSL support belongs in a library adapter: use an extension for shape-aware routing, and host mutators for mutations inside DSL fragments. The [Extending Mutare](https://hexdocs.pm/mutare/extending.html) guide covers that path.
+
+A route that matches no call anywhere in a full scan is reported as a warning, so a typo'd module or a wrong arity never sits silently inert.
+
+#### Argument marks: extending the timeout table
+
+Routes are blunt on purpose: `:raw` holds a position back from every mutator whatever its value. The built-in timeout handling is finer than that. A duration position (`Process.sleep/1`, `GenServer.call/3`'s third argument, `Task.async_stream`'s `timeout:` option, …) is *marked* `:timeout`, and each mutator decides what the mark means: the integer family declines any integer there, the atom family declines only `:infinity`, and every other family proceeds — so a computed duration like `base * 2` still mutates its `2`.
+
+`argument_marks:` extends those tables to your own functions, in the exact shape the mutators declare them:
+
+```elixir
+argument_marks: [
+  {MyApp.Cache, :put, 3, [2], :timeout},                       # a positional argument
+  {MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout} # a trailing-option value
+]
+```
+
+An entry is `{Module, :function, arity, positions, label}`; `positions` lists effective argument indices (a piped receiver is index 0) and `{:keyword, key}` option keys. The label must be one some enabled mutator understands — `:timeout` is built in, and a companion package documents its own — so a typo fails at startup. Reach for a route when a position should simply not mutate; reach for a mark when the reaction should depend on the value.
 
 ### Choosing which mutators run
 

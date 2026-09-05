@@ -5,7 +5,7 @@ defmodule Mutare.Transform.Uses do
   # `use MyAppWeb, :controller` injects a bundle of imports/aliases, and `use Ecto.Schema`
   # injects `import Ecto.Schema` (bringing the `schema`/`field` DSL macros as *bare* calls).
   # Those directives are invisible to `Resolve`, so the calls that depend on them don't
-  # resolve — call families miss mutants, and a registered `:skip` DSL routing (keyed on the
+  # resolve — call families miss mutants, and a registered `:raw` DSL routing (keyed on the
   # *resolved* module) is dead, so core descends into the DSL body and poisons the build.
   #
   # This pass makes them visible. `annotate/1` walks the parsed (Sourceror) tree, finds each
@@ -41,7 +41,7 @@ defmodule Mutare.Transform.Uses do
   # doesn't accept. Each harvested directive is re-rendered through Sourceror
   # (`Sourceror.parse_string!(Macro.to_string(d))`), so it arrives indistinguishable from a
   # textual directive and `Aliases`/`Imports`/`Calls` need no new clauses. Live reflection then
-  # resolves `field`/`schema` against the real module and the `:skip` routing fires.
+  # resolves `field`/`schema` against the real module and the `:raw` routing fires.
   #
   # ## Why the `use` target is alias-resolved (and the caller env mirrored)
   #
@@ -275,8 +275,8 @@ defmodule Mutare.Transform.Uses do
   same alias resolution) and reads back the `:mutare_use_degraded` stamps. Only the two
   module-known, unambiguous failures surface — `:not_loadable` and `:nonstatic_args` (see
   `t:Mutare.Transform.Uses.Harvest.degradation/0`); a `use` that expanded to genuinely
-  nothing is not reported. `mix mutare --check` uses this to warn that a `:macro_routes`
-  `:skip` keyed on such a `use`'s injected macros would be dead. Best-effort and never
+  nothing is not reported. `mix mutare --check` uses this to warn that a `:call_routes`
+  `:raw` keyed on such a `use`'s injected macros would be dead. Best-effort and never
   raises for the same reasons `annotate/2` doesn't.
   """
   @spec degraded_uses(Macro.t(), [Extension.Spec.t() | module() | {module(), keyword()}]) ::

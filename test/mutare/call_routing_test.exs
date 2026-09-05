@@ -1,7 +1,7 @@
-defmodule Mutare.MacroRoutingTest do
+defmodule Mutare.CallRoutingTest do
   use ExUnit.Case, async: true
 
-  alias Mutare.MacroRouting.{ArgumentRoutes, Call, ContractError}
+  alias Mutare.CallRouting.{ArgumentRoutes, Call, ContractError}
 
   defp call(pipe_mode, arguments) do
     %Call{
@@ -17,9 +17,9 @@ defmodule Mutare.MacroRoutingTest do
 
   describe "ArgumentRoutes" do
     test "effective routes split the pipe argument from visible arguments" do
-      routes = ArgumentRoutes.from_effective(call(:piped, [:condition]), [:skip, :hosted])
+      routes = ArgumentRoutes.from_effective(call(:piped, [:condition]), [:raw, :hosted])
 
-      assert ArgumentRoutes.piped(routes) == :skip
+      assert ArgumentRoutes.piped(routes) == :raw
       assert ArgumentRoutes.visible(routes) == [:hosted]
     end
 

@@ -81,25 +81,25 @@ defmodule Mutare.Transform.MetaTest do
 
   describe "known-macro routing stamps" do
     test "macro_routing round-trips through the stamp writer" do
-      assert Meta.macro_routing([]) == nil
-      assert Meta.macro_routing(:not_meta) == nil
+      assert Meta.routing([]) == nil
+      assert Meta.routing(:not_meta) == nil
 
-      meta = Meta.stamp_macro_routing([line: 1], [:pattern, :expression])
-      assert Meta.macro_routing(meta) == [:pattern, :expression]
+      meta = Meta.stamp_routing([line: 1], [:pattern, :expression])
+      assert Meta.routing(meta) == [:pattern, :expression]
     end
 
-    test "piped_macro_routing round-trips through the stamp writer" do
-      assert Meta.piped_macro_routing([]) == nil
+    test "piped_routing round-trips through the stamp writer" do
+      assert Meta.piped_routing([]) == nil
 
-      meta = Meta.stamp_piped_macro_routing([], :binding_pattern)
-      assert Meta.piped_macro_routing(meta) == :binding_pattern
+      meta = Meta.stamp_piped_routing([], :binding_pattern)
+      assert Meta.piped_routing(meta) == :binding_pattern
     end
 
     test "macro_call round-trips the resolved {module, name} identity" do
-      assert Meta.macro_call([]) == nil
+      assert Meta.routed_call([]) == nil
 
-      meta = Meta.stamp_macro_call([], {[:Ecto, :Query], :from})
-      assert Meta.macro_call(meta) == {[:Ecto, :Query], :from}
+      meta = Meta.stamp_routed_call([], {[:Ecto, :Query], :from})
+      assert Meta.routed_call(meta) == {[:Ecto, :Query], :from}
     end
   end
 

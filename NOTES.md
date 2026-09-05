@@ -4988,6 +4988,10 @@ pruned nothing before and prunes nothing now), but it makes `ModeSwap→AtomLite
 covering footprint. See "Overlap resolution" above.
 
 ### Argument marks — a mutator asks the transform to mark positions `[done]`
+*(The user-facing `:skip_arguments` option and the `SkipArguments` mixin this section mentions were
+retired in favour of `call_routes` + `argument_marks` — see "Call routing: `:skip`, `:raw`,
+`:interior`, keyed refinements" below. The facility itself is unchanged.)*
+
 A general facility: a mutator declares argument positions it wants *marked* (`argument_marks/1`), the
 transform stamps those positions during resolution, and the mutator reads the marks back at
 `mutate/2` and decides. The transform stays domain-agnostic — it knows only "position P of call C
@@ -8281,6 +8285,9 @@ mis-attribution fallback) with fixtures `Mutare.Test.AttributedQueryMutator` /
 `MisattributedQueryMutator`.
 
 ### The `:structural` shared mark — a mutator pins a position for every value family `[done]`
+**Superseded** by "Call routing: `:skip`, `:raw`, `:interior`, keyed refinements" below — the
+`:structural` label and `pinned?/1` are gone; an adapter routes such a position `:raw` instead.
+
 
 The motivating case is `mutare_ecto`'s: `Ecto.Changeset.apply_action/2`'s action atom is never
 consulted on the success path and only stamps `changeset.action` on the error path — metadata, not
@@ -8388,3 +8395,140 @@ also stops such groups being lifted at all. Three tests were pinning lifted-path
 original clauses, `:skip_lifting`) while narrowing `:mutators` to a set that no longer lifts —
 they now name `ClauseDrop` explicitly as the thing that lifts the group. A narrowed run that wants
 the lifted path must ask for a family that produces a lifted mutation.
+
+### Call routing: `:skip`, `:raw`, `:interior`, keyed refinements; `argument_marks` replaces `:skip_arguments` `[done]`
+
+The trigger was a small, ordinary wish: "calls to `Mixpanel.track/3` aren't worth testing — don't
+mutate them, event name and details included." Working out where that belongs pulled the whole
+"leave it alone" surface straight, pre-publication. The result is two facilities with one job each,
+and a rename.
+
+**The model.** Two mechanisms already existed for not mutating something at a call, and they differ
+on the axis that matters:
+
+- **Routing** (`macro_routes` → registry → `Resolve` stamp → `Analyze`) is *transform-enforced and
+  descent-scoped*: it decides how core walks each argument, and no mutator is consulted.
+- **Marks** (`argument_marks/1` → `meta[:mutare_marks]` → `context.marks`) are *mutator-interpreted
+  and value-node-only*: core stamps a label, the mutator decides (the timeout table declines a
+  duration literal but lets `base * 2` mutate its `2`).
+
+Whole-call exclusion is a routing statement. And routing already keyed on the *resolved*
+`{module, fun, arity}` with no macro check — `Options.Registry` resolves `macro_routes` "purely
+syntactically" — so `{Mixpanel, :track, 3, :skip}` (old vocabulary) already stripped every argument
+mutant off a plain function. The mechanism was never about macros; only its *name* was. Companion
+packages had quietly been routing functions for a while (`mutare_phoenix_swoosh` routes
+`Phoenix.Swoosh.put_layout/2`).
+
+**A route answers two questions** about a call: is the call node itself offered to mutators, and
+what is each argument? The old `:skip` answered only the second ("this argument is raw") and always
+said yes to the first — by design, so an Ecto adapter's `from/2` mutator still fires on the whole
+call. "Not worth testing" needs *no* to the first as well. Hence a distinct word.
+
+**The vocabulary now.**
+
+- `:skip` is the **call-level** word and is valid only as a route's bare treatment: the call is an
+  *inert leaf* — no whole-node offer, nothing inside the parentheses descended. Everything else
+  follows from "leaf": a skipped call in tail position still gets the enclosing function's
+  `return_value` mutants (they test the function, not the call); a **piped receiver is the `|>`'s
+  other operand, not part of the leaf**, so `Repo.insert!(u) |> Mixpanel.track(…)` keeps the
+  insert's mutants (the argument-level treatments *do* reach back into a piped LHS at position 0 —
+  a semantic claim about a position holds however the position is filled; a policy claim is about
+  the call as written). `RouteStamp` stamps the bare atom `:skip` rather than a per-position list,
+  so every reader sees one distinguished value; a `:skip` inside a list is rejected with a message
+  naming `:raw`. Also honoured on the guard path (`Tag`), on module-level block macros, and by
+  `Calls.routed_treatments/1` (which returns `:skip`).
+- `:raw` is the old argument-level `:skip`, renamed. The README had been explaining it as "mark the
+  non-runtime arguments as *raw*" all along, and `:opaque` would have been wrong for a function
+  argument (`validate_required(cs, [:name])`'s list is transparent Elixir you just don't want
+  touched). Mutare-wide, `skip_*` means *produce no sites*; a `:raw` argument can still receive
+  sites from a host sub-contracting an island, so it isn't a skip.
+- `:interior` completes the axis: offer the node? / descend? — `:expression` both, `:raw` neither,
+  `:interior` descend-only. The recurring shape is a container whose emptying is a crash-kill while
+  its members are the signal (an assigns map for `render/3`, Swoosh bodies, LiveView `assign/2`).
+  Implemented as annotate + strip the node's *own* in-place candidates — the mirror image of
+  `:interpolated`'s `pin_inplace_candidates/1`, which draws the same own-vs-descendant line.
+- **Keyed refinements** `[leading, key: position, …]` (leading defaults to `:expression`; pairs may
+  nest) refine one option value of a *literal* keyword argument — the trailing sugar or an explicit
+  `[k: v]`, both shapes. Semantics: the argument follows `leading`; each named key's value follows
+  its own position; the key, sibling pairs, and the list itself are untouched by the refinement (so
+  keys still go through the ordinary call-option-key policy and `List` still collapses an explicit
+  list). A non-literal argument (a variable, a `Keyword.merge/2`) has no keys to refine and takes
+  `leading` alone. Normalized to `{:keyed, leading, pairs}` in `Spec` so a refinement is never
+  confused with the per-position list it sits in. Implementation (`Analyze.Routed`): route the whole
+  argument by `leading`, then substitute each named value routed from the *raw* source by its own
+  position — analysis only adds metadata, so the analyzed and raw pair lists stay in lockstep (the
+  same assumption `Returns` makes), and ids are assigned at emit, so the discarded step-one
+  candidates cost nothing. It is a *refinement of an expression*, deliberately distinct from the
+  adapter-grade `{:keyword, [t…]}`, which *replaces* the treatment of a DSL keyword shorthand (keys
+  are field names and go raw, values are routed positionally by a shape-aware classifier).
+- Adapter words (`:interpolated`, `{:keyword, …}`, `:hosted`, `:routing`) are unchanged. The tier
+  rule is unchanged too: config accepts only words that can *remove or re-route* mutants; a keyed
+  refinement is graded by its contents.
+
+**The rename.** `:macro_routes` → `:call_routes`; `Mutare.MacroRouting` → `Mutare.CallRouting`
+(`call_routes/0`); `Mutare.Macro.Spec` → `Mutare.CallRouting.Spec`; `Resolve.MacroStamp` →
+`RouteStamp`; `Analyze.Macros` → `Analyze.Routed`; `meta[:mutare_macro*]` → `:mutare_route*`;
+`Calls.resolved_macro_call/1` → `resolved_routed_call/1`, `macro_treatment/1` →
+`routed_treatments/1`. `Mutator.MacroHost` keeps its name — hosting *is* about DSL fragments in
+macros. Older NOTES sections keep their "known macro" wording; read it as "routed call".
+
+**Why one registry, not a separate `skip_calls` option.** A separate option read well but split one
+mechanism across two keys with no precedence rule between them. One registry lets the existing
+specificity cascade answer every conflict (`{Mixpanel, :track, 3, [...]}` beats
+`{Mixpanel, :*, :skip}`), `reject_duplicate_config!` catches a key written twice, and `--skip-call`
+is pure sugar over a route (the one CLI flag that *appends* to a file value rather than replacing
+it — a one-off "and also skip this" run shouldn't restate every configured route).
+
+**`argument_marks` as a config option; `:skip_arguments` retired.** Users should have the full
+power of the built-in timeout table for their own functions, and the table's power is exactly what
+routes can't express: a *value-aware* reaction (`IntegerLiteral` declines any integer,
+`AtomLiteral` only `:infinity`, `Task.yield_many/2`'s one slot holds a bare timeout or an options
+list) on the argument's own node. That power rests on the founding inversion — the meaning of a
+mark lives in the mutator — so a user-facing version can only ever *extend the position tables of
+labels mutators already understand*. First cut: a label as a bare treatment word inside routes
+(`[:expression, [recv_timeout: :timeout]]`). Rejected for colliding the marks namespace with the
+treatments namespace, and because it would have forced marks' sparse grammar (name the positions
+you label) into routes' dense one (a treatment per position). So: a separate `argument_marks:`
+option whose entries are *exactly* what `argument_marks/1` returns — one grammar for marks, code and
+config alike; a user reading `IntegerLiteral`'s table can write a config line in the same shape.
+Fed to `ArgumentMarks.build/2` as a run-level declarer; labels union as before. A configured label
+must be one some mutator declares positions for (`Mutator.declared_labels/1`) — checked once in
+`Options.new/1` against the enabled mutators *plus every built-in family*, so `--mutators arithmetic`
+never invalidates a `:timeout` entry while a typo still fails at startup. Exact arity only (the
+marks registry has no wildcards, and arity-keying is a documented feature).
+
+With that, the per-family `:skip_arguments` option had nothing left to do that a `:raw` route or a
+`:timeout` mark doesn't do better: the `SkipArguments` mixin, `skip_arguments_marks/1`, the
+per-instance self-label machinery (`self_mark`/`self_label`/`self_marked?`) and `pinned?/1` are gone;
+`IntegerLiteral`/`AtomLiteral` gate on `:timeout` alone. The `:structural` shared label went with
+it: its reader set was defined as "the families that honour `:skip_arguments`", and an adapter
+routing `apply_action/2`'s action or `attach_hook/4`'s names `:raw` is strictly stronger on an atom
+(it closes the ConventionAtom leak the `:structural` note accepted as a limit). The marks facility
+now means one thing: value-aware mutator knowledge.
+
+**Smaller decisions.**
+
+- A **configured** `:skip` that displaces an adapter's `:hosted`/`:routing` route counts as
+  reachable in `Registry.validate_hosts!` — the user turned the call off; that is not the adapter's
+  `:unused_callback` contract violation. A *code-provided* `:skip` next to a host subscription still
+  is.
+- The **guard path** (`Tag`) now honours routes (`:skip` → leaf, `:raw` → argument untouched) —
+  the both-offer-paths discipline the marks already followed; the other treatments have no guard
+  meaning and fall through.
+- **Ineffective-configuration diagnostics** mirror `skip_lifting`'s: `ConfigMatches` reads two
+  stamps the resolver already places (`:mutare_route_call` → the winning route's key, wildcards
+  included; a new `:mutare_mark_call` on any call a mark declaration matched, the pipe's RHS
+  included), the count pass reports them, `Schema.detect_ineffective_config/3` diffs them against
+  `options.call_routes` / `options.argument_marks` on a full scan, and `CLI.Diagnostics` warns.
+  Recording the match at the resolver rather than re-deriving resolution in a second walk keeps the
+  diagnostic honest by construction.
+- Companion packages: `dynamic`/`is_named_binding` in `mutare_ecto` were registered `:skip` under
+  the old meaning *because* they rely on the whole-node offer — they are `:raw` now, the one place
+  the rename changes behaviour if missed.
+
+**Deferred, on purpose.** (1) A user-defined label *table* (`labels: [no_strings: [:string]]`,
+enforced at the offer layer) would restore per-family selectivity; NOTES already rejected
+offer-layer enforcement for core-defined labels, the need is rare, and a `:raw` route covers the
+common case. (2) `:interior` at module level: `analyze_module_macro_block/2` honours `:skip` and
+`:raw` only; the other positions fall through to the scaffold/runtime guess as before.
+

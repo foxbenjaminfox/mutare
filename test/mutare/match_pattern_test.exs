@@ -617,7 +617,7 @@ defmodule Mutare.MatchPatternTest do
       {_meta, sites, _} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.PatternSwap],
-          macro_routes: [{Foo, :unpack, [:expression, :binding_pattern]}]
+          call_routes: [{Foo, :unpack, [:expression, :binding_pattern]}]
         )
 
       assert Enum.filter(sites, &(&1.mutator == :pattern_swap))

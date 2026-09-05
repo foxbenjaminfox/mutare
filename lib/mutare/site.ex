@@ -70,12 +70,12 @@ defmodule Mutare.Site do
     # mutates such a body on the guess that the DSL unquotes it into a function, but
     # the injected selector `case` may be illegal in the DSL and poison the single
     # build. The tag lets poison recovery skip the *whole* block at once
-    # (`Mutare.Runner`) — the runtime-stable equivalent of marking it `:skip` —
+    # (`Mutare.Runner`) — the runtime-stable equivalent of routing it `:raw` —
     # instead of dropping one mutant at a time and re-hitting the next selector. The
     # `nid` (the block-macro statement node's stable DFS identity) makes it
     # **per-invocation**: a poison in `guarded :guard do …` must not suppress a
     # sibling `guarded :body do …` of the same macro that expands differently. A
-    # *registered* macro is left untagged: the user's `:macro_routes` routing is honoured,
+    # *registered* macro is left untagged: the user's `:call_routes` routing is honoured,
     # never auto-skipped.
     block_macro: nil
   ]

@@ -42,7 +42,10 @@ defmodule Mutare.Config do
   `Mix.Tasks.Mutare` moduledoc — this is the translation layer, so it records only the
   mappings that aren't a 1:1 rename: a repeatable `--only` accumulates into `:paths`
   (each a directory or single `.ex` file, in order), `--line FILE:LINE` into
-  `:only_lines`, `--skip-lifting Module.fun/arity` into `:skip_lifting`,
+  `:only_lines`, `--skip-lifting Module.fun/arity` into `:skip_lifting`, `--skip-call
+  Module.fun/arity` (or `Module.fun` for any arity, `Module.*` for a whole module) *appends* a
+  `{Module, :fun, arity, :skip}` route to `:call_routes` (the one flag that extends the file value
+  rather than replacing it, so a run can skip one more call without restating the file's routes),
   `--full`/`--no-full` and `--per-file`/`--no-per-file` resolve to
   `:test_selection`, and
   `--partition-db`/`--no-partition-db`/`--partition-env` resolve to
@@ -67,6 +70,7 @@ defmodule Mutare.Config do
     |> put_unless_nil(:exclude, exclude_globs(flags))
     |> put_unless_nil(:only_lines, parse_lines(flags))
     |> put_unless_nil(:skip_lifting, parse_skip_lifting(flags))
+    |> append_skip_calls(flags)
     |> put_translation(:test_selection, test_selection(flags))
     |> put_translation(:partition_env, partition_env(flags))
     |> put_unless_nil(:mutators, flags[:mutators] && parse_families(flags[:mutators]))
@@ -85,6 +89,7 @@ defmodule Mutare.Config do
     only: [:string, :keep],
     line: [:string, :keep],
     skip_lifting: [:string, :keep],
+    skip_call: [:string, :keep],
     exclude: [:string, :keep],
     mutators: :string,
     full: :boolean,
@@ -221,6 +226,58 @@ defmodule Mutare.Config do
       _ ->
         raise ArgumentError,
               "--line expects FILE:LINE (e.g. lib/foo.ex:42), got: #{inspect(spec)}"
+    end
+  end
+
+  # `--skip-call Module.function/arity` skips a call outright — the CLI spelling of a
+  # `{Module, :function, arity, :skip}` `call_routes:` entry (see `Mutare.CallRouting`). It is
+  # repeatable, and it **appends** to the file's `call_routes:` rather than replacing them: a
+  # one-off "and also leave this call alone" run shouldn't have to restate every configured route.
+  # `Module.function` (no arity) skips every arity; `Module.*` skips the whole module.
+  defp append_skip_calls(config, flags) do
+    case Keyword.get_values(flags, :skip_call) do
+      [] ->
+        config
+
+      specs ->
+        routes = Enum.map(specs, &parse_skip_call_spec!/1)
+        Keyword.update(config, :call_routes, routes, &(&1 ++ routes))
+    end
+  end
+
+  @doc false
+  @spec parse_skip_call_spec!(String.t()) :: Mutare.CallRouting.route()
+  def parse_skip_call_spec!(spec) when is_binary(spec) do
+    with {left, arity} <- split_arity(spec),
+         {module_text, function} <- split_module_function(left),
+         true <- Lifting.module_alias?(module_text),
+         true <- function == "*" or Lifting.function_name?(function) do
+      {Module.concat(String.split(module_text, ".")), String.to_atom(function), arity, :skip}
+    else
+      _ ->
+        raise ArgumentError,
+              "--skip-call expects Module.function/arity, Module.function (any arity), or " <>
+                "Module.* (a whole module) — e.g. Mixpanel.track/3 — got: #{inspect(spec)}"
+    end
+  end
+
+  defp split_arity(spec) do
+    case String.split(spec, "/", parts: 2) do
+      [left] ->
+        {left, :any}
+
+      [left, arity_text] ->
+        case Integer.parse(arity_text) do
+          {arity, ""} when arity >= 0 -> {left, arity}
+          _ -> :error
+        end
+    end
+  end
+
+  defp split_module_function(text) do
+    case text |> String.split(".") |> Enum.split(-1) do
+      {[_ | _] = module_parts, [function]} -> {Enum.join(module_parts, "."), function}
+      _ -> :error
     end
   end
 

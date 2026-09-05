@@ -11,7 +11,6 @@ defmodule Mutare.Mutators.BitstringLiteral do
   A bitstring in a *pattern* is left alone, so a match like `<<a, b>> = bin` is not corrupted. The segment *values* still mutate independently (a byte via `Literal`, a string segment via `StringLiteral`, an expression via `Arithmetic`, a `size(expr)` arg via `Literal`).
   """
   @behaviour Mutare.Mutator
-  use Mutare.Mutator.SkipArguments
 
   alias Mutare.AST
 

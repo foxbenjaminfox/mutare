@@ -56,7 +56,7 @@ defmodule Mutare.MutatorTest do
 
   describe "host_targets/3" do
     defp call do
-      %Mutare.MacroRouting.Call{
+      %Mutare.CallRouting.Call{
         node: {:x, [], []},
         module: Mutare.Test.HostDSL,
         name: :x,
@@ -74,7 +74,7 @@ defmodule Mutare.MutatorTest do
     end
 
     test "raises on a malformed target (a hosting-mutator bug, surfaced loudly)" do
-      assert_raise Mutare.MacroRouting.ContractError, ~r/must return.*Target values/s, fn ->
+      assert_raise Mutare.CallRouting.ContractError, ~r/must return.*Target values/s, fn ->
         Dispatch.host_targets(Spec.for_module(BadHost), call(), %{})
       end
     end

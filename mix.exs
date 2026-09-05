@@ -38,7 +38,7 @@ defmodule Mutare.MixProject do
     Mutare.Transform.Config
     Mutare.Runner.Hydrate
     Mutare.Options.Registry
-    Mutare.MacroRouting.Registry
+    Mutare.CallRouting.Registry
     Mutare.Mutator.Dispatch
     Mutare.Coverage.HelperTemplate
     Mutare.Ignore.Directive
@@ -180,9 +180,9 @@ defmodule Mutare.MixProject do
         "Writing extensions": [
           Mutare.Extension,
           Mutare.Extension.Spec,
-          Mutare.MacroRouting,
-          Mutare.MacroRouting.Registry,
-          Mutare.Macro.Spec,
+          Mutare.CallRouting,
+          Mutare.CallRouting.Registry,
+          Mutare.CallRouting.Spec,
           Mutare.UseExpansion,
           Mutare.UseExpansion.Expansion,
           Mutare.UseExpansion.ContractError

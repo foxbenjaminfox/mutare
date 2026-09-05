@@ -131,7 +131,8 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
 - **Extension surface** — `Mutare.Mutator` (+ capability behaviours `Mutator.Structural` /
   `Mutator.MacroHost`) and `Mutare.Mutators.*` (the built-in families); `Mutare.Mutators` (the one
   ordered registry + resolver); `Mutare.Mutator.Spec` (the resolved unit of "a mutator to run");
-  `Mutare.MacroRouting` + its internal registry (static and shape-aware known-macro routing);
+  `Mutare.CallRouting` + its internal registry (call routes: skip a call outright, or route its
+  arguments — static and shape-aware; functions and macros alike);
   `Mutare.UseExpansion` (a `use` override); `Mutare.Extension` (the non-mutating `:extensions`
   boundary); `Mutare.Analyze` (the expression-collect facade a host uses to sub-contract Elixir
   islands inside its fragment back to core's generation). See "Extending it".
@@ -169,6 +170,12 @@ These span modules, so no single moduledoc holds them. Internalize them before s
 - **Two line spaces, decoupled.** Poison works in metamutant-line space (via `Manifest`); the report
   works in original-line space. They never need relating — don't reintroduce a mapping. (Coverage
   uses neither; it keys by mutant id.)
+- **Two "leave it alone" facilities, deliberately split.** *Routes* (`call_routes:`,
+  `Mutare.CallRouting`) are transform-enforced and positional — `:skip` a call, `:raw`/`:interior`
+  an argument — and no mutator is consulted. *Marks* (`argument_marks:`, `argument_marks/1`) label a
+  position and let each mutator decide (the timeout table's value-aware reaction). They share
+  neither a namespace nor a grammar on purpose; NOTES "Call routing: `:skip`, `:raw`, `:interior`,
+  keyed refinements".
 - **Compile-safety is layered.** Built-in mutators are compile-safe by construction (swaps reuse
   operands); dangerous/inert positions are excluded *positively* by the context classifier, not a
   blacklist; the poison pre-filter is the backstop for the unknown (custom mutators, DSLs). A single
@@ -196,23 +203,24 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 | Structural head pattern | `pattern_mutations/2` | (`PatternSwap`/`PatternWildcard`) |
 | Behaviour-gated | read `context.behaviours` (or the `+1`-arity structural callbacks) | `behaviour_mutator.ex` |
 | Call-matching (stdlib/remote) | resolve via `Mutare.Calls.resolved_call_to/3` | `resolved_call_mutator.ex` |
-| Macro routing (static or shape-aware) | `Mutare.MacroRouting.macro_routes/0` + optional `route_arguments/2` | `macro_mutator.ex` / `host_mutator.ex` |
+| Call routing (static or shape-aware) | `Mutare.CallRouting.call_routes/0` + optional `route_arguments/2` | `macro_mutator.ex` / `host_mutator.ex` |
 | Selector-hosting (mutate inside a DSL fragment) | subscribe via `Mutator.MacroHost.hosted_macros/0` + implement `host/2` | `host_mutator.ex` |
 | Sub-contract an Elixir island (pin interior) to core | `Mutare.Analyze.expression_mutations/3` over `context.mutators` (in `host/2`, or in `mutate/2` at a registered macro's whole-call offer), relayed with `producer:` | `host_mutator.ex` (`SubcontractHostMutator`) / `macro_mutator.ex` (`SubcontractNodeMutator`) |
 | Deployment requirement (routed library must be loadable) | `required_modules/0` (checked once at startup, on mutators and extensions) | `environment_fixtures.ex` |
-| Leave a call-argument position alone (mark it, then decline) | `argument_marks/1` (declare `{mod, fun, arity, positions, label}`, config-aware) + read `Mutare.Mutator.marked?/2` in `mutate/2`; for the user-facing `:skip_arguments` option, `use Mutare.Mutator.SkipArguments`; declare the shared `Mutare.Mutator.structural_label/0` to pin a position against **every** value family (`pinned?/1`) | `IntegerLiteral` timeout table; every value-literal family's `:skip_arguments` (`transform_duration_test.exs`) |
+| Leave a call-argument position alone *value-aware* (mark it, then decide) | `argument_marks/1` (declare `{mod, fun, arity, positions, label}`, config-aware) + read `Mutare.Mutator.marked?/2` in `mutate/2`; users extend any declared label's table with the `argument_marks:` option. To hold a position back from **every** family whatever its value, route it `:raw` (`call_routes/0`) instead — no mark needed | `IntegerLiteral` timeout table (`transform_duration_test.exs`) |
 | Per-kind `# mutare:ignore` qualifier | `variants/0` (opt-in) + tag via `Mutation.tagged/2` *or* `variant/2` | (value & operator families) |
 
-An **extension** is a non-mutating module implementing `Mutare.MacroRouting`,
+An **extension** is a non-mutating module implementing `Mutare.CallRouting`,
 `Mutare.UseExpansion`, or both. It has no `name/0`, never appears in a report, and is listed under
 `:extensions`; enabled mutators are inspected for routing capabilities separately. The motivating
 case is Gettext; see `test/support/extension_fixtures.ex` and NOTES "Extension `use`-expansion
 override".
 
-The contract details (notes, `:as` renaming, the macro-routing treatments
-`:expression`/`:pattern`/`:binding_pattern`/`:skip`/`:hosted`/`:interpolated`/`{:keyword, …}`, the
-variant-label rules, the `families:` grammar) are in the
-`Mutare.Mutator` / `Mutare.MacroRouting` / `Mutare.Mutator.MacroHost` /
+The contract details (notes, `:as` renaming, the call-routing vocabulary — `:skip` for a whole
+call; `:expression`/`:raw`/`:interior`/`:pattern`/`:binding_pattern`/keyed `[key: …]` refinements
+per position; the adapter-grade `:hosted`/`:interpolated`/`{:keyword, …}` — the variant-label
+rules, the `families:` grammar) are in the
+`Mutare.Mutator` / `Mutare.CallRouting` / `Mutare.Mutator.MacroHost` /
 `Mutare.UseExpansion` / `Mutare.Mutator.Families` moduledocs — read those when implementing.
 
 ## Result statuses & `# mutare:ignore`

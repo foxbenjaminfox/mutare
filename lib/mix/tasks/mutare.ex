@@ -66,6 +66,8 @@ defmodule Mix.Tasks.Mutare do
 
   A region suppresses everything from its `-start` through its `-end` (both delimiter lines inclusive); `# mutare:ignore-file`, anywhere in a file, suppresses the whole file. A broken pairing — an `-end` with no `-start`, nested `-start`s, a region never closed — is a hard error, and a scoped directive that suppresses nothing is warned exactly like a line one. Grammar details are in the `Mutare.Ignore` docs; audit what's suppressed with `--list-ignores`.
 
+  A directive is per line or per span. To leave a *call* alone everywhere it appears — an analytics emitter, a logger — route it instead: `--skip-call Mixpanel.track/3`, or a `call_routes:` entry in `.mutare.exs` (which can also leave single arguments as written, or keep a DSL macro's body out of the mutation set). See the configuration file section below and the README's "Routing calls".
+
   ## Mutator families
 
   All families run by default. Run `mix mutare --list-mutators` to print the catalog. Select a subset with `--mutators a,b,c` (or the `:mutators` key in `.mutare.exs`); list `builtins` to keep the whole default set and add to it — `--mutators builtins,relational` is every built-in, while `--mutators relational` is *only* the relational family. The family atoms, by kind:
@@ -97,7 +99,7 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --check                  # compile the metamutant (with poison
                                           #   recovery) but run no tests — a fast
                                           #   preflight for "will my DSLs build?".
-                                          #   Prints a copy-pasteable :macro_routes
+                                          #   Prints a copy-pasteable :call_routes
                                           #   fix for any unknown macro it had to skip
 
   ## Choosing what to mutate
@@ -117,6 +119,10 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --skip-lifting MyApp.Mod.fun/2
                                           # keep one function in-place; no guard,
                                           #   head-pattern, or clause-drop mutants
+      mix mutare --skip-call Mixpanel.track/3
+                                          # skip every call to it — nothing inside
+                                          #   the call is mutated (repeatable; also
+                                          #   Mod.fun for any arity, Mod.* for a module)
       mix mutare --no-expand-uses         # don't expand `use` to discover the
                                           #   import/alias/@behaviour it injects
                                           #   (on by default; matters for Phoenix/Ecto)
@@ -279,16 +285,21 @@ defmodule Mix.Tasks.Mutare do
         # `{:builtins, except: [:arithmetic]}` drops a family. Omit the key for
         # the full default set.
         mutators: [:builtins],
-        # leave a macro's arguments raw (a DSL body, a pattern) so they aren't
-        # mutated — `:skip` covers every argument, a list marks each position;
-        # `:*` wildcards a slot: {M, :*, :skip} = whole module, {:*, name, :skip}
+        # skip a call outright (`:skip` — an analytics emitter, a logger), or leave a
+        # macro's arguments as written (`:raw` — a DSL body, a pattern) so they
+        # aren't mutated; a list treats each position (`:expression`, `:raw`,
+        # `:interior`, a keyed `[timeout: :raw]` refinement of a keyword argument);
+        # `:*` wildcards a slot: {M, :*, :skip} = whole module, {:*, name, :raw}
         # = that name in any module (a more specific line overrides)
-        macro_routes: [{Ecto.Query, :from, :skip}],
+        call_routes: [{Mixpanel, :track, 3, :skip}, {Ecto.Query, :from, :raw}],
+        # extend the built-in timeout table (and any label a companion package
+        # documents) to your own functions: {Module, :fun, arity, positions, label}
+        argument_marks: [{MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout}],
         # keep specific functions in-place when lifted function names are observable;
         # entries are {Module, function_name_atom_or_string, arity}
         skip_lifting: [],
         # non-mutating source-understanding modules implementing
-        # Mutare.MacroRouting, Mutare.UseExpansion, or both
+        # Mutare.CallRouting, Mutare.UseExpansion, or both
         extensions: [],
         # expand `use` to surface the import/alias it injects (--no-expand-uses)
         expand_uses: true,

@@ -54,25 +54,27 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_import`           — `{module, :bare | :qualify}` for a bare call    (Imports)
   #   * `:mutare_import_witness`   — dead-code import-witness payload                (Imports, spliced by ImportWitness)
   #   * `:mutare_kernel_displaced` — a Kernel fn displaced by `import …, except:`    (Imports)
-  #   * `:mutare_macro`            — known-macro per-argument routing                (Resolve.MacroStamp, from Macros)
-  #   * `:mutare_macro_piped`      — piped-value routing for a known-macro RHS       (Resolve.MacroStamp, from Macros)
-  #   * `:mutare_macro_call`       — resolved `{module_key, name}` macro identity    (Resolve.MacroStamp, read by Calls.resolved_macro_call/1)
+  #   * `:mutare_route`            — a routed call's per-argument positions, or `:skip` (Resolve.RouteStamp, from the route registry)
+  #   * `:mutare_route_piped`      — piped-value routing for a routed `|>` RHS         (Resolve.RouteStamp, from the route registry)
+  #   * `:mutare_route_call`       — resolved `{module_key, name}` routed-call identity (Resolve.RouteStamp, read by Calls.resolved_routed_call/1)
   #   * `:mutare_use_directives`   — import/alias/require a `use` injects            (Uses)
   #   * `:mutare_use_behaviours`   — `@behaviour`s a `use` injects (on the `use`)    (Uses)
   #   * `:mutare_use_degraded`     — `{module, reason}` a `use` failed to expand     (Uses, read by `--check`)
   #   * `:mutare_behaviours`       — a `defmodule`'s behaviour MapSet               (Behaviours)
   #   * `:mutare_marks`            — mutator-requested position marks (label set)   (Resolve.ArgumentMarks, read by Attach.offer)
+  #   * `:mutare_mark_call`        — `{module_key, fun, arity}` of a call some mark declaration matched (Resolve, read by ConfigMatches)
   @bookkeeping_keys [
     tag_key: :mutare_tag,
     nid_key: :mutare_nid,
     marks_key: :mutare_marks,
+    mark_call_key: :mutare_mark_call,
     alias_key: :mutare_alias,
     import_key: :mutare_import,
     import_witness_key: :mutare_import_witness,
     kernel_displaced_key: :mutare_kernel_displaced,
-    macro_key: :mutare_macro,
-    piped_macro_key: :mutare_macro_piped,
-    macro_call_key: :mutare_macro_call,
+    route_key: :mutare_route,
+    piped_route_key: :mutare_route_piped,
+    route_call_key: :mutare_route_call,
     use_directives_key: :mutare_use_directives,
     use_behaviours_key: :mutare_use_behaviours,
     use_degraded_key: :mutare_use_degraded,

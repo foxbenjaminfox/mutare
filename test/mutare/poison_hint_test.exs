@@ -35,7 +35,7 @@ defmodule Mutare.Poison.HintTest do
     test "keeps only the innermost frame, dropping an enclosing wrapper macro" do
       # `if Size.megabytes(5)` — the compiler prints the failing macro stack
       # innermost-first, so `Size.megabytes` (whose literal arg was mutated) leads
-      # and the enclosing `Kernel.if` follows. Advising `{Kernel, :if, :skip}` would
+      # and the enclosing `Kernel.if` follows. Advising `{Kernel, :if, :raw}` would
       # stop Mutare descending into every `if`, so the outer frame must be dropped.
       output = """
       == Compilation error in file lib/usage.ex ==
@@ -144,11 +144,11 @@ defmodule Mutare.Poison.HintTest do
       assert hint =~ "compile-time literal"
       assert hint =~ "* Size.megabytes"
       assert hint =~ ".mutare.exs"
-      assert hint =~ "macro_routes: ["
-      assert hint =~ "{Size, :megabytes, :skip}"
+      assert hint =~ "call_routes: ["
+      assert hint =~ "{Size, :megabytes, :raw}"
     end
 
-    test "the snippet is valid Elixir that resolves through Mutare.MacroRouting.Registry" do
+    test "the snippet is valid Elixir that resolves through Mutare.CallRouting.Registry" do
       output = """
       ** (FunctionClauseError) no function clause matching in Size.megabytes/1
           expanding macro: Size.megabytes/1
@@ -160,8 +160,8 @@ defmodule Mutare.Poison.HintTest do
 
       hint = Hint.for_compile_failure(output)
 
-      # Pull the `[ macro_routes: [...] ]` snippet out of the prose and evaluate it, then
-      # confirm it round-trips through the real `:macro_routes` resolver — so the advice we
+      # Pull the `[ call_routes: [...] ]` snippet out of the prose and evaluate it, then
+      # confirm it round-trips through the real `:call_routes` resolver — so the advice we
       # print is exactly what the user can paste into `.mutare.exs`.
       lines = String.split(hint, "\n")
       start = Enum.find_index(lines, &(&1 == "    ["))
@@ -170,10 +170,10 @@ defmodule Mutare.Poison.HintTest do
       snippet = rest |> Enum.take(stop + 1) |> Enum.join("\n")
 
       {config, _} = Code.eval_string(snippet)
-      specs = Mutare.MacroRouting.Registry.resolve(config[:macro_routes])
+      specs = Mutare.CallRouting.Registry.resolve(config[:call_routes])
 
       assert Enum.map(specs, &{&1.name, &1.arity, &1.args}) ==
-               [{:megabytes, :any, :skip}, {:field, :any, :skip}]
+               [{:megabytes, :any, :raw}, {:field, :any, :raw}]
 
       # The bullet list joins multiple macros with a real newline, one bullet per line — not ""
       # (which would run every macro's bullet together) or a stray "mutare" separator.
@@ -197,9 +197,9 @@ defmodule Mutare.Poison.HintTest do
       assert note =~ "2 whole"
       assert note =~ "rediscovered on every run"
       assert note =~ ".mutare.exs"
-      assert note =~ "{:*, :guarded, :skip}"
-      assert note =~ "{:*, :parsec, :skip}"
-      assert note =~ "`:macro_routes`"
+      assert note =~ "{:*, :guarded, :raw}"
+      assert note =~ "{:*, :parsec, :raw}"
+      assert note =~ "`:call_routes`"
     end
 
     test "dedups a macro escalated at more than one invocation" do
@@ -212,10 +212,10 @@ defmodule Mutare.Poison.HintTest do
       # One route per distinct macro name, and the singular "1 whole … block".
       assert note =~ "1 whole"
       routes = note |> String.split("\n") |> Enum.filter(&(&1 =~ "{:*,"))
-      assert routes == ["        {:*, :guarded, :skip}"]
+      assert routes == ["        {:*, :guarded, :raw}"]
     end
 
-    test "the snippet is valid Elixir that resolves through Mutare.MacroRouting.Registry" do
+    test "the snippet is valid Elixir that resolves through Mutare.CallRouting.Registry" do
       note = Hint.escalation_note([%{macro: :guarded, file: "lib/a.ex", line: 3, count: 4}])
 
       lines = String.split(note, "\n")
@@ -225,9 +225,9 @@ defmodule Mutare.Poison.HintTest do
       snippet = rest |> Enum.take(stop + 1) |> Enum.join("\n")
 
       {config, _} = Code.eval_string(snippet)
-      specs = Mutare.MacroRouting.Registry.resolve(config[:macro_routes])
+      specs = Mutare.CallRouting.Registry.resolve(config[:call_routes])
 
-      assert Enum.map(specs, &{&1.module, &1.name, &1.args}) == [{:*, :guarded, :skip}]
+      assert Enum.map(specs, &{&1.module, &1.name, &1.args}) == [{:*, :guarded, :raw}]
     end
   end
 
@@ -236,7 +236,7 @@ defmodule Mutare.Poison.HintTest do
       assert Hint.macro_skip_note([]) == nil
     end
 
-    test "suggests a copy-pasteable module-qualified {Module, :fun, :skip} route" do
+    test "suggests a copy-pasteable module-qualified {Module, :fun, :raw} route" do
       note = Hint.macro_skip_note([%{module: "Ecto.Query", macro: :from}])
 
       lines = String.split(note, "\n")
@@ -248,7 +248,7 @@ defmodule Mutare.Poison.HintTest do
       # Evaluates to a well-formed, module-qualified route (unlike the block case's
       # `{:*, …}` wildcard) — the module came from the compiler's `expanding macro:` frame.
       {config, _} = Code.eval_string(snippet)
-      assert config[:macro_routes] == [{Ecto.Query, :from, :skip}]
+      assert config[:call_routes] == [{Ecto.Query, :from, :raw}]
     end
   end
 end

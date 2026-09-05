@@ -14,8 +14,8 @@ defmodule Mutare.Transform.Meta do
   #     consumes, keyed by *logical kind* (`:in_place`/`:case`/`:hosted`) so the API never exposes
   #     the raw delivery atom. `candidates/2`, `put_candidates/3`, `append_candidates/3`,
   #     `take_candidates/2`, `update_candidates/3`, and `strip_delivery/1`.
-  #   * **macro-resolution stamps** — the known-macro routing `Mutare.Transform.Resolve` writes and
-  #     the analyzer reads (`:mutare_macro`/`:mutare_macro_piped`/`:mutare_macro_call`), the one
+  #   * **call-routing stamps** — the routing `Mutare.Transform.Resolve` writes and
+  #     the analyzer reads (`:mutare_route`/`:mutare_route_piped`/`:mutare_route_call`), the one
   #     resolution family that was being read by raw literal in several modules. Typed reader/writer
   #     per stamp.
   #   * **tag** — the replace-by-tag discovery marker (`:mutare_tag`), which had no `MetaKeys`
@@ -121,49 +121,49 @@ defmodule Mutare.Transform.Meta do
   defp delivery_key(:case), do: MetaKeys.case_key()
   defp delivery_key(:hosted), do: MetaKeys.hosted_key()
 
-  # --- known-macro routing stamps --------------------------------------------
+  # --- call-routing stamps ---------------------------------------------------
 
   @doc """
-  The per-argument routing `Mutare.Transform.Resolve` stamped on a call that resolved to a known
-  macro (`Mutare.MacroRouting.Registry`), or `nil` for an ordinary call. The reader of the `:mutare_macro`
-  contract key.
+  The routing `Mutare.Transform.Resolve` stamped on a call the route registry matched
+  (`Mutare.CallRouting.Registry`): the per-argument position list, or the bare `:skip` for a call
+  routed as an inert leaf. `nil` for an unrouted call. The reader of the `:mutare_route` contract key.
   """
-  @spec macro_routing(keyword() | term()) :: term()
-  def macro_routing(meta) when is_list(meta), do: Keyword.get(meta, MetaKeys.macro_key())
-  def macro_routing(_meta), do: nil
+  @spec routing(keyword() | term()) :: term()
+  def routing(meta) when is_list(meta), do: Keyword.get(meta, MetaKeys.route_key())
+  def routing(_meta), do: nil
 
   @doc """
-  The piped-value routing for a known-macro `|>` RHS (`:mutare_macro_piped`), stamped only when the
+  The piped-value routing for a known-macro `|>` RHS (`:mutare_route_piped`), stamped only when the
   effective-argument-0 treatment isn't the `:expression` default — so the common runtime LHS
   carries no stamp and this reads `nil`.
   """
-  @spec piped_macro_routing(keyword() | term()) :: term()
-  def piped_macro_routing(meta) when is_list(meta),
-    do: Keyword.get(meta, MetaKeys.piped_macro_key())
+  @spec piped_routing(keyword() | term()) :: term()
+  def piped_routing(meta) when is_list(meta),
+    do: Keyword.get(meta, MetaKeys.piped_route_key())
 
-  def piped_macro_routing(_meta), do: nil
+  def piped_routing(_meta), do: nil
 
   @doc """
-  The resolved `{module_key, name}` macro identity stamped on a call (`:mutare_macro_call`), or
+  The resolved `{module_key, name}` macro identity stamped on a call (`:mutare_route_call`), or
   `nil` when the node was never matched against the macro registry. Read by
-  `Mutare.Transform.Calls.resolved_macro_call/1`.
+  `Mutare.Transform.Calls.resolved_routed_call/1`.
   """
-  @spec macro_call(keyword() | term()) :: term()
-  def macro_call(meta) when is_list(meta), do: Keyword.get(meta, MetaKeys.macro_call_key())
-  def macro_call(_meta), do: nil
+  @spec routed_call(keyword() | term()) :: term()
+  def routed_call(meta) when is_list(meta), do: Keyword.get(meta, MetaKeys.route_call_key())
+  def routed_call(_meta), do: nil
 
-  @doc "Stamp visible-argument macro routing onto a call's meta (`:mutare_macro`)."
-  @spec stamp_macro_routing(keyword(), term()) :: keyword()
-  def stamp_macro_routing(meta, routing), do: [{MetaKeys.macro_key(), routing} | meta]
+  @doc "Stamp visible-argument macro routing onto a call's meta (`:mutare_route`)."
+  @spec stamp_routing(keyword(), term()) :: keyword()
+  def stamp_routing(meta, routing), do: [{MetaKeys.route_key(), routing} | meta]
 
-  @doc "Stamp the piped-value routing onto a piped known-macro stage's meta (`:mutare_macro_piped`)."
-  @spec stamp_piped_macro_routing(keyword(), term()) :: keyword()
-  def stamp_piped_macro_routing(meta, routing),
-    do: [{MetaKeys.piped_macro_key(), routing} | meta]
+  @doc "Stamp the piped-value routing onto a piped known-macro stage's meta (`:mutare_route_piped`)."
+  @spec stamp_piped_routing(keyword(), term()) :: keyword()
+  def stamp_piped_routing(meta, routing),
+    do: [{MetaKeys.piped_route_key(), routing} | meta]
 
-  @doc "Stamp the resolved `{module_key, name}` macro identity onto a call's meta (`:mutare_macro_call`)."
-  @spec stamp_macro_call(keyword(), term()) :: keyword()
-  def stamp_macro_call(meta, identity), do: [{MetaKeys.macro_call_key(), identity} | meta]
+  @doc "Stamp the resolved `{module_key, name}` macro identity onto a call's meta (`:mutare_route_call`)."
+  @spec stamp_routed_call(keyword(), term()) :: keyword()
+  def stamp_routed_call(meta, identity), do: [{MetaKeys.route_call_key(), identity} | meta]
 
   # --- replace-by-tag discovery marker ---------------------------------------
 
@@ -215,6 +215,20 @@ defmodule Mutare.Transform.Meta do
   end
 
   def add_marks(node, _labels), do: node
+
+  @doc """
+  The `{module_key, fun, effective_arity}` of a call some argument-mark declaration matched
+  (`:mutare_mark_call`), or `nil`. Stamped by `Mutare.Transform.Resolve` on the call node (and on a
+  pipe's RHS when a receiver mark applied) purely so `Mutare.Transform.ConfigMatches` can tell which
+  configured `argument_marks:` entries reached a call — the ineffective-entry diagnostic.
+  """
+  @spec mark_call(keyword() | term()) :: term()
+  def mark_call(meta) when is_list(meta), do: Keyword.get(meta, MetaKeys.mark_call_key())
+  def mark_call(_meta), do: nil
+
+  @doc "Stamp the matched mark-declaration key onto a call's meta (`:mutare_mark_call`)."
+  @spec stamp_mark_call(keyword(), term()) :: keyword()
+  def stamp_mark_call(meta, key) when is_list(meta), do: [{MetaKeys.mark_call_key(), key} | meta]
 
   @doc """
   The dispatch `context` enriched with `node`'s position marks (`marks/1`) under `:marks`, or the

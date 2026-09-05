@@ -4,11 +4,11 @@ defmodule Mutare.UseExpansion do
 
   `Mutare.Transform.Uses` normally expands module-level `use` calls to recover injected imports, aliases, requires, and behaviours. Some `__using__` macros mutate their caller or depend on compile-time state unavailable to the scan process. An enabled extension can implement `c:expand_use/3` to supply those directives explicitly.
 
-  This capability is independent of macro routing. A library integration commonly implements both `Mutare.UseExpansion` and `Mutare.MacroRouting`, but either may be used alone. The module is listed once under `:extensions`:
+  This capability is independent of macro routing. A library integration commonly implements both `Mutare.UseExpansion` and `Mutare.CallRouting`, but either may be used alone. The module is listed once under `:extensions`:
 
       defmodule Mutare.Gettext do
         @behaviour Mutare.UseExpansion
-        @behaviour Mutare.MacroRouting
+        @behaviour Mutare.CallRouting
 
         @impl Mutare.UseExpansion
         def expand_use(Gettext, _args, _context) do
@@ -17,8 +17,8 @@ defmodule Mutare.UseExpansion do
 
         def expand_use(_used, _args, _context), do: :decline
 
-        @impl Mutare.MacroRouting
-        def macro_routes, do: [{Gettext.Macros, :gettext, 1, [:skip]}]
+        @impl Mutare.CallRouting
+        def call_routes, do: [{Gettext.Macros, :gettext, 1, [:raw]}]
       end
 
   Multiple handlers are consulted in `:extensions` order; the first result other than `:decline` wins. Options from a `{module, opts}` entry arrive in `context.opts`.

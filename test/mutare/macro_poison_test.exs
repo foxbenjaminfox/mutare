@@ -9,7 +9,7 @@ defmodule Mutare.MacroPoisonTest do
   This proves recovery now *engages* instead: the `expanding macro:` frame names the macro,
   `Poison.macro_poison/2` maps it to the mutants inside its calls, they are dropped
   wholesale, the metamutant rebuilds, and the run completes — recording those mutants
-  `:poisoned` and surfacing the durable `{MyDsl, :query, :skip}` suggestion.
+  `:poisoned` and surfacing the durable `{MyDsl, :query, :raw}` suggestion.
   """
   use ExUnit.Case, async: false
 

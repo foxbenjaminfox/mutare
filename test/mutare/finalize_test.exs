@@ -170,7 +170,7 @@ defmodule Mutare.FinalizeTest do
 
   describe "the hosted :mutants path" do
     defp call do
-      %Mutare.MacroRouting.Call{
+      %Mutare.CallRouting.Call{
         node: {:x, [], []},
         module: Mutare.Test.HostDSL,
         name: :x,

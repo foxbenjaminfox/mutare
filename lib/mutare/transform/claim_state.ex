@@ -14,6 +14,10 @@ defmodule Mutare.Transform.ClaimState do
   #     pass matched (`Mutare.Transform.ModulePlan` reports them; `Mutare.Transform` unions them
   #     in). Read by `count_report/2` so `Mutare.Schema` can surface configured entries that
   #     matched nothing anywhere — the ineffective-entry diagnostic. Sink-independent.
+  #   * `route_matches` / `mark_matches` — the same diagnostic for configuration: the route keys
+  #     (`Mutare.CallRouting.Spec.key/0`) and mark-declaration keys (`{module_key, fun, arity}`) the
+  #     resolved calls in this pass hit (`Mutare.Transform.ConfigMatches`), so `Mutare.Schema` can
+  #     surface `call_routes:` / `argument_marks:` entries that matched no call anywhere.
   #
   # The `sink` selects what each claim *retains* — the one knob that splits a render from the
   # schema's render-free count pass:
@@ -43,10 +47,19 @@ defmodule Mutare.Transform.ClaimState do
           group: non_neg_integer(),
           sites: [Site.t()],
           count: non_neg_integer(),
-          skip_matches: MapSet.t(Mutare.Lifting.skip_entry())
+          skip_matches: MapSet.t(Mutare.Lifting.skip_entry()),
+          route_matches: MapSet.t(tuple()),
+          mark_matches: MapSet.t(tuple())
         }
 
-  defstruct sink: :render, next_id: 1, group: 0, sites: [], count: 0, skip_matches: MapSet.new()
+  defstruct sink: :render,
+            next_id: 1,
+            group: 0,
+            sites: [],
+            count: 0,
+            skip_matches: MapSet.new(),
+            route_matches: MapSet.new(),
+            mark_matches: MapSet.new()
 
   @doc """
   Claim the next id for `item`, returning `{artifacts, claim}`.

@@ -22,7 +22,8 @@ defmodule Mutare.Options do
           paths: [String.t()],
           exclude: [String.t()],
           mutators: [Mutare.Mutator.Spec.t()] | nil,
-          macro_routes: list(),
+          call_routes: list(),
+          argument_marks: [Mutare.Mutator.mark_declaration()],
           skip_lifting: MapSet.t(Mutare.Lifting.skip_entry()),
           extensions: [Mutare.Extension.Spec.t()],
           expand_uses: boolean(),
@@ -138,6 +139,38 @@ defmodule Mutare.Options do
     Registry.specs()
     |> Enum.map(fn %{key: key, validate: validate} -> {key, validate.(opt(opts, key))} end)
     |> then(&struct(__MODULE__, &1))
+    |> validate_argument_mark_labels!()
+  end
+
+  # The one cross-field check: a configured `argument_marks:` label must be one some mutator
+  # *declares positions for* (`Mutare.Mutator.declared_labels/1`) — a mark's meaning lives in the
+  # mutators that read it, so a label nobody declares would mark positions nobody looks at. The
+  # known set is the enabled mutators' labels plus every built-in family's (so `--mutators`
+  # narrowing a run below `:integer` never invalidates a `:timeout` entry); a `nil` `:mutators` is
+  # the full built-in set. Checked here, once per run, rather than inside the parallel transform.
+  defp validate_argument_mark_labels!(%__MODULE__{argument_marks: []} = options), do: options
+
+  defp validate_argument_mark_labels!(
+         %__MODULE__{argument_marks: marks, mutators: mutators} = options
+       ) do
+    known =
+      MapSet.union(
+        Mutare.Mutator.declared_labels(mutators || []),
+        Mutare.Mutator.declared_labels(Mutare.Mutators.all())
+      )
+
+    Enum.each(marks, fn {module, fun, arity, _positions, label} ->
+      unless MapSet.member?(known, label) do
+        raise ArgumentError,
+              ":argument_marks entry #{inspect(module)}.#{fun}/#{arity} uses label " <>
+                "#{inspect(label)}, which no configured mutator declares positions for (known: " <>
+                "#{inspect(Enum.sort(known))}). A mark's meaning lives in the mutator that reads " <>
+                "it — enable that mutator, or use a :raw route in :call_routes to leave the " <>
+                "position alone for every family."
+      end
+    end)
+
+    options
   end
 
   # Read option `key` from `opts`, falling back to its registry default — the one place `new/1`'s

@@ -4,7 +4,7 @@ defmodule Mutare.Mutator.MacroHost do
 
   Ordinary mutators see runtime Elixir expressions. A fragment inside a macro such as Ecto's `where` has the library's own semantics and cannot necessarily contain Mutare's ordinary selector. A macro host inserts selectors in the form that DSL accepts.
 
-  Macro registration and argument routing belong to the independent `Mutare.MacroRouting` capability. A host subscribes to the macros it can mutate through `c:hosted_macros/0`; a separate library extension may own their routing. This lets several independent mutators target the same DSL without replacing one another.
+  Macro registration and argument routing belong to the independent `Mutare.CallRouting` capability. A host subscribes to the macros it can mutate through `c:hosted_macros/0`; a separate library extension may own their routing. This lets several independent mutators target the same DSL without replacing one another.
 
   `host/2` is itself a mutation-producing callback, so a mutator that delivers all of its mutations through the DSL needs no `mutate/1` — just `name/0` to identify it in reports:
 
@@ -26,7 +26,7 @@ defmodule Mutare.Mutator.MacroHost do
         end
       end
 
-  (Add a `mutate/1` only if the mutator *also* mutates whole nodes outside the DSL.) See `Mutare.MacroRouting` for the "which behaviours do I implement?" table. The same module may also implement `Mutare.MacroRouting` when it owns the DSL adapter as well as its mutations, but the capabilities remain independently composable.
+  (Add a `mutate/1` only if the mutator *also* mutates whole nodes outside the DSL.) See `Mutare.CallRouting` for the "which behaviours do I implement?" table. The same module may also implement `Mutare.CallRouting` when it owns the DSL adapter as well as its mutations, but the capabilities remain independently composable.
   """
 
   @typedoc "A macro selector returned by `c:hosted_macros/0`."
@@ -37,8 +37,8 @@ defmodule Mutare.Mutator.MacroHost do
   @doc """
   Declare the macros this host can mutate.
 
-  Selectors contain identity only, not argument treatments. The merged `Mutare.MacroRouting`
-  declaration remains the sole source of routing semantics. Wildcards follow `macro_routes/0`:
+  Selectors contain identity only, not argument treatments. The merged `Mutare.CallRouting`
+  declaration remains the sole source of routing semantics. Wildcards follow `call_routes/0`:
   `:*` may occupy the module or name slot, and omitted arity means `:any`.
   """
   @callback hosted_macros() :: [macro_selector()]
@@ -46,7 +46,7 @@ defmodule Mutare.Mutator.MacroHost do
   @doc """
   Produces mutations for fragments inside a compile-time DSL.
 
-  The transform hands the callback a resolved `Mutare.MacroRouting.Call` and expects a list of
+  The transform hands the callback a resolved `Mutare.CallRouting.Call` and expects a list of
   `Mutare.Mutator.MacroHost.Target` values, one per fragment to mutate. A target carries:
 
     * `:original` — the fragment before mutation, used for the baseline and the left side of the
@@ -66,7 +66,7 @@ defmodule Mutare.Mutator.MacroHost do
   only the logical fragment change.
 
   Subscribe through `c:hosted_macros/0`. The active macro route must contain `:hosted`, either
-  statically or from `c:Mutare.MacroRouting.route_arguments/2`. `context` is the same map
+  statically or from `c:Mutare.CallRouting.route_arguments/2`. `context` is the same map
   `c:Mutare.Mutator.mutate/2` receives, plus `:mutators` — the run's enabled
   `Mutare.Mutator.Spec`s (hosts included; `Mutare.Analyze.expression_mutations/3` lowers a
   nested host's targets to whole-call rebuilds instead of weaving them, so a sub-contracted
@@ -74,7 +74,7 @@ defmodule Mutare.Mutator.MacroHost do
 
   A `:hosted` route is permission and a delivery mode, **not a target list**: the callback
   receives the whole resolved macro call and owns locating the fragment(s) it will mutate. It
-  need not re-classify the call to do so — `Mutare.Calls.macro_treatment/1` on the
+  need not re-classify the call to do so — `Mutare.Calls.routed_treatments/1` on the
   call's `node` returns the per-argument treatments the route produced, so the `:hosted`
   positions (including values nested under `{:keyword, …}`) can be read back instead of
   rediscovered. Core leaves hosted fragments raw and does not route nested macros inside them;
@@ -92,7 +92,7 @@ defmodule Mutare.Mutator.MacroHost do
   site and `# mutare:ignore` vocabulary belong to the producing core family.
   """
   @callback host(
-              call :: Mutare.MacroRouting.Call.t(),
+              call :: Mutare.CallRouting.Call.t(),
               context :: Mutare.Mutator.context()
             ) :: [Mutare.Mutator.MacroHost.Target.t()]
 end

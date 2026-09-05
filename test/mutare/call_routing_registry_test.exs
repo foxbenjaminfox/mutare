@@ -1,9 +1,9 @@
-defmodule Mutare.MacroRouting.RegistryTest do
+defmodule Mutare.CallRouting.RegistryTest do
   use ExUnit.Case, async: true
 
-  alias Mutare.Macro.Spec
-  alias Mutare.MacroRouting.Registry, as: Macros
-  alias Mutare.MacroRouting.Registry.Entry
+  alias Mutare.CallRouting.Spec
+  alias Mutare.CallRouting.Registry, as: Macros
+  alias Mutare.CallRouting.Registry.Entry
   alias Mutare.Mutator
 
   describe "Macro.Spec.normalize_module/1" do
@@ -30,9 +30,9 @@ defmodule Mutare.MacroRouting.RegistryTest do
 
   describe "Macro.Spec.new/4 and routing/2" do
     test "a uniform-atom args repeats for the arity" do
-      spec = Spec.new(Ecto.Query, :from, :any, :skip)
-      assert spec == %Spec{module: [:Ecto, :Query], name: :from, arity: :any, args: :skip}
-      assert Spec.routing(spec, 2) == [:skip, :skip]
+      spec = Spec.new(Ecto.Query, :from, :any, :raw)
+      assert spec == %Spec{module: [:Ecto, :Query], name: :from, arity: :any, args: :raw}
+      assert Spec.routing(spec, 2) == [:raw, :raw]
       assert Spec.routing(spec, 0) == []
     end
 
@@ -50,8 +50,8 @@ defmodule Mutare.MacroRouting.RegistryTest do
     end
 
     test "static routes accept pinned and recursive keyword treatments" do
-      assert %Spec{args: [:expression, {:keyword, [:interpolated, :skip]}]} =
-               Spec.new(Foo, :set, 2, [:expression, {:keyword, [:interpolated, :skip]}])
+      assert %Spec{args: [:expression, {:keyword, [:interpolated, :raw]}]} =
+               Spec.new(Foo, :set, 2, [:expression, {:keyword, [:interpolated, :raw]}])
     end
   end
 
@@ -60,8 +60,8 @@ defmodule Mutare.MacroRouting.RegistryTest do
       assert [%Spec{module: [:Kernel], name: :match?, arity: 2, args: [:pattern, :expression]}] =
                Macros.resolve([{Kernel, :match?, 2, [:pattern, :expression]}])
 
-      assert [%Spec{module: [:Ecto, :Query], name: :from, arity: :any, args: :skip}] =
-               Macros.resolve([{Ecto.Query, :from, :skip}])
+      assert [%Spec{module: [:Ecto, :Query], name: :from, arity: :any, args: :raw}] =
+               Macros.resolve([{Ecto.Query, :from, :raw}])
     end
 
     test "is idempotent on an already-resolved spec" do
@@ -98,35 +98,35 @@ defmodule Mutare.MacroRouting.RegistryTest do
 
   describe "Macros.build/3 — merge, precedence, :any fallback" do
     test "declarative entries override a built-in of the same key" do
-      registry = Macros.build([{Kernel, :match?, 2, :skip}], [])
-      assert %Entry{spec: %Spec{args: :skip}} = Macros.lookup(registry, [:Kernel], :match?, 2)
+      registry = Macros.build([{Kernel, :match?, 2, :raw}], [])
+      assert %Entry{spec: %Spec{args: :raw}} = Macros.lookup(registry, [:Kernel], :match?, 2)
     end
 
     test "an exact-arity entry wins over an :any entry" do
-      registry = Macros.build([{Foo, :bar, :skip}, {Foo, :bar, 1, [:pattern]}], [])
+      registry = Macros.build([{Foo, :bar, :raw}, {Foo, :bar, 1, [:pattern]}], [])
 
       assert %Entry{spec: %Spec{arity: 1, args: [:pattern]}} =
                Macros.lookup(registry, [:Foo], :bar, 1)
 
-      assert %Entry{spec: %Spec{arity: :any, args: :skip}} =
+      assert %Entry{spec: %Spec{arity: :any, args: :raw}} =
                Macros.lookup(registry, [:Foo], :bar, 2)
     end
 
-    test "a mutator's macro_routes/0 contributes entries" do
+    test "a mutator's call_routes/0 contributes entries" do
       specs = Mutator.Spec.for_module(Mutare.Test.QueryMutator)
       registry = Macros.build([], [specs])
 
-      assert %Entry{spec: %Spec{args: :skip}} =
+      assert %Entry{spec: %Spec{args: :raw}} =
                Macros.lookup(registry, [:Mutare, :Test, :QueryDSL], :query, 1)
     end
 
-    test "a mutator without macro_routes/0 contributes nothing" do
+    test "a mutator without call_routes/0 contributes nothing" do
       specs = Mutator.Spec.for_module(Mutare.Test.AndOrMutator)
       assert Macros.from_mutators([specs]) == []
     end
 
-    test "an explicit :macro_routes config entry wins over a mutator's macro_routes/0 for the same key" do
-      # QueryMutator registers {Mutare.Test.QueryDSL, :query, 1, :skip}; an explicit config entry
+    test "an explicit :call_routes config entry wins over a mutator's call_routes/0 for the same key" do
+      # QueryMutator registers {Mutare.Test.QueryDSL, :query, 1, :raw}; an explicit config entry
       # for the same key overrides it (config is the final authority — folded last).
       specs = Mutator.Spec.for_module(Mutare.Test.QueryMutator)
       registry = Macros.build([{Mutare.Test.QueryDSL, :query, 1, [:expression]}], [specs])
@@ -135,7 +135,7 @@ defmodule Mutare.MacroRouting.RegistryTest do
                Macros.lookup(registry, [:Mutare, :Test, :QueryDSL], :query, 1)
     end
 
-    test "an explicit :macro_routes config entry resolves code-provider conflicts for the same key" do
+    test "an explicit :call_routes config entry resolves code-provider conflicts for the same key" do
       # Config is the final authority. If a user explicitly routes the same macro, the registry
       # must not reject two enabled code providers before the override can break the tie.
       specs = Mutator.Spec.for_module(Mutare.Test.QueryMutator)
@@ -224,7 +224,7 @@ defmodule Mutare.MacroRouting.RegistryTest do
 
     test "a declarative entry may not use an adapter-grade treatment" do
       # `:interpolated`, `{:keyword, …}`, and `:hosted` assert DSL facts Mutare cannot check, so they
-      # are reserved for code providers (a `Mutare.MacroRouting` module under `:mutators` /
+      # are reserved for code providers (a `Mutare.CallRouting` module under `:mutators` /
       # `:extensions`) — even when an enabled host could deliver the `:hosted` position.
       host = Mutator.Spec.for_module(Mutare.Test.SecondHostMutator)
 
@@ -237,14 +237,14 @@ defmodule Mutare.MacroRouting.RegistryTest do
       end
 
       assert_raise ArgumentError, ~r/adapter-grade treatment.*:keyword/s, fn ->
-        Macros.build([{Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:skip]}]}], [])
+        Macros.build([{Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:raw]}]}], [])
       end
     end
 
     test "conflicting code-provided routes raise instead of depending on provider order" do
       mutator = Mutator.Spec.for_module(Mutare.Test.QueryMutator)
 
-      assert_raise Mutare.MacroRouting.ContractError, ~r/conflicting macro routes/, fn ->
+      assert_raise Mutare.CallRouting.ContractError, ~r/conflicting macro routes/, fn ->
         Macros.build([], [mutator], [Mutare.Test.ConflictingQueryRoutingExtension])
       end
     end
@@ -254,7 +254,7 @@ defmodule Mutare.MacroRouting.RegistryTest do
 
       registry = Macros.build([], [mutator], [Mutare.Test.IdenticalQueryRoutingExtension])
 
-      assert %Entry{spec: %Spec{args: :skip}, sources: sources} =
+      assert %Entry{spec: %Spec{args: :raw}, sources: sources} =
                Macros.lookup(registry, [:Mutare, :Test, :QueryDSL], :query, 1)
 
       assert {:mutator, Mutare.Test.QueryMutator} in sources
@@ -266,7 +266,7 @@ defmodule Mutare.MacroRouting.RegistryTest do
       # matched call would have no deliverer.
       broad = Mutator.Spec.for_module(Mutare.Test.BroadHostedRouteMutator)
 
-      assert_raise Mutare.MacroRouting.ContractError, ~r/no enabled.*MacroHost/s, fn ->
+      assert_raise Mutare.CallRouting.ContractError, ~r/no enabled.*MacroHost/s, fn ->
         Macros.build([], [broad])
       end
     end
@@ -274,7 +274,7 @@ defmodule Mutare.MacroRouting.RegistryTest do
     test "a broader dynamic route does not make a host reachable through a shadowing exact route" do
       host = Mutator.Spec.for_module(Mutare.Test.ShadowedHostMutator)
 
-      assert_raise Mutare.MacroRouting.ContractError, ~r/no active.*route can reach/s, fn ->
+      assert_raise Mutare.CallRouting.ContractError, ~r/no active.*route can reach/s, fn ->
         Macros.build([], [host], [Mutare.Test.ShadowingRoutingExtension])
       end
     end
@@ -282,13 +282,13 @@ defmodule Mutare.MacroRouting.RegistryTest do
     test "a host-only mutator must subscribe to at least one macro" do
       host = Mutator.Spec.for_module(Mutare.Test.EmptySubscriptionHostMutator)
 
-      assert_raise Mutare.MacroRouting.ContractError, ~r/returned an empty list/, fn ->
+      assert_raise Mutare.CallRouting.ContractError, ~r/returned an empty list/, fn ->
         Macros.build([], [host])
       end
     end
 
     test "build/3 raises when a declarative entry asks for callback-backed routing" do
-      assert_raise ArgumentError, ~r/requires macro_routes\/0 and route_arguments\/2/, fn ->
+      assert_raise ArgumentError, ~r/requires call_routes\/0 and route_arguments\/2/, fn ->
         Macros.build([{Ecto.Query, :where, :any, :routing}], [])
       end
 
@@ -303,7 +303,7 @@ defmodule Mutare.MacroRouting.RegistryTest do
       # delivery later.
       specs = Mutator.Spec.for_module(Mutare.Test.IncompleteHostMutator)
 
-      assert_raise Mutare.MacroRouting.ContractError, ~r/no enabled.*MacroHost/s, fn ->
+      assert_raise Mutare.CallRouting.ContractError, ~r/no enabled.*MacroHost/s, fn ->
         Macros.build([], [specs])
       end
     end
@@ -322,7 +322,7 @@ defmodule Mutare.MacroRouting.RegistryTest do
     test "build/3 rejects a host/2 no route reaches (silently-inert safety net)" do
       specs = Mutator.Spec.for_module(Mutare.Test.DeadHostMutator)
 
-      assert_raise Mutare.MacroRouting.ContractError,
+      assert_raise Mutare.CallRouting.ContractError,
                    ~r/subscribes to.*no active/s,
                    fn ->
                      Macros.build([], [specs])
@@ -332,7 +332,7 @@ defmodule Mutare.MacroRouting.RegistryTest do
     test "build/3 rejects a route_arguments/2 no :routing route reaches" do
       specs = Mutator.Spec.for_module(Mutare.Test.DeadRouterMutator)
 
-      assert_raise Mutare.MacroRouting.ContractError,
+      assert_raise Mutare.CallRouting.ContractError,
                    ~r/implements route_arguments\/2 but registers no :routing route/,
                    fn ->
                      Macros.build([], [specs])
@@ -342,12 +342,12 @@ defmodule Mutare.MacroRouting.RegistryTest do
 
   describe "Macros.lookup/4" do
     test "returns the whole entry, exact arity over :any" do
-      registry = Macros.build([{Foo, :bar, :skip}, {Foo, :bar, 1, [:pattern]}], [])
+      registry = Macros.build([{Foo, :bar, :raw}, {Foo, :bar, 1, [:pattern]}], [])
 
       assert %Entry{spec: %Spec{arity: 1, args: [:pattern]}} =
                Macros.lookup(registry, [:Foo], :bar, 1)
 
-      assert %Entry{spec: %Spec{arity: :any, args: :skip}} =
+      assert %Entry{spec: %Spec{arity: :any, args: :raw}} =
                Macros.lookup(registry, [:Foo], :bar, 2)
 
       assert Macros.lookup(registry, [:Foo], :baz, 1) == nil
@@ -360,45 +360,45 @@ defmodule Mutare.MacroRouting.RegistryTest do
     end
 
     test "a whole-module entry routes every macro in the module" do
-      registry = Macros.build([{Foo, :*, :skip}], [])
+      registry = Macros.build([{Foo, :*, :raw}], [])
 
-      assert %Entry{spec: %Spec{module: [:Foo], name: :*, args: :skip}} =
+      assert %Entry{spec: %Spec{module: [:Foo], name: :*, args: :raw}} =
                Macros.lookup(registry, [:Foo], :bar, 1)
 
-      assert %Entry{spec: %Spec{args: :skip}} = Macros.lookup(registry, [:Foo], :anything_else, 3)
+      assert %Entry{spec: %Spec{args: :raw}} = Macros.lookup(registry, [:Foo], :anything_else, 3)
       # …but only in that module.
       assert Macros.lookup(registry, [:Other], :bar, 1) == nil
     end
 
     test "a more specific entry overrides a whole-module one (per-macro override)" do
-      registry = Macros.build([{Foo, :*, :skip}, {Foo, :bar, 2, [:pattern, :expression]}], [])
+      registry = Macros.build([{Foo, :*, :raw}, {Foo, :bar, 2, [:pattern, :expression]}], [])
 
       assert %Entry{spec: %Spec{args: [:pattern, :expression]}} =
                Macros.lookup(registry, [:Foo], :bar, 2)
 
       # The override is arity-specific; bar/1 still falls through to the whole-module :skip.
-      assert %Entry{spec: %Spec{name: :*, args: :skip}} = Macros.lookup(registry, [:Foo], :bar, 1)
-      assert %Entry{spec: %Spec{name: :*, args: :skip}} = Macros.lookup(registry, [:Foo], :baz, 9)
+      assert %Entry{spec: %Spec{name: :*, args: :raw}} = Macros.lookup(registry, [:Foo], :bar, 1)
+      assert %Entry{spec: %Spec{name: :*, args: :raw}} = Macros.lookup(registry, [:Foo], :baz, 9)
     end
 
     test "a name-only entry matches the name in any module — including an unresolved (nil) one" do
-      registry = Macros.build([{:*, :sigil_X, :skip}], [])
+      registry = Macros.build([{:*, :sigil_X, :raw}], [])
 
-      assert %Entry{spec: %Spec{module: :*, name: :sigil_X, args: :skip}} =
+      assert %Entry{spec: %Spec{module: :*, name: :sigil_X, args: :raw}} =
                Macros.lookup(registry, [:AnyMod], :sigil_X, 1)
 
-      assert %Entry{spec: %Spec{args: :skip}} =
+      assert %Entry{spec: %Spec{args: :raw}} =
                Macros.lookup(registry, [:Totally, :Different], :sigil_X, 2)
 
       # The escape hatch's whole point: it fires even when the module couldn't be resolved.
-      assert %Entry{spec: %Spec{args: :skip}} = Macros.lookup(registry, nil, :sigil_X, 0)
+      assert %Entry{spec: %Spec{args: :raw}} = Macros.lookup(registry, nil, :sigil_X, 0)
       # but not for a different name
       assert Macros.lookup(registry, [:AnyMod], :other, 1) == nil
     end
 
     test "name-only is the last resort — a module-specific or built-in entry wins" do
       registry =
-        Macros.build([{:*, :match?, :skip}, {Foo, :match?, 2, [:pattern, :expression]}], [])
+        Macros.build([{:*, :match?, :raw}, {Foo, :match?, 2, [:pattern, :expression]}], [])
 
       # The built-in Kernel.match?/2 (a pattern) is not shadowed by the name-only :skip.
       assert %Entry{spec: %Spec{module: [:Kernel], args: [:pattern, :expression]}} =
@@ -409,29 +409,29 @@ defmodule Mutare.MacroRouting.RegistryTest do
                Macros.lookup(registry, [:Foo], :match?, 2)
 
       # An unrelated module falls through to the name-only escape hatch.
-      assert %Entry{spec: %Spec{module: :*, args: :skip}} =
+      assert %Entry{spec: %Spec{module: :*, args: :raw}} =
                Macros.lookup(registry, [:Bar], :match?, 2)
     end
 
     test ":* is a synonym for :any in the arity slot" do
-      assert %Spec{arity: :any} = Spec.new(Foo, :bar, :*, :skip)
+      assert %Spec{arity: :any} = Spec.new(Foo, :bar, :*, :raw)
     end
 
     test "rejects wildcarding both module and name" do
       assert_raise ArgumentError, ~r/cannot wildcard both/, fn ->
-        Spec.new(:*, :*, :any, :skip)
+        Spec.new(:*, :*, :any, :raw)
       end
 
       assert_raise ArgumentError, ~r/cannot wildcard both/, fn ->
-        Macros.resolve([{:*, :*, :skip}])
+        Macros.resolve([{:*, :*, :raw}])
       end
     end
 
     test "rejects a whole-module entry pinned to a specific arity" do
-      assert_raise ArgumentError, ~r/cannot also pin arity/, fn -> Spec.new(Foo, :*, 2, :skip) end
+      assert_raise ArgumentError, ~r/cannot also pin arity/, fn -> Spec.new(Foo, :*, 2, :raw) end
 
       assert_raise ArgumentError, ~r/cannot also pin arity/, fn ->
-        Macros.resolve([{Foo, :*, 2, :skip}])
+        Macros.resolve([{Foo, :*, 2, :raw}])
       end
     end
   end

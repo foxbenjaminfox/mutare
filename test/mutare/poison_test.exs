@@ -160,7 +160,7 @@ defmodule Mutare.PoisonTest do
       assert %{macro_skipped: [%{module: "Size", macro: :megabytes}]} = run.recovery
 
       assert Poison.Hint.macro_skip_note(run.recovery.macro_skipped) =~
-               "{Size, :megabytes, :skip}"
+               "{Size, :megabytes, :raw}"
     end
   end
 
@@ -326,7 +326,7 @@ defmodule Mutare.PoisonTest do
       assert Enum.any?(statuses, &(:killed in &1))
       refute Enum.any?(statuses, &(:poisoned in &1 and :killed in &1))
 
-      # The run carries a recovery summary the Mix task turns into a `:macro_routes`
+      # The run carries a recovery summary the Mix task turns into a `:call_routes`
       # suggestion: the `:guard` invocation was escalated (skipped wholesale), so `guarded`
       # is named there — and only once, though the DSL has two `guarded` invocations.
       assert %{rounds: rounds, escalated: [escalation]} = run.recovery
@@ -337,7 +337,7 @@ defmodule Mutare.PoisonTest do
 
       # And that summary renders the durable, name-based fix.
       note = Mutare.Poison.Hint.escalation_note(run.recovery.escalated)
-      assert note =~ "{:*, :guarded, :skip}"
+      assert note =~ "{:*, :guarded, :raw}"
     end
 
     @tag :runner

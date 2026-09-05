@@ -22,7 +22,7 @@ defmodule Mutare.Runner.Compile do
   # `{module, fun}` macros the macro-expansion fallback skipped (an inline DSL macro the
   # compiler blamed by name — see `recover_compile_poison/5`). On success it is folded into
   # the public summary (`recovery_summary/2`) that rides on `Mutare.Run`'s `:recovery` — the
-  # material the Mix task turns into a `:macro_routes` suggestion.
+  # material the Mix task turns into a `:call_routes` suggestion.
   defmodule Recovery do
     @moduledoc false
     defstruct rounds: 0,
@@ -176,7 +176,7 @@ defmodule Mutare.Runner.Compile do
   end
 
   # Drop the macros' argument mutants wholesale (`matched` is `inline_macro_poison/3`'s already-
-  # filtered result), record the skip for the durable `{Module, :fun, :skip}` suggestion, fire a
+  # filtered result), record the skip for the durable `{Module, :fun, :raw}` suggestion, fire a
   # loud `{:macro_poison, info}` warning naming the macro, and rebuild + recurse.
   defp do_macro_recovery(deps, schema, recovery, attempts, matched) do
     macro_ids =
@@ -242,7 +242,7 @@ defmodule Mutare.Runner.Compile do
   # The public recovery summary a completed compile carries (`Mutare.Run`'s `:recovery`,
   # and `check_with_schema/3`'s result): the rebuild-round count, every dropped mutant
   # id, and the block macros escalated wholesale — the material the Mix task turns into
-  # a `:macro_routes` suggestion (`Mutare.Poison.Hint.escalation_note/1`). `nil` for a
+  # a `:call_routes` suggestion (`Mutare.Poison.Hint.escalation_note/1`). `nil` for a
   # clean first compile, so a healthy run carries no vestigial zero-summary.
   def summary(%Recovery{rounds: 0}, _schema), do: nil
 
@@ -258,7 +258,7 @@ defmodule Mutare.Runner.Compile do
   # The macro-expansion fallback's skips as public summary entries: one
   # `%{module, macro}` per `{module_string, fun}` the fallback dropped, in a stable order.
   # `module` is the frame's module string (`"Ecto.Query"`), rendered into the durable
-  # `{Module, :fun, :skip}` suggestion by `Mutare.Poison.Hint.macro_skip_note/1`.
+  # `{Module, :fun, :raw}` suggestion by `Mutare.Poison.Hint.macro_skip_note/1`.
   defp macro_skips(macro_skips) do
     macro_skips
     |> Enum.map(fn {module, fun} -> %{module: module, macro: fun} end)
@@ -284,9 +284,9 @@ defmodule Mutare.Runner.Compile do
   # does not (drop the bad mutant, the rest compile). So we escalate a block only on its
   # **second** strike: the first poison in a block drops just the implicated id(s) and *marks
   # the block struck* (`struck`); a later poison in an already-struck block drops *every*
-  # mutant in it — the runtime-stable equivalent of marking the macro `:skip` (the body
+  # mutant in it — the runtime-stable equivalent of routing the macro `:raw` (the body
   # renders raw, its mutants recorded `:poisoned`), while ids stay stable across rebuilds
-  # (unlike a true `:skip`, which would stop analyzing the body and shift later ids).
+  # (unlike a true `:raw` route, which would stop analyzing the body and shift later ids).
   #
   # Cost of the precision: a genuinely-wholesale block pays **one extra rebuild** (drop one,
   # see it recur, escalate). Limit: two *independent* id-specific failures in one block also

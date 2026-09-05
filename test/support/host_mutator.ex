@@ -75,7 +75,7 @@ defmodule Mutare.Test.HostMutator do
   @moduledoc """
   A reference **selector-hosting** custom mutator, used in tests to exercise the deep-DSL
   extensions: the `:hosted` argument treatment, the `:routing` shape-aware classifier
-  (`c:Mutare.MacroRouting.route_arguments/2`), and the mutator-supplied selector host
+  (`c:Mutare.CallRouting.route_arguments/2`), and the mutator-supplied selector host
   (`c:Mutare.Mutator.MacroHost.host/2`). It produces *only* through the host, so it carries no
   `mutate/1` — `name/0` plus `host/2` is a complete mutator.
 
@@ -88,10 +88,10 @@ defmodule Mutare.Test.HostMutator do
   (showing only the `x > 1` → `x >= 1` diff), the coverage record, and poison mapping.
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
   @behaviour Mutare.Mutator.MacroHost
 
-  alias Mutare.MacroRouting.{ArgumentRoutes, Call}
+  alias Mutare.CallRouting.{ArgumentRoutes, Call}
   alias Mutare.Mutator.MacroHost.Target
   alias Mutare.Mutator.Mutation
 
@@ -111,8 +111,8 @@ defmodule Mutare.Test.HostMutator do
   # with a **static** routing — arg 0 the escaping pattern (`:binding_pattern`), arg 1 the
   # hosted comparison (`:hosted`) — so one call node carries both a `MacroPattern` and a
   # `Hosted` candidate, exercising the hosted path's in-place dispatch.
-  @impl Mutare.MacroRouting
-  def macro_routes,
+  @impl Mutare.CallRouting
+  def call_routes,
     do: [
       {Mutare.Test.HostDSL, :filter, :any, :routing},
       {Mutare.Test.HostDSL, :set, :any, :routing},
@@ -135,7 +135,7 @@ defmodule Mutare.Test.HostMutator do
   #     the value-`:interpolated`/value-`:skip` split and that the keys are never mutated.
   #   * any other macro (`filter`) routes a comparison condition `:hosted` and everything else
   #     (the query, keyword data) as an ordinary `:expression`.
-  @impl Mutare.MacroRouting
+  @impl Mutare.CallRouting
   def route_arguments(%Call{name: :set, arguments: args} = call, _context) do
     routes =
       Enum.map(args, fn arg ->
@@ -163,9 +163,9 @@ defmodule Mutare.Test.HostMutator do
 
   # A list value is Sourceror-wrapped in `{:__block__, _, [list]}` in a keyword *value* position.
   defp value_treatment({:__block__, _meta, [list]}) when is_list(list),
-    do: if(keyword_list?(list), do: {:keyword, value_treatments(list)}, else: :skip)
+    do: if(keyword_list?(list), do: {:keyword, value_treatments(list)}, else: :raw)
 
-  defp value_treatment(v), do: if(string_literal?(v), do: :interpolated, else: :skip)
+  defp value_treatment(v), do: if(string_literal?(v), do: :interpolated, else: :raw)
 
   defp string_literal?({:__block__, _meta, [s]}) when is_binary(s), do: true
   defp string_literal?(_node), do: false
@@ -247,10 +247,10 @@ defmodule Mutare.Test.SubcontractHostMutator do
   just more branches of the same woven selector.
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
   @behaviour Mutare.Mutator.MacroHost
 
-  alias Mutare.MacroRouting.{ArgumentRoutes, Call}
+  alias Mutare.CallRouting.{ArgumentRoutes, Call}
   alias Mutare.Mutator.MacroHost.Target
   alias Mutare.Mutator.Mutation
 
@@ -259,13 +259,13 @@ defmodule Mutare.Test.SubcontractHostMutator do
   @impl Mutare.Mutator
   def name, do: :sub_host
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.HostDSL, :filter, :any, :routing}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.HostDSL, :filter, :any, :routing}]
 
   @impl Mutare.Mutator.MacroHost
   def hosted_macros, do: [{Mutare.Test.HostDSL, :filter, :any}]
 
-  @impl Mutare.MacroRouting
+  @impl Mutare.CallRouting
   def route_arguments(%Call{arguments: args} = call, _context) do
     routes = Enum.map(args, fn arg -> if comparison?(arg), do: :hosted, else: :expression end)
     ArgumentRoutes.from_visible(call, routes)
@@ -331,10 +331,10 @@ defmodule Mutare.Test.HostNodeMutator do
   inside collect (no recursive hosting). One fixture proves both halves.
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
   @behaviour Mutare.Mutator.MacroHost
 
-  alias Mutare.MacroRouting.{ArgumentRoutes, Call}
+  alias Mutare.CallRouting.{ArgumentRoutes, Call}
   alias Mutare.Mutator.MacroHost.Target
   alias Mutare.Mutator.Mutation
 
@@ -343,17 +343,17 @@ defmodule Mutare.Test.HostNodeMutator do
   @impl Mutare.Mutator
   def name, do: :host_node
 
-  @impl Mutare.MacroRouting
-  def macro_routes,
+  @impl Mutare.CallRouting
+  def call_routes,
     do: [
       {Mutare.Test.HostDSL, :filter, :any, :routing},
-      {Mutare.Test.QueryDSL, :dyn, 1, :skip}
+      {Mutare.Test.QueryDSL, :dyn, 1, :raw}
     ]
 
   @impl Mutare.Mutator.MacroHost
   def hosted_macros, do: [{Mutare.Test.HostDSL, :filter, :any}]
 
-  @impl Mutare.MacroRouting
+  @impl Mutare.CallRouting
   def route_arguments(%Call{arguments: args} = call, _context) do
     routes = Enum.map(args, fn arg -> if comparison?(arg), do: :hosted, else: :expression end)
     ArgumentRoutes.from_visible(call, routes)
@@ -442,7 +442,7 @@ defmodule Mutare.Test.SecondHostMutator do
   def hosted_macros, do: [{Mutare.Test.HostDSL, :filter, :any}]
 
   @impl Mutare.Mutator.MacroHost
-  def host(%Mutare.MacroRouting.Call{node: {form, _meta, args}}, _context)
+  def host(%Mutare.CallRouting.Call{node: {form, _meta, args}}, _context)
       when form == :filter and length(args) in [1, 2] do
     index = length(args) - 1
     original = Enum.at(args, index)
@@ -476,7 +476,7 @@ defmodule Mutare.Test.DerivedVariantHostMutator do
   @behaviour Mutare.Mutator
   @behaviour Mutare.Mutator.MacroHost
 
-  alias Mutare.MacroRouting.Call
+  alias Mutare.CallRouting.Call
   alias Mutare.Mutator.MacroHost.Target
 
   @comparisons [:>, :<, :>=, :<=]
@@ -539,7 +539,7 @@ defmodule Mutare.Test.CustomRangeHostMutator do
   def hosted_macros, do: [{Mutare.Test.HostDSL, :filter, :any}]
 
   @impl Mutare.Mutator.MacroHost
-  def host(%Mutare.MacroRouting.Call{node: {form, _meta, args}}, _context)
+  def host(%Mutare.CallRouting.Call{node: {form, _meta, args}}, _context)
       when form == :filter and length(args) in [1, 2] do
     index = length(args) - 1
     original = Enum.at(args, index)
@@ -588,20 +588,20 @@ end
 
 defmodule Mutare.Test.BroadHostedRouteMutator do
   @moduledoc """
-  A host mutator whose `macro_routes/0` declares a **whole-module** static `:hosted` route while
+  A host mutator whose `call_routes/0` declares a **whole-module** static `:hosted` route while
   its subscription covers only one macro. A broad static `:hosted` requires a subscription
   covering its *full* selector — otherwise some matched call would have no deliverer — so the
   registry rejects the pair at build.
   """
   @behaviour Mutare.Mutator
   @behaviour Mutare.Mutator.MacroHost
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   @impl Mutare.Mutator
   def name, do: :broad_hosted_route
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.HostDSL, :*, :hosted}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.HostDSL, :*, :hosted}]
 
   @impl Mutare.Mutator.MacroHost
   def hosted_macros, do: [{Mutare.Test.HostDSL, :filter, 2}]
@@ -647,14 +647,14 @@ defmodule Mutare.Test.PipedHostMutator do
   raises first).
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
   @behaviour Mutare.Mutator.MacroHost
 
   @impl Mutare.Mutator
   def name, do: :piped_host
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.PipedDSL, :rotate, 1, :hosted}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.PipedDSL, :rotate, 1, :hosted}]
 
   @impl Mutare.Mutator.MacroHost
   def hosted_macros, do: [{Mutare.Test.PipedDSL, :rotate, 1}]
@@ -665,16 +665,16 @@ end
 
 defmodule Mutare.Test.NoDeliveryHostMutator do
   @moduledoc """
-  A `:routing` classifier whose `c:Mutare.MacroRouting.route_arguments/2` routes a comparison condition
+  A `:routing` classifier whose `c:Mutare.CallRouting.route_arguments/2` routes a comparison condition
   `:hosted` but which **omits** `c:Mutare.Mutator.MacroHost.host/2` to deliver it. Build-time validation
   passes (a `:routing` route is only required to implement `route_arguments/2` — a classifier may
   legitimately never route `:hosted`), but the moment a concrete call *is* routed `:hosted` with
-  no host to deliver it, `Mutare.Transform.Resolve.MacroStamp` raises rather
+  no host to deliver it, `Mutare.Transform.Resolve.RouteStamp` raises rather
   than silently leaving the fragment raw and dropping the intended mutation. It is a routing-only
   mutator (no host), so its `mutate/1` is its mutation producer.
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   @comparisons [:>, :<, :>=, :<=]
 
@@ -684,14 +684,14 @@ defmodule Mutare.Test.NoDeliveryHostMutator do
   @impl Mutare.Mutator
   def mutate(_node), do: :skip
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.HostDSL, :filter, :any, :routing}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.HostDSL, :filter, :any, :routing}]
 
   # Routes a comparison condition `:hosted` — but there is no `host/2` to deliver it.
-  @impl Mutare.MacroRouting
-  def route_arguments(%Mutare.MacroRouting.Call{arguments: args} = call, _context) do
+  @impl Mutare.CallRouting
+  def route_arguments(%Mutare.CallRouting.Call{arguments: args} = call, _context) do
     routes = Enum.map(args, fn arg -> if comparison?(arg), do: :hosted, else: :expression end)
-    Mutare.MacroRouting.ArgumentRoutes.from_visible(call, routes)
+    Mutare.CallRouting.ArgumentRoutes.from_visible(call, routes)
   end
 
   defp comparison?({op, _meta, [_left, _right]}) when op in @comparisons, do: true
@@ -701,12 +701,12 @@ end
 defmodule Mutare.Test.IncompleteHostMutator do
   @moduledoc """
   A host mutator that registers a **static** `:hosted` macro argument but **forgets** to
-  implement `c:Mutare.Mutator.MacroHost.host/2`. Used to prove `Mutare.MacroRouting.Registry.build/3`
+  implement `c:Mutare.Mutator.MacroHost.host/2`. Used to prove `Mutare.CallRouting.Registry.build/3`
   rejects an un-deliverable hosting registration at *build* time (the contributing module is
   required to export `host/2` for the route), rather than failing cryptically at delivery later.
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   @impl Mutare.Mutator
   def name, do: :incomplete_host
@@ -715,8 +715,8 @@ defmodule Mutare.Test.IncompleteHostMutator do
   def mutate(_node), do: :skip
 
   # Static `:hosted` at argument 1, but no `host/2` — undeliverable, caught at build.
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.HostDSL, :filter, 2, [:expression, :hosted]}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.HostDSL, :filter, 2, [:expression, :hosted]}]
 end
 
 defmodule Mutare.Test.KeywordHostedMutator do
@@ -725,18 +725,18 @@ defmodule Mutare.Test.KeywordHostedMutator do
   and weaves into the whole macro node; the nested treatment only identifies which values core must
   leave raw while the host builds its targets. It covers both a direct keyword value and a value in
   a nested keyword list, and its `host/2` locates those leaves by reading the routed treatments
-  back through `Mutare.Calls.macro_treatment/1` instead of re-classifying the call —
+  back through `Mutare.Calls.routed_treatments/1` instead of re-classifying the call —
   exercising the documented "permission, not a target list" contract end to end.
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
   @behaviour Mutare.Mutator.MacroHost
 
   @impl Mutare.Mutator
   def name, do: :keyword_hosted
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.HostDSL, :set, :any, :routing}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.HostDSL, :set, :any, :routing}]
 
   @impl Mutare.Mutator.MacroHost
   def hosted_macros, do: [{Mutare.Test.HostDSL, :set, :any}]
@@ -745,20 +745,20 @@ defmodule Mutare.Test.KeywordHostedMutator do
   # argument `{:keyword, …}` with each pair's value `:hosted`. A value that
   # is itself a keyword list recurses as `{:keyword, …}`, so a nested-shorthand value yields a
   # *nested* `:hosted` (`{:keyword, [{:keyword, [:hosted]}]}`).
-  @impl Mutare.MacroRouting
+  @impl Mutare.CallRouting
   def route_arguments(
-        %Mutare.MacroRouting.Call{name: :set, arguments: [_query, assigns]} = call,
+        %Mutare.CallRouting.Call{name: :set, arguments: [_query, assigns]} = call,
         _context
       )
       when is_list(assigns) do
-    Mutare.MacroRouting.ArgumentRoutes.from_visible(
+    Mutare.CallRouting.ArgumentRoutes.from_visible(
       call,
       [:expression, {:keyword, value_treatments(assigns)}]
     )
   end
 
-  def route_arguments(%Mutare.MacroRouting.Call{arguments: args} = call, _context) do
-    Mutare.MacroRouting.ArgumentRoutes.from_visible(
+  def route_arguments(%Mutare.CallRouting.Call{arguments: args} = call, _context) do
+    Mutare.CallRouting.ArgumentRoutes.from_visible(
       call,
       Enum.map(args, fn _arg -> :expression end)
     )
@@ -779,14 +779,14 @@ defmodule Mutare.Test.KeywordHostedMutator do
   defp keyword_list?(_node), do: false
 
   # Locate the fragments by reading the routed treatments *back* rather than re-classifying:
-  # `Mutare.Calls.macro_treatment/1` on the host's own call node returns what
+  # `Mutare.Calls.routed_treatments/1` on the host's own call node returns what
   # `route_arguments/2` produced, so the `:hosted` leaves (and their keyword paths) come from
   # the route itself.
   @impl Mutare.Mutator.MacroHost
-  def host(%Mutare.MacroRouting.Call{node: node}, _context) do
+  def host(%Mutare.CallRouting.Call{node: node}, _context) do
     with {_form, _meta, [_query, assigns]} when is_list(assigns) <- node,
          [_query_treatment, {:keyword, treatments}] <-
-           Mutare.Calls.macro_treatment(node) do
+           Mutare.Calls.routed_treatments(node) do
       for {original, path} <- hosted_leaves(assigns, treatments, []) do
         splice = fn {name, meta, [query, current]}, case_node ->
           {name, meta, [query, replace_keyword_value(current, path, case_node)]}
@@ -848,10 +848,10 @@ defmodule Mutare.Test.UnknownTreatmentMutator do
   argument. Without validation it would fall through `Mutare.Transform.Analyze`'s `:expression`
   catch-all and silently mutate a position the author meant to route specially;
   `Mutare.Transform.Resolve.validate_routing!/2` rejects it loudly instead (the classifier analogue
-  of build-time static-`args` validation, `Mutare.Macro.Spec.validate_args/1`).
+  of build-time static-`args` validation, `Mutare.CallRouting.Spec.validate_args/1`).
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   @impl Mutare.Mutator
   def name, do: :unknown_treatment
@@ -859,13 +859,13 @@ defmodule Mutare.Test.UnknownTreatmentMutator do
   @impl Mutare.Mutator
   def mutate(_node), do: :skip
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.HostDSL, :filter, :any, :routing}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.HostDSL, :filter, :any, :routing}]
 
   # Route the condition (visible arg 1) with a bogus treatment; the query stays an expression.
-  @impl Mutare.MacroRouting
-  def route_arguments(%Mutare.MacroRouting.Call{}, _context) do
-    %Mutare.MacroRouting.ArgumentRoutes{visible: [:expression, :bogus], piped: nil}
+  @impl Mutare.CallRouting
+  def route_arguments(%Mutare.CallRouting.Call{}, _context) do
+    %Mutare.CallRouting.ArgumentRoutes{visible: [:expression, :bogus], piped: nil}
   end
 end
 
@@ -874,12 +874,12 @@ defmodule Mutare.Test.MisroutedKeywordMutator do
   A buggy `:routing` classifier that routes `set`'s second argument `{:keyword, …}` **without
   checking its shape** — so a call site passing a variable (`set(q, opts)`) gets a keyword
   routing for an argument with no pairs. Core leaves the argument raw (the shape fallback) but
-  `Mutare.Transform.Resolve.MacroStamp` prints an advisory warning naming this classifier: the
+  `Mutare.Transform.Resolve.RouteStamp` prints an advisory warning naming this classifier: the
   classifier saw the concrete argument, so the mismatch is its bug, and silent raw-ness would
   read as "no mutants here".
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   @impl Mutare.Mutator
   def name, do: :misrouted_keyword
@@ -887,16 +887,16 @@ defmodule Mutare.Test.MisroutedKeywordMutator do
   @impl Mutare.Mutator
   def mutate(_node), do: :skip
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.HostDSL, :set, 2, :routing}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.HostDSL, :set, 2, :routing}]
 
-  # Argument 1 is always routed `{:keyword, [:skip]}`, shape unchecked — the bug under test.
-  @impl Mutare.MacroRouting
-  def route_arguments(%Mutare.MacroRouting.Call{} = call, _context),
+  # Argument 1 is always routed `{:keyword, [:raw]}`, shape unchecked — the bug under test.
+  @impl Mutare.CallRouting
+  def route_arguments(%Mutare.CallRouting.Call{} = call, _context),
     do:
-      Mutare.MacroRouting.ArgumentRoutes.from_visible(
+      Mutare.CallRouting.ArgumentRoutes.from_visible(
         call,
-        [:expression, {:keyword, [:skip]}]
+        [:expression, {:keyword, [:raw]}]
       )
 end
 
@@ -910,7 +910,7 @@ defmodule Mutare.Test.CompoundInterpolatedMutator do
   value (a string) still pins normally.
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   @impl Mutare.Mutator
   def name, do: :compound_pinned
@@ -918,23 +918,23 @@ defmodule Mutare.Test.CompoundInterpolatedMutator do
   @impl Mutare.Mutator
   def mutate(_node), do: :skip
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.HostDSL, :set, :any, :routing}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.HostDSL, :set, :any, :routing}]
 
-  @impl Mutare.MacroRouting
+  @impl Mutare.CallRouting
   def route_arguments(
-        %Mutare.MacroRouting.Call{name: :set, arguments: [_query, assigns]} = call,
+        %Mutare.CallRouting.Call{name: :set, arguments: [_query, assigns]} = call,
         _context
       )
       when is_list(assigns) do
-    Mutare.MacroRouting.ArgumentRoutes.from_visible(
+    Mutare.CallRouting.ArgumentRoutes.from_visible(
       call,
       [:expression, {:keyword, Enum.map(assigns, fn _pair -> :interpolated end)}]
     )
   end
 
-  def route_arguments(%Mutare.MacroRouting.Call{arguments: args} = call, _context) do
-    Mutare.MacroRouting.ArgumentRoutes.from_visible(
+  def route_arguments(%Mutare.CallRouting.Call{arguments: args} = call, _context) do
+    Mutare.CallRouting.ArgumentRoutes.from_visible(
       call,
       Enum.map(args, fn _arg -> :expression end)
     )
@@ -943,12 +943,12 @@ end
 
 defmodule Mutare.Test.BadShapeMutator do
   @moduledoc """
-  A `:routing` classifier whose `c:Mutare.MacroRouting.route_arguments/2` returns the wrong type.
+  A `:routing` classifier whose `c:Mutare.CallRouting.route_arguments/2` returns the wrong type.
   `Mutare.Transform.Resolve.validate_routing!/2` catches it with a clear message rather than letting
   it crash inside `inject_host/2`'s `Enum.map`.
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   @impl Mutare.Mutator
   def name, do: :bad_shape
@@ -956,10 +956,10 @@ defmodule Mutare.Test.BadShapeMutator do
   @impl Mutare.Mutator
   def mutate(_node), do: :skip
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.HostDSL, :filter, :any, :routing}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.HostDSL, :filter, :any, :routing}]
 
-  @impl Mutare.MacroRouting
+  @impl Mutare.CallRouting
   def route_arguments(_call, _context), do: :not_an_argument_routes_struct
 end
 
@@ -972,7 +972,7 @@ defmodule Mutare.Test.ArgInterpolatedMutator do
   loud rather than poisoned. Routes `filter`'s first argument (the `[:foo]` list) `:interpolated`.
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   @impl Mutare.Mutator
   def name, do: :arg_pinned
@@ -980,12 +980,12 @@ defmodule Mutare.Test.ArgInterpolatedMutator do
   @impl Mutare.Mutator
   def mutate(_node), do: :skip
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.HostDSL, :filter, :any, :routing}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.HostDSL, :filter, :any, :routing}]
 
-  @impl Mutare.MacroRouting
-  def route_arguments(%Mutare.MacroRouting.Call{} = call, _context),
-    do: Mutare.MacroRouting.ArgumentRoutes.from_visible(call, [:interpolated, :expression])
+  @impl Mutare.CallRouting
+  def route_arguments(%Mutare.CallRouting.Call{} = call, _context),
+    do: Mutare.CallRouting.ArgumentRoutes.from_visible(call, [:interpolated, :expression])
 end
 
 defmodule Mutare.Test.DeadHostMutator do
@@ -996,7 +996,7 @@ defmodule Mutare.Test.DeadHostMutator do
   `:hosted`/`:routing` registration).
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
   @behaviour Mutare.Mutator.MacroHost
 
   @impl Mutare.Mutator
@@ -1005,8 +1005,8 @@ defmodule Mutare.Test.DeadHostMutator do
   @impl Mutare.Mutator
   def mutate(_node), do: :skip
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.HostDSL, :filter, 2, [:expression, :skip]}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.HostDSL, :filter, 2, [:expression, :raw]}]
 
   @impl Mutare.Mutator.MacroHost
   def hosted_macros, do: [{Mutare.Test.HostDSL, :filter, 2}]
@@ -1017,11 +1017,11 @@ end
 
 defmodule Mutare.Test.DeadRouterMutator do
   @moduledoc """
-  A mutator that implements `c:Mutare.MacroRouting.route_arguments/2` but registers no `:routing`
+  A mutator that implements `c:Mutare.CallRouting.route_arguments/2` but registers no `:routing`
   route — so the classifier is never reached. Rejected at build (the #8 safety net).
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   @impl Mutare.Mutator
   def name, do: :dead_router
@@ -1029,12 +1029,12 @@ defmodule Mutare.Test.DeadRouterMutator do
   @impl Mutare.Mutator
   def mutate(_node), do: :skip
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.HostDSL, :filter, 2, [:expression, :skip]}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.HostDSL, :filter, 2, [:expression, :raw]}]
 
-  @impl Mutare.MacroRouting
+  @impl Mutare.CallRouting
   def route_arguments(call, _context),
-    do: Mutare.MacroRouting.ArgumentRoutes.from_visible(call, [:expression, :expression])
+    do: Mutare.CallRouting.ArgumentRoutes.from_visible(call, [:expression, :expression])
 end
 
 defmodule Mutare.Test.MalformedHost do
@@ -1050,16 +1050,16 @@ defmodule Mutare.Test.MalformedHost do
   alias Mutare.Mutator.Mutation
   alias Mutare.Mutator.MacroHost.Target
 
-  def host(%Mutare.MacroRouting.Call{node: {:bad_wrap, _meta, _args}}, _context),
+  def host(%Mutare.CallRouting.Call{node: {:bad_wrap, _meta, _args}}, _context),
     do: [%Target{original: 1, mutants: [2], splice: &splice/2, wrap: :not_a_function}]
 
-  def host(%Mutare.MacroRouting.Call{node: {:bad_note, _meta, _args}}, _context),
+  def host(%Mutare.CallRouting.Call{node: {:bad_note, _meta, _args}}, _context),
     do: [%Target{original: 1, mutants: [%Mutation{node: 2, note: 42}], splice: &splice/2}]
 
-  def host(%Mutare.MacroRouting.Call{node: {:bare_map, _meta, _args}}, _context),
+  def host(%Mutare.CallRouting.Call{node: {:bare_map, _meta, _args}}, _context),
     do: [%Target{original: 1, mutants: [%{node: 2, note: "x"}], splice: &splice/2}]
 
-  def host(%Mutare.MacroRouting.Call{node: {:bad_range, _meta, _args}}, _context),
+  def host(%Mutare.CallRouting.Call{node: {:bad_range, _meta, _args}}, _context),
     do: [%Target{original: 1, mutants: [2], splice: &splice/2, range: {3, 7}}]
 
   def host(_call, _context), do: []

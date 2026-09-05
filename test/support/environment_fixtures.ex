@@ -95,12 +95,12 @@ defmodule Mutare.Test.EnvironmentExtension do
   `required_modules/0` is recognized by export (extensions implement no behaviour that
   declares it), and `Mutare.Extension.validate!/1` passes it.
   """
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   def required_modules, do: [Enum]
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.SomeDSL, :env_frag, 1, [:skip]}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.SomeDSL, :env_frag, 1, [:raw]}]
 end
 
 defmodule Mutare.Test.MissingEnvironmentExtension do
@@ -109,10 +109,10 @@ defmodule Mutare.Test.MissingEnvironmentExtension do
   `Mutare.Extension.validate!/1` must abort with `Mutare.EnvironmentError` before its
   routes are ever collected.
   """
-  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.CallRouting
 
   def required_modules, do: [Mutare.Test.AbsentLibrary.Macros]
 
-  @impl Mutare.MacroRouting
-  def macro_routes, do: [{Mutare.Test.AbsentLibrary.Macros, :frag, 1, [:skip]}]
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.AbsentLibrary.Macros, :frag, 1, [:raw]}]
 end
