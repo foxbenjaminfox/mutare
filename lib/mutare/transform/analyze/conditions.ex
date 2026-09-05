@@ -65,10 +65,20 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # The post-analysis step shared by `cond` and the *plain* (non-hoisted) `if`/`unless`
   # path: prune the binding-ancestors; if no binding escapes, additionally offer the
   # IfCondition decision pair on the whole condition.
+  #
+  # A `:skip`-routed condition (`if String.valid?(x)` under `{String, :valid?, 1, :skip}`) is an
+  # inert leaf and gets no decision pair either: `condition_replacements` is an offer *of the
+  # condition node*, structural or not, and the node-offered twin (`Conditional`'s `true`/`false`
+  # on a skipped `x > 0`) is already withheld by the dispatcher — the two families must agree.
+  # (The function-level return contract is the deliberate exception, NOTES "Call routing".)
   def finish_condition(analyzed, raw_condition, mutators) do
-    case prune_binding_ancestors(analyzed) do
-      {pruned, true} -> pruned
-      {_pruned, false} -> attach_if_condition(analyzed, raw_condition, mutators)
+    if Meta.skipped?(raw_condition) do
+      analyzed
+    else
+      case prune_binding_ancestors(analyzed) do
+        {pruned, true} -> pruned
+        {_pruned, false} -> attach_if_condition(analyzed, raw_condition, mutators)
+      end
     end
   end
 
@@ -153,7 +163,9 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # report diff stays faithful (`(name = f()) != nil` → `true`), independent of the
   # rewrite emit actually delivers.
   def hoist_if?(analyzed_condition, mutators) do
-    Spec.find(mutators, Mutare.Mutators.IfCondition) != nil and
+    # A skipped condition is never hoisted: the rewrite would lift bindings out of an inert leaf.
+    not Meta.skipped?(analyzed_condition) and
+      Spec.find(mutators, Mutare.Mutators.IfCondition) != nil and
       escaping_binding?(analyzed_condition) and
       not offspine_escaping_binding?(analyzed_condition) and
       not spine_reorders?(analyzed_condition) and

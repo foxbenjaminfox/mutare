@@ -157,6 +157,42 @@ defmodule Mutare.TransformCallSkipTest do
       assert_compiles(meta)
     end
 
+    test "a skipped condition gets no decision pair and is never hoisted (if, unless, cond)" do
+      # `IfCondition`'s `true`/`false` arrive through a structural pass on the condition, not the
+      # node offer, so the pass reads the stamp itself — as `Conditional`'s `true`/`false` on a
+      # skipped operator condition are already withheld by the dispatcher.
+      source = """
+      defmodule Decisions do
+        def a(x), do: if(String.valid?(x), do: :yes, else: :no)
+        def b(x), do: unless(String.valid?(x), do: :no, else: :yes)
+
+        def c(x) do
+          cond do
+            String.valid?(x) -> :yes
+            true -> :no
+          end
+        end
+
+        def d(x), do: if(String.valid?(y = x), do: y, else: :no)
+      end
+      """
+
+      mutators = [Mutare.Mutators.IfCondition, Mutare.Mutators.Conditional]
+
+      {meta, sites, _} = transform(source, mutators, [{String, :valid?, 1, :skip}])
+      assert sites == []
+      assert_compiles(meta)
+
+      {_m, plain, _} = transform(source, mutators, [])
+
+      for line <- [2, 3, 7],
+          do:
+            assert(
+              Enum.any?(plain, &(&1.line == line and &1.mutator == :if_condition)),
+              "line #{line}"
+            )
+    end
+
     test "a macro is skipped the same way — routing keys on the resolved call, not on macro-ness" do
       source = """
       defmodule SkippedMacro do

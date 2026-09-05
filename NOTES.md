@@ -8678,3 +8678,15 @@ same call — even an identical skip — tripped the registry's one-override-per
 the scan. `Config.append_skip_calls/2` now merges by normalized route key: the flag replaces a
 file entry for the same call, unrelated entries stay, a repeated skip is stated once; an entry the
 registry would reject keeps its place so `Options.new/1` reports it.
+
+**Fifth review, same day — decisions on a skipped condition.** `if String.valid?(x)` under
+`{String, :valid?, 1, :skip}` still produced `IfCondition`'s `true`/`false`: the dispatcher returned
+the skipped node, but `Conditions.finish_condition/3` (the plain `if`/`unless` path and every `cond`
+clause) then offered it to `condition_replacements/1` — a structural pass that never read the stamp
+— and `hoist_if?/2` would have lifted a binding out of it. Both read `Meta.skipped?/1` now. The
+model: `condition_replacements` is an offer *of the condition node*, structural or not, and its
+node-offered twin — `Conditional`'s `true`/`false` on a skipped `x > 0` — was already withheld by
+the dispatcher; the two families must agree, or a user could not say why one condition kept its
+decision mutants and the other lost them. The one deliberate exception stays: return-value mutants
+on a skipped tail, which belong to the def clause (`Returns` attaches them at the function level,
+the user's explicit call), not to the call.
