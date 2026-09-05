@@ -3829,9 +3829,31 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
     which also saw `:error` there; the only static alternative is blocking the
     whole module). Defaults contribute only the full arity (an explicit def at
     an implied lower arity is a compile error beside the defaults).
+
+    The **whole-head** spelling `def unquote(head)` belongs in that hole too, and
+    used not to: `name_arity/1` read the head as a function called `unquote/1`,
+    so two such clauses grouped and were *lifted* — splicing a variable into the
+    dispatcher head and the head expression (`Enum.at(heads, 0)`) into a lifted
+    clause's pattern, which does not compile. It now returns `:error`, which also
+    keeps `Mutare.Transform.UnitReturns` from reading a generated data-returning
+    sibling as absent. Cost: such a body no longer draws return-tail mutants
+    (it is an `{:other}` statement now, not a clause) — the conservative side.
+
+    A **qualified** definition (`Kernel.def f(:c)`, or an aliased `K.def` — a
+    definition macro may be invoked qualified) was invisible for a duller
+    reason: `collect_heads/3` matched the form *atom*, and a qualified call's
+    form is a `{:., …}` tuple. The run of bare clauses beside it therefore
+    looked complete and was lifted, and the dispatcher shadowed the qualified
+    clause — `f(:c)` raised `FunctionClauseError` at **baseline**, no mutant
+    active. `definition_form/1` now reads the head through the qualifier (via
+    the resolver, so an alias works too). Only the *definition* forms are read
+    that way: missing a qualified `Kernel.defmacro` boundary merely over-blocks,
+    and this file's standing rule is that over-blocking costs mutants where
+    under-blocking crashes.
   - **`defmacro`/`defmacrop` bodies are pruned as scope boundaries** (alongside
-    `defmodule`/`defimpl`/`defprotocol`). A macro's body — quoted or not — runs
-    only where the macro is *invoked*, and no invocation can target the
+    `defmodule`/`defimpl`/`defprotocol`). A macro's body runs — with the one
+    exception recorded below — only where the macro is *invoked*, and no
+    invocation can target the
     defining module's own top level: a local macro call in the module body does
     not compile ("undefined function" — the module's own macros don't exist
     until it is compiled, the same principle that forbids `use __MODULE__` and
@@ -3841,7 +3863,22 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
     empirically before widening — the initial design was a timid
     `__using__`/`__before_compile__`-only whitelist until the "local
     def-generating macro invoked later in the same module body" counterexample
-    turned out not to compile at all. Bare module-level `quote`s (outside any
+    turned out not to compile at all.
+
+    The exception, found by a codex review and **left open** here: a
+    *definition-time* `unquote`. `defmacro g, do: unquote((def f(:bad), do:
+    :pending; :ok))` — and the same shape in a plain `def` body — is evaluated
+    while *this* module compiles, not where the macro is invoked, so it really
+    does add a clause. The walk cannot see it (a clause chunk's interior is never
+    scanned, and a macro body is pruned), so a literal run beside it still looks
+    complete, gets lifted, and the dispatcher shadows it: a baseline
+    `FunctionClauseError`. Closing it needs `collect_heads/3` to carry a quote
+    depth so it can scan the live parts of a macro body while still pruning the
+    quoted ones — a real change to the lifting path, for a shape no ordinary code
+    writes. `Mutare.Transform.UnitReturns` *does* account for it
+    (`nesting_kind/2`), because a miss there costs mutants rather than crashing.
+
+    Bare module-level `quote`s (outside any
     macro definition) are **not** pruned: `Module.eval_quoted(__MODULE__, …)`
     really does inject their defs into the module (verified), and scanning them
     is what keeps that shape safe.
@@ -8814,12 +8851,32 @@ else-less `if` around a side effect — `:ok | nil` — qualifies. A tail that n
 raising tail is left unstamped, because `raise … → nil` is the mutant that asks whether the error
 path is tested. (Mutare's own `Ignore.validate_entry!/5` carried a
 `# mutare:ignore[convention, return_value]` for exactly that shape, and `Run.Context.hook` one
-for a `fn _ -> :ok end`; both directives became ineffective and were removed.) Grouping is by `{name, arity}`
-across the module body, pruned at nested scopes; a dynamic head (`def unquote(n)()`) leaves the
-module unclassified and a spliced head blocks its name — the planner's residual holes, reused. The
-hole that remains is the planner's too: a clause a *macro generates* beside visible clauses of the
-same signature (a `defhandler`-style macro's `{:reply, …}` clauses next to a hand-written `:ok`
-fallback) is invisible, so the visible fallback reads as unit. Narrow — `use`-injected defaults
+for a `fn _ -> :ok end`; both directives became ineffective and were removed.) Symmetrically, only
+what the *caller* receives counts: an `else` — on a `try`, or on a `def`, where it is the implicit
+one — consumes the `do` value rather than returning it, so a `do` tail under an `else` is an
+ordinary value position and stays mutable (swapping it picks a different `else` clause, a real
+behaviour change under an unchanged unit return), and a displaced `if` is somebody else's macro,
+which need not return a branch value at all.
+
+Grouping is by `{name, arity}` across the module body, pruned at nested scopes; a dynamic head
+(`def unquote(n)()`, or the whole-head `def unquote(head)`) leaves the module unclassified, a
+spliced head blocks its name, and a `defdelegate` blocks the signature it names — its expansion is
+a sibling `def` clause nothing static sees, and "one explicit clause, delegate the rest" is exactly
+where a visible `:ok` carries a success bit. Delegates are read through the same two planner
+helpers as defs, so a dynamic delegate head forfeits the module too. A clause inside a `quote`
+blocks for the same reason a delegate does — `Module.eval_quoted(__MODULE__, …)` can inject it
+here, but `Resolve` stamps nothing in a quote (it resolves where it is *invoked*), so `raise("x")`
+there may be a local `raise/1` that returns. So does a **qualified** definition
+(`Kernel.def f(x)`, an aliased `K.def`) — read by name alone the node is just a call, though the
+clause it mints is as real as a bare one — and a definition nested in a *live* one
+(`def g, do: unquote((def f(:bad), …; 1))`, which runs during the outer expansion and adds a clause
+here, unlike a quoted one, which can only reach another module). Scope boundaries are read through
+the resolver for the same reason: a displaced `defmodule/2` is somebody else's macro and may splice
+its block into the caller, so what is inside it is a sibling. The planner's residual holes,
+reused; the hole that remains is the planner's too:
+a clause a *macro generates* beside visible clauses of the same signature (a `defhandler`-style
+macro's `{:reply, …}` clauses next to a hand-written `:ok` fallback) is invisible, so the visible
+fallback reads as unit. Narrow — `use`-injected defaults
 are `defoverridable` and get replaced, not joined; non-overridable generated clauses beside
 hand-written ones of one signature draw the compiler's "clauses not grouped" warning — but it is
 the one way the classification can silence a data-returning function, and the moduledoc says so.
@@ -8827,12 +8884,14 @@ the one way the classification can silence a data-returning function, and the mo
 **Transform-enforced, not a mark.** "The `:structural` shared mark" above rejects turning marks
 into an offer-layer veto: a mark's meaning lives in the family that reads it. This classification
 is the transform's own — where a clause returns is knowledge only the return-path walk has — so it
-is enforced where macro-routing `:skip` is, and every family is off a unit tail without opting
+is enforced where call-routing `:skip` is, and every family is off a unit tail without opting
 in, `ConventionAtom` included (whose deliberate exclusion from the `:structural` reader set is
 untouched). The walk itself is `Analyze.Returns`' leaf-tail descent, published single-tree in a
 *classification* mode that is conservative where attachment is permissive (an else-less `with`
-is delivered whole; an unroutable clause block is a leaf), so the two notions of "return path"
-share one walker and can't drift.
+and a construct that only looks like one — a name at an arity its special form does not claim
+(`try(1, do: :ok)` is a local `try/2`), or an `if` displaced out of `Kernel` — are delivered whole;
+a `do` an `else` consumes is not yielded at all; an unroutable clause block is a leaf), so the two
+notions of "return path" share one walker and can't drift.
 
 **Growth path, if survivors warrant it — none of it spec-aware.** A tail that is a *local* call
 to a function already classified unit (a module-local fixed point in the same pass) is the

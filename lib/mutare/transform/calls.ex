@@ -119,6 +119,32 @@ defmodule Mutare.Transform.Calls do
   @spec module_key(module()) :: module_key()
   defdelegate module_key(module), to: Aliases, as: :from_module
 
+  @kernel_key Aliases.from_module(Kernel)
+
+  @doc """
+  Whether `node` is a call to `Kernel`'s macro or function of that name — the reading every
+  bare-`Kernel` reader needs, in one place.
+
+  An *unresolved* bare call is `Kernel`'s unless the resolver stamped it displaced
+  (`import Kernel, except: [if: 2]`, with the replacement out of reach); a *resolved* one names
+  the module it came from, which may still be `Kernel` (an explicit `Kernel.def`, or an
+  `import Kernel, only: …`). `false` for a node that is not a call at all.
+
+  Callers ask this wherever a bare name is about to be read as the `Kernel` construct it looks
+  like — a return-path `if`/`unless` (`Mutare.Transform.Analyze.Returns`), a scope-boundary
+  `defmodule` (`Mutare.Transform.ModulePlan.scope_boundary?/1`).
+  """
+  @spec kernel_call?(Macro.t()) :: boolean()
+  def kernel_call?({_form, meta, _args} = node) when is_list(meta) do
+    case resolved_call(node) do
+      nil -> not Imports.kernel_displaced?(meta)
+      {@kernel_key, _fun, _args, _rebuild} -> true
+      _other_module -> false
+    end
+  end
+
+  def kernel_call?(_node), do: false
+
   # Match a resolved call against a target module and function name(s). See
   # `Mutare.Calls.resolved_call_to/3` for the contract.
   @spec resolved_call_to(Macro.t(), module() | module_key(), atom() | [atom()] | :any) ::

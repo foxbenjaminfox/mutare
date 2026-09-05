@@ -27,7 +27,7 @@ defmodule Mutare.Transform.Analyze.Returns do
 
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Transform.{Candidate, Meta}
+  alias Mutare.Transform.{Calls, Candidate, Meta}
   alias Mutare.Transform.Analyze.{Attach, Syntax}
 
   # The control-flow forms whose branch bodies are return paths when the form is in
@@ -49,6 +49,15 @@ defmodule Mutare.Transform.Analyze.Returns do
     try: %{do: :value, rescue: :clauses, catch: :clauses, else: :clauses},
     receive: %{do: :clauses, after: :clauses}
   }
+
+  # The arity at which each `@return_blocks` name really *is* the special form (or `Kernel` macro)
+  # it is being read as. At any other arity the same name is an ordinary local or imported
+  # function that happens to take a trailing `do:` keyword: `def try(x, opts)` called as
+  # `try(1, do: :ok)` is a plain call whose `:ok` is an argument, not a return path. Established
+  # empirically — at its own arity the name is unavailable to a local (the compiler rejects
+  # `def case(a, b)` and `def if(a, b)`), and at every other arity the local wins. `with` is
+  # absent because it is variadic, so it claims every arity.
+  @form_arity %{case: 2, cond: 1, if: 2, unless: 2, try: 1, receive: 1}
 
   # Attach return-value candidates to the *tail expression(s)* of the clause's
   # return-path blocks — the positions a `def`/`defp` clause returns from. This is
@@ -182,9 +191,14 @@ defmodule Mutare.Transform.Analyze.Returns do
   Classification is conservative where attachment is permissive, so a caller establishing a
   property of *all* return paths can trust the leaves it is handed:
 
+    * a `try`/`def` with an `else` does not yield its `do` tail at all — the `else` clauses
+      *consume* that value and their own tails are what the caller gets;
     * an else-less `with` is delivered **whole** — its first non-matching value is a return path
       with no node of its own (attachment descends only the `do` tail, the one path a constant
       can replace; the implicit one can't be mutated anyway);
+    * a construct that is not the form it looks like is delivered whole — a local `try/2` or
+      `if/1` (only one arity per name is the real thing), or an `if`/`unless` displaced by
+      `import Kernel, except: [if: 2]`: somebody else's function, whose `do:` is an argument;
     * a `rescue`/`catch`/`else` block that isn't a clean clause list is delivered whole, not
       skipped.
 
@@ -197,11 +211,16 @@ defmodule Mutare.Transform.Analyze.Returns do
         ) :: {[{Macro.t(), Macro.t()}], acc}
         when acc: term()
   def map_reduce_clause_returns(body_kw, acc, fun) when is_list(body_kw) do
-    body_kw
-    |> Syntax.normalize_clause_blocks()
-    |> Enum.map_reduce(acc, fn
+    blocks = Syntax.normalize_clause_blocks(body_kw)
+
+    # `def f do … else … end` is an implicit `try`, so its `do` value is *consumed* by the `else`
+    # clauses rather than returned — the same rule `return_path_kinds/3` applies to the `try`
+    # expression.
+    consumed_do? = has_else?(blocks)
+
+    Enum.map_reduce(blocks, acc, fn
       {key, payload}, acc ->
-        {payload, acc} = classify_block(key, payload, acc, fun)
+        {payload, acc} = classify_block(key, payload, consumed_do?, acc, fun)
         {{key, payload}, acc}
 
       other, acc ->
@@ -211,10 +230,12 @@ defmodule Mutare.Transform.Analyze.Returns do
 
   # Route one def-level body block to its return path(s) for classification — the twin of
   # `annotate_block_returns/4`, with the conservative fallbacks the docs above promise.
-  defp classify_block(key, payload, acc, fun) do
+  defp classify_block(key, payload, consumed_do?, acc, fun) do
     cond do
       Syntax.do_key?(key) ->
-        walk_tails(payload, payload, acc, single(fun), :classify)
+        if consumed_do?,
+          do: {payload, acc},
+          else: walk_tails(payload, payload, acc, single(fun), :classify)
 
       Syntax.clause_block_key?(key) and clause_list?(payload) ->
         walk_clauses(payload, payload, acc, single(fun), :classify)
@@ -293,7 +314,7 @@ defmodule Mutare.Transform.Analyze.Returns do
   # A non-descendable shape (the last arg isn't a block list, or a `:clauses` block
   # isn't in canonical block form — see `descendable_blocks?/3`) falls through to
   # the leaf clause: the whole construct is then the tail, as before this descent.
-  # So does a construct with a return path no block shows (`complete?/3`).
+  # So does a construct classification may not descend (`descend?/3`).
   defp walk_tails({form, meta, a_args} = analyzed, {form, _rmeta, r_args} = raw, acc, fun, mode)
        when is_map_key(@return_blocks, form) and is_list(a_args) and is_list(r_args) and
               a_args != [] and length(a_args) == length(r_args) do
@@ -314,9 +335,9 @@ defmodule Mutare.Transform.Analyze.Returns do
       # same normalization; the attach path's analyzed side is left exactly as it came.
       r_blocks = Syntax.normalize_clause_blocks(r_blocks)
       a_blocks = if mode == :classify, do: r_blocks, else: a_blocks
-      kinds = Map.fetch!(@return_blocks, form)
+      kinds = return_path_kinds(form, a_blocks, mode)
 
-      if descendable_blocks?(a_blocks, r_blocks, kinds) and complete?(form, a_blocks, mode) do
+      if descendable_blocks?(a_blocks, r_blocks, kinds) and descend?(analyzed, a_blocks, mode) do
         {blocks, acc} = walk_kw_blocks(a_blocks, r_blocks, kinds, acc, fun, mode)
         {{form, meta, a_head ++ [blocks]}, acc}
       else
@@ -328,15 +349,68 @@ defmodule Mutare.Transform.Analyze.Returns do
   # Leaf: any node outside the control-flow whitelist is itself the tail.
   defp walk_tails(analyzed, raw, acc, fun, _mode), do: fun.(analyzed, raw, acc)
 
-  # Whether every return path of a construct is *visible* as a block tail. Only classification
-  # asks: an else-less `with` returns its first non-matching value as-is — a return path with no
-  # node — so in `:classify` mode the construct is delivered whole (the leaf fallback) rather
-  # than descended as if its `do` tail were the only path. Attachment keeps descending: the `do`
-  # tail is the one path a constant can replace, and the implicit one can't be mutated anyway.
-  defp complete?(:with, blocks, :classify),
-    do: Enum.any?(blocks, fn {key, _payload} -> AST.key_atom(key) == :else end)
+  # The construct's return-path blocks, minus any that classification must not claim. A `try`
+  # with an `else` **consumes** its `do` value — the `else` clauses match on it and *their* tails
+  # are what the caller gets — so the `do` tail is an ordinary value position, not a return path.
+  # (Stamping an intermediate `:ok` there would suppress the mutant that flips which `else`
+  # clause runs, a real behaviour change under an unchanged return value.) Attachment keeps
+  # descending it: a constant there is still a legal swap, which is all that path claims.
+  defp return_path_kinds(form, blocks, mode) do
+    kinds = Map.fetch!(@return_blocks, form)
 
-  defp complete?(_form, _blocks, _mode), do: true
+    if mode == :classify and form == :try and has_else?(blocks),
+      do: Map.delete(kinds, :do),
+      else: kinds
+  end
+
+  # Whether a construct may be descended at all, rather than delivered whole to the leaf
+  # fallback. Only classification declines, and for two reasons:
+  #
+  #   * an **else-less `with`** returns its first non-matching value as-is — a return path with
+  #     no node of its own, so descending as if the `do` tail were the only path would be a
+  #     claim about paths this walk cannot see;
+  #   * a construct that only *looks* like one — a name at an arity the special form does not
+  #     claim (`@form_arity`), or an `if`/`unless` displaced out of `Kernel`
+  #     (`foreign_conditional?/1`) — is somebody else's function: its `do:`/`else:` are ordinary
+  #     arguments, and it need not return a branch value at all.
+  #
+  # Attachment descends in both cases: the `do` tail is a position a constant can legally
+  # replace, and the `with`'s implicit path can't be mutated anyway.
+  defp descend?(_node, _blocks, :mutate), do: true
+
+  defp descend?({form, _meta, args} = node, blocks, :classify),
+    do: own_arity?(form, args) and paths_visible?(form, blocks) and not foreign_conditional?(node)
+
+  defp own_arity?(form, args) do
+    case Map.fetch(@form_arity, form) do
+      {:ok, arity} -> length(args) == arity
+      :error -> true
+    end
+  end
+
+  defp paths_visible?(:with, blocks), do: has_else?(blocks)
+  defp paths_visible?(_form, _blocks), do: true
+
+  # Whether an `if`/`unless` at its *own* arity is nonetheless not `Kernel`'s. These two alone
+  # are askable: they are `Kernel` macros, which `import Kernel, except: [if: 2]` can displace,
+  # whereas nothing can displace a special form at the arity it claims. Read the way every
+  # bare-`Kernel` family reads one — an unresolved bare call is `Kernel`'s unless the resolver
+  # stamped it displaced (the replacement out of reach); a resolved one names its module.
+  defp foreign_conditional?({form, _meta, _args} = node) when form in [:if, :unless],
+    do: not Calls.kernel_call?(node)
+
+  defp foreign_conditional?(_node), do: false
+
+  # Whether a keyword-block list carries an `else` block. Total: it runs before
+  # `descendable_blocks?/3` has vouched for the list's shape.
+  defp has_else?(blocks) when is_list(blocks) do
+    Enum.any?(blocks, fn
+      {key, _payload} -> AST.key_atom(key) == :else
+      _other -> false
+    end)
+  end
+
+  defp has_else?(_blocks), do: false
 
   # Whether a construct's block list is safe to descend. It must be a keyword-block
   # list (both copies, equal length) whose every `:clauses` block carries a clean

@@ -391,6 +391,79 @@ defmodule Mutare.LiftTest do
       assert apply(Mutare.ArityScopedMetaFixture, :list, [0, :x]) == {:other, 0, :x}
     end
 
+    test "a displaced defmodule does not hide the clauses inside it" do
+      # Somebody else's `defmodule/2` may splice its block into the caller, so the `def`s inside
+      # can be clauses of *this* module. Pruned as a scope boundary they went unseen, the run
+      # beside them read as complete, and the lifted dispatcher shadowed them.
+      source = """
+      defmodule Mutare.DisplacedDefmoduleFixture do
+        import Kernel, except: [defmodule: 2]
+        def f(:a), do: 1
+        def f(:b), do: 2
+        defmodule Inner do
+          def f(:c), do: 3
+        end
+      end
+      """
+
+      {{meta, sites, _next_id}, log} =
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source, file: "dd.ex", mutators: @probe)
+        end)
+
+      refute meta =~ "__mutare_f_1"
+      assert sites == []
+      assert log =~ "augmented by compile-time metaprogramming"
+    end
+
+    test "a qualified sibling clause blocks lifting" do
+      # A definition macro may be invoked qualified, and `Kernel.def f(:c)` mints a clause as
+      # real as its bare neighbours. Unseen, the literal run looks complete and the lifted
+      # dispatcher shadows it — `f(:c)` then raised `FunctionClauseError` at *baseline*.
+      source = """
+      defmodule Mutare.QualifiedDefFixture do
+        def f(:a), do: 1
+        def f(:b), do: 2
+        Kernel.def f(:c), do: 3
+      end
+      """
+
+      {{meta, sites, _next_id}, log} =
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source, file: "qd.ex", mutators: @probe)
+        end)
+
+      refute meta =~ "__mutare_f_1"
+      assert sites == []
+      assert log =~ "augmented by compile-time metaprogramming"
+      assert [{Mutare.QualifiedDefFixture, _}] = Mutare.Test.Compile.string(meta)
+
+      Selector.put(Selector.baseline())
+      assert Enum.map([:a, :b, :c], &apply(Mutare.QualifiedDefFixture, :f, [&1])) == [1, 2, 3]
+    end
+
+    test "a whole-head unquote is a dynamic head, not a function called unquote/1" do
+      # `def unquote(head)` splices the entire head in, so neither name nor arity is knowable.
+      # Reading it as `unquote/1` grouped the two clauses and lifted them, which spliced a
+      # *variable* into the dispatcher head and `Enum.at(heads, 0)` into a lifted clause's
+      # pattern — code that does not compile. It is the `def unquote(name)(…)` hole in another
+      # spelling: statically invisible, left exactly as written.
+      source = """
+      defmodule Mutare.WholeHeadUnquoteFixture do
+        heads = [quote(do: f(:a)), quote(do: f(:b))]
+        def unquote(Enum.at(heads, 0)), do: 1
+        def unquote(Enum.at(heads, 1)), do: 2
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(source, file: "wh.ex", mutators: @probe)
+
+      assert sites == []
+      refute meta =~ "__mutare_unquote_1"
+      assert meta =~ "def unquote(Enum.at(heads, 0))"
+    end
+
     test "defs quoted in __using__/__before_compile__ do not block lifting" do
       # Boilerplate quoted inside the two compile-time callbacks targets the
       # modules that `use`/`@before_compile` this one — never this module itself

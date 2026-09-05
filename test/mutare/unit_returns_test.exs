@@ -143,6 +143,76 @@ defmodule Mutare.UnitReturnsTest do
       assert on_ok(t("  def f(x), do: with(1 <- x, do: :ok)")) == @ok_mutated
     end
 
+    test "an else consumes the do value, so its tail is not a return path" do
+      # The `else` clauses match on the `do` value and *their* tails are what the caller gets.
+      # Swapping the consumed `:ok` picks a different clause — a real behaviour change under an
+      # unchanged (unit) return — so it stays mutable while the `else` tails do not.
+      body = "if x, do: :ok, else: nil"
+      arms = "      :ok -> IO.puts(1)\n        :ok\n      nil -> IO.puts(2)\n        :ok"
+
+      for src <- [
+            t("  def f(x) do\n    try do\n      #{body}\n    else\n#{arms}\n    end\n  end"),
+            t("  def f(x) do\n    #{body}\n  else\n#{arms}\n  end")
+          ] do
+        assert on_ok(src) == @ok_mutated, src
+      end
+    end
+
+    test "a defdelegate sibling can return anything, so it disqualifies the group" do
+      # The delegate expands to a `def` clause of the same signature that no static scan sees.
+      assert on_ok(t("  def f(:valid), do: :ok\n  defdelegate f(x), to: Other")) == @ok_mutated
+      # …and only that signature: a delegate at another arity leaves the group alone.
+      assert on_ok(t("  def f(:valid), do: :ok\n  defdelegate f(x, y), to: Other")) == []
+
+      # The deprecated list form still compiles, and Sourceror wraps the list literal in a
+      # single-child `:__block__` — unwrapped, or the whole list reads as one head `__block__/1`
+      # and the signatures it really defines go unseen.
+      assert on_ok(t("  def f(:valid), do: :ok\n  defdelegate [f(x), g(y)], to: Other")) ==
+               @ok_mutated
+    end
+
+    test "a name at an arity its special form does not claim is an ordinary call" do
+      # Exactly one arity per name is the real construct; at any other, the same name is a local
+      # function that merely takes a trailing `do:` keyword, and that `:ok` is an argument.
+      for {form, arity} <- [case: 1, cond: 2, if: 3, unless: 1, try: 2, receive: 2] do
+        params = Enum.map_join(1..arity, ", ", &"a#{&1}")
+
+        args =
+          if arity == 1,
+            do: "do: :ok",
+            else: Enum.map_join(1..(arity - 1), ", ", &"#{&1}") <> ", do: :ok"
+
+        src = t("  def #{form}(#{params}), do: {#{params}}\n  def f, do: #{form}(#{args})")
+        assert {:convention, ":error"} in on_ok(src), "#{form}/#{arity}"
+      end
+    end
+
+    test "a displaced if is somebody else's macro, and opaque" do
+      # `import Kernel, except: [if: 2]` puts an `if/2` in scope that need not return a branch
+      # value at all, so its `do:` payload is not classifiable as a return path.
+      # Both readings of "not Kernel's": a replacement the resolver can name, and one it can't.
+      for replacement <- ["import Other, only: [if: 2]", "import Other"] do
+        src =
+          t("  import Kernel, except: [if: 2]\n  #{replacement}\n  def f(x), do: if(x, do: :ok)")
+
+        assert on_ok(src) == @ok_mutated, replacement
+      end
+
+      # The real `Kernel.if/2` next door still classifies.
+      assert on_ok(t("  def f(x), do: if(x, do: :ok)")) == []
+    end
+
+    test "a local if at another arity needs no displacement to be reached" do
+      # `if/1` and `if/3` don't collide with `Kernel.if/2`, so they compile with no
+      # `import Kernel, except:` and carry no stamp — but `if(do: :ok)` really does call them.
+      # (A local `if/2` is a hard "conflicts with local function" error, so arity two is safe.)
+      one = t("  def if(opts), do: Keyword.fetch!(opts, :do) == :ok\n  def f, do: if(do: :ok)")
+      assert {:return_value, ":mutare"} in on_ok(one)
+
+      three = t("  def if(a, b, c), do: {a, b, c}\n  def f, do: if(1, [do: :ok], 3)")
+      assert on_ok(three) == [convention: ":error"]
+    end
+
     test "a data atom, and :ok inside data" do
       assert Enum.map(sites(t("  def f, do: :pending")), &elem(&1, 0)) ==
                [:atom, :return_value]
@@ -190,6 +260,114 @@ defmodule Mutare.UnitReturnsTest do
     test "a dynamic head leaves the whole module unclassified" do
       src = t("  for n <- [:g] do\n    def unquote(n)(), do: 1\n  end\n  def f, do: :ok")
       assert on_ok(src) == @ok_mutated
+
+      # `def unquote(head)` splices the *whole* head — the same hole in its other spelling,
+      # and here the invisible clause is a data-returning sibling of the `:ok` one.
+      whole_head =
+        t(
+          "  head = quote(do: f(:invalid))\n  def f(:valid), do: :ok\n" <>
+            "  def unquote(head), do: {:error, :invalid}"
+        )
+
+      assert on_ok(whole_head) == @ok_mutated
+
+      # A `defdelegate` whose head is dynamic forfeits the module for the same reason.
+      assert on_ok(
+               t(
+                 "  name = :f\n  def f(:valid), do: :ok\n  defdelegate unquote(name)(x), to: Other"
+               )
+             ) ==
+               @ok_mutated
+    end
+
+    test "a quoted clause blocks its signature: its body carries no resolution" do
+      # `Module.eval_quoted(__MODULE__, …)` really can inject these beside the visible clauses
+      # (the one metaprogramming route the planner also refuses to prune), but `Resolve` stamps
+      # nothing inside a `quote` — quoted code resolves where it is *invoked*. So `raise("bad")`
+      # there may be the local `raise/1`, which returns data, and the head is all this pass can
+      # trust. Blocked, so the visible `:ok` keeps its mutants.
+      quoted = fn body ->
+        t(
+          "  def raise(msg), do: {:error, msg}\n  def f(:good), do: :ok\n" <>
+            "  Code.eval_quoted(quote do\n    import Kernel, except: [raise: 1]\n" <>
+            "    def f(:bad), do: #{body}\n  end, [], __ENV__)"
+        )
+      end
+
+      assert on_ok(quoted.(~s|raise("bad")|)) == @ok_mutated
+      # …and blocking is unconditional: even a quoted body that *reads* unit blocks the group.
+      assert on_ok(quoted.(":ok")) == @ok_mutated
+    end
+
+    test "a displaced defmodule is not a scope boundary" do
+      # `import Kernel, except: [defmodule: 2]` puts somebody else's `defmodule/2` in scope, and
+      # it may splice its block straight into the caller — so the defs inside are this module's
+      # siblings, not another module's.
+      src =
+        t(
+          "  import Kernel, except: [defmodule: 2]\n  def f(:good), do: :ok\n" <>
+            "  defmodule Inner do\n    def f(:bad), do: :pending\n  end"
+        )
+
+      assert on_ok(src) == @ok_mutated
+
+      # The real `Kernel.defmodule/2` next door still opens its own scope.
+      assert on_ok(t("  def f, do: :ok\n  defmodule Inner do\n    def f, do: :pending\n  end")) ==
+               []
+    end
+
+    test "a definition nested in a live one joins this module" do
+      # Un-quoted, the inner `def` runs during the outer one's expansion and really does add a
+      # clause here — unlike a quoted one, which can only be eval'd into another module.
+      src = t("  def f(:good), do: :ok\n  def g, do: unquote((def f(:bad), do: :pending; 1))")
+      assert on_ok(src) == @ok_mutated
+    end
+
+    test "a live unquote in a macro body runs when this module compiles" do
+      # A macro *body* is not another module's scope: its `quote` blocks are data for the
+      # invocation site, but anything outside them is evaluated here, at definition time.
+      src =
+        t("  def f(:good), do: :ok\n  defmacro g, do: unquote((def f(:bad), do: :pending; :ok))")
+
+      assert on_ok(src) == @ok_mutated
+
+      # …while the quoted boilerplate a `__using__` injects still targets somebody else.
+      quoted =
+        t(
+          "  def f, do: :ok\n  defmacro __using__(_) do\n    quote do\n" <>
+            "      def f, do: :pending\n    end\n  end"
+        )
+
+      assert on_ok(quoted) == []
+    end
+
+    test "a definition nested in a definition is data for another module" do
+      # A `def` inside a `def` body can only be quoted and eval'd elsewhere ("cannot invoke def
+      # inside function"), so it neither joins this module's groups nor blocks them — the
+      # reading `ModulePlan` already gives it.
+      src =
+        t(
+          "  defp gen(name) do\n    quote do: (def unquote(name)(), do: 1)\n  end\n" <>
+            "  def f, do: :ok"
+        )
+
+      assert on_ok(src) == []
+    end
+
+    test "a qualified definition is a real clause, so it blocks its signature" do
+      # `Kernel.def` (and an aliased `K.def`) mints a clause as real as a bare one; read by name
+      # alone the node is a call, and the sibling `:ok` reads as the only path.
+      assert on_ok(
+               t("  def f(:valid), do: :ok\n  Kernel.def f(:invalid), do: {:error, :invalid}")
+             ) ==
+               @ok_mutated
+
+      assert on_ok(
+               t(
+                 "  alias Kernel, as: K\n  def f(:valid), do: :ok\n" <>
+                   "  K.def f(:invalid), do: {:error, :invalid}"
+               )
+             ) == @ok_mutated
     end
 
     test "a spliced head blocks its name at every arity, and only its name" do

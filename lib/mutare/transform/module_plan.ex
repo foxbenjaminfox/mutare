@@ -23,6 +23,7 @@ defmodule Mutare.Transform.ModulePlan do
   require Logger
 
   alias Mutare.Lifting
+  alias Mutare.Transform.Calls
   alias Mutare.Transform.Config
   alias Mutare.Transform.FunctionPlan
 
@@ -168,10 +169,60 @@ defmodule Mutare.Transform.ModulePlan do
     end
   end
 
-  defp name_arity({:when, _, [call | _guards]}), do: name_arity(call)
-  defp name_arity({name, _, args}) when is_atom(name) and is_list(args), do: {name, length(args)}
-  defp name_arity({name, _, context}) when is_atom(name) and is_atom(context), do: {name, 0}
-  defp name_arity(_), do: :error
+  # The definition macros a statement can invoke *qualified*. Checked by name before resolving,
+  # so an ordinary `String.upcase(x)` costs nothing.
+  @definition_macros [:def, :defp, :defdelegate]
+  @kernel_key Calls.module_key(Kernel)
+
+  @doc false
+  # The definition macro a statement invokes, seeing through a **qualified** call
+  # (`Kernel.def f(x)`, or an aliased `K.def` — `Resolve` has already stamped the module), or
+  # `nil` for a node that invokes none. A qualified clause is as real as a bare one: invisible,
+  # the literal run beside it looks complete, and lifting installs a dispatcher that shadows it —
+  # a `FunctionClauseError` at *baseline*, no mutant active. Public for
+  # `Mutare.Transform.UnitReturns`, which blocks such a signature for the same reason.
+  #
+  # Only the definition forms are read through a qualifier. A qualified `Kernel.defmacro` is left
+  # unrecognised on purpose: missing a scope *boundary* only over-blocks (its quoted defs read as
+  # metaprogrammed heads), and over-blocking costs mutants where under-blocking crashes.
+  @spec definition_form(Macro.t()) :: atom() | nil
+  def definition_form({form, _meta, args}) when is_atom(form) and is_list(args), do: form
+
+  def definition_form({{:., _, [_module, fun]}, _meta, args} = node)
+      when fun in @definition_macros and is_list(args) do
+    case Calls.resolved_call(node) do
+      {@kernel_key, ^fun, _args, _rebuild} -> fun
+      _other -> nil
+    end
+  end
+
+  def definition_form(_node), do: nil
+
+  @doc false
+  # The head(s) one `defdelegate` names. It historically accepted a **list** of them (deprecated
+  # but still compiling), and Sourceror wraps a list literal in a single-child `:__block__` — so
+  # unwrap that first, or the whole list reads as one opaque head called `__block__/1` and the
+  # signatures it defines go unseen. Public for `Mutare.Transform.UnitReturns`, which blocks
+  # those signatures.
+  @spec delegate_heads(Macro.t()) :: [Macro.t()]
+  def delegate_heads({:__block__, _meta, [heads]}) when is_list(heads), do: heads
+  def delegate_heads(funs), do: List.wrap(funs)
+
+  @doc false
+  # The `{name, arity}` a definition head declares, or `:error` when it is statically unknowable
+  # — the dynamic-head hole this planner accepts. Public for `Mutare.Transform.UnitReturns`,
+  # which reads `defdelegate` heads with it (`clause_signature/1` covers the `def`/`defp` ones).
+  @spec name_arity(Macro.t()) :: {atom(), non_neg_integer()} | :error
+  def name_arity({:when, _, [call | _guards]}), do: name_arity(call)
+
+  # `def unquote(head)` splices the *whole* head in — name and arity both unknowable, and
+  # `:unquote` is not a definable name, so this is the `def unquote(name)(…)` hole in its other
+  # spelling rather than a function called `unquote/1`.
+  def name_arity({:unquote, _, [_head]}), do: :error
+
+  def name_arity({name, _, args}) when is_atom(name) and is_list(args), do: {name, length(args)}
+  def name_arity({name, _, context}) when is_atom(name) and is_atom(context), do: {name, 0}
+  def name_arity(_), do: :error
 
   # --- clause-run chunking ---------------------------------------------------
 
@@ -359,7 +410,8 @@ defmodule Mutare.Transform.ModulePlan do
   # a shifted arity cost real functions their guard/clause-drop mutants).
   # `unquote_splicing` in the args is the exception — the real arity is
   # unknowable — so such a head degrades to the bare-name wildcard. A fully
-  # dynamic name (`def unquote(name)(…)`) is statically invisible and
+  # dynamic name (`def unquote(name)(…)`, or the whole-head `def unquote(head)`)
+  # is statically invisible and
   # contributes nothing: the accepted residual hole (see NOTES
   # "Metaprogramming-augmented clauses"). Defaults in a generated head
   # contribute only the full arity — an explicit def at an implied lower arity
@@ -369,7 +421,8 @@ defmodule Mutare.Transform.ModulePlan do
   # Pruned as scope boundaries — their defs can't add clauses here:
   #
   #   * nested `defmodule`/`defimpl`/`defprotocol` — a different module scope;
-  #   * `defmacro`/`defmacrop` bodies — a macro's body (quoted or not) runs only
+  #   * `defmacro`/`defmacrop` bodies — a macro's body runs (all but the
+  #     definition-time exception below) only
   #     where the macro is *invoked*, and no invocation can target this module's
   #     own top level: a local macro call in the module body does not compile
   #     ("undefined function" — the module's own macros don't exist until it is
@@ -383,6 +436,15 @@ defmodule Mutare.Transform.ModulePlan do
   # A bare module-level `quote` (outside any macro definition) is NOT pruned:
   # its AST can be fed to `Module.eval_quoted(__MODULE__, …)`, which really does
   # inject defs into this module — scanning it is what keeps that shape safe.
+  #
+  # Known hole, pre-existing and left open: a **definition-time `unquote`** in a
+  # `def`/`defmacro` body — `defmacro g, do: unquote((def f(:bad), do: :pending;
+  # :ok))` — is evaluated while *this* module compiles, so it really does add a
+  # clause, invocation-only reasoning notwithstanding. This walk never sees it
+  # (a clause chunk's interior is not scanned, and a macro body is pruned), so a
+  # run beside it can still be lifted and shadow it. See NOTES
+  # "Metaprogramming-augmented clauses"; `Mutare.Transform.UnitReturns` does
+  # account for it (`nesting_kind/2`), because a miss there is only lost mutants.
   #
   # Accepted limitation: only literal def nodes in *this module's source* are
   # visible. A def manufactured by an opaque module-level macro call (`use
@@ -403,15 +465,28 @@ defmodule Mutare.Transform.ModulePlan do
 
   @scope_boundaries [:defmodule, :defimpl, :defprotocol, :defmacro, :defmacrop]
 
+  @doc false
+  # Whether `node` opens a scope whose definitions belong to *something other than* the enclosing
+  # module body — and really is the `Kernel` macro it looks like. `import Kernel, except:
+  # [defmodule: 2]` puts somebody else's `defmodule/2` in scope, which may splice its block
+  # straight into the caller; treated as a boundary, its definitions go unseen, the run beside
+  # them reads as complete, and the lifted dispatcher shadows them — `FunctionClauseError` at
+  # *baseline*. Declining to prune a displaced one only ever over-blocks, which costs mutants.
+  # Public for `Mutare.Transform.UnitReturns`, whose walk prunes the same set.
+  @spec scope_boundary?(Macro.t()) :: boolean()
+  def scope_boundary?({form, _meta, _args} = node) when form in @scope_boundaries,
+    do: Calls.kernel_call?(node)
+
+  def scope_boundary?(_node), do: false
+
   defp collect_heads(statement, forms, initial) do
     {_ast, acc} =
       Macro.prewalk(statement, initial, fn
-        {form, _meta, _args}, acc when form in @scope_boundaries ->
-          # Prune: return a leaf so prewalk does not descend into the boundary.
-          {:__mutare_pruned__, acc}
-
-        {form, _meta, [_ | _]} = node, acc ->
-          if form in forms, do: {node, collect_node(node, acc)}, else: {node, acc}
+        node, acc when is_tuple(node) and tuple_size(node) == 3 ->
+          # A boundary is pruned by returning a leaf, so prewalk does not descend into it.
+          if scope_boundary?(node),
+            do: {:__mutare_pruned__, acc},
+            else: collect_if_definition(node, forms, acc)
 
         node, acc ->
           {node, acc}
@@ -420,17 +495,22 @@ defmodule Mutare.Transform.ModulePlan do
     acc
   end
 
-  # `defdelegate` historically accepted a list of heads; List.wrap/1 keeps the
-  # extraction total over both the single-head and list shapes.
-  defp collect_node({:defdelegate, _meta, [funs | _opts]}, acc) do
-    funs |> List.wrap() |> Enum.reduce(acc, &classify_head/2)
+  defp collect_if_definition({_form, _meta, [_ | _]} = node, forms, acc) do
+    form = definition_form(node)
+    if form in forms, do: {node, collect_node(form, node, acc)}, else: {node, acc}
   end
 
-  defp collect_node({form, _meta, [head | _rest]}, acc) when form in [:def, :defp] do
+  defp collect_if_definition(node, _forms, acc), do: {node, acc}
+
+  defp collect_node(:defdelegate, {_form, _meta, [funs | _opts]}, acc) do
+    funs |> delegate_heads() |> Enum.reduce(acc, &classify_head/2)
+  end
+
+  defp collect_node(form, {_form, _meta, [head | _rest]}, acc) when form in [:def, :defp] do
     classify_head(head, acc)
   end
 
-  defp collect_node(_node, acc), do: acc
+  defp collect_node(_form, _node, acc), do: acc
 
   defp classify_head(head, {exact, wildcard} = acc) do
     case name_arity(head) do

@@ -8,7 +8,7 @@ defmodule Mutare.Transform.UnitReturns do
   # for a side-effect helper — and whose only kill is a test asserting a static fact
   # (`:ok = notify(x)`). So this pass finds those tails and stamps them (`Meta.put_unit_tail/1`),
   # and both consumers decline: the in-place offer (`Analyze.Attach.offer/4`) and the return-tail
-  # attach (`Analyze.Returns`). Transform-enforced, like macro-routing `:skip`, not a mark. See
+  # attach (`Analyze.Returns`). Transform-enforced, like call-routing `:skip`, not a mark. See
   # NOTES "Unit-returning functions are not return-value positions".
   #
   # The criterion is deliberately narrow, and one-sided in its errors:
@@ -28,9 +28,14 @@ defmodule Mutare.Transform.UnitReturns do
   #     asks whether the error path is tested).
   #   * **Misses are the only errors, on the clauses the source shows.** A call tail
   #     (`Logger.info(x)`), a variable bound to `:ok`, a `with` whose implicit pass-through is a
-  #     path — all non-unit here, even when they return unit at runtime. The pass never classifies
-  #     a *visible* data-returning clause group as unit; what it cannot see is a clause a macro
-  #     generates beside hand-written ones of the same signature (see "Static visibility").
+  #     path, a displaced `if` that is somebody else's macro — all non-unit here, even when they
+  #     return unit at runtime. The pass never classifies a *visible* data-returning clause group
+  #     as unit; what it cannot see is a clause a macro generates beside hand-written ones of the
+  #     same signature (see "Static visibility").
+  #   * **Only what the caller receives.** An `else` on a `try` (or on a `def`, the implicit one)
+  #     *consumes* the `do` value: the clauses match on it and their own tails are the return.
+  #     So a `do` tail under an `else` is an ordinary value position and stays mutable — swapping
+  #     it picks a different clause, a real behaviour change under an unchanged unit return.
   #
   # Anonymous functions are the same notion one level down (`Enum.each(xs, fn x -> …; :ok end)`):
   # a `fn` whose every clause body's leaf tails are unit gets its tails stamped too, on its own
@@ -38,11 +43,32 @@ defmodule Mutare.Transform.UnitReturns do
   #
   # ## Static visibility
   #
-  # A module whose body defines a function with a **dynamic name** (`def unquote(n)()`) is left
-  # unclassified entirely — that clause could belong to any signature. A **spliced** head
-  # (`def f(unquote_splicing(args))`) blocks its name at every arity. Both mirror the residual
-  # holes `Mutare.Transform.ModulePlan` accepts for lifting. Nested module scopes are pruned at
-  # the same boundaries the planner uses and classified on their own when the walk reaches them.
+  # A module whose body defines a function with a **dynamic name** — `def unquote(n)()`, or the
+  # whole-head `def unquote(head)` — is left unclassified entirely: that clause could belong to
+  # any signature. A **spliced** head (`def f(unquote_splicing(args))`) blocks its name at every
+  # arity. A **`defdelegate`** blocks the signature it names: the delegate mints a sibling `def`
+  # clause nothing static can see, and it can return anything — "one explicit clause, delegate
+  # the rest" is exactly the shape where a visible `:ok` carries a success bit. A delegate is
+  # read by the same two planner helpers as a `def` (`ModulePlan.name_arity/1` + `spliced?/1`),
+  # so a dynamic delegate head forfeits the module just as a dynamic `def` head does.
+  # All of it mirrors the residual holes `Mutare.Transform.ModulePlan` accepts for lifting. Nested
+  # module scopes are pruned at the same boundaries the planner uses (`scope_boundary?/1`, which
+  # reads the boundary through the resolver — a *displaced* `defmodule/2` is somebody else's
+  # macro and may splice its block into the caller, so its definitions are siblings) and
+  # classified on their own when the walk reaches them. A definition nested in a *definition* is
+  # pruned the same way only when it is **quoted**: that is data for elsewhere, since a generated
+  # `def` inside a function body is illegal. Live, it runs during the outer definition's
+  # expansion and really does add a clause here, so it blocks.
+  #
+  # A **qualified** definition (`Kernel.def f(x)`, or an aliased `K.def` — a definition macro may
+  # be invoked qualified) blocks too: the clause it mints is as real as a bare one, and read by
+  # name alone the node is just a call. A definition inside a **`quote`** is visible but
+  # unreadable, so it blocks like a `defdelegate`: `Module.eval_quoted(__MODULE__, …)` really can inject one beside the visible
+  # clauses (the metaprogramming route the planner also refuses to prune), yet `Resolve` stamps
+  # nothing in there — quoted code resolves where it is *invoked* — so a bare `raise("x")` in that
+  # body may be a local `raise/1` that returns, and an `if` may be anyone's. For the same reason
+  # `annotate/1` classifies nothing inside a `quote` at all. (Belt and braces on that half: the
+  # analyzer already offers no position inside a `quote`, so no mutant hangs on it today.)
   # Clauses defined under a module-level `if`/`for` are ordinary (only scope boundaries prune the
   # walk), so a conditional definition joins its siblings' group. The residual hole — the
   # planner's too — is a clause a **macro generates** next to visible clauses of the same
@@ -60,31 +86,58 @@ defmodule Mutare.Transform.UnitReturns do
   alias Mutare.Transform.{Calls, Imports, Meta, ModulePlan}
   alias Mutare.Transform.Analyze.{Returns, Syntax}
 
-  # Where a function definition stops belonging to the enclosing module body — the planner's set.
-  @scope_boundaries [:defmodule, :defimpl, :defprotocol, :defmacro, :defmacrop]
+  # The statements that define a function of the enclosing module. `defdelegate` is here for
+  # classification only — it names a signature but hides its body, so it can never be *stamped*
+  # (`signature/1` is `nil` for one, and the stamping pass keys on that).
+  @definition_forms [:def, :defp, :defdelegate]
+
+  # Macro definitions: pruned like a definition body rather than like another module's scope
+  # (`nesting_kind/2`).
+  @macro_forms [:defmacro, :defmacrop]
+
+  # Nested scopes are pruned at `ModulePlan.scope_boundary?/1` — the planner's set, read through
+  # the resolver so a *displaced* `defmodule/2` (somebody else's macro, which may splice its
+  # block into the caller) is not mistaken for one.
 
   @unit_atoms [:ok, nil]
 
   @doc "Stamp every unit-returning function's (and `fn`'s) leaf return tails across the tree."
   @spec annotate(Macro.t()) :: Macro.t()
   def annotate(ast) do
-    Macro.prewalk(ast, fn
-      {:defmodule, meta, [head, body]} when is_list(body) ->
-        {:defmodule, meta, [head, stamp_module_body(body)]}
-
-      # `defimpl P, for: T do … end` / `defimpl P, for: T, do: …`: the `do` block is always in
-      # the last argument (a standalone block keyword, or the combined `for:`/`do:` list).
-      {:defimpl, meta, args} when is_list(args) and length(args) >= 2 ->
-        {lead, [last]} = Enum.split(args, -1)
-        {:defimpl, meta, lead ++ [stamp_module_body(last)]}
-
-      {:fn, _meta, clauses} = node when is_list(clauses) ->
-        stamp_fn(node)
-
-      node ->
-        node
-    end)
+    {ast, 0} = Macro.traverse(ast, 0, &enter/2, &leave/2)
+    ast
   end
+
+  # Nothing *inside* a `quote` is classified. `Resolve` stamps none of it — quoted code resolves
+  # where the macro is invoked, not here — so its calls cannot be read: a bare `raise("x")` there
+  # may be a local `raise/1` that returns, and an `if` there may be anyone's. Heads stay visible
+  # to `stamp_defs/1`, which blocks their signatures; only the bodies are off limits.
+  defp enter({:quote, _meta, _args} = node, depth), do: {node, depth + 1}
+  defp enter(node, 0), do: {stamp_scope(node), 0}
+  defp enter(node, depth), do: {node, depth}
+
+  defp leave({:quote, _meta, _args} = node, depth), do: {node, depth - 1}
+  defp leave(node, depth), do: {node, depth}
+
+  defp stamp_scope({:defmodule, meta, [head, body]} = node) when is_list(body) do
+    if ModulePlan.scope_boundary?(node),
+      do: {:defmodule, meta, [head, stamp_module_body(body)]},
+      else: node
+  end
+
+  # `defimpl P, for: T do … end` / `defimpl P, for: T, do: …`: the `do` block is always in
+  # the last argument (a standalone block keyword, or the combined `for:`/`do:` list).
+  defp stamp_scope({:defimpl, meta, args} = node) when is_list(args) and length(args) >= 2 do
+    if ModulePlan.scope_boundary?(node) do
+      {lead, [last]} = Enum.split(args, -1)
+      {:defimpl, meta, lead ++ [stamp_module_body(last)]}
+    else
+      node
+    end
+  end
+
+  defp stamp_scope({:fn, _meta, clauses} = node) when is_list(clauses), do: stamp_fn(node)
+  defp stamp_scope(node), do: node
 
   # --- module bodies ----------------------------------------------------------
 
@@ -110,55 +163,98 @@ defmodule Mutare.Transform.UnitReturns do
       block
     else
       {stamped, nil} =
-        map_reduce_defs(block, nil, fn clause, nil ->
-          if signature(clause) in units, do: {stamp_clause(clause), nil}, else: {clause, nil}
+        map_reduce_defs(block, nil, fn clause, _form, quoted?, nil ->
+          if not quoted? and signature(clause) in units,
+            do: {stamp_clause(clause), nil},
+            else: {clause, nil}
         end)
 
       stamped
     end
   end
 
-  # The `{name, arity}` signatures whose every clause is unit-bodied: fold each clause's verdict
-  # into its group, then drop any group a static-visibility hole could reach.
+  # The `{name, arity}` signatures whose every clause is unit-bodied: fold each definition's
+  # verdict into its group, then drop any group a static-visibility hole could reach. `blocked`
+  # is the planner's `{exact, wildcard}` pair — a `defdelegate` blocks the signature it names, a
+  # spliced head blocks its whole name (its arity is unknowable) — while a head whose *name* is
+  # unknowable sets `dynamic?` and forfeits the module.
   defp unit_signatures(block) do
-    {_block, {groups, dynamic?, spliced}} =
-      map_reduce_defs(block, {%{}, false, MapSet.new()}, fn clause, acc ->
-        {clause, classify(clause, acc)}
-      end)
+    {_block, {groups, dynamic?, {exact, wildcard}}} =
+      map_reduce_defs(
+        block,
+        {%{}, false, {MapSet.new(), MapSet.new()}},
+        fn clause, form, quoted?, acc -> {clause, classify(clause, form, quoted?, acc)} end
+      )
 
     if dynamic? do
       MapSet.new()
     else
       for {{name, _arity} = sig, verdicts} <- groups,
-          name not in spliced,
+          name not in wildcard,
+          sig not in exact,
           Enum.all?(verdicts),
           into: MapSet.new(),
           do: sig
     end
   end
 
-  defp classify({_vis, _meta, [head | rest]} = clause, {groups, dynamic?, spliced}) do
+  # Two kinds of definition whose *head* is visible but whose body this pass cannot read, so the
+  # signature is unclassifiable rather than unit: a `defdelegate` (the body lives in another
+  # module and can return anything — "one explicit clause, delegate the rest" is exactly where a
+  # visible `:ok` carries a success bit), and anything inside a `quote` (unresolved, so its calls
+  # can't be read).
+  defp classify({_form, _meta, [funs | _opts]}, :defdelegate, _quoted?, acc),
+    do: block_heads(ModulePlan.delegate_heads(funs), acc)
+
+  # A **qualified** definition (`Kernel.def f(x)`, or an aliased `K.def`): a definition macro may
+  # be invoked qualified, and the clause it mints is as real as a bare one. Block rather than read
+  # a body reached through so unusual a spelling.
+  defp classify({{:., _, _}, _meta, [head | _rest]}, _form, _quoted?, acc),
+    do: block_heads([head], acc)
+
+  defp classify({_vis, _meta, [head | _rest]}, _form, true, acc), do: block_heads([head], acc)
+
+  defp classify({_vis, _meta, [head | rest]} = clause, _form, false, {groups, dynamic?, blocked}) do
     case signature(clause) do
       nil ->
-        {groups, true, spliced}
+        {groups, true, blocked}
 
       sig ->
-        spliced =
-          if ModulePlan.spliced?(head), do: MapSet.put(spliced, elem(sig, 0)), else: spliced
+        blocked =
+          if ModulePlan.spliced?(head), do: block_name(blocked, elem(sig, 0)), else: blocked
 
         case rest do
           # A bodiless head (`def f(x \\ default)`) defines no return path.
           [] ->
-            {groups, dynamic?, spliced}
+            {groups, dynamic?, blocked}
 
           [body_kw] when is_list(body_kw) ->
-            {add_verdict(groups, sig, unit_body?(body_kw)), dynamic?, spliced}
+            {add_verdict(groups, sig, unit_body?(body_kw)), dynamic?, blocked}
 
           _ ->
-            {add_verdict(groups, sig, false), dynamic?, spliced}
+            {add_verdict(groups, sig, false), dynamic?, blocked}
         end
     end
   end
+
+  # Block every signature these heads name; a head whose *name* is unknowable forfeits the module,
+  # as a dynamic `def` head does.
+  defp block_heads(heads, acc) do
+    Enum.reduce(heads, acc, fn head, {groups, dynamic?, blocked} ->
+      case ModulePlan.name_arity(head) do
+        :error ->
+          {groups, true, blocked}
+
+        {name, _arity} = sig ->
+          if ModulePlan.spliced?(head),
+            do: {groups, dynamic?, block_name(blocked, name)},
+            else: {groups, dynamic?, block_signature(blocked, sig)}
+      end
+    end)
+  end
+
+  defp block_name({exact, wildcard}, name), do: {exact, MapSet.put(wildcard, name)}
+  defp block_signature({exact, wildcard}, sig), do: {MapSet.put(exact, sig), wildcard}
 
   defp add_verdict(groups, sig, verdict),
     do: Map.update(groups, sig, [verdict], &[verdict | &1])
@@ -193,36 +289,85 @@ defmodule Mutare.Transform.UnitReturns do
   # A bodiless head (`def f(x \\ 1)`) shares a unit signature but has no tails to stamp.
   defp stamp_clause(clause), do: clause
 
-  # Map-reduce `fun` over every `def`/`defp` clause node directly in this module scope — nested
-  # scopes (`@scope_boundaries`) are entered for depth-tracking only, never classified here (they
-  # get their own pass when `annotate/1`'s walk reaches them).
+  # Map-reduce `fun.(definition, quoted?, acc)` over every definition node
+  # (`@definition_forms`) directly in this module scope. Nested scopes (`@scope_boundaries`) are
+  # entered for depth-tracking only, never visited here — another module's, or a definition
+  # inside a definition, which can only be data for elsewhere. A `quote` is *not* a boundary:
+  # `Module.eval_quoted(__MODULE__, …)` really does inject its defs here (the one route the
+  # planner also refuses to prune), so their heads must be seen — but `quoted?` tells the caller
+  # their bodies carry no resolution and must not be read.
+  defp definition_args?({_form, _meta, args}), do: match?([_ | _], args)
+  defp definition_args?(_node), do: false
+
   defp map_reduce_defs(block, acc, fun) do
-    {block, {0, acc}} =
-      Macro.traverse(
-        block,
-        {0, acc},
-        fn
-          {form, _meta, _args} = node, {depth, acc} when form in @scope_boundaries ->
-            {node, {depth + 1, acc}}
-
-          {form, _meta, [_ | _]} = node, {0, acc} when form in [:def, :defp] ->
-            {node, acc} = fun.(node, acc)
-            {node, {0, acc}}
-
-          node, state ->
-            {node, state}
-        end,
-        fn
-          {form, _meta, _args} = node, {depth, acc} when form in @scope_boundaries ->
-            {node, {depth - 1, acc}}
-
-          node, state ->
-            {node, state}
-        end
-      )
+    {block, {0, 0, 0, acc}} =
+      Macro.traverse(block, {0, 0, 0, acc}, &enter_definition(&1, &2, fun), &leave_definition/2)
 
     {block, acc}
   end
+
+  # Three counters, because the three kinds of nesting mean different things:
+  #
+  #   * `scope` — inside another module's body (`ModulePlan.scope_boundary?/1`): none of it is
+  #     this module's, so it is not visited at all (it gets its own pass);
+  #   * `nesting` — inside a definition. Quoted, that is data for elsewhere (a `def` generated
+  #     inside a function body is illegal, so it can only be eval'd into another module) and is
+  #     likewise not visited. *Un*quoted it is live — `def g, do: unquote((def f(:bad), …; 1))`
+  #     runs during expansion and really does add a clause here — so it blocks;
+  #   * `quoted` — inside a `quote`, where `Resolve` stamped nothing, so a body is unreadable
+  #     and only the head can be trusted: blocks.
+  defp enter_definition({:quote, _meta, _args} = node, {scope, nesting, quoted, acc}, _fun),
+    do: {node, {scope, nesting, quoted + 1, acc}}
+
+  defp enter_definition(node, {scope, nesting, quoted, acc} = state, fun) do
+    form = ModulePlan.definition_form(node)
+
+    case nesting_kind(form, node) do
+      :definition ->
+        {node, acc} =
+          if scope > 0 or (nesting > 0 and quoted > 0),
+            do: {node, acc},
+            else: fun.(node, form, nesting > 0 or quoted > 0, acc)
+
+        {node, {scope, nesting + 1, quoted, acc}}
+
+      :macro ->
+        {node, {scope, nesting + 1, quoted, acc}}
+
+      :scope ->
+        {node, {scope + 1, nesting, quoted, acc}}
+
+      nil ->
+        {node, state}
+    end
+  end
+
+  defp leave_definition({:quote, _meta, _args} = node, {scope, nesting, quoted, acc}),
+    do: {node, {scope, nesting, quoted - 1, acc}}
+
+  defp leave_definition(node, {scope, nesting, quoted, acc} = state) do
+    case nesting_kind(ModulePlan.definition_form(node), node) do
+      nil -> {node, state}
+      :scope -> {node, {scope - 1, nesting, quoted, acc}}
+      _definition_or_macro -> {node, {scope, nesting - 1, quoted, acc}}
+    end
+  end
+
+  # How a node nests the walk. A **macro** definition counts as a definition body, not as another
+  # module's scope: its `quote` blocks are data for wherever the macro is invoked, but anything
+  # *outside* them runs while this module is compiled, so `defmacro g, do: unquote((def f(:bad),
+  # …))` really does add a clause here. (NOTES "Metaprogramming-augmented clauses" states the
+  # invocation-only rule the planner prunes on; a definition-time `unquote` is its exception.)
+  defp nesting_kind(form, node) do
+    cond do
+      definition?(form, node) -> :definition
+      not ModulePlan.scope_boundary?(node) -> nil
+      form in @macro_forms -> :macro
+      true -> :scope
+    end
+  end
+
+  defp definition?(form, node), do: form in @definition_forms and definition_args?(node)
 
   # --- anonymous functions ----------------------------------------------------
 
