@@ -168,6 +168,23 @@ defmodule Mutare.Transform.StructuralForms do
     end
   end
 
+  @doc """
+  `hint_treatment/2` for a module named as the compiler prints it (`"Kernel"`, `"Ecto.Query"`) —
+  the shape `Mutare.Poison.Hint` and `Mutare.Report.Live` receive. A segment naming no loaded
+  module is a target-project module, and the head an ordinary call.
+  """
+  @spec hint_treatment_for(String.t(), atom()) :: :raw | :skip | nil
+  def hint_treatment_for(module, name) when is_binary(module) do
+    key =
+      try do
+        module |> String.split(".") |> Enum.map(&String.to_existing_atom/1)
+      rescue
+        ArgumentError -> nil
+      end
+
+    hint_treatment(key, name)
+  end
+
   defp structural_message(module_key, name) do
     head = describe(module_key, name)
 

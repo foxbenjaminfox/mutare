@@ -69,9 +69,15 @@ defmodule Mutare.Transform.Analyze.QuoteEscape do
   # catch-all/baseline branch leaves the later read undefined. Keep mutating the live
   # argument, but prune only those candidates that would enclose the binding; descendants
   # and siblings that do not enclose it remain live.
-  defp analyze_quoted_data(descent, {form, meta, [arg]}, 1, mutators)
-       when form in [:unquote, :unquote_splicing],
-       do: {form, meta, [analyze_quote_escape(descent, arg, mutators)]}
+  defp analyze_quoted_data(descent, {form, meta, [arg]} = node, 1, mutators)
+       when form in [:unquote, :unquote_splicing] do
+    # A `:skip`-routed unquote (`{Kernel.SpecialForms, :unquote, :skip}`) is an inert leaf: the
+    # escaping argument stays as written. (The dispatcher never sees an unquote — quoted data is
+    # walked here, not by `analyze/3` — so the stamp is read at this entry.)
+    if Meta.skipped?(node),
+      do: node,
+      else: {form, meta, [analyze_quote_escape(descent, arg, mutators)]}
+  end
 
   defp analyze_quoted_data(_descent, {form, _meta, [_arg]} = node, quote_level, _mutators)
        when form in [:unquote, :unquote_splicing] and quote_level > 1,

@@ -8647,3 +8647,17 @@ built the range/list node's children directly, so `{Kernel, :.., 2, :skip}` and 
 on `..` were ignored in `x in 1..5`; and `analyze_statement/3` discovered a `:binding_pattern` route
 on the RHS stage of a *skipped* pipe (`[x, y] |> destructure(v)` under `{Kernel, :|>, 2, :skip}`)
 and attached pattern-swap candidates past the boundary.
+
+**Third review, same day.** (1) The per-pair keyed routing offered every key through the leading
+treatment, block keys included — so `{MyMacro, :wrap, 1, [[do: :raw]]}` handed `do:` to
+`AtomLiteral`, and `wrap(mutare: body)` failed to expand. The generic pair clause has always kept a
+block key raw (`Syntax.block_key?/1`); both keyed walks (`Routed.route_key/4`, `Tag.tag_key/4`) now
+apply the same rule. (2) `{Kernel.SpecialForms, :unquote, :skip}` was accepted and inert: quoted
+data is walked by the quote-specific passes, not by `analyze/3`, so the dispatcher never saw an
+unquote. The resolver's quoted-data walk now stamps a live unquote through `stamp_bare_call/4`, and
+`QuoteEscape.analyze_quoted_data/4` reads the stamp at its unquote clause. (3) `Report.Live`'s
+compile-poison line rendered `{Module, :fun, :raw}` for every recovered macro — `{Kernel, :in,
+:raw}` included, which the validator now rejects. `StructuralForms.hint_treatment_for/2` (the
+module as the compiler prints it) is the one classification both `Poison.Hint` and `Live` render
+from: `:raw` for a call, `:skip` for a structural head, a `# mutare:ignore` pointer when no route
+can name the head.

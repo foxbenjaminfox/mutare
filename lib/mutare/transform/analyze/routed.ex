@@ -19,7 +19,7 @@ defmodule Mutare.Transform.Analyze.Routed do
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
   alias Mutare.Transform.{Candidate, Meta, NodeRange}
-  alias Mutare.Transform.Analyze.{Attach, CallOptions}
+  alias Mutare.Transform.Analyze.{Attach, CallOptions, Syntax}
 
   # Analyze a routed call: offer the *whole* node to mutators (so a custom mutator
   # registered for the macro still fires — e.g. an Ecto query mutator on `from(...)`),
@@ -181,7 +181,7 @@ defmodule Mutare.Transform.Analyze.Routed do
                 nil -> inner
               end
 
-            {route_macro_arg(descent, key, inner, mutators),
+            {route_key(descent, key, inner, mutators),
              route_macro_arg(descent, value, position, mutators)}
           end)
 
@@ -256,6 +256,15 @@ defmodule Mutare.Transform.Analyze.Routed do
        do: descent.pattern(arg, mutators)
 
   defp route_macro_arg(descent, arg, _expression, mutators), do: descent.annotate(arg, mutators)
+
+  # A keyword key under a keyed refinement, treated as the generic pair clause treats it
+  # (`Mutare.Transform.Analyze`): a **block key** (`do:`/`else:`/`rescue:`/`catch:`/`after:`) is a
+  # structural label and stays raw — a selector in its place is malformed, and a macro matching
+  # `wrap(do: body)` would not even expand — while a data key is a runtime value and follows the
+  # leading treatment's reading.
+  defp route_key(descent, key, inner, mutators) do
+    if Syntax.block_key?(key), do: key, else: route_macro_arg(descent, key, inner, mutators)
+  end
 
   # What a leading treatment means one level down a keyed refinement: `:interior` withholds only
   # the container, so its children are ordinary expressions; every other word means the same at

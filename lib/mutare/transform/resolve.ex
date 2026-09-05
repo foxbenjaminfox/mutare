@@ -621,9 +621,13 @@ defmodule Mutare.Transform.Resolve do
     if walked == args, do: node, else: {:quote, meta, walked}
   end
 
+  # A live unquote is a resolvable head too (`Kernel.SpecialForms.unquote`): stamp it, so a `:skip`
+  # route on it is honoured by `Analyze.QuoteEscape` and the escaping argument stays as written.
   defp walk_quoted_data({form, meta, [arg]}, 1, env)
-       when form in [:unquote, :unquote_splicing],
-       do: {form, meta, [walk(arg, %{env | pipe_mode: :unpiped})]}
+       when form in [:unquote, :unquote_splicing] do
+    {meta, _module_key} = stamp_bare_call(form, meta, [arg], %{env | pipe_mode: :unpiped})
+    {form, meta, [walk(arg, %{env | pipe_mode: :unpiped})]}
+  end
 
   defp walk_quoted_data({form, _meta, [_arg]} = node, quote_level, _env)
        when form in [:unquote, :unquote_splicing] and quote_level > 1,

@@ -1,3 +1,9 @@
+# A macro with a `do:` block head, for the keyed-refinement block-key test: a real macro, so the
+# metamutant is compiled against it and a selector spliced into the key would fail loudly.
+defmodule Mutare.Test.WrapDSL do
+  defmacro wrap(do: body), do: body
+end
+
 defmodule Mutare.TransformCallSkipTest do
   # The user-tier call-routing vocabulary beyond `:raw`: the call-level `:skip` (an inert leaf),
   # the `:interior` treatment (contents mutate, container doesn't), and keyed refinements
@@ -342,6 +348,32 @@ defmodule Mutare.TransformCallSkipTest do
       for line <- [2, 6],
           do:
             assert(Enum.any?(plain, &(&1.line == line and &1.mutator == :string)), "line #{line}")
+    end
+
+    test "a skipped unquote leaves its escaping argument as written (the quote walks honour :skip)" do
+      # Quoted data is walked by the quote-specific passes, not by the dispatcher, so both the
+      # resolver's quoted-data walk (the stamp) and `QuoteEscape` (the check) take part.
+      source = """
+      defmodule Quoted do
+        def one(x), do: quote(do: unquote(x + 1))
+        def many(xs), do: quote(do: f(unquote_splicing(xs ++ [1])))
+      end
+      """
+
+      mutators = [Mutare.Mutators.Arithmetic, Mutare.Mutators.IntegerLiteral]
+
+      routes = [
+        {Kernel.SpecialForms, :unquote, :skip},
+        {Kernel.SpecialForms, :unquote_splicing, :skip}
+      ]
+
+      {meta, sites, _} = transform(source, mutators, routes)
+      assert sites == []
+      assert_compiles(meta)
+
+      {_m, plain, _} = transform(source, mutators, [])
+      assert Enum.any?(plain, &(&1.line == 2 and &1.mutator == :arithmetic))
+      assert Enum.any?(plain, &(&1.line == 3 and &1.original_code == "1"))
     end
 
     test "a skipped pipe whose stage is a binding-pattern macro attaches no pattern mutants" do
@@ -756,6 +788,36 @@ defmodule Mutare.TransformCallSkipTest do
   end
 
   describe "keyed refinements — [leading, key: treatment, …] over a literal keyword argument" do
+    test "a block key stays raw under a keyed refinement, as the ordinary walk keeps it" do
+      # `do:` is a structural label: a selector in its place is malformed, and a macro matching
+      # `wrap(do: body)` would not even expand. The value still follows its own position.
+      source = """
+      defmodule Wrapped do
+        require Mutare.Test.WrapDSL
+        def f, do: Mutare.Test.WrapDSL.wrap(do: 1 + 1)
+      end
+      """
+
+      mutators = [
+        Mutare.Mutators.AtomLiteral,
+        Mutare.Mutators.Arithmetic,
+        Mutare.Mutators.IntegerLiteral
+      ]
+
+      {meta, sites, _} =
+        transform(source, mutators, [{Mutare.Test.WrapDSL, :wrap, 1, [[do: :raw]]}])
+
+      assert sites == []
+      assert_compiles(meta)
+
+      {meta, sites, _} =
+        transform(source, mutators, [{Mutare.Test.WrapDSL, :wrap, 1, [[do: :expression]]}])
+
+      refute Enum.any?(sites, &(&1.mutator == :atom))
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+      assert_compiles(meta)
+    end
+
     test "a :hosted value under a keyed refinement reaches its host" do
       source = """
       defmodule KeyedHosted do

@@ -12,6 +12,7 @@ defmodule Mutare.Report.Live do
   alias Mutare.{CLI, Result, Site}
   alias Mutare.Report.HarnessDiagnostic
   alias Mutare.Result.Status
+  alias Mutare.Transform.StructuralForms
 
   @device :standard_error
   @tick_ms 80
@@ -453,7 +454,9 @@ defmodule Mutare.Report.Live do
   @doc """
   Renders the macro-expansion poison fallback as a loud, persistent warning: names the
   inline DSL macro(s) whose argument wouldn't compile with a mutation spliced in, and the
-  copy-paste `{Module, :fun, :raw}` route to pin the skip up front.
+  copy-paste route to pin the skip up front — `:raw` for a call, `:skip` for a head Mutare
+  analyzes structurally (`Kernel.in`), and a `# mutare:ignore` pointer for a head no route can
+  name (the classification `Mutare.Poison.Hint` uses).
   """
   @spec macro_poison_line(map()) :: String.t()
   def macro_poison_line(%{macros: macros}) do
@@ -461,10 +464,25 @@ defmodule Mutare.Report.Live do
     n = length(macros)
 
     routes =
-      Enum.map_join(macros, ", ", fn m -> "{#{m.module}, #{inspect(m.macro)}, :raw}" end)
+      Enum.flat_map(macros, fn m ->
+        case StructuralForms.hint_treatment_for(m.module, m.macro) do
+          nil -> []
+          treatment -> ["{#{m.module}, #{inspect(m.macro)}, #{inspect(treatment)}}"]
+        end
+      end)
+
+    pin =
+      case routes do
+        [] ->
+          "no call route can name #{if(n == 1, do: "it", else: "them")}; use `# mutare:ignore` " <>
+            "around the offending code"
+
+        routes ->
+          "Pin to skip up front: #{Enum.join(routes, ", ")}"
+      end
 
     "  ⚠ compile-poison inside macro#{plural(n)} #{named} — a mutation there won't compile; " <>
-      "skipping its mutants and rebuilding. Pin to skip up front: #{routes}"
+      "skipping its mutants and rebuilding. #{pin}"
   end
 
   @doc "Seconds as `Ns` (under a minute) or `Nm Ss`."

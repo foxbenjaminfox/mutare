@@ -28,7 +28,7 @@ defmodule Mutare.Transform.Tag do
   alias Mutare.Mutator.Dispatch
   alias Mutare.Mutators.StringLiteral
   alias Mutare.Transform.{Meta, NodeRange, Suppression}
-  alias Mutare.Transform.Analyze.CallOptions
+  alias Mutare.Transform.Analyze.{CallOptions, Syntax}
 
   # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
   # the guard path matches the guard-legal subset of the body path's sets, so its clauses
@@ -295,7 +295,7 @@ defmodule Mutare.Transform.Tag do
                 nil -> inner
               end
 
-            {key, acc} = tag_routed_arg(key, inner, acc, mutators)
+            {key, acc} = tag_key(key, inner, acc, mutators)
             {value, acc} = tag_routed_arg(value, position, acc, mutators)
             {{key, value}, acc}
           end)
@@ -308,6 +308,13 @@ defmodule Mutare.Transform.Tag do
   end
 
   defp tag_routed_arg(arg, _position, acc, mutators), do: tag_walk(arg, acc, mutators)
+
+  # A keyword key under a keyed refinement: a block key (`do:`/`else:`/…) is a structural label
+  # and stays raw, as the body path keeps it (`Analyze.Routed`); a data key follows the leading
+  # treatment's reading.
+  defp tag_key(key, inner, acc, mutators) do
+    if Syntax.block_key?(key), do: {key, acc}, else: tag_routed_arg(key, inner, acc, mutators)
+  end
 
   # What a leading treatment means one level down: `:interior` withholds only the container, so
   # its children are ordinary expressions; `:raw` and `:expression` mean the same at every depth.

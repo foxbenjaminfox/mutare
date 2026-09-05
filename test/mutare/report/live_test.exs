@@ -341,6 +341,21 @@ defmodule Mutare.Report.LiveTest do
   end
 
   describe "macro_poison_line/1" do
+    test "suggests :skip for a structural head and a # mutare:ignore pointer for a definition" do
+      # `{Kernel, :in, :raw}` would be rejected by `Options.new/1`; the line must never suggest it.
+      line =
+        Live.macro_poison_line(%{
+          macros: [%{module: "Kernel", macro: :in}, %{module: "Ecto.Query", macro: :from}]
+        })
+
+      assert line =~ "{Kernel, :in, :skip}"
+      assert line =~ "{Ecto.Query, :from, :raw}"
+
+      only_def = Live.macro_poison_line(%{macros: [%{module: "Kernel", macro: :def}]})
+      refute only_def =~ "{Kernel, :def,"
+      assert only_def =~ "mutare:ignore"
+    end
+
     test "names one inline macro and its module-qualified skip route" do
       line = Live.macro_poison_line(%{macros: [%{module: "Ecto.Query", macro: :from, count: 3}]})
 

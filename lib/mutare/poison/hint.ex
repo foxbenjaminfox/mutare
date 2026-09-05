@@ -260,7 +260,7 @@ defmodule Mutare.Poison.Hint do
   end
 
   defp route_entry({module, fun}) do
-    case StructuralForms.hint_treatment(module_key(module), fun) do
+    case StructuralForms.hint_treatment_for(module, fun) do
       nil ->
         "        # #{module}.#{fun} cannot be named by a route (a definition or compiler " <>
           "syntax); use `# mutare:ignore` around the offending code"
@@ -268,14 +268,6 @@ defmodule Mutare.Poison.Hint do
       treatment ->
         "        {#{module}, #{inspect(fun)}, #{inspect(treatment)}}"
     end
-  end
-
-  # The compiler prints module names it has loaded, so the atoms exist here whenever the module
-  # is one Mutare knows (`Kernel`); an unknown segment is a target-project module — a plain call.
-  defp module_key(module) do
-    module |> String.split(".") |> Enum.map(&String.to_existing_atom/1)
-  rescue
-    ArgumentError -> nil
   end
 
   # A copy-pasteable `.mutare.exs` keyword list. One arity-agnostic 3-tuple per
