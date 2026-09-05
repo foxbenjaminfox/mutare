@@ -76,7 +76,15 @@ defmodule Mutare.Transform.Candidate.Delivery do
     end)
   end
 
+  # Runs on every node of every file, and all but a handful carry no `Candidate.Return` (most
+  # carry no candidates at all), so look for one before building the constant set.
   defp drop_duplicate_returns(candidates) do
+    if Enum.any?(candidates, &match?(%Candidate.Return{}, &1)),
+      do: reject_covered_returns(candidates),
+      else: candidates
+  end
+
+  defp reject_covered_returns(candidates) do
     constants =
       for %Candidate.InPlace{mutated: mutated} <- candidates,
           {:ok, value} <- [AST.literal_value(mutated)],

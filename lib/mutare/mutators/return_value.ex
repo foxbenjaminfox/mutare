@@ -16,16 +16,24 @@ defmodule Mutare.Mutators.ReturnValue do
 
   A replacement equal to the original return is omitted.
 
-  When an enabled node-level family already produces the same scalar replacement at that
-  return expression, the transform keeps the node-level mutation and omits this family's
-  duplicate. For example, with `AtomLiteral` enabled, `:foo → :mutare` belongs to `atom`,
-  while `:foo → nil` remains a `return_value` mutation. With `AtomLiteral` disabled, both
-  return-value replacements remain available.
+  Two separate rules keep this family from restating another's work, and they answer different
+  questions. A *literal* tail belongs to its node-level family outright, whatever the run
+  enables — see Exclusions. On every tail this family does claim, the transform then compares
+  *values*: when an enabled node-level family already produces the same scalar replacement at
+  that return expression, it keeps the node-level mutation and drops this family's duplicate.
+  So with `AtomLiteral` enabled, `:foo → :mutare` is reported as `atom` while `:foo → nil`
+  stays a `return_value` mutation; disable `AtomLiteral` and both replacements come back.
 
   ## Exclusions
 
     * Boolean expressions are handled by `Mutare.Mutators.Conditional`.
-    * Integer, float, string, list, and boolean literals are handled by their node-level families. Bare atoms remain eligible.
+    * Integer, float, string, list, and boolean literals are handed to their node-level families
+      outright — unlike the value comparison above, this holds even when that family is disabled.
+      On a literal tail the contrasting pair earns nothing: `nil`/`:mutare` collide with no
+      replacement those families emit, so no comparison would catch them, and they are at best
+      weaker restatements of one. A `do: false` tail mutated to `nil` is the clearest case — both
+      are falsy, so every `refute`-style assertion lets it through, and only a strict comparison
+      or a `false` pattern match kills it. Bare atoms remain eligible.
     * `nil` return expressions are not mutated.
     * `quote` blocks are compile-time code and are not mutated as a whole.
 

@@ -18,6 +18,11 @@ defmodule Mutare.ReturnValueTest do
   # multi-clause groups, so filter to :return_value when a group lifts).
   @only [ReturnValue]
 
+  # The runtime fixture adds `AtomLiteral` so the deduplicated atom tail below is exercised
+  # end to end: the surviving `atom` and `return_value` mutants must still select the two
+  # distinct replacements. Every other block wants this family alone and uses `@only`.
+  @runtime_mutators [AtomLiteral, ReturnValue]
+
   # One compile for the runtime-semantics tests below; behavior then changes only
   # by flipping `:persistent_term` (the central bet). The other describe blocks
   # don't use `sites` — they call `return_sites/1` directly.
@@ -31,9 +36,7 @@ defmodule Mutare.ReturnValueTest do
 
   setup_all do
     {metamutant, sites, _} =
-      Mutare.Transform.transform_string_with_sites(@runtime_source,
-        mutators: [AtomLiteral, ReturnValue]
-      )
+      Mutare.Transform.transform_string_with_sites(@runtime_source, mutators: @runtime_mutators)
 
     [{_module, _binary}] = Mutare.Test.Compile.string(metamutant)
     %{sites: sites}
@@ -97,12 +100,17 @@ defmodule Mutare.ReturnValueTest do
       assert return_sites("not a") == []
     end
 
-    test "a literal a value family already mutates is skipped" do
+    test "a literal tail is skipped even with its node-level family disabled" do
+      # `@only` runs ReturnValue *alone*, so this pins the handoff as unconditional — it is a
+      # shape rule, not the value comparison `Candidate.Delivery.gate/1` applies elsewhere.
+      # Don't relax it to a value check: `nil`/`:mutare` collide with nothing these families
+      # emit, and a `false` tail mutated to `nil` stays falsy, so no `refute` kills it. See NOTES.
       assert return_sites("5") == []
       assert return_sites("1.5") == []
       assert return_sites(~s("hi")) == []
       assert return_sites("[1, 2]") == []
       assert return_sites("true") == []
+      assert return_sites("false") == []
     end
 
     test "a nil tail is skipped (replacing nil with nil is equivalent)" do

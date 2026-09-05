@@ -8711,3 +8711,19 @@ does not rerun mutators, compare separate source nodes, or replace `Overlap`'s b
 call-rewrite/descendant suppression. Poison skips happen later, so skipping the retained
 candidate cannot revive its duplicate or shift subsequent ids; count and render share
 the same gate.
+
+The gate lives in `Delivery` rather than `Overlap` because it must see *post-policy*
+candidates: `filter_policy/1` runs per node inside the emit traverse, while `Overlap.resolve/1`
+runs over the whole tree before it. An `InPlace` its mutator opted out of must not suppress
+anything.
+
+`ReturnValue.redundant_literal?/1` looks subsumed by this and is not — measured before deleting
+it. It keeps the family off *literal* tails by shape, unconditionally; removing it added 1180
+mutants (+4.3%) across this repo's own `lib/` and removed none (544 list, 402 boolean, 180
+string, 34 numeric tails). The value gate catches none of them, because `nil`/`:mutare` collide
+with nothing the node-level families emit. The boolean tails are the reason to keep the rule:
+115 `false → nil` mutants stay falsy, so every `refute`-style assertion lets them through —
+only a strict comparison or a `false` pattern match kills one — and the matching 115
+`false → :mutare` only restate `boolean`'s own `false → true`. Shape-level ownership for
+literal tails and value-level dedup for everything else are complementary; neither replaces
+the other.
