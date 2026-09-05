@@ -97,8 +97,9 @@ Run these on a clean `master` (or the release branch) with nothing uncommitted.
 
 ## Companion packages release independently
 
-The companion packages (`mutare_phoenix`, `mutare_phoenix_live_view`,
-`mutare_ecto`, `mutare_oban`, `mutare_gettext`) are **deliberately uncoupled** from
+The companion packages (`mutare_plug`, `mutare_phoenix`, `mutare_phoenix_live_view`,
+`mutare_ecto`, `mutare_oban`, `mutare_decimal`, `mutare_swoosh`, `mutare_phoenix_swoosh`,
+`mutare_gettext`) are **deliberately uncoupled** from
 the core. Releasing `mutare` does **not** require touching or re-releasing them:
 
 - The installer adds them with an open requirement (`@companion_requirement

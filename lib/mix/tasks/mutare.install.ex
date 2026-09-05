@@ -6,20 +6,22 @@ if Code.ensure_loaded?(Igniter) do
 
         mix igniter.install mutare
 
-    Adds `:mutare` to your `:dev`/`:test` dependencies (`runtime: false`), then looks at what your project already depends on and wires up the matching companion packages — so a Phoenix/Ecto/Oban/Decimal/Swoosh/Gettext app gets framework-aware mutants without any manual configuration:
+    Adds `:mutare` to your `:dev`/`:test` dependencies (`runtime: false`), then looks at what your project already depends on and wires up the matching companion packages — so a Plug/Phoenix/Ecto/Oban/Decimal/Swoosh/Gettext app gets framework-aware mutants without any manual configuration:
 
-    | Detected dependency                     | Package added              | Wired into                                     |
-    | --------------------------------------- | -------------------------- | ---------------------------------------------- |
-    | `:phoenix`                              | `mutare_phoenix`           | `:mutators` — `Mutare.Phoenix.all/0`           |
-    | `:phoenix_live_view`                    | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0`  |
-    | `:ecto_sql` / `:phoenix_ecto` / `:ecto` | `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}`  |
-    | `:oban` / `:oban_pro`                   | `mutare_oban`              | `:mutators` — `Mutare.Oban.all/0`              |
-    | `:decimal`                              | `mutare_decimal`           | `:mutators` — `Mutare.Decimal.all/0`           |
-    | `:swoosh` / `:phoenix_swoosh`           | `mutare_swoosh`            | `:mutators` — `Mutare.Swoosh.all/0`            |
-    | `:phoenix_swoosh`                       | `mutare_phoenix_swoosh`    | `:mutators` — `Mutare.Phoenix.Swoosh.all/0`    |
-    | `:gettext`                              | `mutare_gettext`           | `:extensions` — `Mutare.Gettext`               |
+    | Detected dependency                               | Package added              | Wired into                                                             |
+    | ------------------------------------------------- | -------------------------- | ---------------------------------------------------------------------- |
+    | `:plug` / `:bandit` / `:plug_cowboy` / `:phoenix` | `mutare_plug`              | `:mutators` — `Mutare.Plug.all/0`                                      |
+    | `:phoenix`                                        | `mutare_phoenix`           | `:mutators` — `Mutare.Phoenix.all/0`; `:extensions` — `Mutare.Phoenix` |
+    | `:phoenix_live_view`                              | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0`                          |
+    | `:ecto_sql` / `:phoenix_ecto` / `:ecto`           | `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}`                          |
+    | `:oban` / `:oban_pro`                             | `mutare_oban`              | `:mutators` — `Mutare.Oban.all/0`                                      |
+    | `:decimal`                                        | `mutare_decimal`           | `:mutators` — `Mutare.Decimal.all/0`                                   |
+    | `:swoosh` / `:phoenix_swoosh`                     | `mutare_swoosh`            | `:mutators` — `Mutare.Swoosh.all/0`                                    |
+    | `:phoenix_swoosh`                                 | `mutare_phoenix_swoosh`    | `:mutators` — `Mutare.Phoenix.Swoosh.all/0`                            |
+    | `:gettext`                                        | `mutare_gettext`           | `:extensions` — `Mutare.Gettext`                                       |
 
-    Each detected package is added as a `:dev`/`:test` dependency and wired into a generated `.mutare.exs`: a mutator package extends the `:mutators` list (alongside the `:builtins` group token, which keeps Mutare's own families on), while a non-mutating extension like `mutare_gettext` — which only teaches Mutare a library's compile-time vocabulary so the built-in mutators land on it correctly — joins the `:extensions` list. Nothing detected? You still get a starter `.mutare.exs` and a ready-to-run `mix mutare`.
+
+    Each detected package is added as a `:dev`/`:test` dependency and wired into a generated `.mutare.exs`: a mutator package extends the `:mutators` list (alongside the `:builtins` group token, which keeps Mutare's own families on), while a non-mutating extension like `mutare_gettext` — which only teaches Mutare a library's compile-time vocabulary so the built-in mutators land on it correctly — joins the `:extensions` list. `mutare_phoenix` does both: its families join `:mutators`, and its front module — a `Mutare.MacroRouting` extension that keeps Phoenix's compile-time macros (the router DSL, `~H`) out of the mutation set — joins `:extensions`. Nothing detected? You still get a starter `.mutare.exs` and a ready-to-run `mix mutare`.
 
     If you already have a `.mutare.exs`, it is left untouched and the recommended `:mutators` / `:extensions` keys are printed as a notice for you to merge in by hand.
 
@@ -56,6 +58,20 @@ if Code.ensure_loaded?(Igniter) do
     @impl Igniter.Mix.Task
     def igniter(igniter) do
       detected = %{
+        # Plug contributes mutator families (`Mutare.Plug.all/0`) for the `Plug.Conn` calls a
+        # plug, router, or controller action performs. `has_dep?` only sees *declared* deps:
+        # a Phoenix app declares `:phoenix` and pulls `:plug` in transitively, and a Plug-only
+        # app may declare just its server (`:bandit` / `:plug_cowboy`) — so any of those
+        # signals wires up `mutare_plug`.
+        plug:
+          Enum.any?(
+            [:plug, :bandit, :plug_cowboy, :phoenix],
+            &Igniter.Project.Deps.has_dep?(igniter, &1)
+          ),
+        # Phoenix layers the controller surface on Plug; `mutare_phoenix` layers on
+        # `mutare_plug` the same way (and arrives alongside it above). Its front module is
+        # also a `Mutare.MacroRouting` extension, so it joins `:extensions` (below) to keep
+        # Phoenix's compile-time macros (router DSL, `~H`) from poisoning the build.
         phoenix: Igniter.Project.Deps.has_dep?(igniter, :phoenix),
         live_view: Igniter.Project.Deps.has_dep?(igniter, :phoenix_live_view),
         # A DB-backed app declares one of these in mix.exs (and pulls `:ecto` in
@@ -102,6 +118,7 @@ if Code.ensure_loaded?(Igniter) do
 
     defp add_companion_deps(igniter, detected) do
       igniter
+      |> maybe_add_dep(detected.plug, :mutare_plug)
       |> maybe_add_dep(detected.phoenix, :mutare_phoenix)
       |> maybe_add_dep(detected.live_view, :mutare_phoenix_live_view)
       |> maybe_add_dep(detected.ecto, :mutare_ecto)
@@ -171,7 +188,10 @@ if Code.ensure_loaded?(Igniter) do
       mutators =
         if mutator_package?(detected), do: [mutators: mutators_expr(detected, repo)], else: []
 
-      extensions = if detected.gettext, do: [extensions: extensions_expr(detected)], else: []
+      extensions =
+        if extension_package?(detected),
+          do: [extensions: extensions_expr(detected)],
+          else: []
 
       mutators ++ extensions
     end
@@ -210,10 +230,12 @@ if Code.ensure_loaded?(Igniter) do
 
     # Build the `:mutators` source as a string, mirroring the extensions' documented
     # composition: a base list literal (`:builtins`, plus the configured `Mutare.Ecto`
-    # entry) `++` each Phoenix preset call. Examples:
+    # entry) `++` each companion preset call. Examples:
     #
-    #   phoenix             → [:builtins] ++ Mutare.Phoenix.all()
-    #   phoenix + liveview  → [:builtins] ++ Mutare.Phoenix.all() ++ Mutare.Phoenix.LiveView.all()
+    #   plug                → [:builtins] ++ Mutare.Plug.all()
+    #   phoenix             → [:builtins] ++ Mutare.Plug.all() ++ Mutare.Phoenix.all()
+    #   phoenix + liveview  → [:builtins] ++ Mutare.Plug.all() ++ Mutare.Phoenix.all() ++
+    #                           Mutare.Phoenix.LiveView.all()
     #   ecto                → [:builtins, {Mutare.Ecto, repo: MyApp.Repo}]
     #   oban                → [:builtins] ++ Mutare.Oban.all()
     #   decimal             → [:builtins] ++ Mutare.Decimal.all()
@@ -227,6 +249,7 @@ if Code.ensure_loaded?(Igniter) do
 
       calls =
         [
+          {detected.plug, "Mutare.Plug.all()"},
           {detected.phoenix, "Mutare.Phoenix.all()"},
           {detected.live_view, "Mutare.Phoenix.LiveView.all()"},
           {detected.oban, "Mutare.Oban.all()"},
@@ -247,7 +270,7 @@ if Code.ensure_loaded?(Igniter) do
     # `calls` shape in `mutators_expr/2` so a future extension is a one-line addition.
     defp extensions_expr(detected) do
       modules =
-        [{detected.gettext, "Mutare.Gettext"}]
+        [{detected.phoenix, "Mutare.Phoenix"}, {detected.gettext, "Mutare.Gettext"}]
         |> Enum.filter(&elem(&1, 0))
         |> Enum.map(&elem(&1, 1))
 
@@ -258,8 +281,13 @@ if Code.ensure_loaded?(Igniter) do
     # `:mutators` key). Gettext is an extension, not a mutator, so it is excluded here.
     defp mutator_package?(detected),
       do:
-        detected.phoenix or detected.live_view or detected.ecto or detected.oban or
-          detected.decimal or detected.swoosh or detected.phoenix_swoosh
+        detected.plug or detected.phoenix or detected.live_view or detected.ecto or
+          detected.oban or detected.decimal or detected.swoosh or detected.phoenix_swoosh
+
+    # Whether any detected dependency contributes a non-mutating extension (and so an
+    # `:extensions` key): Gettext, and Phoenix — a mutator package whose front module is
+    # *also* a `Mutare.MacroRouting` extension.
+    defp extension_package?(detected), do: detected.phoenix or detected.gettext
 
     # --- generated file bodies -----------------------------------------------
 
@@ -277,7 +305,8 @@ if Code.ensure_loaded?(Igniter) do
       # family you don't want, or silence individual sites with `# mutare:ignore[family]`.
       #
       # `:extensions` lists non-mutating extensions that teach Mutare a library's
-      # compile-time vocabulary (e.g. Gettext) so the built-in mutators land on it.
+      # compile-time vocabulary (e.g. Gettext, or Phoenix's router DSL and `~H`) so the
+      # built-in mutators land on it.
       #{list}
       """
     end
@@ -292,8 +321,8 @@ if Code.ensure_loaded?(Igniter) do
       #
       #   mutators: [:builtins, MyApp.Mutators.Custom]
       #
-      # No Phoenix, LiveView, Ecto, Oban, Decimal, Swoosh, or Gettext was detected; add one
-      # and re-run `mix igniter.install mutare` to wire up the matching mutare_* package.
+      # No Plug, Phoenix, LiveView, Ecto, Oban, Decimal, Swoosh, or Gettext was detected; add
+      # one and re-run `mix igniter.install mutare` to wire up the matching mutare_* package.
       []
       """
     end

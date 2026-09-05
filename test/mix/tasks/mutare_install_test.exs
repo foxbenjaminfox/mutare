@@ -54,6 +54,7 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     igniter = project([]) |> install()
 
     assert_creates(igniter, ".mutare.exs")
+    refute Deps.has_dep?(igniter, :mutare_plug)
     refute Deps.has_dep?(igniter, :mutare_phoenix)
     refute Deps.has_dep?(igniter, :mutare_phoenix_live_view)
     refute Deps.has_dep?(igniter, :mutare_ecto)
@@ -64,6 +65,7 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     refute Deps.has_dep?(igniter, :mutare_gettext)
 
     content = config(igniter)
+    refute content =~ "Mutare.Plug"
     refute content =~ "Mutare.Phoenix"
     refute content =~ "Mutare.Ecto"
     refute content =~ "Mutare.Oban"
@@ -74,25 +76,75 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     assert content =~ "[]"
   end
 
+  # --- plug (a mutator package) --------------------------------------------
+
+  test "plug: adds mutare_plug and splices its preset into :mutators" do
+    igniter = project([{:plug, "~> 1.16"}]) |> install()
+
+    assert Deps.has_dep?(igniter, :mutare_plug)
+    refute Deps.has_dep?(igniter, :mutare_phoenix)
+
+    content = config(igniter)
+    assert content =~ "[:builtins] ++ Mutare.Plug.all()"
+    # Plug contributes no extension, so no :extensions key is written.
+    refute content =~ "extensions:"
+  end
+
+  test "a Plug server alone (bandit or plug_cowboy) is enough to wire up mutare_plug" do
+    # A Plug-only app may declare just its server and pull :plug in transitively.
+    for server <- [{:bandit, "~> 1.5"}, {:plug_cowboy, "~> 2.7"}] do
+      igniter = project([server]) |> install()
+
+      assert Deps.has_dep?(igniter, :mutare_plug)
+      refute Deps.has_dep?(igniter, :mutare_phoenix)
+      assert config(igniter) =~ "Mutare.Plug.all()"
+    end
+  end
+
+  test "plug dep is dev/test-only and runtime: false" do
+    igniter = project([{:plug, "~> 1.16"}]) |> install()
+
+    assert {:ok, declaration} = Deps.get_dep(igniter, :mutare_plug)
+    assert declaration =~ ~s({:mutare_plug, ">= 0.0.0")
+    assert declaration =~ "only: [:dev, :test]"
+    assert declaration =~ "runtime: false"
+  end
+
   # --- phoenix -------------------------------------------------------------
 
-  test "phoenix: adds mutare_phoenix and enables its preset" do
+  test "phoenix alone wires up mutare_plug and mutare_phoenix, and lists the extension" do
+    # A Phoenix app declares :phoenix and pulls :plug in transitively, so the one declared
+    # signal composes both presets — and Mutare.Phoenix joins :extensions for its routing.
     igniter = project([{:phoenix, "~> 1.7"}]) |> install()
 
+    assert Deps.has_dep?(igniter, :mutare_plug)
     assert Deps.has_dep?(igniter, :mutare_phoenix)
     refute Deps.has_dep?(igniter, :mutare_phoenix_live_view)
     refute Deps.has_dep?(igniter, :mutare_ecto)
 
-    assert config(igniter) =~ "[:builtins] ++ Mutare.Phoenix.all()"
+    content = config(igniter)
+    assert content =~ "[:builtins] ++ Mutare.Plug.all() ++ Mutare.Phoenix.all()"
+    assert content =~ "extensions: [Mutare.Phoenix]"
   end
 
-  test "phoenix + live_view: adds both companion packages and composes both presets" do
+  test "plug + phoenix declared together adds each package once" do
+    igniter = project([{:plug, "~> 1.16"}, {:phoenix, "~> 1.7"}]) |> install()
+
+    assert Deps.has_dep?(igniter, :mutare_plug)
+    assert Deps.has_dep?(igniter, :mutare_phoenix)
+
+    assert config(igniter) =~ "Mutare.Plug.all() ++ Mutare.Phoenix.all()"
+  end
+
+  test "phoenix + live_view: adds all three companion packages and composes the presets" do
     igniter = project([{:phoenix, "~> 1.7"}, {:phoenix_live_view, "~> 1.0"}]) |> install()
 
+    assert Deps.has_dep?(igniter, :mutare_plug)
     assert Deps.has_dep?(igniter, :mutare_phoenix)
     assert Deps.has_dep?(igniter, :mutare_phoenix_live_view)
 
     content = config(igniter)
+    assert content =~ "Mutare.Plug.all()"
     assert content =~ "Mutare.Phoenix.all()"
     assert content =~ "Mutare.Phoenix.LiveView.all()"
   end
@@ -260,8 +312,8 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     assert Deps.has_dep?(igniter, :mutare_gettext)
 
     content = config(igniter)
-    assert content =~ "Mutare.Phoenix.all()"
-    assert content =~ "extensions: [Mutare.Gettext]"
+    assert content =~ "Mutare.Plug.all() ++ Mutare.Phoenix.all()"
+    assert content =~ "extensions: [Mutare.Phoenix, Mutare.Gettext]"
   end
 
   test "gettext dep is dev/test-only and runtime: false" do
@@ -294,6 +346,7 @@ defmodule Mix.Tasks.Mutare.InstallTest do
 
     igniter = project(deps, %{"lib/repo.ex" => @repo}) |> install()
 
+    assert Deps.has_dep?(igniter, :mutare_plug)
     assert Deps.has_dep?(igniter, :mutare_phoenix)
     assert Deps.has_dep?(igniter, :mutare_phoenix_live_view)
     assert Deps.has_dep?(igniter, :mutare_ecto)
@@ -301,6 +354,7 @@ defmodule Mix.Tasks.Mutare.InstallTest do
 
     content = config(igniter)
     assert content =~ ":builtins"
+    assert content =~ "Mutare.Plug.all()"
     assert content =~ "{Mutare.Ecto, repo: MyApp.Repo}"
     assert content =~ "Mutare.Phoenix.all()"
     assert content =~ "Mutare.Phoenix.LiveView.all()"
@@ -328,6 +382,7 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     assert Deps.has_dep?(igniter, :mutare_phoenix)
     # …but the user's config is preserved and the recommendation printed instead.
     assert_unchanged(igniter, ".mutare.exs")
-    assert Enum.any?(igniter.notices, &(&1 =~ "Mutare.Phoenix.all()"))
+    assert Enum.any?(igniter.notices, &(&1 =~ "Mutare.Plug.all() ++ Mutare.Phoenix.all()"))
+    assert Enum.any?(igniter.notices, &(&1 =~ "extensions: [Mutare.Phoenix]"))
   end
 end
