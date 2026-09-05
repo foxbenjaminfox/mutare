@@ -274,4 +274,29 @@ defmodule Mutare.Transform.Meta do
     marks = marks(node)
     if MapSet.size(marks) == 0, do: context, else: Map.put(context, :marks, marks)
   end
+
+  # --- unit-return tails ------------------------------------------------------
+
+  @doc """
+  Whether `node` is a leaf return tail of a **unit-returning** function — one whose every return
+  path, across all its clauses, is literally `:ok` or `nil` (`:mutare_unit_tail`, stamped by
+  `Mutare.Transform.UnitReturns`). Such a tail is not a value position: the analyzer never offers
+  it to the mutators (`Mutare.Transform.Analyze.Attach.offer/4`) and the return-tail walk attaches
+  no return candidate there (`Mutare.Transform.Analyze.Returns`). `false` for a bare literal.
+  """
+  @spec unit_tail?(Macro.t()) :: boolean()
+  def unit_tail?({_form, meta, _args}) when is_list(meta),
+    do: Keyword.get(meta, MetaKeys.unit_tail_key(), false)
+
+  def unit_tail?(_node), do: false
+
+  @doc """
+  Stamp `node` as a unit-returning function's leaf return tail (`unit_tail?/1`). Total over a bare
+  literal that carries no metadata (nothing to stamp — and nothing mutates a bare `nil` either).
+  """
+  @spec put_unit_tail(Macro.t()) :: Macro.t()
+  def put_unit_tail({form, meta, args}) when is_list(meta),
+    do: {form, Keyword.put(meta, MetaKeys.unit_tail_key(), true), args}
+
+  def put_unit_tail(node), do: node
 end

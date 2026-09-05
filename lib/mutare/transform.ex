@@ -169,6 +169,7 @@ defmodule Mutare.Transform do
     Scope,
     SelectorEmit,
     Super,
+    UnitReturns,
     Uses
   }
 
@@ -484,7 +485,9 @@ defmodule Mutare.Transform do
   # `Resolve` resolves `alias`es/`import`s in one lexical source-order pass (an `alias` can rebind
   # a later `import`'s module — the single fold gets it right), stamping each call with the module
   # it refers to (an aliased `S.upcase` seen as `String.upcase`, a bare imported `reject(xs, f)` as
-  # `Enum.reject`) and each known-macro call with its argument routing.
+  # `Enum.reject`) and each known-macro call with its argument routing. Last, `UnitReturns`
+  # classifies each module's functions by return shape and stamps a unit-returning function's leaf
+  # tails, so the analyzer treats them as non-positions (after `Resolve`, so the stamp survives).
   defp annotate_tree(parsed, opts, extensions, macros, marks) do
     expanded =
       if Keyword.get(opts, :expand_uses, true),
@@ -493,11 +496,13 @@ defmodule Mutare.Transform do
 
     with_behaviours = Behaviours.annotate(expanded)
 
-    Resolve.annotate(with_behaviours, macros,
+    with_behaviours
+    |> Resolve.annotate(macros,
       warnings: Keyword.get(opts, :warnings, true),
       file: Keyword.get(opts, :file, "nofile"),
       marks: marks
     )
+    |> UnitReturns.annotate()
   end
 
   # Mark a site ignored (and record the reason) when a `# mutare:ignore` directive

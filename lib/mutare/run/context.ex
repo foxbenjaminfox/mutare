@@ -141,7 +141,6 @@ defmodule Mutare.Run.Context do
   """
   @spec hook(t(), atom()) :: (term() -> any())
   def hook(%__MODULE__{} = context, field) do
-    # mutare:ignore[convention, return_value] the no-op's return is discarded (side-effect-only hook)
     Map.get(context, field) || fn _ -> :ok end
   end
 

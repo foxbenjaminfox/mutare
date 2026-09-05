@@ -413,10 +413,6 @@ defmodule Mutare.Ignore do
       # `ineffective/2` warning, never a hard abort. Hard errors are reserved for a *known* family
       # with a wrong/absent label (`:none`/`:unknown_variant` below), where the mistake is certain.
       nil ->
-        # `validate!/3`'s `for` comprehension discards every `validate_entry!/5` return value and
-        # always ends with its own literal `:ok`, so this clause's return value never reaches a
-        # caller.
-        # mutare:ignore[convention, return_value] equivalent, per above
         :ok
 
       :none ->

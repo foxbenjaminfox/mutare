@@ -63,11 +63,13 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_behaviours`       — a `defmodule`'s behaviour MapSet               (Behaviours)
   #   * `:mutare_marks`            — mutator-requested position marks (label set)   (Resolve.ArgumentMarks, read by Attach.offer)
   #   * `:mutare_mark_call`        — `{module_key, fun, arity}` of a call some mark declaration matched (Resolve, read by ConfigMatches)
+  #   * `:mutare_unit_tail`        — a unit-returning function's leaf return tail    (UnitReturns, read by Attach.offer + Analyze.Returns)
   @bookkeeping_keys [
     tag_key: :mutare_tag,
     nid_key: :mutare_nid,
     marks_key: :mutare_marks,
     mark_call_key: :mutare_mark_call,
+    unit_tail_key: :mutare_unit_tail,
     alias_key: :mutare_alias,
     import_key: :mutare_import,
     import_witness_key: :mutare_import_witness,

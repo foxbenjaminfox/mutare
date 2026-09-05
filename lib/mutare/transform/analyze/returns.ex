@@ -16,11 +16,18 @@ defmodule Mutare.Transform.Analyze.Returns do
   # (`annotate_returns/3`) or `fn` (`annotate_fn_returns/3`), and it never recurses
   # back into the descent (no `analyze/3`/`offer`/`recurse`), so the dependency is
   # strictly one-way (Analyze → Returns).
+  #
+  # The same leaf-tail descent is also published single-tree, in **classification** mode
+  # (`map_reduce_clause_returns/3` / `map_reduce_fn_returns/3`), for the pre-pass that must see
+  # *every* return path of a clause rather than the ones a constant can be attached to
+  # (`Mutare.Transform.UnitReturns`, which stamps a unit-returning function's tails so that
+  # neither this walk nor the in-place offer touches them — `Meta.unit_tail?/1`). One walker
+  # (`walk_tails/5`) threads an accumulator and a `mode`, so the two notions of "return path"
+  # can't drift apart.
 
   alias Mutare.AST
-  alias Mutare.Transform.Meta
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Transform.Candidate
+  alias Mutare.Transform.{Candidate, Meta}
   alias Mutare.Transform.Analyze.{Attach, Syntax}
 
   # The control-flow forms whose branch bodies are return paths when the form is in
@@ -133,17 +140,23 @@ defmodule Mutare.Transform.Analyze.Returns do
   # `return_replacements/1` output, tagged with its spec). The candidates ride in
   # the tail node's own `meta[:mutare]` — *after* any operator candidates already
   # there — so emission builds one selector `case` hosting both an operator swap
-  # and the return constant on the same node, ids in attachment order.
+  # and the return constant on the same node, ids in attachment order. A tail
+  # stamped as a **unit-returning** function's (`Meta.unit_tail?/1`, by
+  # `Mutare.Transform.UnitReturns`) is not a value position: no mutator is asked.
   defp build_leaf_attacher(return_mutators) do
     fn analyzed_tail, raw_tail ->
-      replacements =
-        Enum.flat_map(return_mutators, fn spec ->
-          Enum.map(Dispatch.return_replacements(spec, raw_tail), &{spec, &1})
-        end)
+      if Meta.unit_tail?(raw_tail) do
+        analyzed_tail
+      else
+        replacements =
+          Enum.flat_map(return_mutators, fn spec ->
+            Enum.map(Dispatch.return_replacements(spec, raw_tail), &{spec, &1})
+          end)
 
-      case replacements do
-        [] -> analyzed_tail
-        _ -> append_return_candidates(analyzed_tail, raw_tail, replacements)
+        case replacements do
+          [] -> analyzed_tail
+          _ -> append_return_candidates(analyzed_tail, raw_tail, replacements)
+        end
       end
     end
   end
@@ -155,6 +168,82 @@ defmodule Mutare.Transform.Analyze.Returns do
   defp attach_return(analyzed_value, raw_value, return_mutators) do
     map_return_tails(analyzed_value, raw_value, build_leaf_attacher(return_mutators))
   end
+
+  # --- the single-tree classification walk --------------------------------------
+
+  @doc """
+  Map-reduce `fun` over every leaf return tail of a `def`/`defp` clause's body keyword
+  (`[do: …, rescue: …, …]`) in **classification** mode — the single-tree twin of the lockstep
+  attach walk, for a pass that must see *every* return path of a clause rather than the ones a
+  return constant can be attached to (`Mutare.Transform.UnitReturns`). `fun.(leaf, acc)` returns
+  `{leaf, acc}`; the result is `{body_kw, acc}`, with the body's keyword-form clause blocks
+  normalized (`Syntax.normalize_clause_blocks/1` — as the analyzer normalizes its own copy).
+
+  Classification is conservative where attachment is permissive, so a caller establishing a
+  property of *all* return paths can trust the leaves it is handed:
+
+    * an else-less `with` is delivered **whole** — its first non-matching value is a return path
+      with no node of its own (attachment descends only the `do` tail, the one path a constant
+      can replace; the implicit one can't be mutated anyway);
+    * a `rescue`/`catch`/`else` block that isn't a clean clause list is delivered whole, not
+      skipped.
+
+  A `try`'s `after` is not a return path in either mode (`try` discards its value).
+  """
+  @spec map_reduce_clause_returns(
+          [{Macro.t(), Macro.t()}],
+          acc,
+          (Macro.t(), acc -> {Macro.t(), acc})
+        ) :: {[{Macro.t(), Macro.t()}], acc}
+        when acc: term()
+  def map_reduce_clause_returns(body_kw, acc, fun) when is_list(body_kw) do
+    body_kw
+    |> Syntax.normalize_clause_blocks()
+    |> Enum.map_reduce(acc, fn
+      {key, payload}, acc ->
+        {payload, acc} = classify_block(key, payload, acc, fun)
+        {{key, payload}, acc}
+
+      other, acc ->
+        {other, acc}
+    end)
+  end
+
+  # Route one def-level body block to its return path(s) for classification — the twin of
+  # `annotate_block_returns/4`, with the conservative fallbacks the docs above promise.
+  defp classify_block(key, payload, acc, fun) do
+    cond do
+      Syntax.do_key?(key) ->
+        walk_tails(payload, payload, acc, single(fun), :classify)
+
+      Syntax.clause_block_key?(key) and clause_list?(payload) ->
+        walk_clauses(payload, payload, acc, single(fun), :classify)
+
+      Syntax.clause_block_key?(key) ->
+        fun.(payload, acc)
+
+      true ->
+        {payload, acc}
+    end
+  end
+
+  @doc """
+  Map-reduce `fun` over every leaf return tail of an anonymous function's clauses, in
+  classification mode (see `map_reduce_clause_returns/3`). Returns `{fn_node, acc}`.
+  """
+  @spec map_reduce_fn_returns(Macro.t(), acc, (Macro.t(), acc -> {Macro.t(), acc})) ::
+          {Macro.t(), acc}
+        when acc: term()
+  def map_reduce_fn_returns({:fn, meta, clauses}, acc, fun) when is_list(clauses) do
+    {clauses, acc} = walk_clauses(clauses, clauses, acc, single(fun), :classify)
+    {{:fn, meta, clauses}, acc}
+  end
+
+  # Lift a single-tree leaf function to the walker's `(analyzed, raw, acc)` shape — the two
+  # trees are one, so the raw side is dropped.
+  defp single(fun), do: fn leaf, _raw, acc -> fun.(leaf, acc) end
+
+  # --- the leaf-tail walk --------------------------------------------------------
 
   # Apply `fun` at every *leaf return tail* of a (possibly control-flow) value, in
   # lockstep on the analyzed and raw copies. The generalization of the old
@@ -174,17 +263,28 @@ defmodule Mutare.Transform.Analyze.Returns do
   # descends its **last** statement, so a `case` that is not itself in tail
   # position (bound to a variable, a non-final statement) is never reached and its
   # branches are correctly not return paths.
+  #
+  # The walker proper (`walk_tails/5`) threads an accumulator and a `mode`, so one
+  # descent serves both this lockstep *map* and the single-tree *map-reduce* of the
+  # classification API above: `:mutate` is the attach path (permissive — the prior
+  # behaviour, bit for bit); `:classify` adds the conservative fallbacks
+  # `map_reduce_clause_returns/3` documents.
+  defp map_return_tails(analyzed, raw, fun) do
+    {mapped, nil} = walk_tails(analyzed, raw, nil, fn a, r, nil -> {fun.(a, r), nil} end, :mutate)
+    mapped
+  end
 
   # A statement sequence: the tail is the last statement — recurse into it.
   # NOTE (equivalent survivor, deliberately not `# mutare:ignore`d so the killed
   # `-> false` sibling stays counted): `length(a_stmts) == length(r_stmts)` is a defensive
   # assertion that always holds (analyzed and raw are the same block with only metadata
   # added), so forcing it `true` is equivalent; forcing it `false` is killed.
-  defp map_return_tails({:__block__, meta, a_stmts}, {:__block__, _rmeta, r_stmts}, fun)
+  defp walk_tails({:__block__, meta, a_stmts}, {:__block__, _rmeta, r_stmts}, acc, fun, mode)
        when length(a_stmts) >= 2 and length(a_stmts) == length(r_stmts) do
     {a_init, [a_last]} = Enum.split(a_stmts, -1)
     {_r_init, [r_last]} = Enum.split(r_stmts, -1)
-    {:__block__, meta, a_init ++ [map_return_tails(a_last, r_last, fun)]}
+    {a_last, acc} = walk_tails(a_last, r_last, acc, fun, mode)
+    {{:__block__, meta, a_init ++ [a_last]}, acc}
   end
 
   # A control-flow construct: route each of its keyword blocks by `@return_blocks`.
@@ -193,34 +293,50 @@ defmodule Mutare.Transform.Analyze.Returns do
   # A non-descendable shape (the last arg isn't a block list, or a `:clauses` block
   # isn't in canonical block form — see `descendable_blocks?/3`) falls through to
   # the leaf clause: the whole construct is then the tail, as before this descent.
-  defp map_return_tails({form, meta, a_args} = analyzed, {form, _rmeta, r_args} = raw, fun)
+  # So does a construct with a return path no block shows (`complete?/3`).
+  defp walk_tails({form, meta, a_args} = analyzed, {form, _rmeta, r_args} = raw, acc, fun, mode)
        when is_map_key(@return_blocks, form) and is_list(a_args) and is_list(r_args) and
               a_args != [] and length(a_args) == length(r_args) do
     # A skipped construct is an inert leaf (`Mutare.Transform.Analyze`'s dispatcher): nothing
     # inside it is a position, its branch tails included, so the whole node is the tail and the
-    # return candidates attach to it — exactly as for a skipped call.
+    # return candidates attach to it — exactly as for a skipped call. Classification agrees: a
+    # path it cannot see into is not a literal `:ok`/`nil` tail.
     if Meta.routing(meta) == :skip do
-      fun.(analyzed, raw)
+      fun.(analyzed, raw, acc)
     else
       {a_head, [a_blocks]} = Enum.split(a_args, -1)
       {_r_head, [r_blocks]} = Enum.split(r_args, -1)
       # The analyzed copy's keyword-form clause tails were normalized at the construct's
       # analyze clause; the raw copy still carries the source's `:__block__` wrapper.
       # Normalize it too so the lockstep walk stays aligned (the clauses inside keep
-      # their own meta, so each candidate's `original`/`range` is unaffected).
+      # their own meta, so each candidate's `original`/`range` is unaffected). In
+      # classification mode the one tree *is* the un-analyzed source, so it gets the
+      # same normalization; the attach path's analyzed side is left exactly as it came.
       r_blocks = Syntax.normalize_clause_blocks(r_blocks)
+      a_blocks = if mode == :classify, do: r_blocks, else: a_blocks
       kinds = Map.fetch!(@return_blocks, form)
 
-      if descendable_blocks?(a_blocks, r_blocks, kinds) do
-        {form, meta, a_head ++ [map_kw_blocks(a_blocks, r_blocks, kinds, fun)]}
+      if descendable_blocks?(a_blocks, r_blocks, kinds) and complete?(form, a_blocks, mode) do
+        {blocks, acc} = walk_kw_blocks(a_blocks, r_blocks, kinds, acc, fun, mode)
+        {{form, meta, a_head ++ [blocks]}, acc}
       else
-        fun.(analyzed, raw)
+        fun.(analyzed, raw, acc)
       end
     end
   end
 
   # Leaf: any node outside the control-flow whitelist is itself the tail.
-  defp map_return_tails(analyzed_value, raw_value, fun), do: fun.(analyzed_value, raw_value)
+  defp walk_tails(analyzed, raw, acc, fun, _mode), do: fun.(analyzed, raw, acc)
+
+  # Whether every return path of a construct is *visible* as a block tail. Only classification
+  # asks: an else-less `with` returns its first non-matching value as-is — a return path with no
+  # node — so in `:classify` mode the construct is delivered whole (the leaf fallback) rather
+  # than descended as if its `do` tail were the only path. Attachment keeps descending: the `do`
+  # tail is the one path a constant can replace, and the implicit one can't be mutated anyway.
+  defp complete?(:with, blocks, :classify),
+    do: Enum.any?(blocks, fn {key, _payload} -> AST.key_atom(key) == :else end)
+
+  defp complete?(_form, _blocks, _mode), do: true
 
   # Whether a construct's block list is safe to descend. It must be a keyword-block
   # list (both copies, equal length) whose every `:clauses` block carries a clean
@@ -247,19 +363,23 @@ defmodule Mutare.Transform.Analyze.Returns do
   # spec: a `:value` payload is recursed as a single tail; a `:clauses` payload has
   # each `->` clause body recursed; a key absent from the spec (a discarded `try`
   # `:after`) passes through untouched.
-  defp map_kw_blocks(a_blocks, r_blocks, kinds, fun) do
-    Enum.zip_with(a_blocks, r_blocks, fn {a_key, a_payload}, {_r_key, r_payload} ->
+  defp walk_kw_blocks(a_blocks, r_blocks, kinds, acc, fun, mode) do
+    a_blocks
+    |> Enum.zip(r_blocks)
+    |> Enum.map_reduce(acc, fn {{a_key, a_payload}, {_r_key, r_payload}}, acc ->
       case Map.get(kinds, AST.key_atom(a_key)) do
         :value ->
-          {a_key, map_return_tails(a_payload, r_payload, fun)}
+          {payload, acc} = walk_tails(a_payload, r_payload, acc, fun, mode)
+          {{a_key, payload}, acc}
 
         :clauses
         when is_list(a_payload) and is_list(r_payload) and
                length(a_payload) == length(r_payload) ->
-          {a_key, map_clauses(a_payload, r_payload, fun)}
+          {payload, acc} = walk_clauses(a_payload, r_payload, acc, fun, mode)
+          {{a_key, payload}, acc}
 
         _ ->
-          {a_key, a_payload}
+          {{a_key, a_payload}, acc}
       end
     end)
   end
@@ -269,12 +389,22 @@ defmodule Mutare.Transform.Analyze.Returns do
   # `rescue`/`catch`/`else` blocks and every `:clauses` block of a control-flow
   # construct (`case`/`cond`/`receive` `:do`, `with`/`try` clause blocks).
   defp map_clauses(a_clauses, r_clauses, fun) do
-    Enum.zip_with(a_clauses, r_clauses, fn
-      {:->, meta, [pats, a_body]}, {:->, _rmeta, [_rpats, r_body]} ->
-        {:->, meta, [pats, map_return_tails(a_body, r_body, fun)]}
+    {mapped, nil} =
+      walk_clauses(a_clauses, r_clauses, nil, fn a, r, nil -> {fun.(a, r), nil} end, :mutate)
 
-      a_clause, _r_clause ->
-        a_clause
+    mapped
+  end
+
+  defp walk_clauses(a_clauses, r_clauses, acc, fun, mode) do
+    a_clauses
+    |> Enum.zip(r_clauses)
+    |> Enum.map_reduce(acc, fn
+      {{:->, meta, [pats, a_body]}, {:->, _rmeta, [_rpats, r_body]}}, acc ->
+        {body, acc} = walk_tails(a_body, r_body, acc, fun, mode)
+        {{:->, meta, [pats, body]}, acc}
+
+      {a_clause, _r_clause}, acc ->
+        {a_clause, acc}
     end)
   end
 

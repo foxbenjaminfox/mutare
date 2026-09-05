@@ -33,13 +33,24 @@ defmodule Mutare.Transform.Analyze.Attach do
   # raw node the candidate records. `context` carries the pipe flag (`Dispatch.mutations`).
   # `Mutare.Transform.Analyze.Routed` offers a known-macro node through here
   # (`offer(node, node, mutators, context)`).
+  #
+  # A leaf return tail of a **unit-returning** function (`Meta.unit_tail?/1`, stamped by
+  # `Mutare.Transform.UnitReturns`) is not a value position — the `:ok`/`nil` there is the
+  # spelling of "nothing", not data — so it is never offered, the way a block key or a
+  # macro-routed `:skip` argument never is. Transform-enforced, deliberately not a mark: marks are
+  # shared vocabulary each family reads by choice (NOTES "The `:structural` shared mark"), whereas
+  # this is the transform's own return-path classification.
   def offer(subject, raw, mutators, context \\ %{pipe_mode: :unpiped}) do
-    # `Meta.context_with_marks/2` surfaces any position marks stamped on `raw` (by
-    # `Mutare.Transform.Resolve.ArgumentMarks`, at a position some mutator asked to mark) to the
-    # mutators as `context.marks` — the same enrichment the tag-based path applies (`Mutare.Transform.Tag`).
-    case Dispatch.mutations(raw, mutators, Meta.context_with_marks(context, raw)) do
-      [] -> subject
-      muts -> put_candidates(subject, build_candidates(raw, muts))
+    if Meta.unit_tail?(raw) do
+      subject
+    else
+      # `Meta.context_with_marks/2` surfaces any position marks stamped on `raw` (by
+      # `Mutare.Transform.Resolve.ArgumentMarks`, at a position some mutator asked to mark) to the
+      # mutators as `context.marks` — the same enrichment the tag-based path applies (`Mutare.Transform.Tag`).
+      case Dispatch.mutations(raw, mutators, Meta.context_with_marks(context, raw)) do
+        [] -> subject
+        muts -> put_candidates(subject, build_candidates(raw, muts))
+      end
     end
   end
 

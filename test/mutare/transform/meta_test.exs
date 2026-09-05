@@ -113,4 +113,20 @@ defmodule Mutare.Transform.MetaTest do
       assert Meta.put_tag(bare(), 7) == bare()
     end
   end
+
+  describe "unit-return tail stamp" do
+    test "unit_tail?/1 reads the stamp put_unit_tail/1 sets; false when absent or bare" do
+      refute Meta.unit_tail?(sample_node())
+      refute Meta.unit_tail?(bare())
+
+      stamped = Meta.put_unit_tail(sample_node())
+      assert Meta.unit_tail?(stamped)
+      # the stamp is one more meta key, alongside whatever was there
+      {_form, meta, _args} = stamped
+      assert Keyword.get(meta, :line) == 1
+      assert Keyword.has_key?(meta, MetaKeys.unit_tail_key())
+      # a bare literal is returned unchanged
+      assert Meta.put_unit_tail(bare()) == bare()
+    end
+  end
 end

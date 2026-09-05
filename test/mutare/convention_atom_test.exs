@@ -129,10 +129,12 @@ defmodule Mutare.ConventionAtomTest do
 
   describe "ownership split with AtomLiteral" do
     # With both enabled, a convention atom yields ONLY the sibling; a plain atom ONLY :mutare.
+    # The atom sits inside a list so it is a plain value position — a bare `:ok` body would make
+    # `f/0` unit-returning, and a unit tail is never offered at all (below).
     defp both_codes(expr) do
       {_meta, sites, _} =
         Mutare.Transform.transform_string_with_sites(
-          "defmodule T do\n  def f, do: #{expr}\nend\n",
+          "defmodule T do\n  def f, do: [#{expr}]\nend\n",
           mutators: [ConventionAtom, AtomLiteral]
         )
 
@@ -145,6 +147,15 @@ defmodule Mutare.ConventionAtomTest do
 
     test "a non-convention atom yields only the sentinel" do
       assert both_codes(":waiting") == [{:atom, ":mutare"}]
+    end
+  end
+
+  describe "unit-returning functions" do
+    test "an :ok that is every return path of its function is not swapped" do
+      # `:ok` there is the spelling of "no value", not data: the transform classifies the
+      # function as unit-returning and never offers the tail (`Mutare.Transform.UnitReturns`;
+      # the full shape catalogue is in `unit_returns_test.exs`).
+      assert body_sites(":ok") == []
     end
   end
 

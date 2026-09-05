@@ -29,7 +29,7 @@ defmodule Mutare.ReturnValueTest do
   @runtime_source """
   defmodule Mutare.ReturnValueFixture do
     def add(a, b), do: a + b
-    def tag, do: :ok
+    def tag, do: :error
     def atom_tag, do: :foo
   end
   """
@@ -83,7 +83,15 @@ defmodule Mutare.ReturnValueTest do
       assert mutated_codes("foo(a)") == ["nil", ":mutare"]
       assert mutated_codes("{:ok, a}") == ["nil", ":mutare"]
       assert mutated_codes("%{a: a}") == ["nil", ":mutare"]
-      assert mutated_codes(":ok") == ["nil", ":mutare"]
+      # A data atom — not `:ok`, which alone makes a one-path function unit-returning (below).
+      assert mutated_codes(":pending") == ["nil", ":mutare"]
+    end
+
+    test "a unit-returning function's tail is not a return position" do
+      # `def f(a, b), do: :ok` returns no data — every path is `:ok` — so the transform never
+      # offers its tail (`Mutare.Transform.UnitReturns`; the shapes are in `unit_returns_test.exs`).
+      assert return_sites(":ok") == []
+      assert return_sites("nil") == []
     end
 
     test "a sentinel equal to the tail is dropped (no equivalent mutant)" do
@@ -174,7 +182,7 @@ defmodule Mutare.ReturnValueTest do
     end
 
     test "excluded atoms retain their non-duplicate return replacements" do
-      for {tail, expected} <- [{":ok", ["nil", ":mutare"]}, {":mutare", ["nil"]}] do
+      for {tail, expected} <- [{":error", ["nil", ":mutare"]}, {":mutare", ["nil"]}] do
         {_meta, sites, _} =
           Mutare.Transform.transform_string_with_sites(
             "defmodule T do\n def f, do: #{tail}\nend",
@@ -917,7 +925,7 @@ defmodule Mutare.ReturnValueTest do
 
     test "baseline returns the real value", %{sites: _} do
       assert Mutare.ReturnValueFixture.add(2, 3) == 5
-      assert Mutare.ReturnValueFixture.tag() == :ok
+      assert Mutare.ReturnValueFixture.tag() == :error
     end
 
     test "the return mutant replaces add/2's result with 0", %{sites: sites} do
@@ -925,11 +933,11 @@ defmodule Mutare.ReturnValueTest do
       Selector.put(site.id)
       assert Mutare.ReturnValueFixture.add(2, 3) == 0
       # a sibling function is unaffected
-      assert Mutare.ReturnValueFixture.tag() == :ok
+      assert Mutare.ReturnValueFixture.tag() == :error
     end
 
-    test "the return mutant replaces tag/0's :ok with nil", %{sites: sites} do
-      site = Enum.find(sites, &(&1.original_code == ":ok"))
+    test "the return mutant replaces tag/0's :error with nil", %{sites: sites} do
+      site = Enum.find(sites, &(&1.original_code == ":error"))
       Selector.put(site.id)
       assert Mutare.ReturnValueFixture.tag() == nil
     end

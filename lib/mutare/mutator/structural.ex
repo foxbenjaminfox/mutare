@@ -67,6 +67,10 @@ defmodule Mutare.Mutator.Structural do
 
   Each result must be clean-meta AST suitable for direct insertion. Return `[]`
   when the expression is not eligible.
+
+  The tails of a unit-returning function — every return path of every clause
+  literally `:ok` or `nil` — are never offered to this callback; see the
+  exclusions in `Mutare.Mutators.ReturnValue`.
   """
   @callback return_replacements(tail :: Macro.t()) :: [Macro.t()]
 

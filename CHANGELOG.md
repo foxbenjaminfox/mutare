@@ -20,6 +20,10 @@ Initial release.
   literals of every kind (integer/float/string/charlist/atom/sigil/regex/
   bitstring/date-time), collection/string/map/keyword call rewrites, pattern and
   clause restructurings, guard/default/call drops, and more. See `Mutare.Mutators`.
+- **Unit-return classification** — a function (or anonymous function) whose every
+  return path is literally `:ok` or `nil` returns no data, so its tails draw no
+  return-value constant and no `:ok → :error` swap. Syntactic, and one-sided: it
+  can miss a unit function, never silence a data-returning one.
 - **Coverage-guided test selection** — coverage is self-recorded by the metamutant
   at runtime and keyed by mutant id; each mutant runs only the test files that
   cover it. Uncovered mutants are skipped and excluded from the score (`--full`

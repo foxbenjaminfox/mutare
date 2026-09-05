@@ -8761,3 +8761,90 @@ only a strict comparison or a `false` pattern match kills one — and the matchi
 `false → :mutare` only restate `boolean`'s own `false → true`. Shape-level ownership for
 literal tails and value-level dedup for everything else are complementary; neither replaces
 the other.
+
+### Unit-returning functions are not return-value positions `[done]`
+
+A function whose every return path, across all its clauses, is literally `:ok` or `nil` returns
+**no data**. Its tail used to draw three mutants from two families — `return_value`'s
+`nil`/`:mutare` pair and `convention`'s `:ok → :error` — and all three survive whenever the caller
+discards the value, which is the norm for a side-effect helper (`defp notify(x) do Logger.info(…);
+:ok end`, `terminate/2`, an `Enum.each` callback). Their only kill is a test asserting a static
+fact (`:ok = notify(x)`), and pressing callers for that is the wrong pressure: the value is `:ok`
+by construction, and a typespec already says so. `Mutare.Transform.UnitReturns` now classifies
+such functions in a pre-pass after `Resolve` and stamps their leaf tails (`Meta.unit_tail?/1`);
+`Analyze.Attach.offer/4` never offers a stamped tail and `Analyze.Returns` attaches nothing there.
+Exercised in `unit_returns_test.exs`.
+
+**How the criterion was narrowed — three things it is not.**
+
+- *Not privacy.* The first framing was "skip return-value mutation on `defp`": private functions
+  can't be called from tests, and a survivor there often reflects usage the code doesn't have.
+  But no mutant is killed by calling its function directly — a `defp` mutant dies through a
+  public caller on tested inputs, exactly like every other mutant in that `defp` — so the
+  argument would apply equally to the arithmetic swaps there, which nobody wants. And in Elixir
+  the logic *lives* in `defp` (`do_*` recursion, `with`-step helpers); a visibility skip would
+  remove the family from where it has teeth. What the framing was pointing at is the *discarded
+  unit return*, which is just as discarded in a `def`.
+- *Not "constant return".* "Every path returns the same constant" says the return carries no
+  information *about which branch ran* — true — but a constant can still be data:
+  `def default_status, do: :pending` and `def max_retries, do: 3` are named constants whose
+  value is the whole point, and `:pending → :mutare` / `3 → 4` ask whether any test observes
+  them. Generalizing to strings, numbers, or compound literals makes it worse, not better. `:ok`
+  is different by convention only: it is Elixir's spelling of unit, the way `void` is a return
+  type with nothing to mutate. Dialyzer can't tell `:ok` from `:pending` either — both are
+  singleton types — so the distinction is conventional, and the convention is real.
+- *Not typespecs.* `@spec f(…) :: :ok` would recognise the one shape the body rule misses — a
+  unit-returning **call** tail (`defp notify(x), do: Logger.info(x)`) — and `Code.Typespec`
+  reads declared specs (a `defp`'s included) straight off a BEAM. Rejected all the same: it would
+  be the first spec-aware part of the tool, a commitment every later change has to keep
+  honouring, bought for one check; a syntactic spec reader is a partial reader of a type
+  language (flattening a union is a recursion on both sides of `|`; `my_ok()` needs type
+  resolution; the line between them is wherever you stop); and the BEAM route needs the target
+  compiled and current, which a transform that runs on source can't assume.
+
+**Why the body-shape criterion, precisely.** It has no type language to normalize — each leaf is
+or isn't one of two literals — and its errors run one way: it can *miss* a unit function (a call
+tail, a variable bound to `:ok`, an else-less `with`, whose implicit pass-through is a return
+path), but it never classifies a data-returning function as unit. One `:ok` path beside a
+`{:error, _}` path is the success bit, and mutating it is how the tool finds an untested happy
+path. `nil` counts as the other unit spelling (every value family already leaves it alone), so an
+else-less `if` around a side effect — `:ok | nil` — qualifies. A tail that never *returns*
+(`raise`/`reraise`/`throw`/`exit`, bare-and-not-displaced or `Kernel.`-qualified, and the
+`:erlang` primitives) is no return path, so the `validate!` shape — `:ok` or raise — is unit; the
+raising tail is left unstamped, because `raise … → nil` is the mutant that asks whether the error
+path is tested. (Mutare's own `Ignore.validate_entry!/5` carried a
+`# mutare:ignore[convention, return_value]` for exactly that shape, and `Run.Context.hook` one
+for a `fn _ -> :ok end`; both directives became ineffective and were removed.) Grouping is by `{name, arity}`
+across the module body, pruned at nested scopes; a dynamic head (`def unquote(n)()`) leaves the
+module unclassified and a spliced head blocks its name — the planner's residual holes, reused. The
+hole that remains is the planner's too: a clause a *macro generates* beside visible clauses of the
+same signature (a `defhandler`-style macro's `{:reply, …}` clauses next to a hand-written `:ok`
+fallback) is invisible, so the visible fallback reads as unit. Narrow — `use`-injected defaults
+are `defoverridable` and get replaced, not joined; non-overridable generated clauses beside
+hand-written ones of one signature draw the compiler's "clauses not grouped" warning — but it is
+the one way the classification can silence a data-returning function, and the moduledoc says so.
+
+**Transform-enforced, not a mark.** "The `:structural` shared mark" above rejects turning marks
+into an offer-layer veto: a mark's meaning lives in the family that reads it. This classification
+is the transform's own — where a clause returns is knowledge only the return-path walk has — so it
+is enforced where macro-routing `:skip` is, and every family is off a unit tail without opting
+in, `ConventionAtom` included (whose deliberate exclusion from the `:structural` reader set is
+untouched). The walk itself is `Analyze.Returns`' leaf-tail descent, published single-tree in a
+*classification* mode that is conservative where attachment is permissive (an else-less `with`
+is delivered whole; an unroutable clause block is a leaf), so the two notions of "return path"
+share one walker and can't drift.
+
+**Growth path, if survivors warrant it — none of it spec-aware.** A tail that is a *local* call
+to a function already classified unit (a module-local fixed point in the same pass) is the
+body-side answer to `my_ok()`; a table of known unit-returning calls (`Logger.*`, `IO.puts`,
+`Process.sleep`, `:telemetry.execute`) through `Calls.resolved_call/1` is the machinery the
+timeout table and `CallRemoval` already use. Both deferred until a run shows them removing
+survivors.
+
+**Incidental finding.** A bare-atom tail drew `:pending → :mutare` twice — from `atom` and from
+`return_value` (whose moduledoc says bare atoms stay eligible while `AtomLiteral` owns them). An
+ownership-split gap, unrelated to unit returns; "Duplicate return constants yield to node-level
+replacements" above closes it at the value level. The shape-level remnant stands: a tuple/map
+*literal* tail is in the same position (`return_value`'s `nil` and `TupleLiteral`'s `{}` die to the
+same test), which the value gate deliberately doesn't reach (non-scalar), and which would fit
+`ReturnValue.redundant_literal?/1` the way ints/strings/lists already do.

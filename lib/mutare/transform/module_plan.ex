@@ -447,10 +447,15 @@ defmodule Mutare.Transform.ModulePlan do
     end
   end
 
-  defp spliced?({:when, _, [call | _guards]}), do: spliced?(call)
+  @doc false
+  # Whether a `def`/`defp` head splices its argument list (`def f(unquote_splicing(args))`), so its
+  # arity is statically unknown. Public for `Mutare.Transform.UnitReturns`, which must then treat
+  # every arity of that name as unclassifiable — the same wildcard this planner records.
+  @spec spliced?(Macro.t()) :: boolean()
+  def spliced?({:when, _, [call | _guards]}), do: spliced?(call)
 
-  defp spliced?({_name, _, args}) when is_list(args),
+  def spliced?({_name, _, args}) when is_list(args),
     do: Enum.any?(args, &match?({:unquote_splicing, _, _}, &1))
 
-  defp spliced?(_head), do: false
+  def spliced?(_head), do: false
 end
