@@ -231,7 +231,7 @@ defmodule Mutare.Site do
         operation: :delete,
         original_form: nil,
         mutated_form: nil,
-        original_code: clause_code(clause_node, Keyword.get(opts, :render?, true)),
+        original_code: clause_code(clause_node, Keyword.get(opts, :render?, true), range),
         mutated_code: "",
         note: opts[:note],
         variant: Keyword.get(opts, :variant, []),
@@ -240,12 +240,27 @@ defmodule Mutare.Site do
   end
 
   # The `original_code` renderer shared by both delete-site constructors
-  # (`clause_drop/4`, `in_place_drop/5`), via `AST.to_string/1` (Sourceror, minus the comments
+  # (`clause_drop/4`, `in_place_drop/5`), via `code_renderer/1` (Sourceror, minus the comments
   # the clause's nodes carry — see `Mutare.AST.strip_comments/1`). Lazy mode (`render?` false)
   # records no diff text — the scan defers it, and the report re-derives it for the few sites it
   # actually shows (see `Mutare.Runner.Hydrate`).
-  defp clause_code(_node, false), do: nil
-  defp clause_code(node, true), do: clause_form(node, &AST.to_string/1)
+  defp clause_code(_node, false, _range), do: nil
+  defp clause_code(node, true, range), do: clause_form(node, code_renderer(range))
+
+  # The `Sourceror` renderer for a site's code fields, chosen by the site's range. `Sourceror`
+  # re-flows a fragment at the formatter's 98 columns, measured from column 0 — it can't see the
+  # column the report will splice it at — so a long *single-line* original would come back
+  # wrapped while the diff's `-` side (source bytes, `Mutare.Report.patch/2`) stays one line, and
+  # the reader hunts for the changed token across a re-flow. A one-line range renders unbounded:
+  # `:infinity` drops only fits-based breaks (operator chains, call arguments); forced ones
+  # (`do`/`end`, clauses) still break. A multi-line range keeps the default — Sourceror can't
+  # reproduce the original's operator-chain breaks at any width, so neither choice is exact
+  # there, and the default at least matches how the source was formatted.
+  defp code_renderer(range) do
+    if range.start[:line] == range.end[:line],
+      do: &AST.to_string(&1, line_length: :infinity),
+      else: &AST.to_string/1
+  end
 
   # Render a clause-shaped node to a one-line source fragment with the given `renderer`
   # (`Sourceror.to_string/1` for the report diff, `Macro.to_string/1` for the live summary). A
@@ -334,8 +349,8 @@ defmodule Mutare.Site do
         operation: :replace,
         original_form: nil,
         mutated_form: nil,
-        original_code: maybe_render(original_node, render?),
-        mutated_code: maybe_render(mutated_node, render?),
+        original_code: maybe_render(original_node, render?, range),
+        mutated_code: maybe_render(mutated_node, render?, range),
         summary: replace_summary(mutator.name, original_node, mutated_node, summary?),
         variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node)
     }
@@ -343,8 +358,8 @@ defmodule Mutare.Site do
 
   # Render a node to source, or `nil` in lazy mode (`render?` false). The single gate the
   # node-rendering constructors share so deferral is one decision, not three.
-  defp maybe_render(_node, false), do: nil
-  defp maybe_render(node, true), do: render_source_code(node)
+  defp maybe_render(_node, false, _range), do: nil
+  defp maybe_render(node, true, range), do: render_source_code(node, code_renderer(range))
 
   # In-place and lifted sites differ only in `kind`: both are a node replacement
   # recorded with the original/mutated nodes, their AST *forms* (the node's head tag —
@@ -361,6 +376,7 @@ defmodule Mutare.Site do
     # decision is read from the *original* node, since a mutated atom carries fresh,
     # format-less meta. (`true`/`false`/`nil` keys included — they are atoms too.)
     keyword_key? = keyword_key?(original_node)
+    renderer = code_renderer(range)
 
     %{
       base_site(id, file, range)
@@ -368,8 +384,8 @@ defmodule Mutare.Site do
         kind: kind,
         original_form: node_form(original_node),
         mutated_form: node_form(mutated_node),
-        original_code: render_code(original_node, keyword_key?, render?),
-        mutated_code: render_code(mutated_node, keyword_key?, render?),
+        original_code: render_code(original_node, keyword_key?, render?, renderer),
+        mutated_code: render_code(mutated_node, keyword_key?, render?, renderer),
         summary: replace_summary(mutator.name, original_node, mutated_node, summary?),
         variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node, variant)
     }
@@ -393,30 +409,35 @@ defmodule Mutare.Site do
 
   defp keyword_key?(_node), do: false
 
-  defp render_code(_node, _keyword_key?, false), do: nil
+  defp render_code(_node, _keyword_key?, false, _renderer), do: nil
 
-  defp render_code({:__block__, _meta, [atom]}, true, true) when is_atom(atom),
+  defp render_code({:__block__, _meta, [atom]}, true, true, _renderer) when is_atom(atom),
     do: Macro.inspect_atom(:key, atom)
 
   # An interpolated atom key: `Sourceror.to_string/1` renders the *value* form (`:"k#{x}"`);
   # move the colon to render the keyword form the source — and the colon-corrected range —
   # uses (`"k#{x}":`).
-  defp render_code({{:., _, [:erlang, :binary_to_atom]}, _meta, _args} = node, true, true) do
-    ":" <> content = AST.to_string(node)
+  defp render_code(
+         {{:., _, [:erlang, :binary_to_atom]}, _meta, _args} = node,
+         true,
+         true,
+         renderer
+       ) do
+    ":" <> content = renderer.(node)
     content <> ":"
   end
 
-  defp render_code(node, _keyword_key?, true), do: render_source_code(node)
+  defp render_code(node, _keyword_key?, true, renderer), do: render_source_code(node, renderer)
 
-  # `AST.to_string/1`, not `Sourceror.to_string/1` directly: the node's subtree carries the
-  # comments Sourceror parked on it (a trailing `# mutare:ignore` on the leftmost leaf of its
-  # line), and the mutated node inherits them via the reused operands. The code fields are the
-  # source *at the site* — and the report splices `mutated_code` over the range, so a comment
-  # here would land in the diff twice.
-  defp render_source_code(node) do
+  # `renderer` is an `AST.to_string` closure (`code_renderer/1`), not `Sourceror.to_string/1`
+  # directly: the node's subtree carries the comments Sourceror parked on it (a trailing
+  # `# mutare:ignore` on the leftmost leaf of its line), and the mutated node inherits them via
+  # the reused operands. The code fields are the source *at the site* — and the report splices
+  # `mutated_code` over the range, so a comment here would land in the diff twice.
+  defp render_source_code(node, renderer) do
     case keyword_pair(node) do
-      {:ok, key, value} -> keyword_pair_code(key, value, &AST.to_string/1)
-      :error -> AST.to_string(node)
+      {:ok, key, value} -> keyword_pair_code(key, value, renderer)
+      :error -> renderer.(node)
     end
   end
 

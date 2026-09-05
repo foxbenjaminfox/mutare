@@ -42,6 +42,32 @@ defmodule Mutare.ReportTest do
              "-    total >= threshold\n+    total > threshold"
   end
 
+  # A source line past the formatter's 98 columns. Sourceror at its default width would re-flow
+  # the mutated fragment across two lines while the `-` side (source bytes) stays one, so the
+  # reader has to hunt for the `and → or` across a re-wrap.
+  @long_source """
+  defmodule Probe do
+    def f(user_record, account_settings, notification_preferences) do
+      user_record.enabled and account_settings.active and notification_preferences.email_allowed and user_record.age > 18
+    end
+  end
+  """
+
+  test "diff/2 keeps a long single-line original's mutation on one line (no 98-column re-flow)" do
+    {_meta, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(@long_source, file: "p.ex")
+
+    # The outermost `and → or`, spanning the whole 116-column expression.
+    site =
+      sites
+      |> Enum.filter(&(&1.mutator == :logical))
+      |> Enum.max_by(& &1.range.end[:column])
+
+    assert Report.diff(site, @long_source) ==
+             "-    user_record.enabled and account_settings.active and notification_preferences.email_allowed and user_record.age > 18\n" <>
+               "+    (user_record.enabled and account_settings.active and notification_preferences.email_allowed) or user_record.age > 18"
+  end
+
   test "header/1 reads file:line and mutator metadata" do
     assert Report.header(site(:>)) == "lib/billing.ex:3  [relational, in-place]  SURVIVED"
   end

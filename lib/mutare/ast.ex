@@ -36,9 +36,12 @@ defmodule Mutare.AST do
       ~s("mutare")
       iex> "a > x # note" |> Mutare.AST.parse!() |> Mutare.AST.to_string()
       "a > x"
+
+  `opts` are passed through to `Sourceror.to_string/2`; `line_length: :infinity` renders
+  without fits-based line breaks (structural breaks — `do`/`end`, clauses — still apply).
   """
-  @spec to_string(Macro.t()) :: String.t()
-  def to_string(ast), do: ast |> strip_comments() |> Sourceror.to_string()
+  @spec to_string(Macro.t(), keyword()) :: String.t()
+  def to_string(ast, opts \\ []), do: ast |> strip_comments() |> Sourceror.to_string(opts)
 
   @doc """
   Drops Sourceror's `:leading_comments`/`:trailing_comments` from every node of `ast`.

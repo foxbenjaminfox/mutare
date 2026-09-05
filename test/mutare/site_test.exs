@@ -178,6 +178,52 @@ defmodule Mutare.SiteTest do
     end
   end
 
+  describe "rendered code width" do
+    # `Sourceror.to_string/1` re-flows at 98 columns from column 0, blind to the splice column;
+    # a one-line range must not come back multi-line (the report's `-` side is source bytes and
+    # stays one line). A multi-line range keeps the default width.
+    setup do
+      long = fn op ->
+        Sourceror.parse_string!(
+          "(user_record.enabled and account_settings.active and " <>
+            "notification_preferences.email_allowed) #{op} user_record.age > 18"
+        )
+      end
+
+      %{
+        original: long.("and"),
+        mutated: long.("or"),
+        spec: Mutare.Mutator.Spec.for_module(Mutare.Mutators.Logical)
+      }
+    end
+
+    test "a single-line range renders without fits-based line breaks", ctx do
+      range = %{start: [line: 3, column: 5], end: [line: 3, column: 120]}
+      site = Site.in_place(1, "p.ex", range, ctx.original, ctx.mutated, ctx.spec)
+
+      refute site.original_code =~ "\n"
+      refute site.mutated_code =~ "\n"
+      assert String.length(site.mutated_code) > 98
+    end
+
+    test "a multi-line range keeps the default 98-column width", ctx do
+      range = %{start: [line: 3, column: 5], end: [line: 4, column: 30]}
+      site = Site.in_place(1, "p.ex", range, ctx.original, ctx.mutated, ctx.spec)
+
+      assert site.mutated_code =~ "\n"
+    end
+
+    test "a single-line range still keeps forced (structural) breaks" do
+      range = %{start: [line: 3, column: 5], end: [line: 3, column: 40]}
+      original = Sourceror.parse_string!("case x do 1 -> :a; 2 -> :b end")
+      spec = Mutare.Mutator.Spec.for_module(Mutare.Mutators.ReturnValue)
+
+      site = Site.return_value(1, "p.ex", range, original, Mutare.AST.literal(:mutare), spec)
+
+      assert site.original_code == "case x do\n  1 -> :a\n  2 -> :b\nend"
+    end
+  end
+
   describe "lifted_replace/6 (no note)" do
     test "records a :lifted replacement with note nil" do
       original = {:>=, [], [{:a, [], nil}, {:b, [], nil}]}

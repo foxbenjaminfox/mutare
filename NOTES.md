@@ -6607,6 +6607,31 @@ clean `-old`/`+new` pair (and every existing single-line diff assertion) still h
 A pure report-rendering fix; the regression test asserts the where-drop shape shows just the dropped
 line with context and that the patched source re-parses (`report_test.exs`).
 
+### Report diff fidelity for long single-line originals — render unbounded `[fixed]`
+A `logical` `and → or` on a 116-column boolean chain diffed as one `-` line against *two* `+`
+lines: `Sourceror.to_string/1` re-flows at the formatter's default `line_length: 98` (nothing in
+Mutare chose that; it fell out of calling the renderer with no options), and it measures from
+column 0 — it can't see the column `Report.patch/2` will splice the fragment at. So the wrap was
+also inconsistent: a 95-char fragment at column 40 stayed one (135-column) line, a 99-char one at
+column 5 broke. Same family as the fidelity fixes above — the `-` side is source bytes, the `+`
+side a re-format of the fragment, and the reader hunts for the flipped token across a re-flow.
+
+Fixed in `Site.code_renderer/1`: a site whose range is one line renders through
+`AST.to_string(node, line_length: :infinity)`. `Inspect.Algebra.format/2` takes `:infinity`, and
+it drops only *fits*-based breaks (operator chains, call arguments); forced breaks (`do`/`end`,
+`case` clauses) still render multi-line, so a one-line `case … end` original keeps its structural
+shape. A multi-line range keeps the default 98 — the mirror case (an `and` chain the formatter
+already broke over two lines would come back as *one* `+` line at `:infinity`) has no right width,
+because Sourceror can't reproduce the original's operator-chain breaks from the AST, and the
+default at least matches how the source was formatted. Hydration (`Runner.Hydrate`) goes through
+the same constructors, so eager and deferred renders agree.
+
+Not pursued: patching only the narrowest differing subtree (the operator token) so the `+` side is
+byte-identical except the change. That would make every diff minimal, but a site's `range` is also
+its `--line`/`# mutare:ignore`/SARIF location, and a whole-node rewrite (an `:attribution` clause,
+a `:hosted` fragment) has no single differing leaf — a second, per-site "changed span" would be
+needed. The one-line rule fixes the case that actually reads badly for a few lines of code.
+
 ### Surface skipped files more loudly `[deferred; corrected scope]`
 The old claim that `Schema`/`safe_transform` skips **any transform failure** is
 **OUTDATED** (deferred-work audit, 2026-06-30). `safe_transform` is gone:
