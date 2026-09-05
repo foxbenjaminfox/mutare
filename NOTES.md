@@ -8690,3 +8690,24 @@ the dispatcher; the two families must agree, or a user could not say why one con
 decision mutants and the other lost them. The one deliberate exception stays: return-value mutants
 on a skipped tail, which belong to the def clause (`Returns` attaches them at the function level,
 the user's explicit call), not to the call.
+
+### Duplicate return constants yield to node-level replacements `[done]`
+
+An atom return tail such as `:foo` produced `:foo → :mutare` twice: once from
+`AtomLiteral`, once from `ReturnValue`. Interpolated atom tails had the same overlap.
+Excluding atom tails from `ReturnValue` altogether would also lose the distinct
+`:foo → nil` mutation; teaching it which atoms another family handles would duplicate
+eligibility rules and ignore whether that family actually produced a candidate.
+
+`Candidate.Delivery.gate/1` now drops a `Candidate.Return` when a surviving
+`Candidate.InPlace` on the same node already produces the same scalar constant. It runs
+after mutator policy filtering and before id assignment. Comparison reads literal values
+and uses strict equality, so formatting metadata does not prevent a match and `0` stays
+distinct from `0.0`. Non-scalar replacements are deliberately outside this check.
+
+The node-level candidate owns reporting and ignore matching, independent of mutator order.
+If that family is disabled or declines the node, the return candidate remains. The check
+does not rerun mutators, compare separate source nodes, or replace `Overlap`'s broader
+call-rewrite/descendant suppression. Poison skips happen later, so skipping the retained
+candidate cannot revive its duplicate or shift subsequent ids; count and render share
+the same gate.

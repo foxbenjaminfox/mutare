@@ -16,6 +16,12 @@ defmodule Mutare.Mutators.ReturnValue do
 
   A replacement equal to the original return is omitted.
 
+  When an enabled node-level family already produces the same scalar replacement at that
+  return expression, the transform keeps the node-level mutation and omits this family's
+  duplicate. For example, with `AtomLiteral` enabled, `:foo → :mutare` belongs to `atom`,
+  while `:foo → nil` remains a `return_value` mutation. With `AtomLiteral` disabled, both
+  return-value replacements remain available.
+
   ## Exclusions
 
     * Boolean expressions are handled by `Mutare.Mutators.Conditional`.

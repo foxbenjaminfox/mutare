@@ -24,7 +24,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
   #     on it.
 
   alias Mutare.Mutator.Mutation.Attribution
-  alias Mutare.Site
+  alias Mutare.{AST, Site}
   alias Mutare.Transform.{Candidate, NodeRange}
 
   @type node_candidate ::
@@ -43,7 +43,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
   @node_routes [:in_place, :case_clause, :match_pattern, :macro_pattern]
 
   @doc """
-  Drop the candidates their producing mutator opts out of — the call-option-key policy gate.
+  Filter one node's candidates by mutator policy, then drop duplicate return constants.
 
   Run *before* id assignment, so a dropped candidate leaves no id, selector, or site — it simply
   doesn't exist for this run (unlike a poisoned id, which is recorded). The analyzer owns the
@@ -52,12 +52,43 @@ defmodule Mutare.Transform.Candidate.Delivery do
   run's poison rebuilds because the mutator list — hence each spec's opts and policy — is constant
   within a run. Shared by emission (`Mutare.Transform`) and the collect walk
   (`Mutare.Transform.Analyze.Collect`), so the two can't disagree about which mutants exist.
+
+  A `Candidate.Return` is redundant when a surviving `Candidate.InPlace` on this same node
+  already replaces it with the same scalar constant. The node-level candidate owns the site
+  and its ignore matching, regardless of candidate order. Compare literal values strictly,
+  ignoring their formatting metadata; other AST shapes are left alone. This uses actual
+  candidates, so a disabled or opted-out family never suppresses another family's replacement.
   """
   @spec gate([node_candidate()]) :: [node_candidate()]
   def gate(candidates) do
+    candidates
+    |> filter_policy()
+    |> drop_duplicate_returns()
+  end
+
+  defp filter_policy(candidates) do
     Enum.reject(candidates, fn
       %Candidate.InPlace{call_option_key?: true, mutator: spec} ->
         not Mutare.Mutator.Dispatch.mutate_call_option_keys?(spec)
+
+      _candidate ->
+        false
+    end)
+  end
+
+  defp drop_duplicate_returns(candidates) do
+    constants =
+      for %Candidate.InPlace{mutated: mutated} <- candidates,
+          {:ok, value} <- [AST.literal_value(mutated)],
+          into: MapSet.new(),
+          do: value
+
+    Enum.reject(candidates, fn
+      %Candidate.Return{mutated: mutated} ->
+        case AST.literal_value(mutated) do
+          {:ok, value} -> MapSet.member?(constants, value)
+          :error -> false
+        end
 
       _candidate ->
         false

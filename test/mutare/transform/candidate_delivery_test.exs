@@ -1,7 +1,7 @@
 defmodule Mutare.Transform.Candidate.DeliveryTest do
   use ExUnit.Case, async: true
 
-  alias Mutare.Site
+  alias Mutare.{AST, Site}
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Delivery
 
@@ -10,6 +10,57 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
   defp spec, do: Mutare.Mutator.Spec.for_module(Mutare.Mutators.Relational)
   defp op(o), do: {o, [], [{:a, [], nil}, {:b, [], nil}]}
   defp clause, do: Sourceror.parse_string!("def f(_), do: :ok")
+
+  describe "gate/1 duplicate return constants" do
+    test "node-level constants win regardless of order, literal wrapping, or metadata" do
+      for value <- [:mutare, nil, false, 0, 0.0, "mutare"] do
+        node = %Candidate.InPlace{mutated: {:__block__, [line: 10], [value]}}
+        return = %Candidate.Return{mutated: value}
+
+        assert Delivery.gate([node, return]) === [node]
+        assert Delivery.gate([return, node]) === [node]
+        assert Delivery.gate([return]) === [return]
+      end
+    end
+
+    test "integer and float replacements remain distinct" do
+      node = %Candidate.InPlace{mutated: AST.literal(0)}
+      return = %Candidate.Return{mutated: AST.literal(0.0)}
+
+      assert Delivery.gate([node, return]) === [node, return]
+    end
+
+    test "a candidate removed by its policy cannot suppress a return replacement" do
+      spec = Mutare.Mutator.Spec.for_module(Mutare.Mutators.AtomLiteral)
+
+      node = %Candidate.InPlace{
+        mutator: %{spec | opts: [call_option_keys: false]},
+        call_option_key?: true,
+        mutated: AST.literal(:mutare)
+      }
+
+      return = %Candidate.Return{mutated: AST.literal(:mutare)}
+      assert Delivery.gate([node, return]) == [return]
+    end
+
+    test "non-scalar replacements and other candidate kinds are left alone" do
+      for replacement <- [op(:+), AST.literal([])] do
+        candidates = [
+          %Candidate.InPlace{mutated: replacement},
+          %Candidate.Return{mutated: replacement}
+        ]
+
+        assert Delivery.gate(candidates) == candidates
+      end
+
+      candidates = [
+        %Candidate.CasePattern{replacement: AST.literal(:mutare)},
+        %Candidate.Return{mutated: AST.literal(:mutare)}
+      ]
+
+      assert Delivery.gate(candidates) == candidates
+    end
+  end
 
   describe "classify_node_candidates/1" do
     test "classifies every node-local delivery route" do

@@ -8,7 +8,7 @@ defmodule Mutare.ReturnValueTest do
 
   import ExUnit.CaptureLog, only: [with_log: 1]
 
-  alias Mutare.Mutators.ReturnValue
+  alias Mutare.Mutators.{AtomLiteral, ReturnValue}
   alias Mutare.{Selector, Site}
 
   @compile {:no_warn_undefined, Mutare.ReturnValueFixture}
@@ -25,12 +25,15 @@ defmodule Mutare.ReturnValueTest do
   defmodule Mutare.ReturnValueFixture do
     def add(a, b), do: a + b
     def tag, do: :ok
+    def atom_tag, do: :foo
   end
   """
 
   setup_all do
     {metamutant, sites, _} =
-      Mutare.Transform.transform_string_with_sites(@runtime_source, mutators: @only)
+      Mutare.Transform.transform_string_with_sites(@runtime_source,
+        mutators: [AtomLiteral, ReturnValue]
+      )
 
     [{_module, _binary}] = Mutare.Test.Compile.string(metamutant)
     %{sites: sites}
@@ -127,6 +130,111 @@ defmodule Mutare.ReturnValueTest do
       assert ReturnValue.return_replacements(1.5) == []
       assert ReturnValue.return_replacements("hi") == []
       assert ReturnValue.return_replacements([1, 2]) == []
+    end
+  end
+
+  describe "duplicate node-level and return replacements" do
+    test "ordinary and interpolated atom tails keep one sentinel and the distinct nil replacement" do
+      for tail <- [":foo", ~S(:"foo#{x}")],
+          mutators <- [[AtomLiteral, ReturnValue], [ReturnValue, AtomLiteral]] do
+        source = "defmodule T do\n def f(x), do: #{tail}\nend"
+
+        {_meta, sites, next_id} =
+          Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
+
+        assert Enum.map(sites, &{&1.id, &1.mutator, &1.mutated_code}) == [
+                 {1, :atom, ":mutare"},
+                 {2, :return_value, "nil"}
+               ]
+
+        assert next_id == 3
+      end
+    end
+
+    test "each family still produces its replacements when enabled alone" do
+      source = "defmodule T do\n def f, do: :foo\nend"
+
+      for {mutators, expected} <- [
+            {[AtomLiteral], [atom: ":mutare"]},
+            {[ReturnValue], [return_value: "nil", return_value: ":mutare"]}
+          ] do
+        {_meta, sites, _} =
+          Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
+
+        assert Enum.map(sites, &{&1.mutator, &1.mutated_code}) == expected
+      end
+    end
+
+    test "excluded atoms retain their non-duplicate return replacements" do
+      for {tail, expected} <- [{":ok", ["nil", ":mutare"]}, {":mutare", ["nil"]}] do
+        {_meta, sites, _} =
+          Mutare.Transform.transform_string_with_sites(
+            "defmodule T do\n def f, do: #{tail}\nend",
+            mutators: [AtomLiteral, ReturnValue]
+          )
+
+        assert Enum.map(sites, &{&1.mutator, &1.mutated_code}) ==
+                 Enum.map(expected, &{:return_value, &1})
+      end
+    end
+
+    test "identical literals in distinct return paths keep independent mutants" do
+      for body <- [
+            "if x, do: :foo, else: :foo",
+            "Enum.map(x, fn true -> :foo; false -> :foo end)"
+          ] do
+        {_meta, sites, _} =
+          Mutare.Transform.transform_string_with_sites(
+            "defmodule T do\n def f(x), do: #{body}\nend",
+            mutators: [AtomLiteral, ReturnValue]
+          )
+
+        paths =
+          sites
+          |> Enum.filter(&(&1.original_code == ":foo"))
+          |> Enum.group_by(& &1.range)
+
+        assert map_size(paths) == 2
+
+        for {_range, path_sites} <- paths do
+          assert Enum.map(path_sites, &{&1.mutator, &1.mutated_code}) ==
+                   [atom: ":mutare", return_value: "nil"]
+        end
+      end
+    end
+
+    test "counting agrees with emission and poison skips do not revive a duplicate" do
+      source = "defmodule T do\n def f, do: :foo\nend"
+      opts = [mutators: [AtomLiteral, ReturnValue], start_id: 40]
+
+      assert Mutare.Transform.count_string(source, opts) == 2
+      {_meta, sites, next_id} = Mutare.Transform.transform_string_with_sites(source, opts)
+      assert Enum.map(sites, & &1.id) == [40, 41]
+      assert next_id == 42
+
+      for skipped_id <- [40, 41] do
+        skipped_opts = Keyword.put(opts, :skip_ids, MapSet.new([skipped_id]))
+        assert Mutare.Transform.count_string(source, skipped_opts) == 2
+
+        {_meta, rebuilt, rebuilt_next_id} =
+          Mutare.Transform.transform_string_with_sites(source, skipped_opts)
+
+        assert rebuilt == Enum.map(sites, &%{&1 | poisoned: &1.id == skipped_id})
+        assert rebuilt_next_id == next_id
+      end
+    end
+
+    test "the retained family owns ignore matching" do
+      for family <- [:atom, :return_value] do
+        {_meta, sites, _} =
+          Mutare.Transform.transform_string_with_sites(
+            "defmodule T do\n def f, do: :foo # mutare:ignore[#{family}]\nend",
+            mutators: [AtomLiteral, ReturnValue]
+          )
+
+        assert length(sites) == 2
+        assert Enum.all?(sites, &(&1.ignored == (&1.mutator == family)))
+      end
     end
   end
 
@@ -784,6 +892,21 @@ defmodule Mutare.ReturnValueTest do
   end
 
   describe "runtime semantics (one compile, flip the selector)" do
+    test "the deduplicated atom tail still selects both distinct replacements", %{sites: sites} do
+      assert Mutare.ReturnValueFixture.atom_tag() == :foo
+      atom_sites = Enum.filter(sites, &(&1.original_code == ":foo"))
+      assert [sentinel, empty] = atom_sites
+
+      Selector.put(sentinel.id)
+      assert Mutare.ReturnValueFixture.atom_tag() == :mutare
+
+      Selector.put(empty.id)
+      assert Mutare.ReturnValueFixture.atom_tag() == nil
+
+      Selector.put(Selector.baseline())
+      assert Mutare.ReturnValueFixture.atom_tag() == :foo
+    end
+
     test "baseline returns the real value", %{sites: _} do
       assert Mutare.ReturnValueFixture.add(2, 3) == 5
       assert Mutare.ReturnValueFixture.tag() == :ok

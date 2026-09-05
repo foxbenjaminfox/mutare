@@ -1068,9 +1068,8 @@ defmodule Mutare.Transform do
     end
   end
 
-  # Drop the candidates their producing mutator opts out of *before* id assignment — the
-  # call-option-key policy gate, shared with the collect walk via `Candidate.Delivery.gate/1`
-  # (see there for the full rationale).
+  # Apply mutator opt-outs and suppress duplicate return constants *before* id assignment,
+  # shared with the collect walk via `Candidate.Delivery.gate/1` (see there for the policy).
   defp gate_candidates(candidates), do: Delivery.gate(candidates)
 
   defp emit_site(node, candidates, ctx) do
