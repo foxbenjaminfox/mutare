@@ -6,16 +6,18 @@ if Code.ensure_loaded?(Igniter) do
 
         mix igniter.install mutare
 
-    Adds `:mutare` to your `:dev`/`:test` dependencies (`runtime: false`), then looks at what your project already depends on and wires up the matching companion packages — so a Phoenix/Ecto/Oban/Decimal/Gettext app gets framework-aware mutants without any manual configuration:
+    Adds `:mutare` to your `:dev`/`:test` dependencies (`runtime: false`), then looks at what your project already depends on and wires up the matching companion packages — so a Phoenix/Ecto/Oban/Decimal/Swoosh/Gettext app gets framework-aware mutants without any manual configuration:
 
-    | Detected dependency                     | Package added              | Wired into                                    |
-    | --------------------------------------- | -------------------------- | --------------------------------------------- |
-    | `:phoenix`                              | `mutare_phoenix`           | `:mutators` — `Mutare.Phoenix.all/0`          |
-    | `:phoenix_live_view`                    | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0` |
-    | `:ecto_sql` / `:phoenix_ecto` / `:ecto` | `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}` |
-    | `:oban` / `:oban_pro`                   | `mutare_oban`              | `:mutators` — `Mutare.Oban.all/0`             |
-    | `:decimal`                              | `mutare_decimal`           | `:mutators` — `Mutare.Decimal.all/0`          |
-    | `:gettext`                              | `mutare_gettext`           | `:extensions` — `Mutare.Gettext`              |
+    | Detected dependency                     | Package added              | Wired into                                     |
+    | --------------------------------------- | -------------------------- | ---------------------------------------------- |
+    | `:phoenix`                              | `mutare_phoenix`           | `:mutators` — `Mutare.Phoenix.all/0`           |
+    | `:phoenix_live_view`                    | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0`  |
+    | `:ecto_sql` / `:phoenix_ecto` / `:ecto` | `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}`  |
+    | `:oban` / `:oban_pro`                   | `mutare_oban`              | `:mutators` — `Mutare.Oban.all/0`              |
+    | `:decimal`                              | `mutare_decimal`           | `:mutators` — `Mutare.Decimal.all/0`           |
+    | `:swoosh` / `:phoenix_swoosh`           | `mutare_swoosh`            | `:mutators` — `Mutare.Swoosh.all/0`            |
+    | `:phoenix_swoosh`                       | `mutare_phoenix_swoosh`    | `:mutators` — `Mutare.Phoenix.Swoosh.all/0`    |
+    | `:gettext`                              | `mutare_gettext`           | `:extensions` — `Mutare.Gettext`               |
 
     Each detected package is added as a `:dev`/`:test` dependency and wired into a generated `.mutare.exs`: a mutator package extends the `:mutators` list (alongside the `:builtins` group token, which keeps Mutare's own families on), while a non-mutating extension like `mutare_gettext` — which only teaches Mutare a library's compile-time vocabulary so the built-in mutators land on it correctly — joins the `:extensions` list. Nothing detected? You still get a starter `.mutare.exs` and a ready-to-run `mix mutare`.
 
@@ -76,7 +78,17 @@ if Code.ensure_loaded?(Igniter) do
         # Decimal contributes mutator families (`Mutare.Decimal.all/0`) for Decimal
         # arithmetic/comparison calls. Unlike Ecto, decimal-using packages normally
         # declare `:decimal` directly, so a declared-dep check is the right signal.
-        decimal: Igniter.Project.Deps.has_dep?(igniter, :decimal)
+        decimal: Igniter.Project.Deps.has_dep?(igniter, :decimal),
+        # Swoosh contributes mutator families (`Mutare.Swoosh.all/0`) for email
+        # construction/delivery calls. A `phoenix_swoosh` app builds its emails through
+        # `Swoosh.Email` too, and `has_dep?` only sees *declared* deps — a project may
+        # declare just `:phoenix_swoosh` and pull `:swoosh` in transitively — so either
+        # signal wires up `mutare_swoosh`.
+        swoosh:
+          Enum.any?([:swoosh, :phoenix_swoosh], &Igniter.Project.Deps.has_dep?(igniter, &1)),
+        # phoenix_swoosh layers template rendering on Swoosh; `mutare_phoenix_swoosh`
+        # layers on `mutare_swoosh` the same way (and arrives alongside it above).
+        phoenix_swoosh: Igniter.Project.Deps.has_dep?(igniter, :phoenix_swoosh)
       }
 
       {igniter, repo} = resolve_repo(igniter, detected.ecto)
@@ -95,6 +107,8 @@ if Code.ensure_loaded?(Igniter) do
       |> maybe_add_dep(detected.ecto, :mutare_ecto)
       |> maybe_add_dep(detected.oban, :mutare_oban)
       |> maybe_add_dep(detected.decimal, :mutare_decimal)
+      |> maybe_add_dep(detected.swoosh, :mutare_swoosh)
+      |> maybe_add_dep(detected.phoenix_swoosh, :mutare_phoenix_swoosh)
       |> maybe_add_dep(detected.gettext, :mutare_gettext)
     end
 
@@ -216,7 +230,9 @@ if Code.ensure_loaded?(Igniter) do
           {detected.phoenix, "Mutare.Phoenix.all()"},
           {detected.live_view, "Mutare.Phoenix.LiveView.all()"},
           {detected.oban, "Mutare.Oban.all()"},
-          {detected.decimal, "Mutare.Decimal.all()"}
+          {detected.decimal, "Mutare.Decimal.all()"},
+          {detected.swoosh, "Mutare.Swoosh.all()"},
+          {detected.phoenix_swoosh, "Mutare.Phoenix.Swoosh.all()"}
         ]
         |> Enum.filter(&elem(&1, 0))
         |> Enum.map(&elem(&1, 1))
@@ -243,7 +259,7 @@ if Code.ensure_loaded?(Igniter) do
     defp mutator_package?(detected),
       do:
         detected.phoenix or detected.live_view or detected.ecto or detected.oban or
-          detected.decimal
+          detected.decimal or detected.swoosh or detected.phoenix_swoosh
 
     # --- generated file bodies -----------------------------------------------
 
@@ -276,8 +292,8 @@ if Code.ensure_loaded?(Igniter) do
       #
       #   mutators: [:builtins, MyApp.Mutators.Custom]
       #
-      # No Phoenix, LiveView, Ecto, Oban, Decimal, or Gettext was detected; add one and re-run
-      # `mix igniter.install mutare` to wire up the matching mutare_* package.
+      # No Phoenix, LiveView, Ecto, Oban, Decimal, Swoosh, or Gettext was detected; add one
+      # and re-run `mix igniter.install mutare` to wire up the matching mutare_* package.
       []
       """
     end

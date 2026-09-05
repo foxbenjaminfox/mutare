@@ -59,6 +59,8 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     refute Deps.has_dep?(igniter, :mutare_ecto)
     refute Deps.has_dep?(igniter, :mutare_oban)
     refute Deps.has_dep?(igniter, :mutare_decimal)
+    refute Deps.has_dep?(igniter, :mutare_swoosh)
+    refute Deps.has_dep?(igniter, :mutare_phoenix_swoosh)
     refute Deps.has_dep?(igniter, :mutare_gettext)
 
     content = config(igniter)
@@ -66,6 +68,7 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     refute content =~ "Mutare.Ecto"
     refute content =~ "Mutare.Oban"
     refute content =~ "Mutare.Decimal"
+    refute content =~ "Mutare.Swoosh"
     refute content =~ "Mutare.Gettext"
     # The active config is the empty list (defaults); guidance lives in comments.
     assert content =~ "[]"
@@ -185,6 +188,52 @@ defmodule Mix.Tasks.Mutare.InstallTest do
 
     assert {:ok, declaration} = Deps.get_dep(igniter, :mutare_decimal)
     assert declaration =~ ~s({:mutare_decimal, ">= 0.0.0")
+    assert declaration =~ "only: [:dev, :test]"
+    assert declaration =~ "runtime: false"
+  end
+
+  # --- swoosh / phoenix_swoosh (mutator packages) --------------------------
+
+  test "swoosh: adds mutare_swoosh and splices its preset into :mutators" do
+    igniter = project([{:swoosh, "~> 1.16"}]) |> install()
+
+    assert Deps.has_dep?(igniter, :mutare_swoosh)
+    refute Deps.has_dep?(igniter, :mutare_phoenix_swoosh)
+    refute Deps.has_dep?(igniter, :mutare_phoenix)
+
+    content = config(igniter)
+    assert content =~ "[:builtins] ++ Mutare.Swoosh.all()"
+    refute content =~ "Mutare.Phoenix.Swoosh.all()"
+  end
+
+  test "phoenix_swoosh alone wires up both mutare_swoosh and mutare_phoenix_swoosh" do
+    # A phoenix_swoosh app builds its emails through Swoosh.Email even when :swoosh is
+    # only a transitive dep, so the one declared signal composes both presets.
+    igniter = project([{:phoenix_swoosh, "~> 1.2"}]) |> install()
+
+    assert Deps.has_dep?(igniter, :mutare_swoosh)
+    assert Deps.has_dep?(igniter, :mutare_phoenix_swoosh)
+
+    content = config(igniter)
+    assert content =~ "Mutare.Swoosh.all()"
+    assert content =~ "Mutare.Phoenix.Swoosh.all()"
+  end
+
+  test "swoosh + phoenix_swoosh declared together adds each package once" do
+    igniter = project([{:swoosh, "~> 1.16"}, {:phoenix_swoosh, "~> 1.2"}]) |> install()
+
+    assert Deps.has_dep?(igniter, :mutare_swoosh)
+    assert Deps.has_dep?(igniter, :mutare_phoenix_swoosh)
+
+    content = config(igniter)
+    assert content =~ "Mutare.Swoosh.all() ++ Mutare.Phoenix.Swoosh.all()"
+  end
+
+  test "swoosh dep is dev/test-only and runtime: false" do
+    igniter = project([{:swoosh, "~> 1.16"}]) |> install()
+
+    assert {:ok, declaration} = Deps.get_dep(igniter, :mutare_swoosh)
+    assert declaration =~ ~s({:mutare_swoosh, ">= 0.0.0")
     assert declaration =~ "only: [:dev, :test]"
     assert declaration =~ "runtime: false"
   end
