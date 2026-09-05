@@ -8479,11 +8479,18 @@ call. "Not worth testing" needs *no* to the first as well. Hence a distinct word
   keys still go through the ordinary call-option-key policy and `List` still collapses an explicit
   list). A non-literal argument (a variable, a `Keyword.merge/2`) has no keys to refine and takes
   `leading` alone. Normalized to `{:keyed, leading, pairs}` in `Spec` so a refinement is never
-  confused with the per-position list it sits in. Implementation (`Analyze.Routed`): route the whole
-  argument by `leading`, then substitute each named value routed from the *raw* source by its own
-  position — analysis only adds metadata, so the analyzed and raw pair lists stay in lockstep (the
-  same assumption `Returns` makes), and ids are assigned at emit, so the discarded step-one
-  candidates cost nothing. It is a *refinement of an expression*, deliberately distinct from the
+  confused with the per-position list it sits in. Implementation (`Analyze.Routed`, and its guard twin
+  `Tag.tag_routed_arg/4`): every pair is routed **once**, by its final position — the named value by
+  the refinement's, keys and unnamed values by `leading`'s reading one level down (`:interior`
+  withholds only the container) — and the container is offered by `leading`. A first cut routed the
+  whole argument by `leading` and then re-routed the named values from the raw source; the discarded
+  candidates were free but the *work* was not — every named value was analyzed twice, and nested
+  calls routed the same way compounded it (eight `f(k: f(k: …))` levels ran a mutator 256 times over
+  the innermost literal). Choosing the final position before descending keeps the once-per-node
+  invariant. Every routing traversal must know the `{:keyed, …}` shape — `hosted_hosts`,
+  `binding_pattern_treatment?`, the misshapen-keyword advisory and `attach_hosts` all recurse into
+  it; a `[:raw, where: :hosted]` value whose hosts were attached but never collected silently
+  produced nothing. It is a *refinement of an expression*, deliberately distinct from the
   adapter-grade `{:keyword, [t…]}`, which *replaces* the treatment of a DSL keyword shorthand (keys
   are field names and go raw, values are routed positionally by a shape-aware classifier).
 - Adapter words (`:interpolated`, `{:keyword, …}`, `:hosted`, `:routing`) are unchanged. The tier
@@ -8537,9 +8544,13 @@ now means one thing: value-aware mutator knowledge.
   reachable in `Registry.validate_hosts!` — the user turned the call off; that is not the adapter's
   `:unused_callback` contract violation. A *code-provided* `:skip` next to a host subscription still
   is.
-- The **guard path** (`Tag`) now honours routes (`:skip` → leaf, `:raw` → argument untouched) —
-  the both-offer-paths discipline the marks already followed; the other treatments have no guard
-  meaning and fall through.
+- The **guard path** (`Tag`) now honours routes — the both-offer-paths discipline the marks already
+  followed: `:skip` → leaf, `:raw` → argument untouched, `:interior` → walked and then the target
+  on the argument's own node dropped (the twin of `Routed`'s strip; guards do allow tuples and
+  maps, so `is_tuple({x, 1})` under `:interior` keeps the `1` and loses the `{}` collapse), a keyed
+  refinement → each named value by its key's position over a literal keyword list, the container
+  and the rest by the leading treatment. `:pattern`/`:binding_pattern` and the adapter-grade words
+  have no guard meaning (a pattern or a DSL fragment is not guard-legal) and fall through.
 - **Ineffective-configuration diagnostics** mirror `skip_lifting`'s: `ConfigMatches` reads two
   stamps the resolver already places (`:mutare_route_call` → the winning route's key, wildcards
   included; a new `:mutare_mark_call` on any call a mark declaration matched, the pipe's RHS
@@ -8557,3 +8568,40 @@ offer-layer enforcement for core-defined labels, the need is rare, and a `:raw` 
 common case. (2) `:interior` at module level: `analyze_module_macro_block/2` honours `:skip` and
 `:raw` only; the other positions fall through to the scaffold/runtime guess as before.
 
+**Structural heads (2026-09-05).** `{Kernel, :if, 2, :skip}` did nothing. The resolver stamped
+it — `if` is a `Kernel` macro like `match?`, and the registry keys on the resolved head — but
+`Analyze`'s dedicated `if`/`unless` clause (like `cond`, `case`, `with`, the negation and connective
+clauses) precedes the generic call clause, the only place the routing stamp was read. An accident of
+clause order, not a position: the same route on `+` already worked. Two facts were tangled.
+
+*`:skip` is a claim about the resolved head, whatever the analyzer does with it*, so it must be
+honoured before any form clause — and now is, once, in a dispatcher at the head of `analyze/3`
+(every recursion re-enters there), with twins at the entries of `Tag`'s guard and pattern walks, an
+inner-operand check in the negation clauses (`x not in y` parses as `not(x in y)`; a skipped inner
+`in` is a leaf under an ordinary `not`), and a leaf rule in `Returns.map_return_tails` (a skipped
+`if` at a tail gets the *function's* return mutants on the whole node, never per branch — "nothing
+inside" holds for tails too).
+
+*Positions are not a thing on a structural head.* A positional route there could only be ignored
+(the silent failure we had) or honoured by swapping the structural analysis for the generic argument
+walk — losing the condition replacements, the hoist, the pattern contexts, without the user knowing.
+So `Mutare.Transform.StructuralForms` classifies a resolved head once — `:call` / `:structural`
+(`if`/`unless`, `|>`, `!`/`not`, `in`, `and`/`or`/`&&`/`||`, every `Kernel.SpecialForms` form) /
+`:declaration` (`def`/`defp`, `defmacro`/`defmacrop`, `defmodule`, `defimpl`/`defprotocol`/
+`defdelegate`, `use`, `@`) — and two readers apply it. `Spec.new/4` rejects an explicit key with an
+`ArgumentError`: a positional route on a structural head, or *any* route on a declaration (a
+"skipped" `def` would still be lifted and return-annotated by paths no stamp reaches, and
+`# mutare:ignore` owns that job). `RouteStamp` declines to stamp a *wildcard* route (`{Kernel, :*,
+:raw}`, `{:*, :and, …}`) whose cascade reaches such a head: its positions don't apply, the head is
+analyzed as usual, and the route is not counted as matched there — so a name-only positional route
+that only ever hits `Kernel.and` surfaces as ineffective. Special forms became resolvable for this:
+bare `case`/`with`/`fn`/`=`/… resolve to `Kernel.SpecialForms` **by name** (their nominal arities
+don't track the AST — a `with` node has one argument per clause plus the block — so
+`{Kernel.SpecialForms, :with, :skip}` is the form to write); before, they resolved to nothing and a
+route on them was silently ineffective. `Poison.Hint` follows the same table (`:skip` for a
+structural head, a comment for a definition), so a pasted hint never trips the new rejection.
+
+Degenerate cases fall out coherently, which is the sign the rule is right: `{Kernel, :|>, 2, :skip}`
+makes a pipeline inert, `{Kernel, :*, :skip}` every Kernel call (definitions excluded). Deferred:
+honouring positional routes on `if` by teaching the routed path the condition machinery — no use
+case, and `# mutare:ignore[conditional]`/`--mutators` already cover "no condition mutants here".

@@ -369,6 +369,11 @@ defmodule Mutare.Transform.Analyze.QuoteEscape do
   defp binding_pattern_treatment?({:keyword, treatments}) when is_list(treatments),
     do: binding_pattern_treatment?(treatments)
 
+  defp binding_pattern_treatment?({:keyed, leading, pairs}),
+    do:
+      binding_pattern_treatment?(leading) or
+        Enum.any?(pairs, fn {_key, position} -> binding_pattern_treatment?(position) end)
+
   defp binding_pattern_treatment?(_treatment), do: false
 
   @missing_quote_option :__mutare_missing_quote_option__

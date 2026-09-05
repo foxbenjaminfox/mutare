@@ -236,6 +236,22 @@ defmodule Mutare.Poison.HintTest do
       assert Hint.macro_skip_note([]) == nil
     end
 
+    test "suggests :skip for a structural Kernel head and no route at all for a definition" do
+      # `{Kernel, :in, :raw}` would be rejected by `Options.new/1` (a structural head takes only
+      # `:skip`), and no route may name `def`; a pasted hint must never trip either rule.
+      note =
+        Hint.macro_skip_note([
+          %{module: "Kernel", macro: :in},
+          %{module: "Kernel", macro: :def},
+          %{module: "Kernel", macro: :sigil_r}
+        ])
+
+      assert note =~ "{Kernel, :in, :skip}"
+      assert note =~ "{Kernel, :sigil_r, :raw}"
+      assert note =~ "# Kernel.def is a definition"
+      refute note =~ "{Kernel, :def,"
+    end
+
     test "suggests a copy-pasteable module-qualified {Module, :fun, :raw} route" do
       note = Hint.macro_skip_note([%{module: "Ecto.Query", macro: :from}])
 

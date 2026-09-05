@@ -172,7 +172,9 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   uses neither; it keys by mutant id.)
 - **Two "leave it alone" facilities, deliberately split.** *Routes* (`call_routes:`,
   `Mutare.CallRouting`) are transform-enforced and positional — `:skip` a call, `:raw`/`:interior`
-  an argument — and no mutator is consulted. *Marks* (`argument_marks:`, `argument_marks/1`) label a
+  an argument — and no mutator is consulted; a structural head (`if`, `case`, the boolean ops —
+  `Mutare.Transform.StructuralForms`) takes `:skip` only, honoured by every walk at its entry.
+  *Marks* (`argument_marks:`, `argument_marks/1`) label a
   position and let each mutator decide (the timeout table's value-aware reaction). They share
   neither a namespace nor a grammar on purpose; NOTES "Call routing: `:skip`, `:raw`, `:interior`,
   keyed refinements".

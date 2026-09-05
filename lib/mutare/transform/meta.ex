@@ -183,6 +183,13 @@ defmodule Mutare.Transform.Meta do
 
   def put_tag(node, _tag), do: node
 
+  @doc "Remove the replace-by-tag marker from a node; total over a bare literal or an untagged node."
+  @spec delete_tag(Macro.t()) :: Macro.t()
+  def delete_tag({form, meta, args}) when is_list(meta),
+    do: {form, Keyword.delete(meta, MetaKeys.tag_key()), args}
+
+  def delete_tag(node), do: node
+
   # --- mutator-requested position marks --------------------------------------
 
   @doc """

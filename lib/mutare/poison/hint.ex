@@ -20,6 +20,8 @@ defmodule Mutare.Poison.Hint do
   own.
   """
 
+  alias Mutare.Transform.StructuralForms
+
   # An `expanding macro: Mod.fun/arity` stacktrace frame, the signature of an
   # exception raised *during macro expansion* — a `FunctionClauseError` from a
   # literal-only clause, a `CompileError`/`ArgumentError` a macro raises itself.
@@ -257,13 +259,32 @@ defmodule Mutare.Poison.Hint do
     Enum.map_join(macros, "\n", fn {module, fun} -> "  * #{module}.#{fun}" end)
   end
 
+  defp route_entry({module, fun}) do
+    case StructuralForms.hint_treatment(module_key(module), fun) do
+      nil ->
+        "        # #{module}.#{fun} is a definition — no route can name it; " <>
+          "use `# mutare:ignore` around the offending code"
+
+      treatment ->
+        "        {#{module}, #{inspect(fun)}, #{inspect(treatment)}}"
+    end
+  end
+
+  # The compiler prints module names it has loaded, so the atoms exist here whenever the module
+  # is one Mutare knows (`Kernel`); an unknown segment is a target-project module — a plain call.
+  defp module_key(module) do
+    module |> String.split(".") |> Enum.map(&String.to_existing_atom/1)
+  rescue
+    ArgumentError -> nil
+  end
+
   # A copy-pasteable `.mutare.exs` keyword list. One arity-agnostic 3-tuple per
-  # macro (`{Module, :fun, :raw}`), so every arity of the macro is skipped.
+  # macro (`{Module, :fun, :raw}`), so every arity of the macro is skipped. A head Mutare
+  # analyzes structurally (`Kernel.in/2`, say) takes `:skip` — the only route it accepts — and
+  # a definition (`Kernel.def/2`) takes no route at all, so it gets a comment pointing at
+  # `# mutare:ignore` instead (`Mutare.Transform.StructuralForms`).
   defp snippet(macros) do
-    entries =
-      Enum.map_join(macros, ",\n", fn {module, fun} ->
-        "        {#{module}, #{inspect(fun)}, :raw}"
-      end)
+    entries = Enum.map_join(macros, ",\n", &route_entry/1)
 
     """
         [

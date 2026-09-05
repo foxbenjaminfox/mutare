@@ -752,6 +752,19 @@ defmodule Mutare.OptionsTest do
     test "rejects a malformed entry" do
       assert_raise ArgumentError, fn -> Options.new(call_routes: [{Kernel, :match?}]) end
     end
+
+    test "rejects a positional route on a structural form, and any route on a definition" do
+      assert_raise ArgumentError, ~r/accepts only :skip/, fn ->
+        Options.new(call_routes: [{Kernel, :if, 2, :raw}])
+      end
+
+      assert_raise ArgumentError, ~r/is a definition, not a call/, fn ->
+        Options.new(call_routes: [{Kernel, :def, 2, :skip}])
+      end
+
+      assert [%Mutare.CallRouting.Spec{args: :skip}] =
+               Options.new(call_routes: [{Kernel, :if, 2, :skip}]).call_routes
+    end
   end
 
   describe ":skip_lifting" do

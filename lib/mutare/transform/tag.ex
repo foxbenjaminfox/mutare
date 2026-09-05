@@ -28,6 +28,7 @@ defmodule Mutare.Transform.Tag do
   alias Mutare.Mutator.Dispatch
   alias Mutare.Mutators.StringLiteral
   alias Mutare.Transform.{Meta, NodeRange, Suppression}
+  alias Mutare.Transform.Analyze.CallOptions
 
   # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
   # the guard path matches the guard-legal subset of the body path's sets, so its clauses
@@ -112,6 +113,18 @@ defmodule Mutare.Transform.Tag do
 
   # === guard tagging =========================================================
 
+  # Every guard-walk clause is reached through here, so a call-level `:skip` — a route on the
+  # resolved head: `is_integer/1`, but equally `and/2` or `in/2`, which have clauses of their own
+  # below — is honoured first: the node is an inert leaf, nothing offered, nothing descended.
+  # Mirrors `Mutare.Transform.Analyze.analyze/3`'s dispatcher (and, like it, the negation
+  # clauses check their inner operand, so a skipped `in` under `not` is a leaf too).
+  defp tag_walk(node, acc, mutators) do
+    if skipped_call?(node), do: {node, acc}, else: tag_walk_form(node, acc, mutators)
+  end
+
+  defp skipped_call?({_form, meta, args}) when is_list(args), do: Meta.routing(meta) == :skip
+  defp skipped_call?(_node), do: false
+
   # Redundancy suppression in guards — the guard-legal subset of the in-place analyzer's
   # equivalent-sibling clauses (`Mutare.Transform.Analyze`). The shared move is identical:
   # descend operands (a literal still mutates) but offer only the outer node, never the
@@ -124,10 +137,14 @@ defmodule Mutare.Transform.Tag do
   # outer's Conditional — sound here because guards have no observable side effects and
   # guard errors fail the guard; see `tag_in_rhs/3`). The outer `not` is offered
   # (strip/true/false).
-  defp tag_walk({:not, meta, [{:in, in_meta, [left, right]}]}, acc, mutators) do
-    {left, acc} = tag_walk(left, acc, mutators)
-    {right, acc} = tag_in_rhs(right, acc, mutators)
-    offer_target({:not, meta, [{:in, in_meta, [left, right]}]}, acc, mutators)
+  defp tag_walk_form({:not, meta, [{:in, in_meta, [left, right]} = inner]} = node, acc, mutators) do
+    if skipped_call?(inner) do
+      tag_generic(node, acc, mutators)
+    else
+      {left, acc} = tag_walk(left, acc, mutators)
+      {right, acc} = tag_in_rhs(right, acc, mutators)
+      offer_target({:not, meta, [{:in, in_meta, [left, right]}]}, acc, mutators)
+    end
   end
 
   # `not` over an equality operator (`==`/`!=`/`===`/`!==`) — `not in` generalised: each
@@ -139,26 +156,38 @@ defmodule Mutare.Transform.Tag do
   # (`===` → `==`, `Mutare.Mutators.StrictEquality`, guard-legal) is neither the complement
   # nor a constant, so `not (a == b)` ≢ `a === b` survives. Mirrors the body-side clause in
   # `Mutare.Transform.Analyze`.
-  defp tag_walk({:not, meta, [{op, op_meta, [left, right]}]}, acc, mutators)
+  defp tag_walk_form(
+         {:not, meta, [{op, op_meta, [left, right]} = raw_inner]} = node,
+         acc,
+         mutators
+       )
        when is_equality_op(op) do
-    {left, acc} = tag_walk(left, acc, mutators)
-    {right, acc} = tag_walk(right, acc, mutators)
-    {inner, acc} = offer_negation_survivors({op, op_meta, [left, right]}, op, acc, mutators)
-    offer_target({:not, meta, [inner]}, acc, mutators)
+    if skipped_call?(raw_inner) do
+      tag_generic(node, acc, mutators)
+    else
+      {left, acc} = tag_walk(left, acc, mutators)
+      {right, acc} = tag_walk(right, acc, mutators)
+      {inner, acc} = offer_negation_survivors({op, op_meta, [left, right]}, op, acc, mutators)
+      offer_target({:not, meta, [inner]}, acc, mutators)
+    end
   end
 
   # Double negation `not not x` in a guard (same operator — `!` is not guard-legal). Both
   # strips are the identical `not x`, and Conditional on the inner ≡ the outer's
   # `true`/`false`. Suppress the inner `not`; offer only the outer.
-  defp tag_walk({:not, meta, [{:not, inner_meta, [operand]}]}, acc, mutators) do
-    {operand, acc} = tag_walk(operand, acc, mutators)
-    offer_target({:not, meta, [{:not, inner_meta, [operand]}]}, acc, mutators)
+  defp tag_walk_form({:not, meta, [{:not, inner_meta, [operand]} = inner]} = node, acc, mutators) do
+    if skipped_call?(inner) do
+      tag_generic(node, acc, mutators)
+    else
+      {operand, acc} = tag_walk(operand, acc, mutators)
+      offer_target({:not, meta, [{:not, inner_meta, [operand]}]}, acc, mutators)
+    end
   end
 
   # A bare `x in [list]` guard: offer the `in` node (Conditional `true`/`false`,
   # Relational → `not in`), but List-suppress the RHS list literal (`x in []` ≡ `false`,
   # already the Conditional).
-  defp tag_walk({:in, meta, [left, right]}, acc, mutators) do
+  defp tag_walk_form({:in, meta, [left, right]}, acc, mutators) do
     {left, acc} = tag_walk(left, acc, mutators)
     {right, acc} = tag_in_rhs(right, acc, mutators)
     offer_target({:in, meta, [left, right]}, acc, mutators)
@@ -169,7 +198,7 @@ defmodule Mutare.Transform.Tag do
   # segment's *value* side, keep the *spec* side raw — except `size(expr)` args, the
   # one genuine runtime sub-position. A blind walk would offer the `-` separator to
   # Arithmetic and lift an "unknown bitstring specifier" that poisons the build.
-  defp tag_walk({:<<>>, meta, segments}, acc, mutators) do
+  defp tag_walk_form({:<<>>, meta, segments}, acc, mutators) do
     {segments, acc} = Enum.map_reduce(segments, acc, &tag_segment(&1, &2, mutators))
     offer_target({:<<>>, meta, segments}, acc, mutators)
   end
@@ -182,12 +211,12 @@ defmodule Mutare.Transform.Tag do
   # precise diff, the other constant and Logical's `and`↔`or` stay. A non-boolean-op left has
   # no subsuming sibling, so it is offered in full. Mirrors `Mutare.Transform.Analyze`'s
   # body-side clause.
-  defp tag_walk({op, meta, [left, right]}, acc, mutators) when is_guard_connective(op) do
+  defp tag_walk_form({op, meta, [left, right]}, acc, mutators) when is_guard_connective(op) do
     {left_t, acc} = tag_walk(left, acc, mutators)
     {right_t, acc} = tag_walk(right, acc, mutators)
     rebuilt = {op, meta, [left_t, right_t]}
 
-    if Suppression.boolean_op_node?(left),
+    if Suppression.boolean_op_node?(left) and not skipped_call?(left),
       do: offer_without_constant(rebuilt, Suppression.redundant_constant(op), acc, mutators),
       else: offer_target(rebuilt, acc, mutators)
   end
@@ -195,46 +224,112 @@ defmodule Mutare.Transform.Tag do
   # An n-ary node: descend its args (not its form), then offer the node itself — honouring a
   # call route stamped by `Mutare.Transform.Resolve` the same way the body path does, so a
   # routed call in a `when` guard can't leak mutants the body offer would hold back (the same
-  # both-offer-paths discipline the position marks follow, NOTES "Argument marks"). A call-level
-  # `:skip` is an inert leaf (nothing offered, nothing descended); a `:raw` argument is left as
-  # written while its siblings walk. The other treatments have no guard meaning (a pattern or a
-  # DSL fragment is not guard-legal), so they fall through to the ordinary walk.
-  defp tag_walk({form, meta, args} = node, acc, mutators) when is_list(args) do
+  # both-offer-paths discipline the position marks follow, NOTES "Argument marks"). Each argument
+  # goes by its position (`tag_routed_arg/4`); the call-level `:skip` was honoured at
+  # `tag_walk/3`, before any clause.
+  defp tag_walk_form({form, meta, args}, acc, mutators) when is_list(args) do
     case Meta.routing(meta) do
-      :skip ->
-        {node, acc}
-
       routing when is_list(routing) ->
         {args, acc} =
           args
           |> Enum.with_index()
           |> Enum.map_reduce(acc, fn {arg, i}, acc ->
-            if Enum.at(routing, i, :expression) == :raw,
-              do: {arg, acc},
-              else: tag_walk(arg, acc, mutators)
+            tag_routed_arg(arg, Enum.at(routing, i, :expression), acc, mutators)
           end)
 
         offer_target({form, meta, args}, acc, mutators)
 
       _unrouted ->
-        {args, acc} = Enum.map_reduce(args, acc, &tag_walk(&1, &2, mutators))
-        offer_target({form, meta, args}, acc, mutators)
+        tag_generic({form, meta, args}, acc, mutators)
     end
   end
 
   # A 2-tuple (a keyword/map pair shape): descend both sides; never node-offered.
-  defp tag_walk({left, right}, acc, mutators) do
+  defp tag_walk_form({left, right}, acc, mutators) do
     {left, acc} = tag_walk(left, acc, mutators)
     {right, acc} = tag_walk(right, acc, mutators)
     {{left, right}, acc}
   end
 
-  defp tag_walk(list, acc, mutators) when is_list(list),
+  defp tag_walk_form(list, acc, mutators) when is_list(list),
     do: Enum.map_reduce(list, acc, &tag_walk(&1, &2, mutators))
 
   # A leaf — a var, a bare literal, an atom: offer it (a bare `0` in `x > 0` is
   # mutatable) but there is nothing to descend.
-  defp tag_walk(leaf, acc, mutators), do: offer_target(leaf, acc, mutators)
+  defp tag_walk_form(leaf, acc, mutators), do: offer_target(leaf, acc, mutators)
+
+  # The unrouted n-ary walk: every argument descended, then the node offered.
+  defp tag_generic({form, meta, args}, acc, mutators) do
+    {args, acc} = Enum.map_reduce(args, acc, &tag_walk(&1, &2, mutators))
+    offer_target({form, meta, args}, acc, mutators)
+  end
+
+  # One routed argument of a guard call, by its position — the guard twin of
+  # `Mutare.Transform.Analyze.Routed.route_macro_arg/4` for the positions a guard-legal value can
+  # take. `:raw`: left as written. `:interior`: walked, then the target registered for the
+  # argument's *own* node is dropped (`strip_own_target/1`) while its descendants keep theirs —
+  # `is_tuple({x, 1})` under `:interior` loses the `{x, 1} → {}` collapse but keeps the `1`'s
+  # mutants. A keyed refinement over a literal keyword list: each named pair's value takes its
+  # key's position; the container is offered (or not) by the leading treatment, and the keys and
+  # unnamed values take the leading treatment's descendant reading (`:interior` reads as
+  # `:expression` one level down — the container is the node it withholds). A non-keyword
+  # argument takes the leading treatment alone, as in the body. Everything else —
+  # `:expression`, and the positions with no guard meaning (`:pattern`/`:binding_pattern`, the
+  # adapter-grade words: a pattern or a DSL fragment is not guard-legal) — is the ordinary walk.
+  defp tag_routed_arg(arg, :raw, acc, _mutators), do: {arg, acc}
+
+  defp tag_routed_arg(arg, :interior, acc, mutators),
+    do: arg |> tag_walk(acc, mutators) |> strip_own_target()
+
+  defp tag_routed_arg(arg, {:keyed, leading, pairs}, acc, mutators) do
+    case CallOptions.keyword_pairs(arg) do
+      {:ok, kw_pairs, rewrap} ->
+        inner = descendant_position(leading)
+
+        {kw_pairs, acc} =
+          Enum.map_reduce(kw_pairs, acc, fn {key, value}, acc ->
+            position =
+              case List.keyfind(pairs, AST.key_atom(key), 0) do
+                {_key, position} -> position
+                nil -> inner
+              end
+
+            {key, acc} = tag_routed_arg(key, inner, acc, mutators)
+            {value, acc} = tag_routed_arg(value, position, acc, mutators)
+            {{key, value}, acc}
+          end)
+
+        offer_container(rewrap.(kw_pairs), leading, acc, mutators)
+
+      :error ->
+        tag_routed_arg(arg, leading, acc, mutators)
+    end
+  end
+
+  defp tag_routed_arg(arg, _position, acc, mutators), do: tag_walk(arg, acc, mutators)
+
+  # What a leading treatment means one level down: `:interior` withholds only the container, so
+  # its children are ordinary expressions; `:raw` and `:expression` mean the same at every depth.
+  defp descendant_position(:interior), do: :expression
+  defp descendant_position(other), do: other
+
+  # The keyword container's own offer, by the leading treatment. Only the Sourceror-wrapped
+  # explicit list (`{:__block__, _, [list]}`) is a node the ordinary walk offers (the `[…] → []`
+  # collapse); the bare trailing sugar is a plain list and never was.
+  defp offer_container({:__block__, _meta, _args} = node, :expression, acc, mutators),
+    do: offer_target(node, acc, mutators)
+
+  defp offer_container(node, _leading, acc, _mutators), do: {node, acc}
+
+  # Drop the target registered for a node *itself*, keeping every descendant's — the guard twin
+  # of `Routed`'s `strip_own_inplace_candidates/1`. The tag counter is not rewound: tags are
+  # identifiers, so a gap is harmless.
+  defp strip_own_target({node, {next, targets}}) do
+    case Meta.tag(node) do
+      nil -> {node, {next, targets}}
+      tag -> {Meta.delete_tag(node), {next, List.keydelete(targets, tag, 0)}}
+    end
+  end
 
   # The RHS of a guard `in`: descend its children exactly as the generic walk would, then
   # offer the top node with any *empty-collection* mutation dropped — `x in <empty>` ≡
@@ -330,8 +425,17 @@ defmodule Mutare.Transform.Tag do
 
   # === pattern-literal tagging ===============================================
 
+  # The pattern walk's entry, honouring a call-level `:skip` the same way `tag_walk/3` does — a
+  # head pattern is walked by the resolver too, so a skipped special form (`%{}`, `=`, `<<>>`) is
+  # an inert leaf there as well.
+  defp tag_pattern_targets(node, acc, mutators, context) do
+    if skipped_call?(node),
+      do: {node, acc},
+      else: tag_pattern_form(node, acc, mutators, context)
+  end
+
   # A scalar literal — the only thing mutated in a pattern. No children to descend.
-  defp tag_pattern_targets({:__block__, _meta, [value]} = node, acc, mutators, context)
+  defp tag_pattern_form({:__block__, _meta, [value]} = node, acc, mutators, context)
        when is_integer(value) or is_float(value) or is_binary(value) or is_atom(value),
        do: tag_node(node, literal_pattern_mutations(node, mutators, context), acc)
 
@@ -345,7 +449,7 @@ defmodule Mutare.Transform.Tag do
   # never a nested `-(-x)`. Guards keep the in-place magnitude walk (`guard_targets/3`),
   # where the nested minus compiles fine.
   # mutare:ignore[guard_drop] equivalent — in a pattern, unary minus only ever wraps a numeric literal, so `is_number(n)` always holds and removing it can't change which inputs match.
-  defp tag_pattern_targets(
+  defp tag_pattern_form(
          {:-, _meta, [{:__block__, _bmeta, [n]}]} = node,
          acc,
          mutators,
@@ -359,7 +463,7 @@ defmodule Mutare.Transform.Tag do
   # `"mutare"` keeps a non-empty constraint and retargets it. Mark every descendant
   # of `<>` / `<<>>` as binary-composing; other literal families are unchanged by
   # the context, and a conservative singleton `<<"foo">>` keeps both string mutants.
-  defp tag_pattern_targets({form, meta, args}, acc, mutators, _context)
+  defp tag_pattern_form({form, meta, args}, acc, mutators, _context)
        when form in [:<>, :<<>>] and is_list(args) do
     {args, acc} =
       Enum.map_reduce(args, acc, &tag_pattern_targets(&1, &2, mutators, :binary_composition))
@@ -370,7 +474,7 @@ defmodule Mutare.Transform.Tag do
   # A bitstring segment `value :: spec`: descend the value, keep the spec raw — a
   # spec is not a runtime value and a `size`/`unit` literal swap risks an illegal
   # specifier (`unit(0)`) that would compile-poison the single build.
-  defp tag_pattern_targets({:"::", meta, [value, spec]}, acc, mutators, context) do
+  defp tag_pattern_form({:"::", meta, [value, spec]}, acc, mutators, context) do
     {value, acc} = tag_pattern_targets(value, acc, mutators, context)
     {{:"::", meta, [value, spec]}, acc}
   end
@@ -378,7 +482,7 @@ defmodule Mutare.Transform.Tag do
   # A default argument `pattern \\ default`: descend the *pattern* (a literal there
   # is a head literal mutated by lifting), but keep the default value raw — the
   # default is a runtime position, mutated in place elsewhere.
-  defp tag_pattern_targets({:\\, meta, [pattern, default]}, acc, mutators, context) do
+  defp tag_pattern_form({:\\, meta, [pattern, default]}, acc, mutators, context) do
     {pattern, acc} = tag_pattern_targets(pattern, acc, mutators, context)
     {{:\\, meta, [pattern, default]}, acc}
   end
@@ -388,7 +492,7 @@ defmodule Mutare.Transform.Tag do
   # against the map's other keys (`map_key_values/1`) before tagging. Values mutate
   # normally (duplicate values are legal).
   # mutare:ignore[guard_drop] equivalent — a `%{}` node's args are always a list, so this guard never fails for valid input.
-  defp tag_pattern_targets({:%{}, meta, pairs}, acc, mutators, context) when is_list(pairs) do
+  defp tag_pattern_form({:%{}, meta, pairs}, acc, mutators, context) when is_list(pairs) do
     key_values = map_key_values(pairs)
 
     {pairs, acc} =
@@ -400,7 +504,7 @@ defmodule Mutare.Transform.Tag do
   # A keyword/map-key pair: skip the key (a structural label), descend only the
   # value. A non-label pair — a tuple `{1, 2}` or an arrow entry `1 => 2` — has no
   # `format: :keyword` key, so both sides descend and both literals mutate.
-  defp tag_pattern_targets({key, value}, acc, mutators, context) do
+  defp tag_pattern_form({key, value}, acc, mutators, context) do
     if AST.keyword_label?(key) do
       {value, acc} = tag_pattern_targets(value, acc, mutators, context)
       {{key, value}, acc}
@@ -413,18 +517,18 @@ defmodule Mutare.Transform.Tag do
 
   # Structural descent over an n-ary node (lists, tuples, maps, structs, nested
   # patterns): re-tag every child in order.
-  defp tag_pattern_targets({form, meta, args}, acc, mutators, context) when is_list(args) do
+  defp tag_pattern_form({form, meta, args}, acc, mutators, context) when is_list(args) do
     {args, acc} =
       Enum.map_reduce(args, acc, &tag_pattern_targets(&1, &2, mutators, context))
 
     {{form, meta, args}, acc}
   end
 
-  defp tag_pattern_targets(list, acc, mutators, context) when is_list(list),
+  defp tag_pattern_form(list, acc, mutators, context) when is_list(list),
     do: Enum.map_reduce(list, acc, &tag_pattern_targets(&1, &2, mutators, context))
 
   # A var (`{:x, _, nil}`), a bare leaf, or anything else: no literal to tag.
-  defp tag_pattern_targets(other, acc, _mutators, _context), do: {other, acc}
+  defp tag_pattern_form(other, acc, _mutators, _context), do: {other, acc}
 
   # The literal-valued mutations a node admits — the local `mutations/2` (mark-aware) filtered to
   # those whose replacement is itself a scalar literal. A literal is legal in any

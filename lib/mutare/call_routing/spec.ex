@@ -1,6 +1,8 @@
 defmodule Mutare.CallRouting.Spec do
   @moduledoc false
 
+  alias Mutare.Transform.StructuralForms
+
   # Internal normalized representation of a public `Mutare.CallRouting.route/0` tuple.
   # Resolution keys and registry helpers deliberately stay out of the extension contract.
   #
@@ -162,7 +164,9 @@ defmodule Mutare.CallRouting.Spec do
   `module` is normalized to its lookup key. `name`, `arity`, and `args` are
   validated without loading or reflecting on the target module. Per-position lists are
   normalized (a keyed refinement `[leading, key: position, …]` becomes
-  `{:keyed, leading, pairs}`).
+  `{:keyed, leading, pairs}`). A head Mutare analyzes structurally (`if`, `case`, the boolean
+  operators — `Mutare.Transform.StructuralForms`) accepts only `:skip`, and a definition (`def`,
+  `defmodule`, …) accepts no route at all; either is rejected with an `ArgumentError`.
 
       iex> Mutare.CallRouting.Spec.new(Kernel, :match?, 2, [:pattern])
       %Mutare.CallRouting.Spec{module: [:Kernel], name: :match?, arity: 2, args: [:pattern]}
@@ -172,6 +176,9 @@ defmodule Mutare.CallRouting.Spec do
 
       iex> Mutare.CallRouting.Spec.new(Mixpanel, :track, 3, :skip)
       %Mutare.CallRouting.Spec{module: [:Mixpanel], name: :track, arity: 3, args: :skip}
+
+      iex> Mutare.CallRouting.Spec.new(Kernel, :if, 2, :skip).args
+      :skip
 
       iex> Mutare.CallRouting.Spec.new(MyApp.Http, :get, 2, [:expression, [timeout: :raw]]).args
       [:expression, {:keyed, :expression, [timeout: :raw]}]
@@ -188,8 +195,10 @@ defmodule Mutare.CallRouting.Spec do
     name = validate_name(name)
     arity = validate_arity(arity)
     validate_wildcards!(module, name, arity)
+    args = validate_args(args)
+    StructuralForms.validate!(module, name, args)
 
-    %__MODULE__{module: module, name: name, arity: arity, args: validate_args(args)}
+    %__MODULE__{module: module, name: name, arity: arity, args: args}
   end
 
   # Reject the two nonsensical wildcard combinations, leaving the meaningful ones (whole module

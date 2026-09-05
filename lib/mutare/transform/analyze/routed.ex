@@ -93,6 +93,12 @@ defmodule Mutare.Transform.Analyze.Routed do
 
   defp hosted_hosts({:hosted, hosts}), do: hosts
   defp hosted_hosts({:keyword, treatments}), do: hosted_hosts(treatments)
+
+  defp hosted_hosts({:keyed, leading, pairs}),
+    do:
+      hosted_hosts(leading) ++
+        Enum.flat_map(pairs, fn {_key, position} -> hosted_hosts(position) end)
+
   defp hosted_hosts(_), do: []
 
   # Build the `Candidate.Hosted`s for a macro node from the host's targets, dropping any whose
@@ -150,35 +156,39 @@ defmodule Mutare.Transform.Analyze.Routed do
   defp route_macro_arg(descent, arg, :interior, mutators),
     do: arg |> descent.annotate(mutators) |> strip_own_inplace_candidates()
 
-  # A keyed refinement `{:keyed, leading, pairs}`: when the argument is written as a literal
-  # keyword list (the trailing sugar or an explicit `[k: v]`), route the whole argument by the
-  # leading treatment *and then* substitute each named key's value, routed from the raw source by
-  # its own position. Step one attaches the container's and the unnamed pairs' candidates exactly
-  # as the leading treatment alone would (analysis only adds metadata, so the analyzed and raw
-  # lists stay in lockstep pair for pair); step two replaces the named values wholesale, so a
-  # `:raw` value carries nothing and an `:expression` value under a `:raw` leading treatment is
-  # analyzed on its own. A non-keyword argument (a variable, a `Keyword.merge/2` call, a map) has
-  # no keys to refine and takes the leading treatment alone — exactly the "if it is a literal
-  # keyword list with a literal key" contract.
+  # A keyed refinement `{:keyed, leading, pairs}` over a literal keyword list (the trailing sugar
+  # or an explicit `[k: v]`): every pair is routed **once**, by its final position — a named key's
+  # value by the position the refinement gives it, every other value and every key by the leading
+  # treatment's reading one level down (`descendant_treatment/1`) — and the container is offered
+  # by the leading treatment (`offer_container/4`). Choosing the final position *before*
+  # descending keeps the once-per-node invariant: a two-pass "route by the leading treatment,
+  # then re-route the named values from the raw source" analyzes every named value twice, and
+  # with nested calls routed the same way (`f(k: f(k: f(k: …)))`) the repeats compound
+  # exponentially — eight levels ran a mutator 256 times over the innermost literal. A non-keyword
+  # argument (a variable, a `Keyword.merge/2` call, a map) has no keys to refine and takes the
+  # leading treatment alone — exactly the "if it is a literal keyword list with a literal key"
+  # contract. (`Mutare.Transform.Tag.tag_routed_arg/4` is the guard-path twin.)
   defp route_macro_arg(descent, arg, {:keyed, leading, pairs}, mutators) do
-    analyzed = route_macro_arg(descent, arg, leading, mutators)
+    case CallOptions.keyword_pairs(arg) do
+      {:ok, kw_pairs, rewrap} ->
+        inner = descendant_treatment(leading)
 
-    with {:ok, raw_pairs, _rewrap} <- keyword_pairs(arg),
-         {:ok, analyzed_pairs, rewrap} <- keyword_pairs(analyzed),
-         true <- length(raw_pairs) == length(analyzed_pairs) do
-      raw_pairs
-      |> Enum.zip_with(analyzed_pairs, fn {key, raw_value}, {analyzed_key, analyzed_value} ->
-        case List.keyfind(pairs, AST.key_atom(key), 0) do
-          {_key, position} ->
-            {analyzed_key, route_macro_arg(descent, raw_value, position, mutators)}
+        routed =
+          Enum.map(kw_pairs, fn {key, value} ->
+            position =
+              case List.keyfind(pairs, AST.key_atom(key), 0) do
+                {_key, position} -> position
+                nil -> inner
+              end
 
-          nil ->
-            {analyzed_key, analyzed_value}
-        end
-      end)
-      |> rewrap.()
-    else
-      _ -> analyzed
+            {route_macro_arg(descent, key, inner, mutators),
+             route_macro_arg(descent, value, position, mutators)}
+          end)
+
+        offer_container(rewrap.(routed), arg, leading, mutators)
+
+      :error ->
+        route_macro_arg(descent, arg, leading, mutators)
     end
   end
 
@@ -246,6 +256,26 @@ defmodule Mutare.Transform.Analyze.Routed do
        do: descent.pattern(arg, mutators)
 
   defp route_macro_arg(descent, arg, _expression, mutators), do: descent.annotate(arg, mutators)
+
+  # What a leading treatment means one level down a keyed refinement: `:interior` withholds only
+  # the container, so its children are ordinary expressions; every other word means the same at
+  # every depth (`:raw` children stay raw, `:pattern` children are patterns, `:interpolated`
+  # children are each pinned — the scalar-per-value shape the keyword form is for).
+  defp descendant_treatment(:interior), do: :expression
+  defp descendant_treatment(other), do: other
+
+  # The keyword container's own offer under a keyed refinement, by the leading treatment. Only the
+  # Sourceror-wrapped explicit list (`{:__block__, _, [list]}`) is a node the generic walk offers
+  # (the collection families' `[…] → []` collapse and pair drops); the bare trailing sugar is a
+  # plain list and never was. `:expression` offers it — built from the routed pairs, diffed against
+  # the raw argument, as any rebuilt node; every other leading word withholds the container:
+  # `:interior` by definition, `:raw`/`:hosted` because the list is DSL data, `:pattern` because a
+  # pattern is never offered in place, `:interpolated` because pinning a container is the compound
+  # case `reject_compound_value!/2` forbids.
+  defp offer_container({:__block__, _meta, _args} = routed, raw, :expression, mutators),
+    do: Attach.offer(routed, raw, mutators)
+
+  defp offer_container(routed, _raw, _leading, _mutators), do: routed
 
   # Flag the in-place candidates on a node's own metadata `pin?: true` (the `:interpolated`
   # treatment), so emission `^`-pins their selector. Only the node's *own* candidates — a scalar
@@ -319,26 +349,6 @@ defmodule Mutare.Transform.Analyze.Routed do
   end
 
   defp route_keyword(_descent, arg, _value_treatments, _mutators), do: arg
-
-  # The pairs of a literal keyword-list argument in either shape — the bare trailing sugar
-  # (`f(x, timeout: 5)`) or the Sourceror `{:__block__, _, [list]}` wrap an explicit `[k: v]`
-  # takes — plus a `rewrap` that puts a routed pair list back into the same shape (so the
-  # rendering metadata survives). `:error` for anything that isn't a keyword literal. The keyed
-  # refinement's shape probe.
-  defp keyword_pairs({:__block__, meta, [list]}) when is_list(list) do
-    case keyword_pairs(list) do
-      {:ok, pairs, _rewrap} -> {:ok, pairs, fn routed -> {:__block__, meta, [routed]} end}
-      :error -> :error
-    end
-  end
-
-  defp keyword_pairs(list) when is_list(list) do
-    if CallOptions.keyword_list_shaped?(list),
-      do: {:ok, list, fn routed -> routed end},
-      else: :error
-  end
-
-  defp keyword_pairs(_arg), do: :error
 
   # Drop the in-place candidates on a node's *own* metadata, keeping every descendant's. The
   # `:interior` treatment; same move as `Mutare.Transform.Analyze.QuoteEscape`'s strip.

@@ -227,7 +227,7 @@ call_routes: [
 
 An entry is `{Module, :name, arity, treatment}`, or `{Module, :name, treatment}` to match any arity. The treatment is either `:skip` for the whole call, one word for every argument, or a per-position list:
 
-- `:skip` — the whole call is an inert leaf. A value piped *into* the call is not part of it and still mutates, and a skipped call in tail position still gets the enclosing function's return-value mutants (those test the function, not the call). `mix mutare --skip-call Mixpanel.track/3` is the same thing from the command line.
+- `:skip` — the whole call is an inert leaf. A value piped *into* the call is not part of it and still mutates, and a skipped call in tail position still gets the enclosing function's return-value mutants (those test the function, not the call). `mix mutare --skip-call Mixpanel.track/3` is the same thing from the command line. `:skip` applies to whatever the name resolves to — `Kernel.if/2` or a special form (`{Kernel.SpecialForms, :case, :skip}`) included. The forms Mutare analyzes structurally (`if`, `case`, the boolean operators, …) accept `:skip` and nothing else, and definitions (`def`, `defmodule`, `use`, …) cannot be routed; `# mutare:ignore` is the tool there.
 - `:raw` — leave the argument exactly as written (no descent, no mutation).
 - `:interior` — mutate what is *inside* the argument, but never the argument's own node.
 - `:expression` — mutate it as normal runtime code (the default).

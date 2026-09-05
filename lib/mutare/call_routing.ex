@@ -10,7 +10,10 @@ defmodule Mutare.CallRouting do
       is descended and the call node itself is never offered to a mutator. A piped receiver is the
       `|>`'s other operand, not part of the call, so it is analyzed as usual; a skipped call in
       tail position still gets the enclosing function's return-value mutants. The word for "this
-      call is not worth testing" (`Mixpanel.track/3`, a logger, a metrics emitter).
+      call is not worth testing" (`Mixpanel.track/3`, a logger, a metrics emitter). It applies to
+      whatever the head resolves to — a function, a macro such as `Kernel.if/2`, or a special form
+      (`{Kernel.SpecialForms, :case, :skip}`; special-form arities follow the AST, so use the
+      any-arity form).
     * **treat each argument** by a *position*: `:expression` (ordinary runtime code, the default),
       `:raw` (leave the argument exactly as written — a DSL body, a pattern the macro owns, an
       identifier list), `:interior` (descend into the argument but offer nothing on its own node —
@@ -52,6 +55,8 @@ defmodule Mutare.CallRouting do
   `:skip`, `:raw`, `:interior`, `:expression`, `:pattern`, `:binding_pattern`, and keyed refinements built from them can only *remove* or *re-route* mutants, so they can never break the single metamutant compile; they are the whole vocabulary the declarative `call_routes:` configuration key accepts. `:interpolated`, `{:keyword, ...}`, and `:hosted` are adapter-grade: each asserts a fact about a DSL that Mutare cannot verify, and the module routing it takes responsibility for that fact. An `:interpolated` position must genuinely accept `^` interpolation — where it doesn't, the spliced selector fails the single metamutant compile and is recovered as poison, discarding those mutants after a rebuild. A `{:keyword, ...}` list routes keyword *values positionally* and must name exactly one treatment per pair — a length mismatch raises at transform time, and a non-keyword argument under it is left raw (warned when a `:routing` classifier routed it; silent for a static route, whose other call shapes may be legal forms). A `:hosted` route without an enabled subscribing host aborts the run at scan time. These treatments must come from a module implementing this behaviour — an adapter written and tested against the library it describes; a declarative `call_routes:` entry that uses one (a keyed refinement included) is rejected with an `ArgumentError`.
 
   `:skip` is a statement about the *call*, so it is valid only as a route's bare treatment (`{Mixpanel, :track, 3, :skip}`); inside a per-position list it is rejected with a message naming `:raw`. Every other word is a statement about a *position*.
+
+  **Structural heads.** The forms Mutare analyzes structurally rather than as calls — `if`/`unless`, `|>`, the boolean connectives (`and`/`or`/`&&`/`||`) and negations (`!`/`not`), `in`, and every `Kernel.SpecialForms` form (`case`, `cond`, `with`, `for`, `fn`, `=`, …) — have no argument positions in the routing sense: a route on one accepts only `:skip`. An explicit positional route (`{Kernel, :if, 2, [:raw, :expression]}`) is rejected with an `ArgumentError`; a wildcard route's positions (`{Kernel, :*, :raw}`) simply do not apply to them. Definitions and directives (`def`/`defp`, `defmacro`/`defmacrop`, `defmodule`, `defimpl`/`defprotocol`/`defdelegate`, `use`, `@`) are not calls a route can act on at all. `# mutare:ignore` is the tool for leaving a definition alone, and `# mutare:ignore[conditional]` (or `--mutators`) for holding back particular mutants inside an `if`.
 
   Routes are positional and transform-enforced: no mutator is consulted. The other facility for leaving something alone — **argument marks** (`argument_marks:` / `c:Mutare.Mutator.argument_marks/1`) — labels a position and lets each mutator decide what the label means, which is how the built-in timeout table declines a duration literal but not a computed one. Reach for a route when the position should simply not mutate; reach for a mark when the reaction should depend on the value. See `Mutare.Mutator`.
 

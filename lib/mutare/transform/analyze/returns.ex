@@ -18,6 +18,7 @@ defmodule Mutare.Transform.Analyze.Returns do
   # strictly one-way (Analyze → Returns).
 
   alias Mutare.AST
+  alias Mutare.Transform.Meta
   alias Mutare.Mutator.Dispatch
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Analyze.{Attach, Syntax}
@@ -195,19 +196,26 @@ defmodule Mutare.Transform.Analyze.Returns do
   defp map_return_tails({form, meta, a_args} = analyzed, {form, _rmeta, r_args} = raw, fun)
        when is_map_key(@return_blocks, form) and is_list(a_args) and is_list(r_args) and
               a_args != [] and length(a_args) == length(r_args) do
-    {a_head, [a_blocks]} = Enum.split(a_args, -1)
-    {_r_head, [r_blocks]} = Enum.split(r_args, -1)
-    # The analyzed copy's keyword-form clause tails were normalized at the construct's
-    # analyze clause; the raw copy still carries the source's `:__block__` wrapper.
-    # Normalize it too so the lockstep walk stays aligned (the clauses inside keep
-    # their own meta, so each candidate's `original`/`range` is unaffected).
-    r_blocks = Syntax.normalize_clause_blocks(r_blocks)
-    kinds = Map.fetch!(@return_blocks, form)
-
-    if descendable_blocks?(a_blocks, r_blocks, kinds) do
-      {form, meta, a_head ++ [map_kw_blocks(a_blocks, r_blocks, kinds, fun)]}
-    else
+    # A skipped construct is an inert leaf (`Mutare.Transform.Analyze`'s dispatcher): nothing
+    # inside it is a position, its branch tails included, so the whole node is the tail and the
+    # return candidates attach to it — exactly as for a skipped call.
+    if Meta.routing(meta) == :skip do
       fun.(analyzed, raw)
+    else
+      {a_head, [a_blocks]} = Enum.split(a_args, -1)
+      {_r_head, [r_blocks]} = Enum.split(r_args, -1)
+      # The analyzed copy's keyword-form clause tails were normalized at the construct's
+      # analyze clause; the raw copy still carries the source's `:__block__` wrapper.
+      # Normalize it too so the lockstep walk stays aligned (the clauses inside keep
+      # their own meta, so each candidate's `original`/`range` is unaffected).
+      r_blocks = Syntax.normalize_clause_blocks(r_blocks)
+      kinds = Map.fetch!(@return_blocks, form)
+
+      if descendable_blocks?(a_blocks, r_blocks, kinds) do
+        {form, meta, a_head ++ [map_kw_blocks(a_blocks, r_blocks, kinds, fun)]}
+      else
+        fun.(analyzed, raw)
+      end
     end
   end
 

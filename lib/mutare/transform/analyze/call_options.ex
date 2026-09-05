@@ -52,6 +52,31 @@ defmodule Mutare.Transform.Analyze.CallOptions do
 
   def keyword_list_shaped?(_other), do: false
 
+  @doc """
+  The pairs of a literal keyword-list argument in either shape — the bare trailing sugar
+  (`f(x, timeout: 5)`) or the Sourceror `{:__block__, _, [list]}` wrap an explicit `[k: v]`
+  takes — plus a `rewrap` that puts a routed pair list back into the same shape (so the
+  rendering metadata survives). `:error` for anything that isn't a keyword literal. The keyed
+  refinement's shape probe, shared by the body path (`Mutare.Transform.Analyze.Routed`) and the
+  guard path (`Mutare.Transform.Tag`).
+  """
+  @spec keyword_pairs(Macro.t()) ::
+          {:ok, [{Macro.t(), Macro.t()}], ([{Macro.t(), Macro.t()}] -> Macro.t())} | :error
+  def keyword_pairs({:__block__, meta, [list]}) when is_list(list) do
+    case keyword_pairs(list) do
+      {:ok, pairs, _rewrap} -> {:ok, pairs, fn routed -> {:__block__, meta, [routed]} end}
+      :error -> :error
+    end
+  end
+
+  def keyword_pairs(list) when is_list(list) do
+    if keyword_list_shaped?(list),
+      do: {:ok, list, fn routed -> routed end},
+      else: :error
+  end
+
+  def keyword_pairs(_arg), do: :error
+
   # A genuine call: a remote `Foo.bar(…)` (`{:., …}` form) or a local/operator call (an
   # atom form), minus the data/structural forms that also reach the generic runtime
   # clause and could carry a keyword-list-shaped trailing element without being a call.

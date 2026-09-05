@@ -41,6 +41,7 @@ defmodule Mutare.Transform.Resolve do
   alias Mutare.Mutator
   alias Mutare.Transform.{Aliases, Calls, Imports, MetaKeys, ModuleScope, Uses}
   alias Mutare.Transform.Resolve.{ArgumentMarks, RouteStamp, NodeIds}
+  alias Mutare.Transform.StructuralForms
 
   @doc "Stamp remote calls, bare imported calls, and bare imported captures with their resolved module."
   @spec annotate(Macro.t()) :: Macro.t()
@@ -474,8 +475,13 @@ defmodule Mutare.Transform.Resolve do
   # if stamped, else `[:Kernel]` only when the name is a genuine `Kernel` export *and* not
   # displaced (`import Kernel, except:`). A local function — or a displaced name — resolves to
   # `nil` (no match), so a bare call is recognised as `Kernel.match?` exactly when it compiles
-  # to it (a local `def match?/2` shadowing the Kernel macro is itself a compile error). When
-  # none of those resolve, fall back to the **registries** for a call reached through a whole
+  # to it (a local `def match?/2` shadowing the Kernel macro is itself a compile error). A
+  # **special form** (`case`, `with`, `fn`, `=`, …) resolves to `Kernel.SpecialForms` by *name*:
+  # the compiler recognises them by name, and their nominal arities don't track the AST (a `with`
+  # node has one argument per clause plus the block). That lets a route `:skip` one
+  # (`{Kernel.SpecialForms, :case, :skip}`); positional routes never apply to them
+  # (`Mutare.Transform.StructuralForms`). When none of those resolve, fall back to the
+  # **registries** for a call reached through a whole
   # import the Mutare process can't reflect on: a registered macro (`registered_macro_module/3`)
   # first, then a declared argument mark (`marked_import_module/3`).
   defp bare_module_key(fun, arity, meta, env) do
@@ -484,9 +490,16 @@ defmodule Mutare.Transform.Resolve do
         module_key
 
       nil ->
-        if not Imports.kernel_displaced?(meta) and kernel_export?(fun, arity),
-          do: [:Kernel],
-          else: registered_macro_module(fun, arity, env) || marked_import_module(fun, arity, env)
+        cond do
+          not Imports.kernel_displaced?(meta) and kernel_export?(fun, arity) ->
+            [:Kernel]
+
+          StructuralForms.special_form?(fun) ->
+            StructuralForms.special_forms_key()
+
+          true ->
+            registered_macro_module(fun, arity, env) || marked_import_module(fun, arity, env)
+        end
     end
   end
 

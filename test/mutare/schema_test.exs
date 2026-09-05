@@ -864,6 +864,33 @@ defmodule Mutare.SchemaTest do
            ]
   end
 
+  test "a :skip on a structural head counts as matched; a wildcard's positions cascading onto one do not",
+       %{root: root} do
+    write(root, "lib/a.ex", """
+    defmodule SchemaRoutesStructural do
+      def f(x), do: if(x, do: 1, else: 2)
+      def g(a, b), do: a and b
+    end
+    """)
+
+    schema =
+      Schema.build(root,
+        mutators: @probe,
+        call_routes: [
+          # `Kernel.if/2` is a resolved head like any other: the `:skip` matches — not recorded.
+          {Kernel, :if, 2, :skip},
+          # A name-only positional route reaches `Kernel.and/2` through the cascade, but a
+          # structural head has no positions: the route is not applied there, so it matched
+          # nothing — recorded.
+          {:*, :and, 2, :raw}
+        ]
+      )
+
+    assert Enum.map(schema.ineffective_call_routes, &Mutare.CallRouting.Spec.key/1) == [
+             {:*, :and, 2}
+           ]
+  end
+
   test "records :argument_marks entries that matched no call (a piped receiver counts)", %{
     root: root
   } do

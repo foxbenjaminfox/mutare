@@ -252,7 +252,250 @@ defmodule Mutare.TransformCallSkipTest do
     end
   end
 
+  describe "structural heads — :skip is honoured on every form, and is the only route they take" do
+    # A route names a resolved head, whatever the analyzer does with it: `Kernel.if/2` is a macro
+    # like any other to the registry. The analyzer's dedicated clauses (`if`, the connectives, the
+    # negations, `case`, …) run *after* its dispatcher has honoured `:skip`, so the inert-leaf
+    # promise holds for them exactly as for `Mixpanel.track/3`. Positional routes never get there:
+    # an explicit key is rejected (`call_routing_spec_test.exs`), a wildcard's positions are not
+    # applied (`schema_test.exs` checks the match accounting).
+
+    @if_source """
+    defmodule Branches do
+      def f(x), do: if(x, do: 1, else: 2)
+
+      def g(x) do
+        y = if x > 0, do: 10, else: 20
+        y + 3
+      end
+    end
+    """
+
+    @flow_mutators [
+      Mutare.Mutators.IntegerLiteral,
+      Mutare.Mutators.Arithmetic,
+      Mutare.Mutators.Relational,
+      Mutare.Mutators.Conditional,
+      Mutare.Mutators.ReturnValue
+    ]
+
+    test "{Kernel, :if, 2, :skip} leaves nothing inside the if — no branch literals, no condition mutants" do
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(@if_source,
+          mutators: @flow_mutators,
+          call_routes: [{Kernel, :if, 2, :skip}]
+        )
+
+      inside = Enum.filter(sites, &(&1.line in [2, 5]))
+
+      # Line 2: the `if` is the function's tail, so the *function's* return-value mutants stay —
+      # on the leaf as a whole, never inside a branch. Line 5: nothing at all (`y =` is no tail).
+      assert inside != []
+      assert Enum.all?(inside, &(&1.mutator == :return_value and &1.line == 2))
+      assert Enum.all?(inside, &String.starts_with?(&1.original_code, "if("))
+      # Line 6 is untouched control: `y + 3` keeps its swap, literal, and return mutants.
+      assert Enum.any?(sites, &(&1.line == 6 and &1.mutator == :arithmetic))
+      assert_compiles(meta)
+    end
+
+    test "without the route the same ifs mutate inside (the :skip is doing the work)" do
+      {_meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(@if_source, mutators: @flow_mutators)
+
+      assert Enum.any?(sites, &(&1.line == 2 and &1.original_code == "1"))
+      assert Enum.any?(sites, &(&1.line == 5 and &1.mutator == :conditional))
+    end
+
+    test "a skipped connective is a leaf — operands included — while its own enclosing operator still mutates" do
+      source = """
+      defmodule Ops do
+        def f(a, b), do: (a > 1 && b > 2) || false
+      end
+      """
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [
+            Mutare.Mutators.Relational,
+            Mutare.Mutators.IntegerLiteral,
+            Mutare.Mutators.Logical,
+            Mutare.Mutators.Conditional
+          ],
+          call_routes: [{Kernel, :&&, 2, :skip}]
+        )
+
+      # Nothing from inside the `&&` (no relational swaps, no literals); the `||` — a different
+      # head — is still offered.
+      refute Enum.any?(sites, &(&1.mutator in [:relational, :integer]))
+      assert Enum.any?(sites, &(&1.mutator == :logical and &1.original_code =~ "||"))
+      assert_compiles(meta)
+    end
+
+    test "a skipped `in` under `not` is a leaf (the negation clauses check their inner operand)" do
+      # `x not in [1, 2]` parses as `not(x in [1, 2])`, and the analyzer has a dedicated clause for
+      # that shape which reads the inner operands directly. It must still see the inner `:skip`.
+      source = """
+      defmodule NotIn do
+        def f(x), do: x not in [1, 2]
+      end
+      """
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [
+            Mutare.Mutators.IntegerLiteral,
+            Mutare.Mutators.Logical,
+            Mutare.Mutators.Conditional
+          ],
+          call_routes: [{Kernel, :in, 2, :skip}]
+        )
+
+      refute Enum.any?(sites, &(&1.mutator == :integer))
+      # The outer `not` is an ordinary offered node.
+      assert Enum.any?(sites, &(&1.mutator in [:logical, :conditional]))
+      assert_compiles(meta)
+    end
+
+    test "a special form is skipped by name: {Kernel.SpecialForms, :case, :skip}, and :with at any arity" do
+      source = """
+      defmodule Forms do
+        def f(x) do
+          case x do
+            1 -> 2
+            _ -> 3
+          end
+        end
+
+        def g(m) do
+          with {:ok, v} <- Map.fetch(m, :k), do: v + 1, else: (_ -> 0)
+        end
+      end
+      """
+
+      mutators = [
+        Mutare.Mutators.IntegerLiteral,
+        Mutare.Mutators.Arithmetic,
+        Mutare.Mutators.ReturnValue
+      ]
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: mutators,
+          call_routes: [
+            {Kernel.SpecialForms, :case, :skip},
+            {Kernel.SpecialForms, :with, :skip}
+          ]
+        )
+
+      # Both constructs are their function's tail: the return-value mutants on the whole node are
+      # the function's; nothing from inside either.
+      assert sites != []
+      assert Enum.all?(sites, &(&1.mutator == :return_value))
+      assert_compiles(meta)
+
+      {_meta, plain, _} = Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
+      assert Enum.any?(plain, &(&1.original_code == "3"))
+      assert Enum.any?(plain, &(&1.mutator == :arithmetic))
+    end
+
+    test "in a guard, a skipped connective is inert too (the guard walk honours :skip at its entry)" do
+      source = "defmodule G do\n  def f(x) when x > 1 and x < 9, do: x\nend\n"
+      mutators = [Mutare.Mutators.Relational, Mutare.Mutators.IntegerLiteral]
+
+      {_m, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: mutators,
+          call_routes: [{Kernel, :and, 2, :skip}]
+        )
+
+      assert sites == []
+
+      {_m, plain, _} = Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
+      assert Enum.any?(plain, &(&1.original_code == "9"))
+    end
+
+    test "in a head pattern, a skipped special form is inert (the pattern walk honours :skip at its entry)" do
+      source = "defmodule P do\n  def f(%{a: 1} = m), do: m\nend\n"
+      mutators = [Mutare.Mutators.IntegerLiteral]
+
+      {_m, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: mutators,
+          call_routes: [{Kernel.SpecialForms, :%{}, :skip}]
+        )
+
+      assert sites == []
+
+      {_m, plain, _} = Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
+      assert Enum.any?(plain, &(&1.original_code == "1"))
+    end
+
+    test "a wildcard route's :skip reaches the structural heads but never a definition" do
+      # `{Kernel, :*, :skip}` skips every Kernel *call* — the `+` here — but `def` is a
+      # declaration the cascade declines, so the clause is still analyzed and its tail (the
+      # skipped `+`, a leaf) still carries the function's return-value mutants.
+      source = "defmodule W do\n  def f(x), do: x + 1\nend\n"
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [
+            Mutare.Mutators.Arithmetic,
+            Mutare.Mutators.IntegerLiteral,
+            Mutare.Mutators.ReturnValue
+          ],
+          call_routes: [{Kernel, :*, :skip}]
+        )
+
+      assert sites != []
+      assert Enum.all?(sites, &(&1.mutator == :return_value))
+      assert_compiles(meta)
+    end
+
+    test "a wildcard route's positions apply to the Kernel calls, not to a structural head" do
+      source = """
+      defmodule Wild do
+        def f(x), do: if(x, do: 1 + 1, else: inspect(x, limit: 3))
+      end
+      """
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.IntegerLiteral],
+          call_routes: [{Kernel, :*, :raw}]
+        )
+
+      # `:raw` reaches `+` and `inspect` — their arguments are left as written (no `1`, no `3`)
+      # while the nodes are still offered (the arithmetic swap fires). The `if` is analyzed as
+      # usual, which is what lets the `+` inside its branch be seen at all.
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+      refute Enum.any?(sites, &(&1.original_code in ["1", "3"]))
+      assert_compiles(meta)
+    end
+  end
+
   describe "the :interior treatment — contents mutate, the container doesn't" do
+    test "in a guard too: the container's own collapse goes, its contents keep mutating" do
+      # The guard walk registers targets as it goes, so `:interior` there is "walk, then drop the
+      # target on the argument's own node" — the twin of the body path's strip. Tuples and maps
+      # are guard-legal, so the treatment has real work to do here.
+      source = "defmodule GI do\n  def f(x) when is_tuple({x, 1}), do: x\nend\n"
+      mutators = [Mutare.Mutators.TupleLiteral, Mutare.Mutators.IntegerLiteral]
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: mutators,
+          call_routes: [{Kernel, :is_tuple, 1, :interior}]
+        )
+
+      refute Enum.any?(sites, &(&1.mutator == :tuple))
+      assert Enum.any?(sites, &(&1.original_code == "1"))
+      assert_compiles(meta)
+
+      # Not vacuous: unrouted, the tuple collapses.
+      {_m, plain, _} = Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
+      assert Enum.any?(plain, &(&1.mutator == :tuple))
+    end
+
     test "a map argument keeps its value mutants but loses its own collapse" do
       source = """
       defmodule Assigns do
@@ -324,7 +567,152 @@ defmodule Mutare.TransformCallSkipTest do
     end
   end
 
+  # A selector host reached through a keyed refinement: the DSL takes its fragment as a named
+  # option (`query(q, where: cond)`), so the adapter routes `[:expression, [:raw, where: :hosted]]`.
+  # (`KeyedDSL` is deliberately *not* defined here: a nested `defmodule` would make the route's
+  # alias resolve to `#{__MODULE__}.KeyedDSL`, not the bare `KeyedDSL` the source names — and a
+  # route never reflects on its module anyway.)
+  defmodule KeyedHost do
+    @behaviour Mutare.Mutator
+    @behaviour Mutare.CallRouting
+    @behaviour Mutare.Mutator.MacroHost
+
+    alias Mutare.CallRouting.Call
+    alias Mutare.Mutator.MacroHost.Target
+
+    @impl Mutare.Mutator
+    def name, do: :keyed_host
+
+    @impl Mutare.CallRouting
+    def call_routes, do: [{KeyedDSL, :query, 2, [:expression, [:raw, where: :hosted]]}]
+
+    @impl Mutare.Mutator.MacroHost
+    def hosted_macros, do: [{KeyedDSL, :query, 2}]
+
+    # Flip the `where:` comparison in place (the options are the trailing sugar: a bare pair list).
+    @impl Mutare.Mutator.MacroHost
+    def host(%Call{node: {_form, _meta, [_q, opts]}}, _context) when is_list(opts) do
+      case Enum.find_index(opts, fn {key, _value} -> Mutare.AST.key_atom(key) == :where end) do
+        nil ->
+          []
+
+        index ->
+          {_key, {op, meta, [left, right]} = original} = Enum.at(opts, index)
+
+          splice = fn {form, cmeta, [q, current]}, case_node ->
+            {form, cmeta,
+             [q, List.update_at(current, index, fn {key, _} -> {key, case_node} end)]}
+          end
+
+          [Target.new(original, [{flip(op), meta, [left, right]}], splice)]
+      end
+    end
+
+    def host(_call, _context), do: []
+
+    defp flip(:>), do: :<
+    defp flip(:<), do: :>
+    defp flip(op), do: op
+  end
+
+  # Counts how often the literal `1` is offered — the once-per-node probe for nested keyed routes.
+  defmodule OfferCounter do
+    @behaviour Mutare.Mutator
+
+    @impl true
+    def name, do: :offer_counter
+
+    @impl true
+    def mutate({:__block__, _meta, [1]}) do
+      :ets.update_counter(:mutare_keyed_offer_count, :offers, 1)
+      :skip
+    end
+
+    def mutate(_node), do: :skip
+  end
+
   describe "keyed refinements — [leading, key: treatment, …] over a literal keyword argument" do
+    test "a :hosted value under a keyed refinement reaches its host" do
+      source = """
+      defmodule KeyedHosted do
+        def f(q, x), do: KeyedDSL.query(q, limit: 1 + 1, where: x > 1)
+      end
+      """
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [
+            KeyedHost,
+            Mutare.Mutators.Relational,
+            Mutare.Mutators.Arithmetic,
+            Mutare.Mutators.IntegerLiteral
+          ]
+        )
+
+      # The host's flip is the only mutant: the `where:` fragment is core-raw (hosted), and under
+      # the `:raw` leading treatment the `limit:` value and both keys are left as written.
+      assert [%{mutator: :keyed_host, mutated_code: mutated}] = sites
+      assert mutated =~ "x < 1"
+      assert_compiles(meta)
+    end
+
+    test "each value is routed once — nested keyed routes do not compound the offers" do
+      # Six nested `f(k: …)` calls, each routed `[[k: :expression]]`. Routing the whole argument
+      # by the leading treatment and then re-routing the named value would offer the innermost
+      # literal 2^6 times; choosing the final position before descending offers it once.
+      :ets.new(:mutare_keyed_offer_count, [:named_table, :public])
+      :ets.insert(:mutare_keyed_offer_count, {:offers, 0})
+
+      inner = Enum.reduce(1..6, "1", fn _, acc -> "KeyedCountDSL.f(k: #{acc})" end)
+      source = "defmodule KeyedNested do\n  def g, do: #{inner}\nend\n"
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [OfferCounter, Mutare.Mutators.IntegerLiteral],
+          call_routes: [{KeyedCountDSL, :f, 1, [[k: :expression]]}]
+        )
+
+      assert :ets.lookup(:mutare_keyed_offer_count, :offers) == [offers: 1]
+      # The innermost literal's own mutants, exactly once each.
+      assert Enum.count(sites, &(&1.original_code == "1")) == 2
+      assert_compiles(meta)
+    end
+
+    test "in a guard too: the named value is held back, the rest follows the leading treatment" do
+      source = "defmodule GK do\n  def f(x) when is_list([timeout: 5, limit: 2]), do: x\nend\n"
+
+      mutators = [
+        Mutare.Mutators.IntegerLiteral,
+        Mutare.Mutators.List,
+        Mutare.Mutators.AtomLiteral
+      ]
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: mutators,
+          call_routes: [{Kernel, :is_list, 1, [[timeout: :raw]]}]
+        )
+
+      # `timeout:`'s value is raw; the sibling pair, the keys, and the list's own collapse follow
+      # the (default) `:expression` leading treatment.
+      refute Enum.any?(sites, &(&1.original_code == "5"))
+      assert Enum.any?(sites, &(&1.original_code == "2"))
+      assert Enum.any?(sites, &(&1.original_code == "timeout:"))
+      assert Enum.any?(sites, &(&1.mutator == :list))
+      assert_compiles(meta)
+
+      # An `:interior` leading treatment withholds the container only.
+      {_m, interior, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: mutators,
+          call_routes: [{Kernel, :is_list, 1, [[:interior, timeout: :raw]]}]
+        )
+
+      refute Enum.any?(interior, &(&1.mutator == :list))
+      refute Enum.any?(interior, &(&1.original_code == "5"))
+      assert Enum.any?(interior, &(&1.original_code == "2"))
+    end
+
     @kw_mutators [
       Mutare.Mutators.IntegerLiteral,
       Mutare.Mutators.AtomLiteral,

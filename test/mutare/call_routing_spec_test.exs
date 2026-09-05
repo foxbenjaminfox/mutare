@@ -146,6 +146,52 @@ defmodule Mutare.CallRouting.SpecGrammarTest do
     end
   end
 
+  describe "structural heads (Mutare.Transform.StructuralForms)" do
+    test "a structural form accepts :skip and nothing else" do
+      assert Mutare.CallRouting.Spec.new(Kernel, :if, 2, :skip).args == :skip
+      assert Mutare.CallRouting.Spec.new(Kernel.SpecialForms, :case, :any, :skip).args == :skip
+
+      for args <- [:raw, [:raw, :expression], :routing, [:expression, [do: :raw]]] do
+        assert_raise ArgumentError,
+                     ~r/Kernel\.if is analyzed structurally.*accepts only :skip/,
+                     fn -> Mutare.CallRouting.Spec.new(Kernel, :if, 2, args) end
+      end
+
+      assert_raise ArgumentError, ~r/Kernel\.SpecialForms\.case is analyzed structurally/, fn ->
+        Mutare.CallRouting.Spec.new(Kernel.SpecialForms, :case, :any, :raw)
+      end
+
+      for name <- [:unless, :|>, :!, :not, :in, :and, :or, :&&, :||] do
+        assert_raise ArgumentError, ~r/accepts only :skip/, fn ->
+          Mutare.CallRouting.Spec.new(Kernel, name, :any, :raw)
+        end
+      end
+    end
+
+    test "a definition accepts no route at all, :skip included" do
+      names = [:def, :defp, :defmacro, :defmacrop, :defmodule, :defimpl, :defprotocol]
+
+      for name <- names ++ [:defdelegate, :use, :@], args <- [:skip, :raw] do
+        assert_raise ArgumentError, ~r/is a definition, not a call/, fn ->
+          Mutare.CallRouting.Spec.new(Kernel, name, :any, args)
+        end
+      end
+    end
+
+    test "every other Kernel export, and any wildcard, is an ordinary call" do
+      alias Mutare.CallRouting.Spec
+
+      assert %Spec{} = Spec.new(Kernel, :inspect, 2, [:expression, :raw])
+      # The built-in route.
+      assert %Spec{} = Spec.new(Kernel, :match?, 2, [:pattern])
+      assert %Spec{} = Spec.new(Kernel, :+, 2, :skip)
+      # Whole-module: its positions are declined per structural head at stamp time.
+      assert %Spec{} = Spec.new(Kernel, :*, :any, :raw)
+      # Name-only: may be a DSL's `if` under a displaced Kernel import.
+      assert %Spec{} = Spec.new(:*, :if, 2, :raw)
+    end
+  end
+
   test "the treatment vocabulary is the argument words only" do
     assert Spec.treatments() == [
              :expression,

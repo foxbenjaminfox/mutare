@@ -8,10 +8,10 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   alias Mutare.CallRouting.Registry, as: Routes
   alias Mutare.CallRouting.Registry.Entry
   alias Mutare.CallRouting.{ArgumentRoutes, Call, ContractError}
-  alias Mutare.Mutator
+  alias Mutare.{AST, Mutator}
   alias Mutare.CallRouting.Spec
   alias Mutare.Transform.Analyze.CallOptions
-  alias Mutare.Transform.{Calls, Imports, Meta}
+  alias Mutare.Transform.{Calls, Imports, Meta, StructuralForms}
 
   @typep diag :: %{warn?: boolean(), file: String.t()}
 
@@ -38,19 +38,29 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
       nil ->
         meta
 
-      %Entry{} = entry ->
-        # A known macro routes its arguments specially, so a bare-import witness that rebuilds
-        # the call as an anonymous function may be invalid. Drop the witness where the macro is
-        # known; the resolution stamp itself stays.
-        #
-        # Stamp the resolved identity (`{module_key, name}`) *before* dispatching, and thread the
-        # updated meta back onto `call_node` — so a `:routing` classifier (invoked *inside*
-        # `stamp_spec`) that normalizes the node via `Mutare.Transform.Calls.resolved_routed_call/1`
-        # already sees it. `module_key` is `nil` only for a name-only (`{:*, name, …}`) match whose
-        # module the resolver couldn't see; the reader then returns `{nil, name, …}`, which a
-        # module-matching classifier clause simply skips (its purpose — match by name instead).
-        meta = stamp_identity(Imports.drop_witness(meta), module_key, fun, pipe_mode)
-        stamp_spec(meta, entry, put_meta(call_node, meta), arity, pipe_mode, diag)
+      %Entry{spec: spec} = entry ->
+        if StructuralForms.applies?(module_key, fun, spec) do
+          # A known macro routes its arguments specially, so a bare-import witness that rebuilds
+          # the call as an anonymous function may be invalid. Drop the witness where the macro is
+          # known; the resolution stamp itself stays.
+          #
+          # Stamp the resolved identity (`{module_key, name}`) *before* dispatching, and thread the
+          # updated meta back onto `call_node` — so a `:routing` classifier (invoked *inside*
+          # `stamp_spec`) that normalizes the node via `Mutare.Transform.Calls.resolved_routed_call/1`
+          # already sees it. `module_key` is `nil` only for a name-only (`{:*, name, …}`) match whose
+          # module the resolver couldn't see; the reader then returns `{nil, name, …}`, which a
+          # module-matching classifier clause simply skips (its purpose — match by name instead).
+          meta = stamp_identity(Imports.drop_witness(meta), module_key, fun, pipe_mode)
+          stamp_spec(meta, entry, put_meta(call_node, meta), arity, pipe_mode, diag)
+        else
+          # A wildcard route (`{Kernel, :*, :raw}`, `{:*, :if, …}`) whose cascade reached a head
+          # its key never named and that cannot carry it: a positional route on a structural form
+          # (`if`, `and`, `case`, …), or any route on a declaration (`def`, `use`, …). The explicit
+          # key forms were rejected at `Mutare.CallRouting.Spec.new/4`; here the route's positions
+          # simply do not apply, so the head stays unstamped — analyzed as usual, and not counted
+          # among the route's matches (`Mutare.Transform.ConfigMatches`).
+          meta
+        end
     end
   end
 
@@ -142,6 +152,23 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
           []
         )
     end
+  end
+
+  # A keyed refinement: check the leading treatment against the argument, then each named key's
+  # position against that key's value (a non-keyword argument has no named values to check).
+  defp warn_misshapen_keyword({:keyed, leading, pairs}, arg, index, diag, router, spec) do
+    warn_misshapen_keyword(leading, arg, index, diag, router, spec)
+
+    with {:ok, kw_pairs} <- keyword_pairs(arg) do
+      Enum.each(kw_pairs, fn {key, value} ->
+        case List.keyfind(pairs, AST.key_atom(key), 0) do
+          {_key, position} -> warn_misshapen_keyword(position, value, index, diag, router, spec)
+          nil -> :ok
+        end
+      end)
+    end
+
+    :ok
   end
 
   defp warn_misshapen_keyword(_treatment, _arg, _index, _diag, _router, _spec), do: :ok
