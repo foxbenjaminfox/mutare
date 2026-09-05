@@ -8626,3 +8626,24 @@ analyzed the inner operands directly, so `{Kernel, :==, 2, :interior}` held on `
 `not (x == 2)`; the inner node now takes the ordinary call path (`do_analyze_call_node/3` /
 `tag_args/3`) with the redundancy drop applied on top. The negation-over-`in` and double-negation
 clauses need nothing: `in`, `!` and `not` are structural, so no positional route can reach them.
+
+**Second review, same day — literal forms are not routable.** The next round found `{1, 2}`
+escaping a `{}` skip (a two-tuple is a bare tuple in the AST, not a `{:{}, …}` node) and
+`%__MODULE__{a: 123}` escaping a `%{}` skip (the struct clause destructures its map without passing
+through the dispatcher). Both are symptoms of one mistake: `{}`, `%{}`, `%`, `<<>>`, `=`, `^` and
+`::` are literal and pattern *syntax*, not calls, and "skip every tuple" is a literal-family concern
+the literal families already own (`--mutators`, `# mutare:ignore[<family>]`) — honouring it would
+mean chasing every walk that destructures data. `StructuralForms` now partitions
+`Kernel.SpecialForms` explicitly: the *construct* forms (`case`, `cond`, `with`, `for`, `try`,
+`receive`, `fn`, `quote`, `unquote`/`unquote_splicing`, `super`, `&`) take `:skip`; the *directives*
+(`alias`/`import`/`require`) are declarations like `use`; the *literal and pattern* forms are a
+`:literal` class no route may name; the rest is compiler-internal (and a form none of the lists
+name falls there too — the conservative reading for a future Elixir). The pattern-side gates from
+the previous round stay: a pattern can still hold a routable Kernel head (`"a" <> rest`, `-1`), and
+the structural families' contract (a custom `pattern_mutations/2` may restructure anything) is what
+they enforce, though the built-ins never cross such a head; only the `=`-statement gate went, since
+nothing can reach it now. Two real leaks fixed alongside: the guard `in`-RHS walk (`tag_in_rhs/3`)
+built the range/list node's children directly, so `{Kernel, :.., 2, :skip}` and positional routes
+on `..` were ignored in `x in 1..5`; and `analyze_statement/3` discovered a `:binding_pattern` route
+on the RHS stage of a *skipped* pipe (`[x, y] |> destructure(v)` under `{Kernel, :|>, 2, :skip}`)
+and attached pattern-swap candidates past the boundary.

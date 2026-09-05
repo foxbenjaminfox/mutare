@@ -76,9 +76,11 @@ defmodule Mutare.Transform.PatternStructure do
   @spec node_mutations(Macro.t(), MapSet.t(), [Mutare.Mutator.Spec.t()]) ::
           [{Mutare.Mutator.Spec.t(), Macro.t()}]
   def node_mutations(pattern, used_outside, structural_mutators) do
-    # A pattern holding a `:skip`-routed form is not restructured at all: the skipped form is an
-    # inert leaf, and a swap or wildcard across it would mutate inside it (a swap beside it
-    # would not — conservative on purpose; the literal walk still mutates beside it).
+    # A pattern holding a `:skip`-routed head (`"a" <> rest`, `-1` — the literal forms themselves
+    # are not routable) is not restructured at all: the skipped head is an inert leaf, and a swap
+    # or wildcard across it would mutate inside it. Conservative on purpose, and a contract guard:
+    # the built-in families never restructure across such a head, a custom `pattern_mutations/2`
+    # might. The literal walk still mutates beside it.
     if Mutare.Transform.Meta.contains_skipped?(pattern) do
       []
     else

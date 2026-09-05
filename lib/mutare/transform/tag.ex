@@ -342,9 +342,15 @@ defmodule Mutare.Transform.Tag do
   # in a body, replacing the whole membership expression with `false` skips evaluation of
   # the left operand, while emptying only the RHS does not.
   # mutare:ignore[guard_drop] equivalent — Sourceror wraps every collection literal as a 3-tuple with list args, so this guard never fails for valid input.
-  defp tag_in_rhs({form, meta, args}, acc, mutators) when is_list(args) do
-    {args, acc} = Enum.map_reduce(args, acc, &tag_walk(&1, &2, mutators))
-    offer_legal_in_rhs({form, meta, args}, acc, mutators)
+  defp tag_in_rhs({form, meta, args} = node, acc, mutators) when is_list(args) do
+    # The RHS head's own route first, as `tag_walk/3` would: a skipped `1..5` is a leaf, a
+    # positional route on `..` reaches its endpoints (`tag_args/3`).
+    if Meta.skipped?(node) do
+      {node, acc}
+    else
+      {args, acc} = tag_args(node, acc, mutators)
+      offer_legal_in_rhs({form, meta, args}, acc, mutators)
+    end
   end
 
   # mutare:ignore[clause_drop] equivalent — a variable can't be a guard `in`-RHS, so this fallback is unreachable for valid input.

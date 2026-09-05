@@ -215,6 +215,21 @@ defmodule Mutare.TransformCallSkipTest do
       assert Enum.any?(plain, &(&1.original_code == "123"))
     end
 
+    test "the RHS of a guard `in` is routed too: a skipped or :interior range keeps its endpoints" do
+      # `tag_in_rhs/3` walks the membership RHS with its own redundancy filter; it must honour the
+      # RHS head's route first.
+      source = "defmodule R do\n  def f(x) when x in 1..5, do: x\nend\n"
+      mutators = [Mutare.Mutators.IntegerLiteral]
+
+      for route <- [{Kernel, :.., 2, :skip}, {Kernel, :.., 2, :interior}] do
+        {_m, sites, _} = transform(source, mutators, [route])
+        assert sites == [], "expected the endpoints held back under #{inspect(route)}"
+      end
+
+      {_m, plain, _} = transform(source, mutators, [])
+      assert Enum.any?(plain, &(&1.original_code == "5"))
+    end
+
     test "Mutare.Calls.routed_treatments/1 reports :skip for a skipped call" do
       node =
         "Mixpanel.track(u, \"e\", %{})"
@@ -293,41 +308,62 @@ defmodule Mutare.TransformCallSkipTest do
       assert Mutare.Calls.routed_treatments(capture) == :skip
     end
 
-    test "a skipped form inside a pattern is not restructured — match, head, and case-clause patterns alike" do
-      # The structural pattern families run outside the dispatcher (they restructure a whole
-      # pattern after it was analyzed), so they gate on the skip boundary themselves.
+    test "a skipped Kernel head inside a pattern is inert wherever the pattern sits — head and case clause" do
+      # Patterns can hold routable Kernel heads (`"a" <> rest`, `-1`); the literal forms themselves
+      # cannot be routed. The pattern walks honour the stamp at their entry, and the structural
+      # families are gated on it (`PatternStructure.node_mutations/3`) as a contract guard — the
+      # built-ins never restructure across such a head, a custom `pattern_mutations/2` might.
       source = """
       defmodule Pats do
-        def match(v) do
-          {x, y} = v
-          {y, x}
-        end
-
-        def head(%{a: a, b: b}), do: {a, b}
+        def head("a" <> x), do: x
 
         def clause(v) do
           case v do
-            {x, y, z} -> {z, y, x}
+            "a" <> x -> x
           end
+        end
+      end
+      """
+
+      mutators = [
+        Mutare.Mutators.StringLiteral,
+        Mutare.Mutators.PatternWildcard,
+        Mutare.Mutators.PatternSwap
+      ]
+
+      {meta, sites, _} = transform(source, mutators, [{Kernel, :<>, 2, :skip}])
+      assert sites == []
+      assert_compiles(meta)
+
+      # Not vacuous: unrouted, the literal mutates in both positions. (A `=` match's LHS is a
+      # `:pattern` position the in-place walk never mutates, so it is no control here.)
+      {_m, plain, _} = transform(source, mutators, [])
+
+      for line <- [2, 6],
+          do:
+            assert(Enum.any?(plain, &(&1.line == line and &1.mutator == :string)), "line #{line}")
+    end
+
+    test "a skipped pipe whose stage is a binding-pattern macro attaches no pattern mutants" do
+      # `destructure/2` is routed `:binding_pattern` by core, and `analyze_statement/3` discovers
+      # that route on the pipe's RHS stage — it must stop at the skipped pipe.
+      source = """
+      defmodule Destructured do
+        def f(v) do
+          [x, y] |> destructure(v)
+          {y, x}
         end
       end
       """
 
       mutators = [Mutare.Mutators.PatternSwap]
 
-      routes = [
-        {Kernel.SpecialForms, :=, :skip},
-        {Kernel.SpecialForms, :%{}, :skip},
-        {Kernel.SpecialForms, :{}, :skip}
-      ]
-
-      {meta, sites, _} = transform(source, mutators, routes)
+      {meta, sites, _} = transform(source, mutators, [{Kernel, :|>, 2, :skip}])
       assert sites == []
       assert_compiles(meta)
 
-      # Not vacuous: unrouted, each of the three patterns is swapped.
       {_m, plain, _} = transform(source, mutators, [])
-      for line <- [3, 7, 11], do: assert(Enum.any?(plain, &(&1.line == line)), "line #{line}")
+      assert Enum.any?(plain, &(&1.mutator == :pattern_swap))
     end
 
     @if_source """
@@ -484,20 +520,16 @@ defmodule Mutare.TransformCallSkipTest do
       assert Enum.any?(plain, &(&1.original_code == "9"))
     end
 
-    test "in a head pattern, a skipped special form is inert (the pattern walk honours :skip at its entry)" do
-      source = "defmodule P do\n  def f(%{a: 1} = m), do: m\nend\n"
-      mutators = [Mutare.Mutators.IntegerLiteral]
+    test "in a head pattern, a skipped Kernel head is inert (the pattern walk honours :skip at its entry)" do
+      # `<>` is a Kernel macro a pattern can hold; the literal forms themselves are not routable.
+      source = "defmodule P do\n  def f(\"a\" <> rest), do: rest\nend\n"
+      mutators = [Mutare.Mutators.StringLiteral]
 
-      {_m, sites, _} =
-        Mutare.Transform.transform_string_with_sites(source,
-          mutators: mutators,
-          call_routes: [{Kernel.SpecialForms, :%{}, :skip}]
-        )
-
+      {_m, sites, _} = transform(source, mutators, [{Kernel, :<>, 2, :skip}])
       assert sites == []
 
-      {_m, plain, _} = Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
-      assert Enum.any?(plain, &(&1.original_code == "1"))
+      {_m, plain, _} = transform(source, mutators, [])
+      assert Enum.any?(plain, &(&1.original_code == ~s("a")))
     end
 
     test "a wildcard route's :skip reaches the structural heads but never a definition" do

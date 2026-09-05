@@ -33,14 +33,21 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
     do: analyze_match_statement(descent, match, mutators)
 
   def analyze_statement(descent, node, mutators) do
-    case binding_pattern_macro(node) do
-      nil ->
-        descent.annotate(node, mutators)
+    # A `:skip`-routed statement (`[x, y] |> destructure(v)` under `{Kernel, :|>, 2, :skip}`) is an
+    # inert leaf: the dispatcher leaves it untouched, and the `:binding_pattern` route stamped on
+    # its RHS *stage* must not be discovered past that boundary either.
+    if Meta.skipped?(node) do
+      descent.annotate(node, mutators)
+    else
+      case binding_pattern_macro(node) do
+        nil ->
+          descent.annotate(node, mutators)
 
-      {raw_pattern, rebuild_mutant} ->
-        node
-        |> descent.annotate(mutators)
-        |> attach_macro_pattern_candidates(raw_pattern, rebuild_mutant, mutators)
+        {raw_pattern, rebuild_mutant} ->
+          node
+          |> descent.annotate(mutators)
+          |> attach_macro_pattern_candidates(raw_pattern, rebuild_mutant, mutators)
+      end
     end
   end
 
@@ -52,12 +59,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # a binding would silently drop the filter; only a `=` (already a binding qualifier) is safe.
   def analyze_match_statement(descent, {:=, _meta, [raw_lhs, raw_rhs]} = match, mutators) do
     analyzed = descent.annotate(match, mutators)
-
-    # A `:skip`-routed `=` (`{Kernel.SpecialForms, :=, :skip}`) is an inert leaf: the dispatcher
-    # returned it untouched above, and its LHS is not offered to the structural families either.
-    if Meta.skipped?(match),
-      do: analyzed,
-      else: attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, mutators)
+    attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, mutators)
   end
 
   def analyze_match_statement(descent, other, mutators), do: descent.annotate(other, mutators)

@@ -216,7 +216,8 @@ position to a host mutator — below). The `:routing` sentinel defers to
 `where(q, category: "Foo")` is data, `where(q, [u], u.x == u.y)` is a DSL
 fragment. Two limits on what a route may name: the structural forms (`if`,
 `case`, the boolean operators — anything the analyzer walks with a clause of its
-own) take `:skip` only, and definitions (`def`, `defmodule`, …) take no route —
+own) take `:skip` only; definitions (`def`, `defmodule`, …) and literal syntax (`{}`, `%{}`, …)
+take no route —
 an explicit key is rejected, a wildcard's positions are not applied to them.
 
 `:skip`, `:raw`, `:interior`, `:expression`, `:pattern`, `:binding_pattern`,

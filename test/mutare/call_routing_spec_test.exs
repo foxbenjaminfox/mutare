@@ -172,15 +172,35 @@ defmodule Mutare.CallRouting.SpecGrammarTest do
       names = [:def, :defp, :defmacro, :defmacrop, :defmodule, :defimpl, :defprotocol]
 
       for name <- names ++ [:defdelegate, :use, :@], args <- [:skip, :raw] do
-        assert_raise ArgumentError, ~r/is a definition, not a call/, fn ->
+        assert_raise ArgumentError, ~r/not a call: a call route cannot target it/, fn ->
           Mutare.CallRouting.Spec.new(Kernel, name, :any, args)
+        end
+      end
+    end
+
+    test "a literal or pattern form cannot be named at all — the literal families own it" do
+      for name <- [:{}, :%{}, :%, :<<>>, :=, :^, :"::"] do
+        assert_raise ArgumentError, ~r/literal or pattern syntax/, fn ->
+          Mutare.CallRouting.Spec.new(Kernel.SpecialForms, name, :any, :skip)
+        end
+      end
+    end
+
+    test "the construct special forms take :skip; the directives are declarations" do
+      for name <- [:case, :cond, :with, :for, :try, :receive, :fn, :quote, :unquote, :super, :&] do
+        assert Mutare.CallRouting.Spec.new(Kernel.SpecialForms, name, :any, :skip).args == :skip
+      end
+
+      for name <- [:alias, :import, :require] do
+        assert_raise ArgumentError, ~r/not a call: a call route cannot target it/, fn ->
+          Mutare.CallRouting.Spec.new(Kernel.SpecialForms, name, :any, :skip)
         end
       end
     end
 
     test "a compiler-internal form cannot be named at all" do
       for name <- [:__block__, :__aliases__, :., :__MODULE__] do
-        assert_raise ArgumentError, ~r/compiler-internal syntax/, fn ->
+        assert_raise ArgumentError, ~r/special form no call route can name/, fn ->
           Mutare.CallRouting.Spec.new(Kernel.SpecialForms, name, :any, :skip)
         end
       end

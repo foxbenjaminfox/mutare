@@ -758,7 +758,7 @@ defmodule Mutare.OptionsTest do
         Options.new(call_routes: [{Kernel, :if, 2, :raw}])
       end
 
-      assert_raise ArgumentError, ~r/is a definition, not a call/, fn ->
+      assert_raise ArgumentError, ~r/not a call: a call route cannot target it/, fn ->
         Options.new(call_routes: [{Kernel, :def, 2, :skip}])
       end
 
