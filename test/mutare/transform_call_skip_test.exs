@@ -1095,6 +1095,116 @@ defmodule Mutare.TransformCallSkipTest do
     end
   end
 
+  describe "a call-level :skip and the pipe's left operand" do
+    # `:skip` says nothing about positions, so the receiver would fall back to ordinary runtime.
+    # Where the skip displaced a code-provided route, that route still governs the position: a
+    # piped receiver is the call's effective argument 0, and `Kernel.match?/2` routes 0 as
+    # `:pattern`. Getting this wrong splices a selector `case` into a match — uncompilable.
+    test "a skipped macro's piped receiver keeps the displaced route's pattern context" do
+      source = "defmodule PipedSkip do\n  def f(x), do: 1 |> match?(x)\nend\n"
+
+      {skipped_meta, skipped, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          call_routes: [{Kernel, :match?, 2, :skip}]
+        )
+
+      {_meta, default, _} = Mutare.Transform.transform_string_with_sites(source)
+
+      # The receiver is a pattern either way: no `integer` selector lands on the `1`.
+      refute Enum.any?(skipped, &(&1.mutator == :integer))
+
+      assert Enum.map(skipped, &{&1.mutator, &1.mutated_code}) ==
+               Enum.map(default, &{&1.mutator, &1.mutated_code})
+
+      assert_compiles(skipped_meta)
+    end
+
+    test "the same holds for a binding-pattern macro" do
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(
+          "defmodule PipedDestructure do\n  def f(x), do: [1] |> destructure(x)\nend\n",
+          call_routes: [{Kernel, :destructure, 2, :skip}]
+        )
+
+      refute Enum.any?(sites, &(&1.mutator == :integer))
+      assert_compiles(meta)
+    end
+
+    test "displacing nothing leaves the receiver ordinary runtime, mutants and all" do
+      source = "defmodule PipedPlain do\n  def f(u), do: Enum.reverse(u) |> List.wrap()\nend\n"
+
+      {meta, skipped, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          call_routes: [{List, :wrap, 1, :skip}]
+        )
+
+      {_meta, unrouted, _} = Mutare.Transform.transform_string_with_sites(source)
+
+      assert Enum.map(skipped, &{&1.mutator, &1.mutated_code}) ==
+               Enum.map(unrouted, &{&1.mutator, &1.mutated_code})
+
+      assert {:call_removal, "u"} in Enum.map(skipped, &{&1.mutator, &1.mutated_code})
+      assert_compiles(meta)
+    end
+  end
+
+  describe ":interior over an operand the equivalent-sibling suppression withheld" do
+    # Analyze withholds the operand because the negation carries the mutation for both; `:interior`
+    # then drops the negation. Without accounting for the withheld root the pair vanishes together
+    # and the argument yields nothing at all.
+    test "each suppressed shape yields its operand's mutants once the root is withheld" do
+      for {body, original, expected} <- [
+            {"not not x", "not x", [logical: "x", conditional: "true", conditional: "false"]},
+            {"not (x in [1])", "x in [1]",
+             [conditional: "true", conditional: "false", relational: "x not in [1]"]},
+            {"not (x == 1)", "x == 1",
+             [conditional: "true", conditional: "false", relational: "x != 1"]}
+          ] do
+        {meta, sites, _} =
+          Mutare.Transform.transform_string_with_sites(
+            "defmodule Withheld do\n  def f(x), do: MyApp.render(x, #{body})\nend\n",
+            mutators: [
+              Mutare.Mutators.Logical,
+              Mutare.Mutators.Conditional,
+              Mutare.Mutators.Relational
+            ],
+            call_routes: [{MyApp, :render, 2, [:expression, :interior]}]
+          )
+
+        assert Enum.map(sites, &{&1.mutator, &1.mutated_code}) == expected
+        # The mutants are the *operand's*, not the withheld negation's.
+        assert Enum.all?(sites, &(&1.original_code == original))
+        assert_compiles(meta)
+      end
+    end
+
+    test "an ordering operator under the negation is unaffected — it was never withheld" do
+      {_meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(
+          "defmodule Ordering do\n  def f(x), do: MyApp.render(x, not (x > 1))\nend\n",
+          mutators: [Mutare.Mutators.Relational],
+          call_routes: [{MyApp, :render, 2, [:expression, :interior]}]
+        )
+
+      assert Enum.map(sites, &{&1.original_code, &1.mutated_code}) == [
+               {"x > 1", "x >= 1"},
+               {"x > 1", "x < 1"}
+             ]
+    end
+
+    test "a plain argument still loses only its own node's mutants" do
+      {_meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(
+          "defmodule Plain do\n  def f(x), do: MyApp.render(x, x + 1)\nend\n",
+          mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.IntegerLiteral],
+          call_routes: [{MyApp, :render, 2, [:expression, :interior]}]
+        )
+
+      refute Enum.any?(sites, &(&1.mutator == :arithmetic))
+      assert Enum.all?(sites, &(&1.original_code == "1"))
+    end
+  end
+
   defp transform(source, mutators, routes),
     do:
       Mutare.Transform.transform_string_with_sites(source,

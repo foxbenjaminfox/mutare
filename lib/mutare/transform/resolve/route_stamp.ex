@@ -98,13 +98,50 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   # `Mutare.Transform.Calls.routed_treatments/1` reports `:skip`. No piped stamp is written: a piped
   # receiver is the `|>`'s left operand, a sibling of the skipped call rather than part of it, so it
   # is analyzed as ordinary runtime (a `Repo.insert!(u) |> Mixpanel.track(…)` keeps its mutants).
-  defp stamp_spec(meta, %Entry{spec: %Spec{args: :skip}}, _call_node, _arity, _pipe_mode, _diag),
-    do: Meta.stamp_routing(meta, :skip)
+  defp stamp_spec(meta, %Entry{spec: %Spec{args: :skip}} = entry, call_node, arity, _pipe, _diag),
+    do: meta |> Meta.stamp_routing(:skip) |> stamp_skipped_pipe(entry, call_node, arity)
 
   defp stamp_spec(meta, %Entry{spec: spec} = entry, call_node, arity, _pipe_mode, _diag) do
     call = resolved_call!(call_node, spec)
     routes = ArgumentRoutes.from_effective(call, Spec.routing(spec, arity))
     stamp_routes(meta, attach_hosts!(routes, entry), spec)
+  end
+
+  # The one position a bare `:skip` still has to answer for. A piped receiver is the `|>`'s left
+  # operand but the call's *effective argument 0*, so when the skip displaced a code-provided
+  # route, that route's position 0 governs it — otherwise `--skip-call Kernel.match?/2` would
+  # route `1 |> match?(x)`'s receiver as runtime and splice a selector `case` into a match, which
+  # the displaced `[:pattern, :expression]` route forbids. A `:skip` must not route a position
+  # less safely than the route it replaced.
+  #
+  # A displaced *classifier* is answered `:raw`: its treatments are computed per call node by a
+  # router the user just skipped, so the position's shape is unknowable here and the adapter-grade
+  # DSLs classifiers describe are exactly where a spliced `case` is illegal. Displacing nothing
+  # keeps the documented default — an unrouted receiver is ordinary runtime, so
+  # `Repo.insert!(u) |> Mixpanel.track(…)` keeps its `Repo.insert!(u)` mutants.
+  defp stamp_skipped_pipe(meta, %Entry{displaced: nil}, _call_node, _arity), do: meta
+
+  defp stamp_skipped_pipe(meta, %Entry{displaced: %Spec{} = displaced}, call_node, arity) do
+    if Spec.classifier?(displaced) do
+      Meta.stamp_piped_routing(meta, :raw)
+    else
+      stamp_displaced_pipe(meta, displaced, call_node, arity)
+    end
+  end
+
+  defp stamp_displaced_pipe(meta, displaced, call_node, arity) do
+    case Calls.resolved_routed_call(call_node) do
+      %Call{pipe_mode: :piped} = call ->
+        routes = ArgumentRoutes.from_effective(call, Spec.routing(displaced, arity))
+
+        case ArgumentRoutes.piped(routes) do
+          treatment when treatment in [nil, :expression] -> meta
+          treatment -> Meta.stamp_piped_routing(meta, treatment)
+        end
+
+      _unpiped_or_unresolved ->
+        meta
+    end
   end
 
   # Advisory (dynamic path only): a `:routing` classifier that returns `{:keyword, …}` for an

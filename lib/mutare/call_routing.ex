@@ -8,7 +8,10 @@ defmodule Mutare.CallRouting do
 
     * **skip the whole call** (`:skip`): the call is an inert leaf. Nothing inside its parentheses
       is descended and the call node itself is never offered to a mutator. A piped receiver is the
-      `|>`'s other operand, not part of the call, so it is analyzed as usual; a skipped call in
+      `|>`'s other operand, so it is analyzed as usual — except where the skip displaced a route
+      that governs position 0, whose treatment the receiver keeps, since skipping a call must never
+      free a position the displaced route held (skip `Kernel.match?/2` and `1 |> match?(x)`'s
+      receiver stays the pattern it is). A skipped call in
       tail position still gets the enclosing function's return-value mutants. The word for "this
       call is not worth testing" (`Mixpanel.track/3`, a logger, a metrics emitter). It applies to
       whatever the head resolves to — a function, a macro such as `Kernel.if/2`, or a special form

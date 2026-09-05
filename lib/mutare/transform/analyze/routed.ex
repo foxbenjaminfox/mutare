@@ -20,6 +20,9 @@ defmodule Mutare.Transform.Analyze.Routed do
   alias Mutare.Mutator.Dispatch
   alias Mutare.Transform.{Candidate, Meta, NodeRange}
   alias Mutare.Transform.Analyze.{Attach, CallOptions, Syntax}
+  alias Mutare.Transform.Suppression
+
+  import Suppression, only: [is_equality_op: 1, is_negation_op: 1]
 
   # Analyze a routed call: offer the *whole* node to mutators (so a custom mutator
   # registered for the macro still fires — e.g. an Ecto query mutator on `from(...)`),
@@ -153,8 +156,30 @@ defmodule Mutare.Transform.Analyze.Routed do
   # `:interior`: analyze the argument as ordinary runtime, then drop the in-place candidates that
   # landed on the argument node *itself* — the mirror image of `:interpolated`'s
   # `pin_inplace_candidates/1` (which touches only that same set). Descendants keep theirs.
+  #
+  # A negation whose operand the equivalent-sibling suppression left un-offered needs one more
+  # step, or `:interior` keeps nothing at all. `Mutare.Transform.Analyze` withholds that operand
+  # *because the negation carries the mutation for both* (shapes 1-3: a negation over the same
+  # operator, over `in`, or over an equality) — and the negation is exactly what `:interior` then
+  # drops, so the pair vanishes together and `MyApp.consume(not not x)` yields nothing. Re-analyze
+  # the operand on its own once the root is withheld: with no surviving sibling to duplicate, its
+  # mutations are distinct again (`not (a == b)` withheld leaves `a == b`, which is neither the
+  # original nor the outer's strip). The root still goes through `descent.annotate/2` first, so it
+  # keeps every other stamp analysis puts on it; only its own candidates go.
+  defp route_macro_arg(descent, {neg, _meta, [inner]} = arg, :interior, mutators)
+       when is_negation_op(neg) do
+    if suppressed_operand?(neg, inner) do
+      case strip_interior(descent, arg, mutators) do
+        {^neg, meta, [_withheld]} -> {neg, meta, [descent.annotate(inner, mutators)]}
+        other -> other
+      end
+    else
+      strip_interior(descent, arg, mutators)
+    end
+  end
+
   defp route_macro_arg(descent, arg, :interior, mutators),
-    do: arg |> descent.annotate(mutators) |> strip_own_inplace_candidates()
+    do: strip_interior(descent, arg, mutators)
 
   # A keyed refinement `{:keyed, leading, pairs}` over a literal keyword list (the trailing sugar
   # or an explicit `[k: v]`): every pair is routed **once**, by its final position — a named key's
@@ -358,6 +383,21 @@ defmodule Mutare.Transform.Analyze.Routed do
   end
 
   defp route_keyword(_descent, arg, _value_treatments, _mutators), do: arg
+
+  # The plain `:interior` move: analyze, then withhold the node's own candidates.
+  defp strip_interior(descent, arg, mutators),
+    do: arg |> descent.annotate(mutators) |> strip_own_inplace_candidates()
+
+  # The operands `Mutare.Transform.Analyze` leaves un-offered beneath a negation: shape 1 (the
+  # same negation operator again), shape 2 (`in`), shape 3 (an equality operator). An *ordering*
+  # operator is deliberately absent — shape 3 excludes it, so it is offered in its own right
+  # already and re-analyzing it would change nothing.
+  defp suppressed_operand?(neg, {neg, _meta, [_operand]}), do: true
+  defp suppressed_operand?(_neg, {:in, _meta, [_left, _right]}), do: true
+
+  defp suppressed_operand?(_neg, {op, _meta, [_left, _right]}) when is_equality_op(op), do: true
+
+  defp suppressed_operand?(_neg, _inner), do: false
 
   # Drop the in-place candidates on a node's *own* metadata, keeping every descendant's. The
   # `:interior` treatment; same move as `Mutare.Transform.Analyze.QuoteEscape`'s strip.

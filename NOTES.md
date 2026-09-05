@@ -8691,6 +8691,40 @@ decision mutants and the other lost them. The one deliberate exception stays: re
 on a skipped tail, which belong to the def clause (`Returns` attaches them at the function level,
 the user's explicit call), not to the call.
 
+### A call-level `:skip` must not route the pipe less safely than what it displaced `[done]`
+
+`:skip` stamps a bare `:skip` and writes no piped stamp, reasoning that a piped receiver is the
+`|>`'s left operand — a sibling of the skipped call, hence ordinary runtime, which is what keeps
+`Repo.insert!(u) |> Mixpanel.track(…)`'s receiver mutants. That holds only where position 0 accepts
+runtime code. `Kernel.match?/2` routes position 0 `:pattern`, and configuring
+`{Kernel, :match?, 2, :skip}` — or the `--skip-call Kernel.match?/2` flag — displaces that route,
+so `1 |> match?(x)` analyzed its receiver as runtime and spliced a selector `case` into a match.
+A supported flag produced `case is not allowed in matches`, against the positive compile-safety
+invariant, and `:skip` thereby made a call *less* safe than no route at all.
+
+`Registry.Entry` now carries `displaced`, the code-provided spec a configured `:skip` overrode, and
+`RouteStamp.stamp_skipped_pipe/4` stamps that route's piped treatment. A displaced *classifier*
+answers `:raw`: its treatments are computed per call node by the router the user just skipped, and
+the adapter-grade DSLs classifiers describe are exactly where a spliced `case` is illegal.
+Displacing nothing keeps the documented default. The rule is one-way — a `:skip` may withhold
+mutants, never grant a position more freedom than the route it replaced.
+
+### `:interior` has to account for the operand the suppression withheld `[done]`
+
+`:interior` analyzes its argument and then drops the candidates on the argument's own node. The
+equivalent-sibling suppression withholds an operand *because the enclosing negation carries the
+mutation for both* (shapes 1-3: a negation over the same operator, over `in`, over an equality) —
+and that negation is exactly what `:interior` drops. The pair vanished together, so
+`MyApp.consume(not not x)` produced no `logical` or `conditional` mutants at all, though the inner
+`not x` was eligible and the route promises an argument's contents.
+
+`Routed.route_macro_arg/4` now re-analyzes that operand on its own once the root is withheld. With
+no surviving sibling to duplicate, its mutations are distinct again: withhold the root of
+`not (a == b)` and the operand's flip leaves `a == b`, which is neither the original (`a != b`) nor
+the outer's strip. Ordering operators are untouched — shape 3 excludes them, so they were offered
+in their own right already. The root still goes through `annotate/2` first, so it keeps every other
+stamp analysis puts on it; only its own candidates go.
+
 ### Duplicate return constants yield to node-level replacements `[done]`
 
 An atom return tail such as `:foo` produced `:foo → :mutare` twice: once from

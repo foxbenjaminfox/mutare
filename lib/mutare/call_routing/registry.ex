@@ -81,7 +81,7 @@ defmodule Mutare.CallRouting.Registry do
       code_routes
       |> reject_config_overridden(config_keys)
       |> merge_code_routes()
-      |> apply_config_routes(config_entries)
+      |> apply_config_routes(carry_displaced(config_entries, code_routes))
 
     validate_hosts!(routes, hosts)
     %__MODULE__{routes: routes, hosts: hosts}
@@ -331,6 +331,30 @@ defmodule Mutare.CallRouting.Registry do
 
   defp apply_config_routes(routes, config_entries) do
     Enum.reduce(config_entries, routes, fn entry, acc -> Map.put(acc, Entry.key(entry), entry) end)
+  end
+
+  # Record, on each configured call-level `:skip`, the code-provided spec it overrode. Only `:skip`
+  # needs it: every other config entry states its own positions, so its piped treatment follows
+  # from its own spec. `Mutare.Transform.Resolve.RouteStamp` reads it back to stamp the pipe's left
+  # operand, which a bare `:skip` would otherwise leave to the runtime default — less safe than the
+  # displaced route (`Kernel.match?/2`'s position 0 is `:pattern`). Built here rather than from the
+  # rejected entries because `reject_config_overridden/2` has already dropped them; duplicates
+  # collapse silently (last wins) instead of raising, since a code-route conflict on a key the user
+  # deliberately overrode is not theirs to answer.
+  defp carry_displaced(config_entries, code_routes) do
+    skipped = MapSet.new(config_entries, &Entry.key/1)
+
+    displaced =
+      code_routes
+      |> Enum.filter(&MapSet.member?(skipped, Entry.key(&1)))
+      |> Map.new(&{Entry.key(&1), &1.spec})
+
+    Enum.map(config_entries, fn entry ->
+      case {Spec.skip?(entry.spec), Map.get(displaced, Entry.key(entry))} do
+        {true, %Spec{} = spec} -> %{entry | displaced: spec}
+        _other -> entry
+      end
+    end)
   end
 
   defp reject_duplicate_config!(entries) do
