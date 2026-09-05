@@ -1120,11 +1120,14 @@ defmodule Mutare.Transform.Analyze do
   # literal there could be a real runtime value). A **registered known macro** overrides
   # that guess per argument: a `:raw` arg (`{DSL, :schema, 1, :raw}`) is left **raw** —
   # no descent, no mutation — so core never mutates inside an opaque DSL block body and
-  # can't poison the DSL the registry was meant to exclude. Only `:raw` (and the call-level `:skip`) is honoured here:
-  # the other treatments are compile-time-context-sensitive and the default path already
-  # does the right thing (`:expression` *is* the runtime-body guess, `:pattern` has no
-  # module-level use). `Resolve` stamps `meta[:mutare_route]` for bare-imported and
-  # qualified forms alike, so both route.
+  # can't poison the DSL the registry was meant to exclude. `:raw` and the call-level `:skip` are
+  # honoured, and so is a **keyed refinement** over the block keyword (`[[do: :raw]]` keeps an
+  # explicitly excluded DSL body untouched while the other pairs take the module-level default —
+  # `route_module_arg/4`). The other treatments collapse to the default path, which already does
+  # the right thing: `:expression` *is* the runtime-body guess, `:interior` has nothing to
+  # withhold (a module-level container is never offered), `:pattern` has no module-level use.
+  # `Resolve` stamps `meta[:mutare_route]` for bare-imported and qualified forms alike, so both
+  # route.
   def analyze_module_macro_block({form, meta, args} = node, mutators) do
     case Meta.routing(meta) do
       # The call-level `:skip`: the whole block macro is an inert leaf.
@@ -1138,13 +1141,21 @@ defmodule Mutare.Transform.Analyze do
           init
           |> Enum.with_index()
           |> Enum.map(fn {arg, i} ->
-            if raw_arg?(routing, i), do: arg, else: analyze(arg, :scaffold, mutators)
+            route_module_arg(
+              arg,
+              module_position(routing, i),
+              &analyze(&1, :scaffold, mutators),
+              fn _key, value -> analyze(value, :scaffold, mutators) end
+            )
           end)
 
         last =
-          if raw_arg?(routing, length(args) - 1),
-            do: last,
-            else: analyze_module_macro_block_arg(last, mutators)
+          route_module_arg(
+            last,
+            module_position(routing, length(args) - 1),
+            &analyze_module_macro_block_arg(&1, mutators),
+            &analyze_module_pair_value(&1, &2, mutators)
+          )
 
         {form, meta, init ++ [last]}
     end
@@ -1166,20 +1177,58 @@ defmodule Mutare.Transform.Analyze do
     if Meta.routing(meta) == nil, do: form, else: nil
   end
 
-  # Whether the macro argument at position `i` is routed `:raw` (a routed macro's opaque
-  # arg). No stamp (`nil`) or a position past the routing list is the `:expression` default.
-  # Only `:raw` is honoured at module level (see `analyze_module_macro_block/2`).
-  defp raw_arg?(nil, _i), do: false
-  defp raw_arg?(routing, i), do: Enum.at(routing, i, :expression) == :raw
+  # The routed position of a module-level macro argument: no stamp (`nil`), or a position past
+  # the routing list, is the `:expression` default.
+  defp module_position(nil, _i), do: :expression
+  defp module_position(routing, i), do: Enum.at(routing, i, :expression)
+
+  # A module-level macro argument by its position. `:raw` leaves it as written. A keyed
+  # refinement over a keyword argument (the `do:` block list, or trailing options) routes each
+  # named value by its own position and the rest by the leading treatment's reading — `:raw`
+  # stays raw, anything else is the module-level default for that pair (`pair_default`, keyed by
+  # the pair's key: a block body is the runtime guess, an option value is scaffold) — and every
+  # key stays raw (keys are compile-time here, block and data alike). A non-keyword argument
+  # takes the leading treatment alone. Every other position takes `arg_default`, the module-level
+  # guess for the whole argument.
+  defp route_module_arg(arg, :raw, _arg_default, _pair_default), do: arg
+
+  defp route_module_arg(arg, {:keyed, leading, pairs}, arg_default, pair_default) do
+    case CallOptions.keyword_pairs(arg) do
+      {:ok, kw_pairs, rewrap} ->
+        inner = if leading == :raw, do: :raw, else: :expression
+
+        kw_pairs
+        |> Enum.map(fn {key, value} ->
+          position =
+            case List.keyfind(pairs, AST.key_atom(key), 0) do
+              {_key, position} -> position
+              nil -> inner
+            end
+
+          value_default = fn v -> pair_default.(key, v) end
+          {key, route_module_arg(value, position, value_default, pair_default)}
+        end)
+        |> rewrap.()
+
+      :error ->
+        route_module_arg(arg, leading, arg_default, pair_default)
+    end
+  end
+
+  defp route_module_arg(arg, _position, arg_default, _pair_default), do: arg_default.(arg)
+
+  # The module-level default for one keyword pair's value: a block key's body is analyzed as
+  # `:runtime` (an unknown DSL may unquote it into generated functions), an option value as
+  # `:scaffold`.
+  defp analyze_module_pair_value(key, value, mutators) do
+    context = if Syntax.block_key?(key), do: :runtime, else: :scaffold
+    analyze(value, context, mutators)
+  end
 
   defp analyze_module_macro_block_arg(kw, mutators) when is_list(kw) do
     Enum.map(kw, fn
-      {key, value} ->
-        context = if Syntax.block_key?(key), do: :runtime, else: :scaffold
-        {key, analyze(value, context, mutators)}
-
-      other ->
-        analyze(other, :scaffold, mutators)
+      {key, value} -> {key, analyze_module_pair_value(key, value, mutators)}
+      other -> analyze(other, :scaffold, mutators)
     end)
   end
 

@@ -4,6 +4,12 @@ defmodule Mutare.Test.WrapDSL do
   defmacro wrap(do: body), do: body
 end
 
+# A module-level macro whose head demands a literal body: a selector spliced into the body would
+# fail to expand, so a `[[do: :raw]]` route must keep it as written.
+defmodule Mutare.Test.LiteralBlockDSL do
+  defmacro literal(do: 42), do: nil
+end
+
 defmodule Mutare.TransformCallSkipTest do
   # The user-tier call-routing vocabulary beyond `:raw`: the call-level `:skip` (an inert leaf),
   # the `:interior` treatment (contents mutate, container doesn't), and keyed refinements
@@ -816,6 +822,30 @@ defmodule Mutare.TransformCallSkipTest do
       refute Enum.any?(sites, &(&1.mutator == :atom))
       assert Enum.any?(sites, &(&1.mutator == :arithmetic))
       assert_compiles(meta)
+    end
+
+    test "on a module-level block macro too: [[do: :raw]] keeps the body as written" do
+      # `analyze_module_macro_block/2` is its own path (module-level contexts, no dispatcher); it
+      # routes each position as the body path does.
+      source = """
+      defmodule Lit do
+        require Mutare.Test.LiteralBlockDSL
+        Mutare.Test.LiteralBlockDSL.literal(do: 42)
+      end
+      """
+
+      mutators = [Mutare.Mutators.IntegerLiteral]
+
+      {meta, sites, _} =
+        transform(source, mutators, [{Mutare.Test.LiteralBlockDSL, :literal, 1, [[do: :raw]]}])
+
+      assert sites == []
+      assert_compiles(meta)
+
+      # Not vacuous: unrouted, the body takes the runtime-body guess and mutates — a metamutant
+      # this strict macro would refuse to expand, the poison case the route exists for.
+      {_m, plain, _} = transform(source, mutators, [])
+      assert Enum.any?(plain, &(&1.original_code == "42"))
     end
 
     test "a :hosted value under a keyed refinement reaches its host" do

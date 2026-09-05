@@ -231,18 +231,37 @@ defmodule Mutare.Config do
 
   # `--skip-call Module.function/arity` skips a call outright — the CLI spelling of a
   # `{Module, :function, arity, :skip}` `call_routes:` entry (see `Mutare.CallRouting`). It is
-  # repeatable, and it **appends** to the file's `call_routes:` rather than replacing them: a
+  # repeatable, and it **merges into** the file's `call_routes:` rather than replacing them: a
   # one-off "and also leave this call alone" run shouldn't have to restate every configured route.
-  # `Module.function` (no arity) skips every arity; `Module.*` skips the whole module.
+  # Merging is by normalized route key (`{module, name, arity}`, however either side spelt it): a
+  # file entry for the same call is replaced — the flag wins for that call, and the registry's
+  # one-override-per-key rule is never tripped — unrelated entries stay, and a skip repeated on the
+  # command line is stated once. `Module.function` (no arity) skips every arity; `Module.*` skips
+  # the whole module.
   defp append_skip_calls(config, flags) do
     case Keyword.get_values(flags, :skip_call) do
       [] ->
         config
 
       specs ->
-        routes = Enum.map(specs, &parse_skip_call_spec!/1)
-        Keyword.update(config, :call_routes, routes, &(&1 ++ routes))
+        skips =
+          specs |> Enum.map(&parse_skip_call_spec!/1) |> Enum.uniq_by(&(route_key(&1) || &1))
+
+        keys = skips |> Enum.map(&route_key/1) |> Enum.reject(&is_nil/1) |> MapSet.new()
+
+        Keyword.update(config, :call_routes, skips, fn existing ->
+          Enum.reject(List.wrap(existing), &MapSet.member?(keys, route_key(&1))) ++ skips
+        end)
     end
+  end
+
+  # The normalized key of a `call_routes:` entry (`{module_key, name, arity}`), or `nil` for one
+  # the registry would reject — left in place here so `Mutare.Options.new/1` reports it properly.
+  defp route_key(entry) do
+    [spec] = Mutare.CallRouting.Registry.resolve([entry])
+    Mutare.CallRouting.Spec.key(spec)
+  rescue
+    ArgumentError -> nil
   end
 
   @doc false

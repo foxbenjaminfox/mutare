@@ -8566,7 +8566,9 @@ now means one thing: value-aware mutator knowledge.
 enforced at the offer layer) would restore per-family selectivity; NOTES already rejected
 offer-layer enforcement for core-defined labels, the need is rare, and a `:raw` route covers the
 common case. (2) `:interior` at module level: `analyze_module_macro_block/2` honours `:skip` and
-`:raw` only; the other positions fall through to the scaffold/runtime guess as before.
+`:raw` only; the other positions fall through to the scaffold/runtime guess as before. *(Closed in
+the fourth review round below: keyed refinements are honoured there too, and `:interior` collapses
+to the default because a module-level container is never offered.)*
 
 **Structural heads (2026-09-05).** `{Kernel, :if, 2, :skip}` did nothing. The resolver stamped
 it — `if` is a `Kernel` macro like `match?`, and the registry keys on the resolved head — but
@@ -8661,3 +8663,18 @@ compile-poison line rendered `{Module, :fun, :raw}` for every recovered macro �
 module as the compiler prints it) is the one classification both `Poison.Hint` and `Live` render
 from: `:raw` for a call, `:skip` for a structural head, a `# mutare:ignore` pointer when no route
 can name the head.
+
+**Fourth review, same day.** (1) `analyze_module_macro_block/2` honoured `:raw` and `:skip` only,
+so `{DSL, :literal, 1, [[do: :raw]]}` on a module-level block macro still mutated the `do:` body —
+and a macro whose head demands a literal (`defmacro literal(do: 42)`) then failed to expand, where
+the uniform `:raw` route compiled. `route_module_arg/4` now routes each position: `:raw` as
+written; a keyed refinement per pair — named values by their position, the rest by the leading
+treatment's reading, every key raw (keys are compile-time at module level), the default for a value
+keyed by its key (a block body is the runtime guess, an option value scaffold); everything else the
+module-level default, which is what `:expression` means there and what `:interior` collapses to (a
+module-level container is never offered, so there is nothing to withhold — the earlier deferred
+note is closed). (2) `--skip-call` appended to the file's `call_routes:`, so a file entry for the
+same call — even an identical skip — tripped the registry's one-override-per-key rule and aborted
+the scan. `Config.append_skip_calls/2` now merges by normalized route key: the flag replaces a
+file entry for the same call, unrelated entries stay, a repeated skip is stated once; an entry the
+registry would reject keeps its place so `Options.new/1` reports it.

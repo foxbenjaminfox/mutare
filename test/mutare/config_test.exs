@@ -103,7 +103,7 @@ defmodule Mutare.ConfigTest do
                [{:"Elixir.Elixir.MyUse", "f", 1}]
     end
 
-    test "--skip-call appends {Module, :fun, arity, :skip} routes to :call_routes; repeatable" do
+    test "--skip-call merges {Module, :fun, arity, :skip} routes into :call_routes by key; repeatable" do
       assert Config.merge([], skip_call: "Mixpanel.track/3")[:call_routes] ==
                [{Mixpanel, :track, 3, :skip}]
 
@@ -117,6 +117,20 @@ defmodule Mutare.ConfigTest do
              )[
                :call_routes
              ] == [{Ecto.Query, :from, :raw}, {Mixpanel, :track, 3, :skip}]
+
+      # …by normalized key: a file entry for the same call is replaced (the flag wins, and the
+      # registry's one-override-per-key rule is not tripped), a repeated skip is stated once, and
+      # unrelated entries stay.
+      assert Config.merge(
+               [call_routes: [{Foo, :bar, 1, :raw}, {Other, :f, 2, :raw}]],
+               skip_call: "Foo.bar/1",
+               skip_call: "Foo.bar/1"
+             )[:call_routes] == [{Other, :f, 2, :raw}, {Foo, :bar, 1, :skip}]
+
+      # An entry the registry would reject is left in place, for Options.new/1 to report.
+      assert Config.merge([call_routes: [{Kernel, :if, 2, :raw}]], skip_call: "Foo.bar/1")[
+               :call_routes
+             ] == [{Kernel, :if, 2, :raw}, {Foo, :bar, 1, :skip}]
 
       refute Keyword.has_key?(Config.merge([], []), :call_routes)
     end
