@@ -107,10 +107,11 @@ defmodule Mutare.Transform.Resolve do
   # escaping `unquote`/`unquote_splicing` arguments in the quoted block, resolving them under the
   # env at the quote site. That keeps a quoted directive such as `alias List, as: S` from
   # restamping `unquote(S.trim(s))`, whose expression is evaluated in the outer scope.
-  defp walk({:quote, meta, args} = node, env) when is_list(args) do
-    walked = walk_live_quote_args(args, env)
-
-    if walked == args, do: node, else: {:quote, meta, walked}
+  defp walk({:quote, meta, args}, env) when is_list(args) do
+    # The head (`Kernel.SpecialForms.quote`) is stamped like any bare call, so a `:skip` route on
+    # it is honoured — the analyzer then leaves the whole quote alone, escaping unquotes included.
+    {meta, _module_key} = stamp_bare_call(:quote, meta, args, %{env | pipe_mode: :unpiped})
+    {:quote, meta, walk_live_quote_args(args, env)}
   end
 
   # `|>` pipe: the RHS is a call whose effective first argument is the LHS, so it carries one
@@ -120,6 +121,9 @@ defmodule Mutare.Transform.Resolve do
   # `:timer.sleep/1`, or a custom index-0 mark) `mark_pipe_receiver/3` marks the LHS — the piped
   # counterpart of the visible-arg stamping the RHS clause did.
   defp walk({:|>, meta, [lhs, rhs]}, env) do
+    # The pipe head is a resolvable call too (`Kernel.|>/2`): stamp it so a `:skip` route on it is
+    # honoured (a positional route never applies — `Mutare.Transform.StructuralForms`).
+    {meta, _module_key} = stamp_bare_call(:|>, meta, [lhs, rhs], %{env | pipe_mode: :unpiped})
     rhs = walk(rhs, %{env | pipe_mode: :piped})
     {lhs, rhs} = mark_pipe_receiver(walk(lhs, %{env | pipe_mode: :unpiped}), rhs, env)
     {:|>, meta, [lhs, rhs]}
@@ -135,6 +139,11 @@ defmodule Mutare.Transform.Resolve do
   # (`&foo / bar`), not `&fun/N`; fall back to normal descent so `/` remains mutatable there.
   defp walk({:&, amp_meta, [{:/, slash_meta, [{fun, ref_meta, context} = ref, right]}]}, env)
        when is_atom(fun) and is_list(ref_meta) and is_atom(context) do
+    # The capture head (`Kernel.SpecialForms.&`) is stamped like any bare call, so a `:skip` route
+    # on it is honoured here too (the other `&` shapes reach the bare-call clause on their own).
+    {amp_meta, _module_key} =
+      stamp_bare_call(:&, amp_meta, [{:/, slash_meta, [ref, right]}], %{env | pipe_mode: :unpiped})
+
     case capture_arity(right) do
       {:ok, arity} ->
         ref_meta =

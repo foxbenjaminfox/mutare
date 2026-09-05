@@ -52,7 +52,12 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # a binding would silently drop the filter; only a `=` (already a binding qualifier) is safe.
   def analyze_match_statement(descent, {:=, _meta, [raw_lhs, raw_rhs]} = match, mutators) do
     analyzed = descent.annotate(match, mutators)
-    attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, mutators)
+
+    # A `:skip`-routed `=` (`{Kernel.SpecialForms, :=, :skip}`) is an inert leaf: the dispatcher
+    # returned it untouched above, and its LHS is not offered to the structural families either.
+    if Meta.skipped?(match),
+      do: analyzed,
+      else: attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, mutators)
   end
 
   def analyze_match_statement(descent, other, mutators), do: descent.annotate(other, mutators)

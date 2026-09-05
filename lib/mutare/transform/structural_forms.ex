@@ -57,9 +57,26 @@ defmodule Mutare.Transform.StructuralForms do
 
   @special_forms Kernel.SpecialForms.__info__(:macros) |> Keyword.keys() |> Enum.uniq()
 
+  # Compiler-internal special forms a user never writes as a call: `{:__block__, …}` wraps every
+  # literal and statement sequence, `__aliases__` is how `Foo.Bar` parses, `.` is the remote-call
+  # head, `__cursor__` is the editor's, and the nullary `__MODULE__`/`__ENV__`/… are not calls at
+  # all. A route on one names nothing the user could mean (and honouring it would mean stamping
+  # every literal's wrapper), so it is rejected outright.
+  @internal_forms [
+    :__block__,
+    :__aliases__,
+    :__cursor__,
+    :.,
+    :__CALLER__,
+    :__DIR__,
+    :__ENV__,
+    :__MODULE__,
+    :__STACKTRACE__
+  ]
+
   @special_forms_key [:Kernel, :SpecialForms]
 
-  @type class :: :call | :structural | :declaration
+  @type class :: :call | :structural | :declaration | :internal
 
   @doc """
   The module key a bare special form resolves to — `Kernel.SpecialForms`, as a route names it.
@@ -75,12 +92,14 @@ defmodule Mutare.Transform.StructuralForms do
 
   @doc """
   How a route on the resolved head `module_key`/`name` is treated: an ordinary `:call`, a
-  `:structural` expression form (`:skip` only), or a `:declaration` (no route at all). A `nil`
-  module key (a name-only match whose module the resolver couldn't see) is always a `:call`.
+  `:structural` expression form (`:skip` only), a `:declaration` (no route at all), or an
+  `:internal` compiler form (no route at all). A `nil` module key (a name-only match whose module
+  the resolver couldn't see) is always a `:call`.
   """
   @spec classify(Spec.module_key() | nil, atom()) :: class()
   def classify([:Kernel], name) when name in @kernel_structural, do: :structural
   def classify([:Kernel], name) when name in @kernel_declarations, do: :declaration
+  def classify(@special_forms_key, name) when name in @internal_forms, do: :internal
   def classify(@special_forms_key, name) when name in @special_forms, do: :structural
   def classify(_module_key, _name), do: :call
 
@@ -95,6 +114,7 @@ defmodule Mutare.Transform.StructuralForms do
       :structural when args == :skip -> :ok
       :structural -> raise ArgumentError, structural_message(module_key, name)
       :declaration -> raise ArgumentError, declaration_message(module_key, name)
+      :internal -> raise ArgumentError, internal_message(module_key, name)
     end
   end
 
@@ -110,12 +130,13 @@ defmodule Mutare.Transform.StructuralForms do
       :call -> true
       :structural -> Spec.skip?(spec)
       :declaration -> false
+      :internal -> false
     end
   end
 
   @doc """
   The route text `Mutare.Poison.Hint` should suggest for a head: `:raw` for a call, `:skip`
-  for a structural form, `nil` for a declaration (no route can name it).
+  for a structural form, `nil` for a declaration or an internal form (no route can name it).
   """
   @spec hint_treatment(Spec.module_key() | nil, atom()) :: :raw | :skip | nil
   def hint_treatment(module_key, name) do
@@ -123,6 +144,7 @@ defmodule Mutare.Transform.StructuralForms do
       :call -> :raw
       :structural -> :skip
       :declaration -> nil
+      :internal -> nil
     end
   end
 
@@ -140,6 +162,11 @@ defmodule Mutare.Transform.StructuralForms do
 
     "#{head} is a definition, not a call: a call route cannot target it. To leave a definition " <>
       "alone, use `# mutare:ignore` (`-start`/`-end` for a span, `-file` for a whole file)."
+  end
+
+  defp internal_message(module_key, name) do
+    "#{describe(module_key, name)} is compiler-internal syntax, never written as a call: a call " <>
+      "route cannot name it."
   end
 
   defp describe(module_key, name), do: "#{inspect(Module.concat(module_key))}.#{name}"

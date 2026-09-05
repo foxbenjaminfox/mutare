@@ -155,11 +155,8 @@ defmodule Mutare.Transform.Analyze do
   # does the same at the head of its guard and pattern walks; `Analyze.Returns` treats a skipped
   # tail as one leaf.
   defp analyze(node, context, mutators) do
-    if skipped_call?(node), do: node, else: analyze_form(node, context, mutators)
+    if Meta.skipped?(node), do: node, else: analyze_form(node, context, mutators)
   end
-
-  defp skipped_call?({_form, meta, args}) when is_list(args), do: Meta.routing(meta) == :skip
-  defp skipped_call?(_node), do: false
 
   # `when` guard (position-independent: also covers case/fn clause guards): the
   # lift path owns guard mutation, so the in-place walk never touches one.
@@ -633,7 +630,7 @@ defmodule Mutare.Transform.Analyze do
        )
        when is_negation_op(neg) do
     # A skipped inner node is a leaf with no mutants to be redundant with: the generic path.
-    if skipped_call?(raw_inner) do
+    if Meta.skipped?(raw_inner) do
       do_analyze_call_node(node, mutators, %{pipe_mode: :unpiped})
     else
       inner = {neg, inner_meta, [analyze(operand, :runtime, mutators)]}
@@ -654,7 +651,7 @@ defmodule Mutare.Transform.Analyze do
          mutators
        )
        when is_negation_op(neg) do
-    if skipped_call?(raw_inner) do
+    if Meta.skipped?(raw_inner) do
       do_analyze_call_node(node, mutators, %{pipe_mode: :unpiped})
     else
       inner =
@@ -683,12 +680,15 @@ defmodule Mutare.Transform.Analyze do
        when is_negation_op(neg) and is_equality_op(op) do
     inner_raw = {op, op_meta, [left, right]}
 
-    if skipped_call?(inner_raw) do
+    if Meta.skipped?(inner_raw) do
       do_analyze_call_node(node, mutators, %{pipe_mode: :unpiped})
     else
+      # The inner node takes the ordinary call path — offered, its operands by their stamped
+      # positions when it carries a route (`{Kernel, :==, 2, :interior}` holds under `not` as it
+      # does bare); this clause adds only the negation-redundancy drop on top.
       inner =
-        {op, op_meta, [analyze(left, :runtime, mutators), analyze(right, :runtime, mutators)]}
-        |> Attach.offer(inner_raw, mutators)
+        inner_raw
+        |> do_analyze_call_node(mutators, %{pipe_mode: :unpiped})
         |> drop_negation_redundant_candidates(op)
 
       Attach.offer({neg, meta, [inner]}, node, mutators)
@@ -713,7 +713,7 @@ defmodule Mutare.Transform.Analyze do
     analyzed = node |> Attach.offer(node, mutators) |> recurse_runtime(mutators)
 
     # (A skipped left operand has no `L → false`/`L → true` of its own to defer to.)
-    if Suppression.boolean_op_node?(left) and not skipped_call?(left),
+    if Suppression.boolean_op_node?(left) and not Meta.skipped?(left),
       do: drop_constant_candidate(analyzed, Suppression.redundant_constant(op)),
       else: analyzed
   end

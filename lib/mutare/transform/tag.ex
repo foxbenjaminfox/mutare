@@ -119,11 +119,8 @@ defmodule Mutare.Transform.Tag do
   # Mirrors `Mutare.Transform.Analyze.analyze/3`'s dispatcher (and, like it, the negation
   # clauses check their inner operand, so a skipped `in` under `not` is a leaf too).
   defp tag_walk(node, acc, mutators) do
-    if skipped_call?(node), do: {node, acc}, else: tag_walk_form(node, acc, mutators)
+    if Meta.skipped?(node), do: {node, acc}, else: tag_walk_form(node, acc, mutators)
   end
-
-  defp skipped_call?({_form, meta, args}) when is_list(args), do: Meta.routing(meta) == :skip
-  defp skipped_call?(_node), do: false
 
   # Redundancy suppression in guards — the guard-legal subset of the in-place analyzer's
   # equivalent-sibling clauses (`Mutare.Transform.Analyze`). The shared move is identical:
@@ -138,7 +135,7 @@ defmodule Mutare.Transform.Tag do
   # guard errors fail the guard; see `tag_in_rhs/3`). The outer `not` is offered
   # (strip/true/false).
   defp tag_walk_form({:not, meta, [{:in, in_meta, [left, right]} = inner]} = node, acc, mutators) do
-    if skipped_call?(inner) do
+    if Meta.skipped?(inner) do
       tag_generic(node, acc, mutators)
     else
       {left, acc} = tag_walk(left, acc, mutators)
@@ -157,16 +154,17 @@ defmodule Mutare.Transform.Tag do
   # nor a constant, so `not (a == b)` ≢ `a === b` survives. Mirrors the body-side clause in
   # `Mutare.Transform.Analyze`.
   defp tag_walk_form(
-         {:not, meta, [{op, op_meta, [left, right]} = raw_inner]} = node,
+         {:not, meta, [{op, op_meta, [_left, _right]} = raw_inner]} = node,
          acc,
          mutators
        )
        when is_equality_op(op) do
-    if skipped_call?(raw_inner) do
+    if Meta.skipped?(raw_inner) do
       tag_generic(node, acc, mutators)
     else
-      {left, acc} = tag_walk(left, acc, mutators)
-      {right, acc} = tag_walk(right, acc, mutators)
+      # The operands by the inner node's own positions (a positional route on `==` holds under
+      # `not` as it does bare); only the redundancy drop is this clause's.
+      {[left, right], acc} = tag_args(raw_inner, acc, mutators)
       {inner, acc} = offer_negation_survivors({op, op_meta, [left, right]}, op, acc, mutators)
       offer_target({:not, meta, [inner]}, acc, mutators)
     end
@@ -176,7 +174,7 @@ defmodule Mutare.Transform.Tag do
   # strips are the identical `not x`, and Conditional on the inner ≡ the outer's
   # `true`/`false`. Suppress the inner `not`; offer only the outer.
   defp tag_walk_form({:not, meta, [{:not, inner_meta, [operand]} = inner]} = node, acc, mutators) do
-    if skipped_call?(inner) do
+    if Meta.skipped?(inner) do
       tag_generic(node, acc, mutators)
     else
       {operand, acc} = tag_walk(operand, acc, mutators)
@@ -216,7 +214,7 @@ defmodule Mutare.Transform.Tag do
     {right_t, acc} = tag_walk(right, acc, mutators)
     rebuilt = {op, meta, [left_t, right_t]}
 
-    if Suppression.boolean_op_node?(left) and not skipped_call?(left),
+    if Suppression.boolean_op_node?(left) and not Meta.skipped?(left),
       do: offer_without_constant(rebuilt, Suppression.redundant_constant(op), acc, mutators),
       else: offer_target(rebuilt, acc, mutators)
   end
@@ -227,22 +225,8 @@ defmodule Mutare.Transform.Tag do
   # both-offer-paths discipline the position marks follow, NOTES "Argument marks"). Each argument
   # goes by its position (`tag_routed_arg/4`); the call-level `:skip` was honoured at
   # `tag_walk/3`, before any clause.
-  defp tag_walk_form({form, meta, args}, acc, mutators) when is_list(args) do
-    case Meta.routing(meta) do
-      routing when is_list(routing) ->
-        {args, acc} =
-          args
-          |> Enum.with_index()
-          |> Enum.map_reduce(acc, fn {arg, i}, acc ->
-            tag_routed_arg(arg, Enum.at(routing, i, :expression), acc, mutators)
-          end)
-
-        offer_target({form, meta, args}, acc, mutators)
-
-      _unrouted ->
-        tag_generic({form, meta, args}, acc, mutators)
-    end
-  end
+  defp tag_walk_form({form, meta, args}, acc, mutators) when is_list(args),
+    do: tag_generic({form, meta, args}, acc, mutators)
 
   # A 2-tuple (a keyword/map pair shape): descend both sides; never node-offered.
   defp tag_walk_form({left, right}, acc, mutators) do
@@ -258,10 +242,27 @@ defmodule Mutare.Transform.Tag do
   # mutatable) but there is nothing to descend.
   defp tag_walk_form(leaf, acc, mutators), do: offer_target(leaf, acc, mutators)
 
-  # The unrouted n-ary walk: every argument descended, then the node offered.
+  # The n-ary walk: every argument by its position (`tag_args/3`), then the node offered.
   defp tag_generic({form, meta, args}, acc, mutators) do
-    {args, acc} = Enum.map_reduce(args, acc, &tag_walk(&1, &2, mutators))
+    {args, acc} = tag_args({form, meta, args}, acc, mutators)
     offer_target({form, meta, args}, acc, mutators)
+  end
+
+  # A node's arguments — each by its stamped position when the node carries a route
+  # (`tag_routed_arg/4`), else the ordinary walk. Shared by the generic n-ary clause and the
+  # negated-equality clause, which builds its inner node from the operands directly.
+  defp tag_args({_form, meta, args}, acc, mutators) do
+    case Meta.routing(meta) do
+      routing when is_list(routing) ->
+        args
+        |> Enum.with_index()
+        |> Enum.map_reduce(acc, fn {arg, i}, acc ->
+          tag_routed_arg(arg, Enum.at(routing, i, :expression), acc, mutators)
+        end)
+
+      _unrouted ->
+        Enum.map_reduce(args, acc, &tag_walk(&1, &2, mutators))
+    end
   end
 
   # One routed argument of a guard call, by its position — the guard twin of
@@ -429,7 +430,7 @@ defmodule Mutare.Transform.Tag do
   # head pattern is walked by the resolver too, so a skipped special form (`%{}`, `=`, `<<>>`) is
   # an inert leaf there as well.
   defp tag_pattern_targets(node, acc, mutators, context) do
-    if skipped_call?(node),
+    if Meta.skipped?(node),
       do: {node, acc},
       else: tag_pattern_form(node, acc, mutators, context)
   end

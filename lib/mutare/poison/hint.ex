@@ -262,8 +262,8 @@ defmodule Mutare.Poison.Hint do
   defp route_entry({module, fun}) do
     case StructuralForms.hint_treatment(module_key(module), fun) do
       nil ->
-        "        # #{module}.#{fun} is a definition — no route can name it; " <>
-          "use `# mutare:ignore` around the offending code"
+        "        # #{module}.#{fun} cannot be named by a route (a definition or compiler " <>
+          "syntax); use `# mutare:ignore` around the offending code"
 
       treatment ->
         "        {#{module}, #{inspect(fun)}, #{inspect(treatment)}}"

@@ -178,6 +178,14 @@ defmodule Mutare.CallRouting.SpecGrammarTest do
       end
     end
 
+    test "a compiler-internal form cannot be named at all" do
+      for name <- [:__block__, :__aliases__, :., :__MODULE__] do
+        assert_raise ArgumentError, ~r/compiler-internal syntax/, fn ->
+          Mutare.CallRouting.Spec.new(Kernel.SpecialForms, name, :any, :skip)
+        end
+      end
+    end
+
     test "every other Kernel export, and any wildcard, is an ordinary call" do
       alias Mutare.CallRouting.Spec
 

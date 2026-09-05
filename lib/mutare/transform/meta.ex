@@ -133,6 +133,28 @@ defmodule Mutare.Transform.Meta do
   def routing(_meta), do: nil
 
   @doc """
+  Whether a node carries the call-level `:skip` route — an inert leaf to every walk: the
+  `Mutare.Transform.Analyze` dispatcher, `Mutare.Transform.Tag`'s guard and pattern walks, and
+  the structural pattern discovery (through `contains_skipped?/1`).
+  """
+  @spec skipped?(Macro.t()) :: boolean()
+  def skipped?({_form, meta, args}) when is_list(meta) and is_list(args),
+    do: routing(meta) == :skip
+
+  def skipped?(_node), do: false
+
+  @doc """
+  Whether `ast` (a node or a list of nodes) holds a `:skip`-routed node anywhere, itself
+  included. The structural pattern families restructure a *whole* pattern, so a pattern holding
+  a skipped form is not offered to them at all (`Mutare.Transform.PatternStructure`).
+  """
+  @spec contains_skipped?(Macro.t() | [Macro.t()]) :: boolean()
+  def contains_skipped?(ast) do
+    {_ast, found} = Macro.prewalk(ast, false, fn node, acc -> {node, acc or skipped?(node)} end)
+    found
+  end
+
+  @doc """
   The piped-value routing for a known-macro `|>` RHS (`:mutare_route_piped`), stamped only when the
   effective-argument-0 treatment isn't the `:expression` default — so the common runtime LHS
   carries no stamp and this reads `nil`.

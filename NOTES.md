@@ -8605,3 +8605,24 @@ Degenerate cases fall out coherently, which is the sign the rule is right: `{Ker
 makes a pipeline inert, `{Kernel, :*, :skip}` every Kernel call (definitions excluded). Deferred:
 honouring positional routes on `if` by teaching the routed path the condition machinery — no use
 case, and `# mutare:ignore[conditional]`/`--mutators` already cover "no condition mutants here".
+
+**Review fixes, same day.** Three more paths bypassed the dispatcher or the routed argument
+walk. (1) The resolver's specialized `walk` clauses — `|>` (pipe-mode bookkeeping), `quote` (the
+live-parts-only walk), `&fun/N` (the ref-not-call shape) — returned their head's meta unstamped, so
+`{Kernel, :|>, 2, :skip}` and `{Kernel.SpecialForms, :quote, :skip}` were accepted and inert; each
+now stamps its head through `stamp_bare_call/4` before its own descent. The compiler-internal forms
+a user never writes as a call (`__block__`, `__aliases__`, `__cursor__`, `.`, the nullary
+`__MODULE__`/`__ENV__`/…) are a fourth class, `:internal`, rejected outright — the alternative was
+stamping every literal's `__block__` wrapper to honour a route nobody can mean. (2) The structural
+pattern families run *outside* the dispatcher — `MatchPatterns` offers a `=`'s LHS after
+`annotate/2` returns, `FunctionPlan` offers head arg lists, `ClausePatterns` offers clause patterns
+— so `{Kernel.SpecialForms, :=, :skip}` still swapped `{x, y} = v`, and a skipped `%{}` in a head
+still had its bindings swapped. One predicate, `Meta.contains_skipped?/1`, now gates them at their
+shared entry (`PatternStructure.node_mutations/3`, plus the head arg list in `FunctionPlan`, plus
+the skipped `=` itself): a pattern holding a skipped form is not restructured at all — conservative
+on purpose (a swap across the skipped form would mutate inside it, a swap beside it would not), and
+the literal walk still mutates beside it. (3) The negated-equality clauses in `Analyze` and `Tag`
+analyzed the inner operands directly, so `{Kernel, :==, 2, :interior}` held on `x == 2` and not on
+`not (x == 2)`; the inner node now takes the ordinary call path (`do_analyze_call_node/3` /
+`tag_args/3`) with the redundancy drop applied on top. The negation-over-`in` and double-negation
+clauses need nothing: `in`, `!` and `not` are structural, so no positional route can reach them.

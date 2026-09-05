@@ -248,7 +248,7 @@ defmodule Mutare.Poison.HintTest do
 
       assert note =~ "{Kernel, :in, :skip}"
       assert note =~ "{Kernel, :sigil_r, :raw}"
-      assert note =~ "# Kernel.def is a definition"
+      assert note =~ "# Kernel.def cannot be named by a route"
       refute note =~ "{Kernel, :def,"
     end
 

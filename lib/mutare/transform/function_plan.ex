@@ -348,7 +348,7 @@ defmodule Mutare.Transform.FunctionPlan do
             used = clause_used_outside(clause)
             original = ClauseAST.put_call_args(call, raw_args)
 
-            Enum.flat_map(structural, fn mutator ->
+            Enum.flat_map(structural_unless_skipped(structural, raw_args), fn mutator ->
               mutator
               |> Mutare.Mutator.Dispatch.pattern_mutations(args, used)
               |> Enum.map(fn mutated_args ->
@@ -370,6 +370,12 @@ defmodule Mutare.Transform.FunctionPlan do
         end
     end
   end
+
+  # A head whose patterns hold a `:skip`-routed form is not restructured (the same gate
+  # `PatternStructure.node_mutations/3` applies to a single pattern): the skipped form is an inert
+  # leaf, and a swap or wildcard across the head could mutate inside it.
+  defp structural_unless_skipped(structural, raw_args),
+    do: if(Mutare.Transform.Meta.contains_skipped?(raw_args), do: [], else: structural)
 
   # Drop each arg's `\\ default` down to its bare pattern (a no-op for a plain arg).
   defp strip_defaults(args), do: Enum.map(args, &strip_default/1)

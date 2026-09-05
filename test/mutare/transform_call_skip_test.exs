@@ -260,6 +260,76 @@ defmodule Mutare.TransformCallSkipTest do
     # an explicit key is rejected (`call_routing_spec_test.exs`), a wildcard's positions are not
     # applied (`schema_test.exs` checks the match accounting).
 
+    test "the resolver stamps the pipe, quote and capture heads too, so :skip reaches them" do
+      # These heads have specialized resolver clauses (pipe-mode bookkeeping, the live-parts-only
+      # quote walk, the `&fun/N` ref shape); each must stamp its head before its own descent.
+      source = """
+      defmodule Heads do
+        def piped(x), do: x |> Enum.take(2)
+        def quoted(v), do: quote(do: unquote(v + 1))
+      end
+      """
+
+      mutators = [Mutare.Mutators.IntegerLiteral, Mutare.Mutators.Arithmetic]
+
+      {meta, sites, _} =
+        transform(source, mutators, [
+          {Kernel, :|>, 2, :skip},
+          {Kernel.SpecialForms, :quote, :skip}
+        ])
+
+      assert sites == []
+      assert_compiles(meta)
+
+      {_m, plain, _} = transform(source, mutators, [])
+      assert Enum.any?(plain, &(&1.line == 2 and &1.original_code == "2"))
+      assert Enum.any?(plain, &(&1.line == 3 and &1.mutator == :arithmetic))
+
+      registry = Mutare.CallRouting.Registry.build([{Kernel.SpecialForms, :&, :skip}], [])
+
+      capture =
+        "&Enum.map/2" |> Sourceror.parse_string!() |> Mutare.Transform.Resolve.annotate(registry)
+
+      assert Mutare.Calls.routed_treatments(capture) == :skip
+    end
+
+    test "a skipped form inside a pattern is not restructured — match, head, and case-clause patterns alike" do
+      # The structural pattern families run outside the dispatcher (they restructure a whole
+      # pattern after it was analyzed), so they gate on the skip boundary themselves.
+      source = """
+      defmodule Pats do
+        def match(v) do
+          {x, y} = v
+          {y, x}
+        end
+
+        def head(%{a: a, b: b}), do: {a, b}
+
+        def clause(v) do
+          case v do
+            {x, y, z} -> {z, y, x}
+          end
+        end
+      end
+      """
+
+      mutators = [Mutare.Mutators.PatternSwap]
+
+      routes = [
+        {Kernel.SpecialForms, :=, :skip},
+        {Kernel.SpecialForms, :%{}, :skip},
+        {Kernel.SpecialForms, :{}, :skip}
+      ]
+
+      {meta, sites, _} = transform(source, mutators, routes)
+      assert sites == []
+      assert_compiles(meta)
+
+      # Not vacuous: unrouted, each of the three patterns is swapped.
+      {_m, plain, _} = transform(source, mutators, [])
+      for line <- [3, 7, 11], do: assert(Enum.any?(plain, &(&1.line == line)), "line #{line}")
+    end
+
     @if_source """
     defmodule Branches do
       def f(x), do: if(x, do: 1, else: 2)
@@ -474,6 +544,28 @@ defmodule Mutare.TransformCallSkipTest do
   end
 
   describe "the :interior treatment — contents mutate, the container doesn't" do
+    test "under a negation too: a positional route on the inner equality holds, in a body and in a guard" do
+      # `not (x == 2)` has dedicated clauses on both walks (negation-redundancy suppression) that
+      # build the inner node from its operands; they must route those operands by the inner
+      # node's own positions.
+      source = """
+      defmodule Neg do
+        def body(x), do: not (x == 2)
+        def guard(x) when not (x == 2), do: x
+      end
+      """
+
+      mutators = [Mutare.Mutators.IntegerLiteral]
+
+      {meta, sites, _} = transform(source, mutators, [{Kernel, :==, 2, :interior}])
+      assert sites == []
+      assert_compiles(meta)
+
+      {_m, plain, _} = transform(source, mutators, [])
+      assert Enum.any?(plain, &(&1.line == 2 and &1.original_code == "2"))
+      assert Enum.any?(plain, &(&1.line == 3 and &1.original_code == "2"))
+    end
+
     test "in a guard too: the container's own collapse goes, its contents keep mutating" do
       # The guard walk registers targets as it goes, so `:interior` there is "walk, then drop the
       # target on the argument's own node" — the twin of the body path's strip. Tuples and maps
@@ -842,6 +934,13 @@ defmodule Mutare.TransformCallSkipTest do
              ]
     end
   end
+
+  defp transform(source, mutators, routes),
+    do:
+      Mutare.Transform.transform_string_with_sites(source,
+        mutators: mutators,
+        call_routes: routes
+      )
 
   defp assert_compiles(meta) do
     assert [_ | _] = Mutare.Test.Compile.string(meta)
