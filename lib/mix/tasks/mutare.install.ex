@@ -111,10 +111,32 @@ if Code.ensure_loaded?(Igniter) do
 
       igniter
       |> add_companion_deps(detected)
+      |> fetch_companion_deps()
       |> configure(detected, repo)
     end
 
     # --- dependencies --------------------------------------------------------
+
+    # Igniter fetches the dependencies an installer *declares* up front (`Info.installs` /
+    # `Info.adds_deps`) before running it, but the companions are chosen at run time from
+    # the project's own deps, so they are added inside `igniter/1` — and Igniter does
+    # nothing with a dep added there beyond writing it to `mix.exs` at the very end. Left
+    # at that, `mix igniter.install mutare` wrote a `.mutare.exs` naming modules of packages
+    # it had never fetched or locked (found by the v0.1.0 release smoke test). So apply the
+    # `mix.exs` change and run `deps.get` here, before `.mutare.exs` is written; the
+    # remaining changes carry on to Igniter's final apply. Under `Igniter.Test` fetching is
+    # illegal (and pointless): the tests assert on the igniter's deps instead.
+    defp fetch_companion_deps(igniter) do
+      if igniter.assigns[:test_mode?] do
+        igniter
+      else
+        Igniter.apply_and_fetch_dependencies(igniter,
+          yes: igniter.args.options[:yes],
+          error_on_abort?: true,
+          operation: "fetching Mutare's companion packages"
+        )
+      end
+    end
 
     defp add_companion_deps(igniter, detected) do
       igniter

@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:ecto_sql` given to `:import_deps`"). Every render now pins the option
   (`Mutare.AST.render_opts/1`); a parsed call keeps the spelling its metadata
   records, and a node built without metadata renders with parentheses.
+- **`mix igniter.install mutare` fetches the companion packages it adds.** The
+  companions are chosen from the project's own deps at run time, and Igniter
+  writes a dep added that way to `mix.exs` without fetching it — so the
+  generated `.mutare.exs` named modules of packages that were never fetched or
+  locked. The installer now applies the `mix.exs` change and runs `deps.get`
+  before writing `.mutare.exs`.
+
 ## [0.1.1] - 2026-09-07
 
 ### Fixed

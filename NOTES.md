@@ -9004,3 +9004,20 @@ call's metadata records; a node built without metadata renders with parentheses,
 already did in every project without a `locals_without_parens` of its own (Mutare's and
 the companions' included). `ast_render_test.exs` pins it with a `.formatter.exs` naming an
 unknown dependency in the working directory.
+
+### The installer must fetch the deps it adds `[done]`
+
+Igniter fetches the dependencies an installer *declares* (`Igniter.Mix.Task.Info`'s
+`installs`/`adds_deps`) before running it, and applies whatever `igniter/1` changed —
+`mix.exs` included — at the very end, with no fetch after. `mutare.install` picks the
+companion packages at run time from the project's own deps (`Igniter.Project.Deps.has_dep?`
+on `:phoenix`, `:ecto`, …), so it adds them from `igniter/1`, and the v0.1.0 smoke test
+showed the consequence: `mix igniter.install mutare` left six companions in `mix.exs`,
+none in `mix.lock` or `deps/`, and a `.mutare.exs` naming their modules, so the very next
+`mix mutare` failed at `deps.loadpaths`. The declared route (`adds_deps` in `info/1`) is
+static and cannot see the project, so the fix is on our side of the contract:
+`fetch_companion_deps/1` calls `Igniter.apply_and_fetch_dependencies/2` right after the
+deps are added — applying only the `mix.exs` change and running `deps.get` — and hands the
+remaining changes (`.mutare.exs`) on to Igniter's final apply. Skipped under
+`Igniter.Test` (`assigns[:test_mode?]`), where fetching raises by design and the tests
+assert on the igniter's deps.
