@@ -165,7 +165,7 @@ behaviour (`compile_metamutant/3` + `observe_mutant/3`). Each source-driven
 helper forwards a trailing keyword list to `Mutare.transform_string/2`, so a
 suite can thread `:extensions` or `:call_routes` through them. To test that
 your mutator composes with macro routing an *independent* library ships, use
-the bundled `Mutare.Test.Fixtures.RoutingExtension` rather than authoring a
+the bundled `Mutare.Test.RoutingExtension` rather than authoring a
 no-op routing provider.
 
 ## Writing an extension

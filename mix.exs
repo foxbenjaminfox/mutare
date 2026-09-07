@@ -173,7 +173,7 @@ defmodule Mutare.MixProject do
           Mutare.Mutator.Spec,
           Mutare.AST,
           Mutare.Test,
-          Mutare.Test.Fixtures.RoutingExtension,
+          Mutare.Test.RoutingExtension,
           Mutare.Calls,
           Mutare.Analyze
         ],

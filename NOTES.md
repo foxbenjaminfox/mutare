@@ -7325,7 +7325,7 @@ aliased `Context` vs `RunCtx` to keep them apart in `Runner`.
   flip-and-compare pair `{baseline, mutated}`; the baseline runs **first and pinned to
   `Selector.baseline()`** (not the current selection), so a leaked active id can't masquerade as
   baseline and a wrong first element indicts the fixture, not the mutant. (4) A shipped
-  `Mutare.Test.Fixtures.RoutingExtension` — two pass-through macros routed `:skip` /
+  `Mutare.Test.RoutingExtension` — two pass-through macros routed `:skip` /
   `[:expression, :skip]` — replaces each plugin's hand-rolled no-op routing provider
   (`MyApp.QueryHelperMutator`) for foreign-routing composition tests. Deliberately scoped down from
   the proposal's "each treatment kind": it ships as an *extension* (so `:hosted` is illegal on it by

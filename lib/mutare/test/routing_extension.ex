@@ -1,4 +1,4 @@
-defmodule Mutare.Test.Fixtures.RoutingExtension do
+defmodule Mutare.Test.RoutingExtension do
   @moduledoc """
   A shipped routing-only extension for testing composition with foreign macro routing.
 
@@ -12,11 +12,11 @@ defmodule Mutare.Test.Fixtures.RoutingExtension do
   Both expand to their (first) argument, so fixtures using them still compile and run (`Mutare.Test.assert_metamutant_compiles/3`, `Mutare.Test.compile_metamutant/3`). Enable the routes by threading the module through the `Mutare.Test` helpers' `opts` — routing applies only when the extension is enabled, so the same source doubles as the unrouted contrast:
 
       import Mutare.Test
-      alias Mutare.Test.Fixtures.RoutingExtension
+      alias Mutare.Test.RoutingExtension
 
       source = \"\"\"
       defmodule M do
-        import Mutare.Test.Fixtures.RoutingExtension
+        import Mutare.Test.RoutingExtension
         def f(x), do: opaque(x + 1)
       end
       \"\"\"

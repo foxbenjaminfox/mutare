@@ -105,11 +105,11 @@ defmodule Mutare.TestTest do
     # skip suppresses the mutation inside the routed call, so the option observably arrived.
     @routed_source """
     defmodule M do
-      import Mutare.Test.Fixtures.RoutingExtension
+      import Mutare.Test.RoutingExtension
       def f(x), do: opaque(x + 1)
     end
     """
-    @skip_route [{Mutare.Test.Fixtures.RoutingExtension, :opaque, 1, :raw}]
+    @skip_route [{Mutare.Test.RoutingExtension, :opaque, 1, :raw}]
 
     test "diffs/3 forwards transform options" do
       assert {:arithmetic, "x + 1", "x - 1"} in diffs(@routed_source, [Arithmetic])
@@ -175,7 +175,7 @@ defmodule Mutare.TestTest do
     test "forwards transform options (the routed fixture still compiles)" do
       assert [_ | _] =
                assert_metamutant_compiles(@routed_source, [Arithmetic],
-                 extensions: [Mutare.Test.Fixtures.RoutingExtension]
+                 extensions: [Mutare.Test.RoutingExtension]
                )
     end
   end
@@ -326,19 +326,19 @@ defmodule Mutare.TestTest do
     end
   end
 
-  describe "Fixtures.RoutingExtension" do
-    alias Mutare.Test.Fixtures.RoutingExtension
+  describe "RoutingExtension" do
+    alias Mutare.Test.RoutingExtension
 
     @opaque_source """
     defmodule M do
-      import Mutare.Test.Fixtures.RoutingExtension
+      import Mutare.Test.RoutingExtension
       def f(x), do: opaque(x + 1)
     end
     """
 
     @tagged_source """
     defmodule M do
-      import Mutare.Test.Fixtures.RoutingExtension
+      import Mutare.Test.RoutingExtension
       def f(x), do: tagged(x + 1, x * 2)
     end
     """
