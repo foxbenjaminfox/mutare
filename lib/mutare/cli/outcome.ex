@@ -164,7 +164,10 @@ defmodule Mutare.CLI.Outcome do
   end
 
   def format_error(:baseline_failed, detail, _root) do
-    "baseline suite is not green; mutation testing needs a passing suite.\n\n" <>
+    "baseline suite is not green; mutation testing needs a passing suite. " <>
+      "If `mix test` is green in the project itself, the kept sandbox may have gone bad " <>
+      "(a stale or corrupted build artifact): rerun with --no-keep-sandbox to rebuild it " <>
+      "cold.\n\n" <>
       Output.output_tail(detail, 25)
   end
 

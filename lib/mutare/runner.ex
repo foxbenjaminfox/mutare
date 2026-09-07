@@ -76,10 +76,11 @@ defmodule Mutare.Runner do
 
   alias Mutare.Sandbox.Command.Invocation
 
-  # `sandbox` is where the run *was* materialised. For a default (throwaway) run it
-  # is removed once the run completes — the path is informational, not a live dir;
-  # only `--sandbox`/`--keep-sandbox` runs leave it in place. The report reads
-  # `schema`/`results`, never the sandbox, so this is safe.
+  # `sandbox` is where the run *was* materialised. For a throwaway
+  # (`--no-keep-sandbox`, no `--sandbox`) run it is removed once the run completes —
+  # the path is informational, not a live dir; the default kept run and `--sandbox`
+  # runs leave it in place. The report reads `schema`/`results`, never the sandbox,
+  # so this is safe.
   @type run :: Run.t()
 
   @type error ::
@@ -448,12 +449,12 @@ defmodule Mutare.Runner do
 
   defp probe_cap(mutant_cap, %Options{}), do: mutant_cap * 10
 
-  # Remove an auto-generated fresh sandbox once the run is done with it, so the
-  # default throwaway dirs don't accumulate in the temp dir across runs. A pinned
-  # `--sandbox` is the user's chosen path (left for inspection and their own reuse)
-  # and `--keep-sandbox` deliberately persists for `_build` caching, so neither is
-  # touched. Best-effort (`rm_rf`, not `rm_rf!`): a cleanup failure must never mask
-  # the run's actual result.
+  # Remove an auto-generated fresh sandbox once the run is done with it, so
+  # `--no-keep-sandbox` throwaway dirs don't accumulate in the temp dir across runs.
+  # A pinned `--sandbox` is the user's chosen path (left for inspection and their
+  # own reuse) and a kept sandbox (the default) deliberately persists for `_build`
+  # caching, so neither is touched. Best-effort (`rm_rf`, not `rm_rf!`): a cleanup
+  # failure must never mask the run's actual result.
   defp cleanup_sandbox(sandbox, %Options{sandbox: nil, keep_sandbox: false}) do
     File.rm_rf(sandbox)
     :ok
@@ -484,7 +485,9 @@ defmodule Mutare.Runner do
         "means the suite never reached a verdict (a compile error, a missing dependency, or a " <>
         "filesystem/lock problem), so the score would be computed over a denominator hollowed " <>
         "out by infrastructure failures. Fix the sandbox, or raise --max-harness-error-rate " <>
-        "to proceed anyway."
+        "to proceed anyway. If this persists across runs, the kept sandbox itself may have " <>
+        "gone bad (a build artifact corrupted by an earlier crashed run, say): rerun with " <>
+        "--no-keep-sandbox to rebuild it cold."
 
     case harness_error_examples(results) do
       "" -> base

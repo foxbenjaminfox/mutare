@@ -250,10 +250,10 @@ defmodule Mix.Tasks.Mutare do
 
   ## Sandbox and build cache
 
-      mix mutare --sandbox /tmp/mut                 # keep the generated sandbox to inspect it
-      mix mutare --sandbox /tmp/mut --keep-sandbox  # reuse the sandbox + its build cache (CI)
+      mix mutare --sandbox /tmp/mut       # put the sandbox at a path of your choosing (inspect it, or cache it on CI)
+      mix mutare --no-keep-sandbox        # throwaway sandbox: rebuild cold, remove it afterwards
 
-  By default Mutare materialises a throwaway sandbox copy, recompiles the metamutant cold every run, and removes the sandbox when it finishes (so the temp dir does not accumulate). `--sandbox <path>` keeps that sandbox around — handy for inspecting the generated metamutant. `--keep-sandbox` instead preserves the sandbox between runs and re-materialises it incrementally (only changed files are rewritten, so mix's compiler reuses the cached `_build`). On CI, pair it with `--sandbox <path>` pointed at a cached directory (cache `<path>/_build` and `<path>/deps`, keyed on `mix.lock`); locally, `--keep-sandbox` alone reuses a stable per-project temp dir.
+  By default Mutare keeps the sandbox between runs (`--keep-sandbox`, on): it lives at a stable per-project temp dir and is re-materialised incrementally — only changed files are rewritten, so mix's compiler reuses the cached `_build` and a re-run after adding a test recompiles nothing. That is the compile-once bet applied across runs, not just within one; the cost is one project copy plus its build sitting in the temp dir per project. `--sandbox <path>` chooses the location — handy for inspecting the generated metamutant, and on CI point it at a cached directory (cache `<path>/_build` and `<path>/deps`, keyed on `mix.lock`; tar-based caches preserve the mtimes the incremental compile relies on). `--no-keep-sandbox` opts out: a fresh copy, a cold compile, and the sandbox removed when the run finishes. Reach for it when a kept sandbox has gone bad — a build artifact corrupted by a crashed run, say, shows up as every mutant reporting a harness error — since the wipe is the reset.
 
   ## Output formats
 
@@ -353,7 +353,9 @@ defmodule Mix.Tasks.Mutare do
 
         # --- sandbox reuse / build cache (see "Sandbox and build cache" above) ---
         sandbox: nil,
-        keep_sandbox: false,
+        # keep the sandbox (and its compiled _build) between runs, re-materialising
+        # it incrementally; false = throwaway copy, cold compile, removed afterwards
+        keep_sandbox: true,
         # on a narrowed run (--only/--line/--since), reuse the app's already-built
         # beams so the one compile rebuilds just the mutated file(s) — not the whole
         # app. On by default; --no-seed-app-build forces a cold compile

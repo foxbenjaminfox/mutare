@@ -10,7 +10,8 @@ defmodule Mutare.Options.Registry do
   #                   the flag is exceptional/translated (handled in `Mutare.Config`) or has no flag.
   #                   Drives the Mix task's `@switches` and `Config`'s pass-through fold.
   #   * `:visible`  — whether it appears in `mix mutare --show-config`
-  #   * `:show`     — a 1-arity `value -> String.t()` formatter for that `--show-config` row
+  #   * `:show`     — a `value -> String.t()` formatter for that `--show-config` row; a 2-arity
+  #                   `value, options -> String.t()` when the rendering depends on another option
   #   * `:validate` — a 1-arity validator returning the canonical value or raising `ArgumentError`
   #
   # Adding a typical option is then a *single* entry here (plus its validator), instead of the old
@@ -546,6 +547,9 @@ defmodule Mutare.Options.Registry do
   defp show_value(v) when is_binary(v), do: v
   defp show_value(v), do: to_string(v)
 
+  defp show_row(show, value, _options) when is_function(show, 1), do: show.(value)
+  defp show_row(show, value, options) when is_function(show, 2), do: show.(value, options)
+
   defp show_mutators(nil), do: "(all built-ins — see --list-mutators)"
 
   # `validate_mutators!/1` has already resolved this to `[Mutare.Mutator.Spec{}]`, so we
@@ -586,8 +590,9 @@ defmodule Mutare.Options.Registry do
   defp show_gate(nil), do: "(no gate)"
   defp show_gate(n), do: to_string(n)
 
-  defp show_sandbox(nil), do: "(throwaway temp dir)"
-  defp show_sandbox(path), do: path
+  defp show_sandbox(nil, %{keep_sandbox: true}), do: "(per-project temp dir, kept between runs)"
+  defp show_sandbox(nil, _options), do: "(throwaway temp dir)"
+  defp show_sandbox(path, _options), do: path
 
   defp show_partition_env(nil), do: "(off)"
   defp show_partition_env(name), do: name
@@ -792,12 +797,12 @@ defmodule Mutare.Options.Registry do
         key: :sandbox,
         default: nil,
         cli: :string,
-        show: &show_sandbox/1,
+        show: &show_sandbox/2,
         validate: &validate_sandbox!/1
       ),
       spec(
         key: :keep_sandbox,
-        default: false,
+        default: true,
         cli: :boolean,
         validate: &validate_keep_sandbox!/1
       ),
@@ -861,7 +866,7 @@ defmodule Mutare.Options.Registry do
   """
   def display_rows(options) when is_map(options) do
     for %{key: key, visible: true, show: show} <- specs() do
-      {to_string(key), show.(Map.fetch!(options, key))}
+      {to_string(key), show_row(show, Map.fetch!(options, key), options)}
     end
   end
 end

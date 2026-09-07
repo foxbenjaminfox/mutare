@@ -20,16 +20,18 @@ defmodule Mutare.Sandbox do
 
   Two materialisation modes, chosen by `:keep_sandbox`:
 
-    * **fresh (default)** — a throwaway dir is wiped and re-copied every run, so the metamutant
-      recompiles cold. Always correct, no caching.
-    * **kept (`keep_sandbox: true`)** — the sandbox (and its compiled `_build`)
+    * **kept (default, `keep_sandbox: true`)** — the sandbox (and its compiled `_build`)
       is *preserved* between runs and re-materialised in place: a file is
       rewritten only when its desired content differs (unchanged files keep their
       mtime, so mix's incremental compiler reuses `_build`), and files Mutare no
       longer owns are pruned. The mirror carries each source's permission mode and
       recreates its symlinks (never following them), matching what the fresh copy
-      preserves. Intended for CI build caching; pair with a stable `:sandbox`
-      path. See `NOTES.md` for the cache pattern.
+      preserves. Without an explicit `:sandbox` it lives at a stable per-project
+      temp dir; CI pins `:sandbox` at a cached directory instead. See `NOTES.md`
+      for the cache pattern.
+    * **fresh (`keep_sandbox: false`)** — a throwaway dir is wiped and re-copied every run, so
+      the metamutant recompiles cold, and the runner removes it afterwards. Always correct, no
+      caching — the reset for a kept sandbox that has gone bad.
 
   Materialising the workspace lives here; running `mix` against it (and the
   per-mutant timeout cap the bootstrap honours) lives in
@@ -144,8 +146,9 @@ defmodule Mutare.Sandbox do
   Prepare a sandbox for `schema` taken from `root`. Returns the sandbox path.
 
   `opts` may be a `Mutare.Run.Context`, a `Mutare.Options` struct, or a keyword
-  list. `:sandbox` selects the target directory; without it Mutare uses a fresh
-  temp directory. The context's project scope controls which umbrella apps are
+  list. `:sandbox` selects the target directory; without it Mutare uses a stable
+  per-project temp directory (kept mode, the default) or a fresh one (`keep_sandbox:
+  false`). The context's project scope controls which umbrella apps are
   materialized.
 
   The sandbox must be separate from the project tree: it may not be the project

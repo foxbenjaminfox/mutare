@@ -14,15 +14,16 @@ defmodule Mutare.Sandbox.Ownership do
   # not real content" carve-out (in `reset!/1` and `effectively_empty?/1`) can't drift from it.
   @lock_name Lock.name()
 
-  # A sandbox is a throwaway copy we compile, mutate, and wipe. Before clearing a
-  # directory we must be sure it is *ours* — not, say, a path `--sandbox` was
-  # pointed at by mistake — so we never `rm_rf!` arbitrary user data. We take a
-  # path only when it is one of:
+  # A sandbox is a copy we compile, mutate, overwrite, and (in fresh mode) wipe.
+  # Before clearing a directory we must be sure it is *ours* — not, say, a path
+  # `--sandbox` was pointed at by mistake — so we never `rm_rf!` arbitrary user
+  # data. We take a path only when it is one of:
   #
   #   1. absent — we create it;
   #   2. an empty directory — we adopt it; or
   #   3. a directory carrying our ownership marker — a sandbox from an earlier
-  #      run, which we wipe and reuse (poison recovery rebuilds the same path).
+  #      run, which we reuse: synced in place in kept mode, wiped and re-copied
+  #      in fresh mode (poison recovery rebuilds the same path either way).
   #
   # Anything else — a non-empty directory we never marked, a regular file, a
   # symlink — is refused untouched. The marker is a small dotfile whose first

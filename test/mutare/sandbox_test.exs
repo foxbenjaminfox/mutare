@@ -136,7 +136,8 @@ defmodule Mutare.SandboxTest do
 
   test "preserves the active internal lock when resetting an owned explicit sandbox", context do
     sandbox = Path.join(context.base, "sandbox")
-    assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+    fresh = [sandbox: sandbox, keep_sandbox: false]
+    assert Sandbox.prepare(context.project, context.schema, fresh) == sandbox
     stale = Path.join(sandbox, "stale.txt")
     File.write!(stale, "stale")
 
@@ -144,7 +145,7 @@ defmodule Mutare.SandboxTest do
     lock_dir = Path.join(sandbox, @lock)
 
     try do
-      assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+      assert Sandbox.prepare(context.project, context.schema, fresh) == sandbox
       assert File.dir?(lock_dir)
       refute File.exists?(stale)
       assert File.read!(Path.join(sandbox, "keep.txt")) == "keep"
@@ -154,10 +155,10 @@ defmodule Mutare.SandboxTest do
   end
 
   test "auto-generates a fresh sandbox path salted with the OS pid", context do
-    # No explicit `:sandbox` → a throwaway temp dir. `System.unique_integer/1`
+    # No explicit `:sandbox` in fresh mode → a throwaway temp dir. `System.unique_integer/1`
     # repeats across BEAM instances, so the OS pid is what keeps two concurrent
     # `mix mutare` runs from colliding on the same path (and wiping each other).
-    sandbox = Sandbox.prepare(context.project, context.schema)
+    sandbox = Sandbox.prepare(context.project, context.schema, keep_sandbox: false)
     on_exit(fn -> File.rm_rf!(sandbox) end)
 
     assert Path.basename(sandbox) =~ ~r/^mutare_sandbox_#{System.pid()}_\d+$/
@@ -196,16 +197,17 @@ defmodule Mutare.SandboxTest do
     assert File.regular?(Path.join(sandbox, @marker))
   end
 
-  test "reuses a marked sandbox, clearing its stale contents", context do
+  test "fresh mode reuses a marked sandbox, clearing its stale contents", context do
     sandbox = Path.join(context.base, "sandbox")
+    fresh = [sandbox: sandbox, keep_sandbox: false]
 
     # First run marks and populates it.
-    assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+    assert Sandbox.prepare(context.project, context.schema, fresh) == sandbox
     stale = Path.join(sandbox, "stale.txt")
     File.write!(stale, "stale")
 
-    # Second run on the same (now owned) path wipes the stale file and rebuilds.
-    assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+    # Second fresh run on the same (now owned) path wipes the stale file and rebuilds.
+    assert Sandbox.prepare(context.project, context.schema, fresh) == sandbox
     refute File.exists?(stale)
     assert File.read!(Path.join(sandbox, "keep.txt")) == "keep"
     assert File.regular?(Path.join(sandbox, @marker))
@@ -305,7 +307,7 @@ defmodule Mutare.SandboxTest do
     :ok = File.ln_s("keep.txt", Path.join(context.project, "linked.txt"))
 
     sandbox = Path.join(context.base, "sandbox")
-    Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
+    Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: false)
 
     assert mode(Path.join(sandbox, "bin/run.sh")) == 0o755
     assert File.read_link!(Path.join(sandbox, "linked.txt")) == "keep.txt"
@@ -346,7 +348,7 @@ defmodule Mutare.SandboxTest do
       :ok = File.ln_s(outside, config)
 
       sandbox = Path.join(context.base, "sandbox")
-      Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: false)
 
       sandbox_config = Path.join(sandbox, "config/config.exs")
       assert %File.Stat{type: :regular} = File.lstat!(sandbox_config)
@@ -366,7 +368,7 @@ defmodule Mutare.SandboxTest do
       :ok = File.ln_s(outside_dir, Path.join(context.project, "config"))
 
       sandbox = Path.join(context.base, "sandbox")
-      Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: false)
 
       sandbox_config_dir = Path.join(sandbox, "config")
       sandbox_config = Path.join(sandbox_config_dir, "config.exs")
@@ -454,8 +456,8 @@ defmodule Mutare.SandboxTest do
       Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
       assert File.read!(cached) == "cached"
 
-      # A fresh (default) run on the same owned path wipes everything.
-      Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
+      # A fresh (`keep_sandbox: false`) run on the same owned path wipes everything.
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: false)
       refute File.exists?(cached)
     end
 

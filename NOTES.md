@@ -1453,7 +1453,8 @@ is informational only and may already be gone by the time the caller sees it.
 The default sandbox is throwaway: a fresh dir per run, or an owned `--sandbox`
 that `reset!/1` wipes (`rm_rf` + `mkdir`) and re-copies. So "compile once" was
 **per run** — `_build` is discarded between runs and the metamutant recompiles
-cold every time. `--keep-sandbox` (`Options.keep_sandbox`, default `false`) makes
+cold every time. `--keep-sandbox` (`Options.keep_sandbox`; default `false` when
+this landed, flipped to `true` — see the next entry) makes
 the sandbox *survive* between runs so mix's incremental compiler does almost
 nothing on a re-run. The precondition is already true: the metamutant is
 deterministic for identical input (stable mutant ids), so an unchanged source
@@ -1511,6 +1512,53 @@ and `<cache-dir>/deps` keyed on `mix.lock`. tar-based caches (e.g. GitHub
 compile work. Still out of scope: `mix deps.get` in the sandbox (unchanged). (The
 `MIX_BUILD_PATH` worker-isolation question is settled — not pursued; see
 "Per-worker `MIX_BUILD_PATH` vs the shared sandbox build" above.)
+
+### The kept sandbox is the default `[done]`
+`keep_sandbox` shipped as `false`, framed as a CI cache ("pair with a stable
+`:sandbox`"). That framing pointed it at the audience for whom the default matters
+least: CI configs spell their flags out, and a fresh checkout has nothing to reuse
+anyway. The default only bites the *interactive* loop — run, read survivors, write a
+test, rerun — which is the workflow the tool exists for, and the one where the kept
+sandbox pays best: editing `test/` leaves the metamutant byte-identical, so the one
+`mix compile` does nothing. Fresh mode threw that away on every run, and in practice
+the flag was passed every time and its omission regretted. "Compile once" was coined
+against per-mutant recompilation; extending it from once-per-run to
+once-per-source-change is the same bet, and the machinery (`sync/4`, the byte-aware
+mirror, `prune/2`, the stable digest path, the live-owner `Lock`) already existed and
+was tested. So the default is now `true`; `--no-keep-sandbox` is the opt-out.
+
+What changes for a default run, and what was weighed:
+- **Space.** One project copy plus its `_build` per project root ever mutated, at
+  `System.tmp_dir!()/mutare_sandbox_<digest>`. On tmpfs `/tmp` (Fedora et al.) that
+  is RAM; a reboot clears it, which doubles as the sweeper. macOS ages `$TMPDIR`;
+  persistent-`/tmp` distros age it via tmpfiles. Bounded in practice, so no sweeper
+  was written (the "No sweeper for leaked sandboxes" item above still applies to
+  fresh-mode leftovers only).
+- **Persisted corruption.** Fresh mode's wipe was a free reset; a kept sandbox
+  carries a bad `_build` forward (the PropCheck DETS incident is the archetype:
+  every later run fails with undifferentiated harness errors). So the two aborts
+  that this looks like — `:too_many_harness_errors` and `:baseline_failed` — now
+  name `--no-keep-sandbox` as the cold-rebuild escape hatch.
+- **Concurrent runs on one project.** Fresh mode gave each its own pid-salted dir;
+  kept mode shares the digest path, and `Lock.acquire/1` refuses the second live
+  owner rather than letting them race. Two terminals on one project is now a
+  refusal, not two runs — acceptable (they would each pay the compile anyway).
+- **Dep bumps.** `Seed.dep_build/2` only fills deps the sandbox lacks, so after an
+  upgrade mix recompiles that dep cold in the sandbox instead of seeding the
+  already-built new version. Correct, slower for that one run; could reseed on a
+  manifest mismatch if it ever matters.
+- **How incremental is a `lib/` edit?** Ids are a prefix-sum across files in
+  discovery order, so a new mutant in file *k* shifts the ids in every later file
+  and those metamutants get rewritten and recompiled. Kept mode is still never
+  slower than fresh (which recompiled everything), but "only what changed" is exact
+  only for test-side edits.
+- **`--sandbox <path>` alone** now reuses in place too (it used to wipe-and-recopy);
+  fresh-at-a-pinned-path is `--sandbox <path> --no-keep-sandbox`. `Ownership`'s
+  decision table needed no change — only the flag's default moved.
+- **Tests.** The suite's fixtures pass `sandbox:` (a scratch dir the fixture
+  removes), so nothing leaks into `/tmp`; the tests that exercise fresh-mode
+  semantics (wipe on reuse, pid-salted path, cleanup on completion) say
+  `keep_sandbox: false` explicitly.
 
 ### Keyword-`do:` normalization (Sourceror workaround) `[done, watch]`
 Sourceror's formatter raises when rendering `def f, do: <case>` (keyword block

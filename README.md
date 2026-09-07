@@ -73,7 +73,7 @@ One observable difference is worth knowing: a suite that is green under plain `m
 - Compile-poison recovery — a mutant that wouldn't compile is identified from the compile error, dropped (reported as *poisoned*), and the build retried, to try and avoid a bad mutant spoiling the whole run—but ideally this shouldn't be necessary, and it usually isn't.
 - A very broad built-in mutator set — arithmetic/operator swaps, relational and logical swaps, literals of every kind, collection/string/map call rewrites, pattern and clause restructurings, and more. See [`Mutare.Mutators`](https://hexdocs.pm/mutare/Mutare.Mutators.html), and write your own — the [Extending Mutare](https://hexdocs.pm/mutare/extending.html) guide walks through custom mutators and library extensions.
 - Umbrella-aware — target one app, several, or the whole workspace.
-- CI-friendly — `--since <ref>` to scope to changed lines, score/coverage/infra gates, machine-readable reports, and `--keep-sandbox` to cache the compiled sandbox across runs.
+- CI-friendly — `--since <ref>` to scope to changed lines, score/coverage/infra gates, machine-readable reports, and a kept sandbox (on by default; `--sandbox <path>` to point it at a CI cache) so a re-run recompiles only what changed.
 
 Suppress a known-equivalent mutant with a comment — a trailing comment marks its line as ignored, and a standalone comment applies to the next line. Ignored mutants are excluded from the score.
 

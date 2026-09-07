@@ -129,14 +129,35 @@ defmodule Mutare.RunnerTest do
     assert ms > 0
   end
 
-  test "removes the default throwaway sandbox when the run completes", %{project: project} do
-    # No `--sandbox` and no `--keep-sandbox`: the runner materialises a throwaway
-    # sandbox under the temp dir and removes it on completion, so default runs
-    # don't accumulate stale dirs there.
-    assert {:ok, run} = Mutare.run(project, mutators: @probe)
+  test "removes a throwaway (--no-keep-sandbox) sandbox when the run completes", %{
+    project: project
+  } do
+    # No `--sandbox` and `--no-keep-sandbox`: the runner materialises a throwaway
+    # sandbox under the temp dir and removes it on completion, so fresh runs don't
+    # accumulate stale dirs there.
+    assert {:ok, run} = Mutare.run(project, mutators: @probe, keep_sandbox: false)
     on_exit(fn -> File.rm_rf(run.sandbox) end)
 
     refute File.exists?(run.sandbox)
+  end
+
+  test "by default keeps the sandbox at a stable per-project path across runs", %{
+    project: project
+  } do
+    # No `--sandbox`, no flag: the default is the kept mode — the sandbox survives the
+    # run at a per-project temp dir, and a second run lands on the same path with the
+    # first run's build still in place.
+    assert {:ok, first} = Mutare.run(project, mutators: @probe)
+    on_exit(fn -> File.rm_rf(first.sandbox) end)
+
+    assert File.dir?(first.sandbox)
+    assert String.starts_with?(first.sandbox, System.tmp_dir!())
+    [beam | _] = Path.wildcard(Path.join(first.sandbox, "_build/**/*.beam"))
+
+    assert {:ok, second} = Mutare.run(project, mutators: @probe)
+    assert second.sandbox == first.sandbox
+    assert File.exists?(beam)
+    assert Enum.count(second.results, &(&1.status == :killed)) == 2
   end
 
   test "keep_sandbox reuses the sandbox and its build across runs", %{

@@ -146,8 +146,8 @@ defmodule Mutare.OptionsTest do
   end
 
   describe ":keep_sandbox" do
-    test "defaults to false" do
-      assert Options.new([]).keep_sandbox == false
+    test "defaults to true" do
+      assert Options.new([]).keep_sandbox == true
     end
 
     test "accepts true and false" do

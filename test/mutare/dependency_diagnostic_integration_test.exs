@@ -27,11 +27,12 @@ defmodule Mutare.DependencyDiagnosticIntegrationTest do
 
     # Prove the target itself is healthy: the relative path resolves beside the
     # original project. It becomes unavailable only after the project is copied
-    # to Mutare's unrelated temp sandbox.
+    # to Mutare's unrelated temp sandbox — a throwaway one here, so the test
+    # leaves nothing behind in the temp dir (a kept default sandbox would persist).
     assert {_output, 0} = Project.compile(project)
 
     assert {:error, :dependency_failed, detail} =
-             Mutare.run(project, mutators: [Mutare.Mutators.Arithmetic])
+             Mutare.run(project, keep_sandbox: false, mutators: [Mutare.Mutators.Arithmetic])
 
     assert Output.dependency_issue(detail) == :unavailable
     assert detail =~ "outside_dep"
