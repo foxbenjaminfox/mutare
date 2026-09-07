@@ -439,10 +439,8 @@ defmodule Mutare.CLI.Info do
       Mix.shell().info("  #{at}  #{e.macro}  (#{e.count} mutant#{CLI.plural(e.count)})")
     end)
 
-    case Mutare.Poison.Hint.escalation_note(escalations) do
-      nil -> :ok
-      note -> Mix.shell().info("\n" <> note)
-    end
+    # `escalations` is non-empty here (the `[]` clause above), so the note is never `nil`.
+    Mix.shell().info("\n" <> Mutare.Poison.Hint.escalation_note(escalations))
   end
 
   # The macro-expansion fallback's skips (`--check`): name each inline DSL macro whose
@@ -458,10 +456,8 @@ defmodule Mutare.CLI.Info do
     |> Enum.sort_by(&{&1.module, to_string(&1.macro)})
     |> Enum.each(fn m -> Mix.shell().info("  #{m.module}.#{m.macro}") end)
 
-    case Mutare.Poison.Hint.macro_skip_note(macro_skipped) do
-      nil -> :ok
-      note -> Mix.shell().info("\n" <> note)
-    end
+    # `macro_skipped` is non-empty here (the `[]` clause above), so the note is never `nil`.
+    Mix.shell().info("\n" <> Mutare.Poison.Hint.macro_skip_note(macro_skipped))
   end
 
   defp print_dry_run_file({file, sites}) do

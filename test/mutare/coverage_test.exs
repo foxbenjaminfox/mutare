@@ -40,6 +40,8 @@ end
 defmodule Mutare.CoverageTest do
   use ExUnit.Case, async: false
 
+  import Mutare.Test.ExUnitSummary, only: [tests_run: 1]
+
   import ExUnit.CaptureLog, only: [capture_log: 1]
 
   alias Mutare.{Coverage, Result}
@@ -539,10 +541,8 @@ defmodule Mutare.CoverageTest do
       # run the whole suite rather than being skipped as :no_coverage.
       assert [%Result{status: :survived, duration_ms: ms, output: output}] = run.results
       assert ms > 0
-      # Elixir <1.20 summarizes a green run as "1 test, 0 failures"; 1.20+ as
-      # "Result: 1 passed". Either proves the whole (1-test) suite ran rather
-      # than being skipped as :no_coverage.
-      assert output =~ ~r/1 test|1 passed/
+      # The whole (1-test) suite ran rather than being skipped as :no_coverage.
+      assert tests_run(output) == 1
     end
 
     @tag :runner
@@ -601,9 +601,8 @@ defmodule Mutare.CoverageTest do
 
       assert [%Result{status: :survived} = result] = run.results
       # Narrowed to `--only test:"test covers add loosely"` → ExUnit runs 1 test, not the 2-test
-      # file. Elixir <1.20 summarises as "1 test"; refute the whole-file "2 tests"/"/2 passed".
-      assert result.output =~ "1 test"
-      refute result.output =~ ~r{2 tests|/2 passed}
+      # file.
+      assert tests_run(result.output) == 1
     end
 
     @tag :runner
@@ -619,7 +618,7 @@ defmodule Mutare.CoverageTest do
 
       assert [%Result{status: :survived} = result] = run.results
       # The whole covering file runs — both tests, no per-test narrowing.
-      assert result.output =~ ~r{2 tests|/2 passed}
+      assert tests_run(result.output) == 2
     end
   end
 
@@ -649,17 +648,15 @@ defmodule Mutare.CoverageTest do
       by_op = Map.new(run.results, &{&1.site.original_form, &1})
 
       # Calc.add's `+` mutant is covered only by calc_test.exs → that file alone
-      # runs (1 test), not the whole 2-test suite — and it's killed. Elixir <1.20
-      # would summarize a whole-suite run as "2 tests"; 1.20+ as "Result: N/2 passed".
+      # runs (1 test), not the whole 2-test suite — and it's killed.
       calc = by_op[:+]
       assert calc.status == :killed
-      assert calc.output =~ "1 test"
-      refute calc.output =~ ~r{2 tests|/2 passed}
+      assert tests_run(calc.output) == 1
 
       # Greeter.shout's `*` mutant likewise runs only greeter_test.exs, killed.
       greeter = by_op[:*]
       assert greeter.status == :killed
-      assert greeter.output =~ "1 test"
+      assert tests_run(greeter.output) == 1
     end
 
     @tag :runner
@@ -694,8 +691,7 @@ defmodule Mutare.CoverageTest do
       # recovery attributed the id instead of dropping it to the unlabeled (run-everything) bucket.
       assert [result] = run.results
       assert result.status == :killed
-      assert result.output =~ "1 test"
-      refute result.output =~ "2 tests"
+      assert tests_run(result.output) == 1
     end
 
     @tag :runner
@@ -787,10 +783,7 @@ defmodule Mutare.CoverageTest do
       assert run.results != []
       assert Enum.all?(run.results, &(&1.status == :killed))
       # Tight selection: only setup_all_test.exs runs (1 test), not the idle file.
-      # Elixir <1.20 would summarize a whole-suite run as "2 tests"; 1.20+ as
-      # "Result: N/2 passed" — refute both phrasings.
-      assert Enum.all?(run.results, &(&1.output =~ "1 test"))
-      refute Enum.any?(run.results, &(&1.output =~ ~r{2 tests|/2 passed}))
+      assert Enum.all?(run.results, &(tests_run(&1.output) == 1))
     end
 
     @tag :runner
@@ -823,10 +816,8 @@ defmodule Mutare.CoverageTest do
       assert run.results != []
       assert Enum.all?(run.results, &(&1.status == :killed))
       # Attributed to worker_test.exs (via the Task caller chain), so only that file
-      # runs — not the whole suite. Elixir <1.20 would summarize a whole-suite run
-      # as "2 tests"; 1.20+ as "Result: N/2 passed" — refute both phrasings.
-      assert Enum.all?(run.results, &(&1.output =~ "1 test"))
-      refute Enum.any?(run.results, &(&1.output =~ ~r{2 tests|/2 passed}))
+      # runs — not the whole suite.
+      assert Enum.all?(run.results, &(tests_run(&1.output) == 1))
     end
 
     @tag :runner
@@ -905,9 +896,9 @@ defmodule Mutare.CoverageTest do
                Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.Arithmetic])
 
       assert [%{status: :killed, output: output}] = run.results
-      # Whole-suite selection ran both files. Elixir <1.20 summarizes the aborted
-      # (max-failures) run as "2 tests, 1 failure"; 1.20+ as "Result: 1/2 passed".
-      assert output =~ ~r{2 tests|/2 passed}
+      # Whole-suite selection ran both files (the kill aborts at `--max-failures 1`, so the
+      # summary counts one failure among the two).
+      assert tests_run(output) == 2
     end
 
     @tag :runner

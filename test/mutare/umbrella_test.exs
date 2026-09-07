@@ -7,6 +7,8 @@ defmodule Mutare.UmbrellaTest do
   """
   use ExUnit.Case, async: false
 
+  import Mutare.Test.ExUnitSummary, only: [tests_run: 1]
+
   alias Mutare.Test.Umbrella
 
   # Pin to arithmetic swaps: the fixture's sites are `+` (core) and `*` (web), so
@@ -124,10 +126,7 @@ defmodule Mutare.UmbrellaTest do
     # mutant runs that one file (1 test), not the whole umbrella suite.
     web = Enum.find(run.results, &(&1.site.file == "apps/web/lib/web.ex"))
     assert web.status == :killed
-    assert web.output =~ "1 test"
-    # Elixir <1.20 would summarize a whole-suite run as "2 tests"; 1.20+ as
-    # "Result: N/2 passed" — refute both phrasings.
-    refute web.output =~ ~r{2 tests|/2 passed}
+    assert tests_run(web.output) == 1
   end
 
   test "a broad (:full) run is narrowed to the owning app + its dependents" do
