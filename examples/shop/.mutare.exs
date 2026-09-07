@@ -12,11 +12,12 @@
   # 2. MACRO ARGUMENTS TO LEAVE RAW. `Shop.Query.matching/2` (lib/shop/query.ex)
   #    is a query DSL — like `Ecto.Query.from/2`. Its second argument is a query
   #    expression, not ordinary runtime code, so mutating inside it is noise (or
-  #    worse, uncompilable). `[:expression, :skip]` mutates the first argument
-  #    normally and leaves the second raw. (Comment this out and re-run to see
+  #    worse, uncompilable). `[:expression, :raw]` mutates the first argument
+  #    normally and leaves the second as written — `:raw` is the per-argument
+  #    treatment; `:skip` turns a whole call off. (Comment this out and re-run to see
   #    the relational/condition mutants it suppresses in lib/shop/search.ex.)
-  macro_routes: [
-    {Shop.Query, :matching, [:expression, :skip]}
+  call_routes: [
+    {Shop.Query, :matching, [:expression, :raw]}
   ]
 
   # 3. KNOWN-EQUIVALENT MUTANTS are suppressed at the source with

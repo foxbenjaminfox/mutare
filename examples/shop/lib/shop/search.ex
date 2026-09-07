@@ -3,8 +3,8 @@ defmodule Shop.Search do
   Product search, written with the `Shop.Query` DSL.
 
   The `matching/2` conditions read like query expressions. Because `.mutare.exs`
-  skips that macro argument, the comparisons inside them (`<=`, `==`) produce no
-  mutants. Remove the `macro_routes:` line from `.mutare.exs` and re-run to watch a
+  leaves that macro argument raw, the comparisons inside them (`<=`, `==`) produce no
+  mutants. Remove the `call_routes:` line from `.mutare.exs` and re-run to watch a
   cluster of relational/condition mutants appear in this file — the cost of
   letting Mutare mutate a query DSL it can't tell from ordinary code.
   """

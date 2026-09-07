@@ -6,7 +6,7 @@ defmodule Shop.Query do
   is a query *expression* evaluated against each `row` — not ordinary runtime
   code. Used inside a function (as `Shop.Search` does), Mutare would otherwise
   splice mutation selectors into that expression; `.mutare.exs` lists the macro
-  under `macro_routes:` to leave the argument raw — the dependency-free twin of
+  under `call_routes:` to leave the argument raw — the dependency-free twin of
   `{Ecto.Query, :from, :skip}`.
   """
 

@@ -7,20 +7,20 @@ things the other examples don't:
    44 — from `arithmetic` and `regex` to `genserver`, `bitstring_spec`,
    `pattern_swap`, and `rescue_type`. (`mix mutare examples/shop --dry-run` lists
    every mutant, grouped by file, without compiling or running anything.)
-2. **Show the `.mutare.exs` config surface** — choosing mutators, skipping a
-   macro's arguments, and suppressing known-equivalent mutants with
+2. **Show the `.mutare.exs` config surface** — choosing mutators, leaving a
+   macro's argument raw, and suppressing known-equivalent mutants with
    `# mutare:ignore`.
 
 ```
 examples/shop/
-├── .mutare.exs            # mutator selection + macro_routes: skip (the config tour)
+├── .mutare.exs            # mutator selection + a call_routes: entry (the config tour)
 ├── lib/shop/
 │   ├── cart.ex            # lists, maps, tuples, Enum rewrites, pattern families
 │   ├── pricing.ex         # the operator/number families + the ignore directives
 │   ├── inventory.ex       # bitwise, Integer, MapSet, a guard, a try/rescue, apply/3
 │   ├── catalog.ex         # strings, sigils, regex, calendar + bitstring literals
 │   ├── query.ex           # a one-macro query DSL (stands in for Ecto.Query)
-│   ├── search.ex          # uses the DSL — the macro_routes: skip target
+│   ├── search.ex          # uses the DSL — the call_routes: target
 │   └── server.ex          # a GenServer (the genserver family)
 └── test/shop/             # a deliberately good-but-imperfect suite
 ```
@@ -59,10 +59,10 @@ This is the example's real subject — open
 - **`mutators: [:builtins]`** runs the whole catalogue (the default, spelled out).
   The file shows the forms for narrowing it (`[:arithmetic, :relational]`,
   `[{:builtins, except: [:regex]}]`, or adding your own module).
-- **`macro_routes: [{Shop.Query, :matching, [:expression, :skip]}]`** leaves the second
-  argument of the `matching/2` query macro raw. `lib/shop/search.ex` writes
+- **`call_routes: [{Shop.Query, :matching, [:expression, :raw]}]`** leaves the second
+  argument of the `matching/2` query macro as written. `lib/shop/search.ex` writes
   `matching(products, row.price <= budget)` — a query *expression*, not runtime
-  code. Skipping it drops `search.ex` from 11 mutants to 4. **Comment that line
+  code. Leaving it raw drops `search.ex` from 11 mutants to 4. **Comment that line
   out and re-run** to watch the `relational`/`conditional` mutants on the query
   conditions reappear — the dependency-free version of `{Ecto.Query, :from, :skip}`.
 - **`# mutare:ignore`** lives in the source, not the config. `lib/shop/pricing.ex`
