@@ -251,8 +251,15 @@ defmodule Mutare.Mutators.ModeSwap do
   # Whether the `swaps/2` catch-all still raises for a group with no clause — the property
   # `swaps_defined?/1` depends on. A healthy module raises here; a catch-all softened to return
   # `[]` would not, silently defeating the guard, which `__assert_swap_coverage__/2` rejects.
+  #
+  # The unknown group is built at runtime rather than written as a literal: Elixir's type
+  # inference (from 1.21) reads `swaps/2`'s domain off its clause heads and drops the
+  # catch-all, which always raises, so a literal no clause matches is flagged as a call that
+  # can never succeed — a warning, and a failed compile under `--warnings-as-errors`. An atom
+  # made from a string types as `atom()`, which overlaps the domain, and the probe still lands
+  # in the catch-all exactly as before.
   defp catch_all_raises? do
-    swaps(:__mutare_undefined_group__, @drift_probe)
+    swaps(:erlang.binary_to_atom("__mutare_undefined_group__", :utf8), @drift_probe)
     false
   rescue
     ArgumentError -> true
