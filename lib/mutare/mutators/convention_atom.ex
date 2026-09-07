@@ -20,7 +20,7 @@ defmodule Mutare.Mutators.ConventionAtom do
 
       {Mutare.Mutators.ConventionAtom, call_option_keys: false}
 
-  The family applies in value positions and patterns, but not where an atom names a function. An `:ok` that is a unit-returning function's return tail — every return path of every clause literally `:ok` or `nil` — is not a value position and is left alone; there the atom spells "no value", not data (see the exclusions in `Mutare.Mutators.ReturnValue`). It is enabled by default.
+  The family applies in value positions and patterns, but not where an atom names a function. An `:ok` that is a unit-returning function's return tail — every return path of every clause literally `:ok` or `nil`, and the function not a behaviour callback — is not a value position and is left alone; there the atom spells "no value", not data (see the exclusions in `Mutare.Mutators.ReturnValue`). It is enabled by default.
   """
   @behaviour Mutare.Mutator
 

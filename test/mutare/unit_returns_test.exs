@@ -236,6 +236,58 @@ defmodule Mutare.UnitReturnsTest do
     end
   end
 
+  describe "a behaviour callback's return is the contract's, not the body's" do
+    test "a callback of a declared, loadable behaviour keeps its :ok mutants" do
+      # `terminate/2` is unit in fact, but the tool can't tell it from a callback whose lone
+      # `:ok` is one contract outcome among several (an `Oban.Worker.perform/1`); the
+      # exemption errs towards offering.
+      src = t("  @behaviour GenServer\n  def terminate(_reason, _state), do: :ok")
+      assert on_ok(src) == @ok_mutated
+    end
+
+    test "a custom behaviour, and a non-callback sibling stays unit" do
+      src =
+        t(
+          "  @behaviour Mutare.Test.SampleBehaviour\n  def handle(_msg), do: :ok\n  defp helper, do: :ok"
+        )
+
+      # Every site sits on the callback's line (3 — `t/1` adds the `defmodule` line); the
+      # `helper` on line 4 draws none.
+      assert Enum.all?(sites(src), &(elem(&1, 1) == 3))
+      assert on_ok(src) == @ok_mutated
+    end
+
+    test "a use-injected behaviour counts" do
+      src = t("  use Mutare.Test.SampleUsing\n  def handle(_msg), do: :ok")
+      assert on_ok(src) == @ok_mutated
+    end
+
+    test "@impl marks a callback even when the behaviour can't be loaded" do
+      src = t("  @behaviour Nope.Unloadable\n  @impl true\n  def go, do: :ok")
+      assert on_ok(src) == @ok_mutated
+
+      src = t("  @behaviour Nope.Unloadable\n  @impl Nope.Unloadable\n  def go, do: :ok")
+      assert on_ok(src) == @ok_mutated
+    end
+
+    test "@impl on the first clause covers the whole group" do
+      src =
+        t(
+          "  @behaviour Nope.Unloadable\n  @impl true\n  def go(1), do: :ok\n  def go(_), do: :ok"
+        )
+
+      assert length(on_ok(src)) == 2 * length(@ok_mutated)
+    end
+
+    test "@impl false is the author saying it is not a callback" do
+      assert sites(t("  @behaviour Nope.Unloadable\n  @impl false\n  def go, do: :ok")) == []
+    end
+
+    test "an unloadable behaviour without @impl exempts nothing" do
+      assert sites(t("  @behaviour Nope.Unloadable\n  def go, do: :ok")) == []
+    end
+  end
+
   describe "static visibility" do
     test "a nested module is classified on its own, both ways round" do
       outer_unit = t("  def f, do: :ok\n  defmodule Inner do\n    def f, do: :pending\n  end")

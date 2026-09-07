@@ -26,6 +26,18 @@ defmodule Mutare.Transform.UnitReturns do
   #     forms — is not a return path, so an `:ok`-or-raise function (`validate!`-style) is unit;
   #     the raising tail itself is not stamped and keeps its own return mutants (`raise … → nil`
   #     asks whether the error path is tested).
+  #   * **Not a behaviour callback.** The premise — the caller discards a lone `:ok` — fails
+  #     when the caller is a behaviour's runtime, which the source never shows: `Oban.Worker`'s
+  #     `perform/1` returning `:ok` is one of six contract outcomes the runtime inspects, and a
+  #     `GenServer.terminate/2` is read by nothing, yet the tool can't tell the two apart from
+  #     the body. So a function whose `{name, arity}` is a callback of one of the module's
+  #     declared behaviours (`Mutare.Transform.Behaviours`' stamp, read through
+  #     `behaviour_info(:callbacks)` when the behaviour is loadable — stdlib always, a companion's
+  #     library via `required_modules/0`), or whose first clause carries an `@impl` other than
+  #     `@impl false` (the syntactic signal, covering an unloadable behaviour), is never unit.
+  #     Conservative in the pass's own direction: a callback that really is unit regains its
+  #     low-value `:ok → :error` survivor; a callback whose `:ok` is its contract outcome keeps
+  #     the mutant that asks whether that outcome is asserted.
   #   * **Misses are the only errors, on the clauses the source shows.** A call tail
   #     (`Logger.info(x)`), a variable bound to `:ok`, a `with` whose implicit pass-through is a
   #     path, a displaced `if` that is somebody else's macro — all non-unit here, even when they
@@ -83,7 +95,7 @@ defmodule Mutare.Transform.UnitReturns do
   # classification mode, so what counts as a return path here is what the return mutator sees —
   # plus the conservative fallbacks that mode adds.
 
-  alias Mutare.Transform.{Calls, Imports, Meta, ModulePlan}
+  alias Mutare.Transform.{Behaviours, Calls, Imports, Meta, ModulePlan}
   alias Mutare.Transform.Analyze.{Returns, Syntax}
 
   # The statements that define a function of the enclosing module. `defdelegate` is here for
@@ -121,16 +133,18 @@ defmodule Mutare.Transform.UnitReturns do
 
   defp stamp_scope({:defmodule, meta, [head, body]} = node) when is_list(body) do
     if ModulePlan.scope_boundary?(node),
-      do: {:defmodule, meta, [head, stamp_module_body(body)]},
+      do: {:defmodule, meta, [head, stamp_module_body(body, callback_signatures(meta))]},
       else: node
   end
 
   # `defimpl P, for: T do … end` / `defimpl P, for: T, do: …`: the `do` block is always in
-  # the last argument (a standalone block keyword, or the combined `for:`/`do:` list).
+  # the last argument (a standalone block keyword, or the combined `for:`/`do:` list). A
+  # `defimpl` carries no behaviour stamp (`Behaviours` doesn't stamp one), so only an `@impl`
+  # can exempt a function there.
   defp stamp_scope({:defimpl, meta, args} = node) when is_list(args) and length(args) >= 2 do
     if ModulePlan.scope_boundary?(node) do
       {lead, [last]} = Enum.split(args, -1)
-      {:defimpl, meta, lead ++ [stamp_module_body(last)]}
+      {:defimpl, meta, lead ++ [stamp_module_body(last, MapSet.new())]}
     else
       node
     end
@@ -143,21 +157,22 @@ defmodule Mutare.Transform.UnitReturns do
 
   # Stamp the unit signatures' clause tails inside a module's `do` block (other keys — a
   # `defimpl`'s `for:` — pass through). Two walks over the body, both pruned at nested scopes:
-  # collect + classify, then stamp only the clauses of signatures that qualified.
-  defp stamp_module_body(body_kw) when is_list(body_kw) do
+  # collect + classify, then stamp only the clauses of signatures that qualified. `callbacks`
+  # is the module's behaviour-callback signature set: never unit, whatever the body says.
+  defp stamp_module_body(body_kw, callbacks) when is_list(body_kw) do
     Enum.map(body_kw, fn
       {key, block} = pair ->
-        if Syntax.do_key?(key), do: {key, stamp_defs(block)}, else: pair
+        if Syntax.do_key?(key), do: {key, stamp_defs(block, callbacks)}, else: pair
 
       other ->
         other
     end)
   end
 
-  defp stamp_module_body(other), do: other
+  defp stamp_module_body(other, _callbacks), do: other
 
-  defp stamp_defs(block) do
-    units = unit_signatures(block)
+  defp stamp_defs(block, callbacks) do
+    units = unit_signatures(block, MapSet.union(callbacks, impl_signatures(block)))
 
     if MapSet.size(units) == 0 do
       block
@@ -174,11 +189,13 @@ defmodule Mutare.Transform.UnitReturns do
   end
 
   # The `{name, arity}` signatures whose every clause is unit-bodied: fold each definition's
-  # verdict into its group, then drop any group a static-visibility hole could reach. `blocked`
+  # verdict into its group, then drop any group a static-visibility hole could reach, and any
+  # that is a behaviour callback (`callbacks` — declared or `@impl`-marked; its return is the
+  # contract's, not the body's). `blocked`
   # is the planner's `{exact, wildcard}` pair — a `defdelegate` blocks the signature it names, a
   # spliced head blocks its whole name (its arity is unknowable) — while a head whose *name* is
   # unknowable sets `dynamic?` and forfeits the module.
-  defp unit_signatures(block) do
+  defp unit_signatures(block, callbacks) do
     {_block, {groups, dynamic?, {exact, wildcard}}} =
       map_reduce_defs(
         block,
@@ -192,11 +209,57 @@ defmodule Mutare.Transform.UnitReturns do
       for {{name, _arity} = sig, verdicts} <- groups,
           name not in wildcard,
           sig not in exact,
+          sig not in callbacks,
           Enum.all?(verdicts),
           into: MapSet.new(),
           do: sig
     end
   end
+
+  # --- behaviour callbacks ----------------------------------------------------
+
+  # The `{name, arity}` callbacks of every behaviour stamped on a module node
+  # (`Behaviours.behaviours/1`, direct `@behaviour` plus `use`-injected), read off each
+  # behaviour's `behaviour_info/1` when it is loadable in this process. An unloadable behaviour
+  # contributes nothing here — its callbacks are reachable only through `@impl`
+  # (`impl_signatures/1`).
+  defp callback_signatures(meta) do
+    meta
+    |> Behaviours.behaviours()
+    |> Enum.flat_map(&behaviour_callbacks/1)
+    |> MapSet.new()
+  end
+
+  defp behaviour_callbacks(mod) when is_atom(mod) do
+    if Code.ensure_loaded?(mod) and function_exported?(mod, :behaviour_info, 1),
+      do: mod.behaviour_info(:callbacks),
+      else: []
+  end
+
+  defp behaviour_callbacks(_other), do: []
+
+  # The signatures of the definitions an `@impl` statement precedes, among a module body's
+  # direct statements — `@impl true` or `@impl Behaviour`, not `@impl false`, which is the
+  # author saying the function is *not* a callback. The attribute marks a signature's first
+  # clause by convention; blocking the signature covers every clause of the group.
+  defp impl_signatures({:__block__, _meta, stmts}) when is_list(stmts) do
+    stmts
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.flat_map(fn
+      [{:@, _ameta, [{:impl, _imeta, [value]}]}, next] ->
+        if impl_false?(value), do: [], else: List.wrap(signature(next))
+
+      _pair ->
+        []
+    end)
+    |> MapSet.new()
+  end
+
+  defp impl_signatures(_single), do: MapSet.new()
+
+  defp impl_false?({:__block__, _meta, [false]}), do: true
+  defp impl_false?(false), do: true
+  defp impl_false?(_value), do: false
 
   # Two kinds of definition whose *head* is visible but whose body this pass cannot read, so the
   # signature is unclassifiable rather than unit: a `defdelegate` (the body lives in another

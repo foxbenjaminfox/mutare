@@ -58,8 +58,9 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
     behaviour-gated mutators see the enclosing `@behaviour` set. `Uses` expands `use` (in-process,
     or via an extension override) to recover the `import`/`alias` idiomatic Phoenix/Ecto hide.
     `UnitReturns` runs last: it stamps the leaf tails of a **unit-returning** function (every path
-    literally `:ok`/`nil`) so no family is offered them — NOTES "Unit-returning functions are not
-    return-value positions".
+    literally `:ok`/`nil`, and not a behaviour callback — a callback's `:ok` may be a contract
+    outcome its runtime inspects) so no family is offered them — NOTES "Unit-returning functions
+    are not return-value positions".
   - **`Calls` / `Analyze.Captures`** — the single `resolved_call/1` reader every call family uses
     (returns `{module, fun, args, rebuild}`), plus `&Mod.fun/N` capture mutation. `Mutare.Calls`
     is the published facade re-exporting the author-facing readers.

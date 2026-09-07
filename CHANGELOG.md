@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Unit-return classification exempts behaviour callbacks.** A function that is a
+  callback of one of its module's declared behaviours (direct `@behaviour` or
+  `use`-injected, read through the behaviour's `behaviour_info/1` when it is
+  loadable), or whose first clause carries an `@impl` other than `@impl false`, is
+  never classified unit-returning, however its body reads. Its caller is the
+  behaviour's runtime, which the source never shows and which may treat a lone
+  `:ok` as one contract outcome among several — `Oban.Worker.perform/1`'s `:ok`
+  is one of six. 0.1.0 silenced the `:ok` return mutants of every such callback,
+  including `mutare_oban`'s worker-return family.
+
 ## [0.1.0] - 2026-09-07
 
 Initial release.

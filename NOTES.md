@@ -8955,3 +8955,19 @@ replacements" above closes it at the value level. The shape-level remnant stands
 *literal* tail is in the same position (`return_value`'s `nil` and `TupleLiteral`'s `{}` die to the
 same test), which the value gate deliberately doesn't reach (non-scalar), and which would fit
 `ReturnValue.redundant_literal?/1` the way ints/strings/lists already do.
+
+**Behaviour callbacks are exempt (0.1.1).** Publishing `mutare_oban` against 0.1.0 exposed the
+premise's boundary: `def perform(_job), do: :ok` in an `Oban.Worker` is body-shape unit, but its
+caller is Oban's runtime, which reads `:ok` as one of six `t:Oban.Worker.result/0` outcomes — the
+success bit the criterion promises to keep is there, held by a caller the source never shows. The
+same holds for any callback: the behaviour's runtime, not a helper's caller, consumes the value,
+and the tool can't tell a `terminate/2` (read by nothing) from a `perform/1` (read closely) by
+looking at the body. So `UnitReturns` now excludes a signature that is a callback of one of the
+module's stamped behaviours (`Behaviours.behaviours/1`, through `behaviour_info(:callbacks)` when
+the behaviour is loadable — stdlib always, a companion's library via `required_modules/0`) or
+whose first clause an `@impl` (other than `@impl false`) precedes — the syntactic signal, which
+also covers an unloadable behaviour. The error direction is the pass's own: a truly unit callback
+regains a low-value survivor; a contract-`:ok` callback keeps the mutant that asks whether the
+outcome is asserted. Considered and rejected: a per-mutator opt-out from the stamp (every
+behaviour-gated return family would have to remember it, and the stamp is transform-enforced on
+purpose), and dropping the swap from `mutare_oban` (the mutant is the point of that family).
