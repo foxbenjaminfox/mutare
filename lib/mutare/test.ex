@@ -10,7 +10,10 @@ defmodule Mutare.Test do
 
   The source-driven helpers all call `Mutare.transform_string/2` and inherit its defaults — notably `expand_uses: true`, which the schema/query routing of `use`-heavy DSLs depends on. Each takes a trailing `opts` keyword list forwarded to `Mutare.transform_string/2` (the `mutators` argument overrides any `:mutators` option), so a suite can thread `:call_routes`, `:extensions`, or `expand_uses: false` without dropping to `Mutare.transform_string/2` itself.
 
-  > #### Selection is process-global {: .warning} > > Tests that call `with_active_mutant/2` must use `async: false`, because the active mutant is > shared across the VM.
+  > #### Selection is process-global {: .warning}
+  >
+  > Tests that call `with_active_mutant/2` must use `async: false`, because the
+  > active mutant is shared across the VM.
 
   `import Mutare.Test` in an `ExUnit.Case` to use them:
 
