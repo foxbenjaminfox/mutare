@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The kept sandbox preserves empty directories.** The incremental
+  materialisation that the default kept sandbox uses mirrored files and
+  symlinks only, so a directory with nothing in it never reached the sandbox —
+  and a shallow git checkout under `deps/` keeps `.git/refs/heads` and
+  `.git/refs/tags` empty. git then no longer recognised the checkout and Mix
+  reported every git dependency as a lock mismatch before the metamutant could
+  compile; a freshly generated Phoenix 1.8 app (`heroicons`, `daisyui`) could
+  not run Mutare at all.
 ## [0.1.1] - 2026-09-07
 
 ### Fixed

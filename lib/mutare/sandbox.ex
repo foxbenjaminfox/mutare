@@ -404,8 +404,8 @@ defmodule Mutare.Sandbox do
       MapSet.union(source_set, MapSet.new([Ownership.marker_name() | Map.keys(overrides)]))
 
     # 1. mirror every source: file contents byte-aware, symlinks as symlinks (never
-    #    followed). Paths a generated override owns are skipped — step 2 materialises
-    #    those as ordinary files.
+    #    followed), empty directories as directories. Paths a generated override owns are
+    #    skipped — step 2 materialises those as ordinary files.
     for {rel, kind} <- sources, not Map.has_key?(overrides, rel) do
       mirror_source(root, sandbox, rel, kind)
     end
@@ -433,6 +433,13 @@ defmodule Mutare.Sandbox do
 
   defp mirror_source(_root, sandbox, rel, {:symlink, target}) do
     put_sandbox_symlink_if_changed(sandbox, rel, target)
+  end
+
+  # An empty source directory: created (or cleared of whatever else sat at its path), and
+  # kept by `prune/2` because it is managed, even though nothing under it is.
+  defp mirror_source(_root, sandbox, rel, :directory) do
+    ensure_sandbox_parent!(sandbox, rel)
+    ensure_sandbox_dir!(Path.join(sandbox, rel))
   end
 
   # The files Mutare generates rather than copies, keyed by sandbox-relative path (the same
@@ -624,9 +631,14 @@ defmodule Mutare.Sandbox do
   # Every mirrorable entry under `root` (skipping `@excluded` at the top level, matching
   # `copy_project/2`) as `{rel, kind}`, with `rel` keyed exactly like `Schema.metamutants`
   # (`relative/2`) and `kind` recording what has to be recreated: `{:regular, mode}` (the
-  # permission bits, file-type bits masked off) or `{:symlink, target}` (the raw link
-  # target). Directories are walked but not themselves entries — they are implied by the
-  # files under them (`ensure_sandbox_parent!`). A symlink is recorded, never descended, so
+  # permission bits, file-type bits masked off), `{:symlink, target}` (the raw link
+  # target), or `:directory` for a directory with nothing in it. A non-empty directory is
+  # walked but is not itself an entry — it is implied by the files under it
+  # (`ensure_sandbox_parent!`). An *empty* one has nothing to imply it, so it is an entry
+  # of its own; without that a shallow git checkout under `deps/` loses its empty
+  # `.git/refs/heads` and `.git/refs/tags`, git stops recognising the checkout, and Mix
+  # reports every git dependency as a lock mismatch — a Phoenix app's `heroicons`/`daisyui`
+  # (NOTES "The kept sandbox is the default"). A symlink is recorded, never descended, so
   # its subtree is mirrored only where it also lives under `root` in its own right. Anything
   # else (device, socket, unreadable) is skipped, as before.
   defp source_entries(root) do
@@ -640,7 +652,13 @@ defmodule Mutare.Sandbox do
   defp walk(root, path) do
     case File.lstat(path) do
       {:ok, %File.Stat{type: :directory}} ->
-        for child <- File.ls!(path), source <- walk(root, Path.join(path, child)), do: source
+        case File.ls!(path) do
+          [] ->
+            [{rel_path(root, path), :directory}]
+
+          children ->
+            for child <- children, source <- walk(root, Path.join(path, child)), do: source
+        end
 
       {:ok, %File.Stat{type: :regular, mode: mode}} ->
         [{rel_path(root, path), {:regular, Bitwise.band(mode, @permission_bits)}}]
@@ -658,10 +676,11 @@ defmodule Mutare.Sandbox do
 
   defp rel_path(root, path), do: path |> Path.relative_to(root) |> to_string()
 
-  # Delete sandbox files and symlinks not in `managed`, then any directory left empty.
-  # Never descends `@excluded` dirs, so `_build`/`cover` and their artifacts survive — nor
-  # a symlink (`lstat` types it as `:symlink`), so pruning removes the link itself and
-  # never walks into whatever it points at.
+  # Delete sandbox files and symlinks not in `managed`, then any directory left empty —
+  # unless the empty directory is itself managed (an empty source directory, mirrored on
+  # purpose). Never descends `@excluded` dirs, so `_build`/`cover` and their artifacts
+  # survive — nor a symlink (`lstat` types it as `:symlink`), so pruning removes the link
+  # itself and never walks into whatever it points at.
   defp prune(sandbox, managed) do
     for entry <- File.ls!(sandbox), entry not in @excluded do
       prune_path(Path.join(sandbox, entry), entry, managed)
@@ -674,7 +693,7 @@ defmodule Mutare.Sandbox do
         for child <- File.ls!(path),
             do: prune_path(Path.join(path, child), Path.join(rel, child), managed)
 
-        if File.ls!(path) == [], do: File.rmdir!(path)
+        if File.ls!(path) == [] and not MapSet.member?(managed, rel), do: File.rmdir!(path)
 
       {:ok, %File.Stat{type: type}} when type in [:regular, :symlink] ->
         unless MapSet.member?(managed, rel), do: File.rm!(path)

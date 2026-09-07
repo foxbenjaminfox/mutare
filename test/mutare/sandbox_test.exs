@@ -438,6 +438,28 @@ defmodule Mutare.SandboxTest do
   end
 
   describe "keep_sandbox: true" do
+    test "mirrors an empty directory, keeps it across syncs, and prunes it once it is gone",
+         context do
+      # A shallow git checkout under `deps/` keeps `refs/heads` and `refs/tags` empty
+      # (packed-refs holds the refs) — and git does not recognise a repository without
+      # them, so Mix reports a lock mismatch for every git dependency if they vanish.
+      heads = "deps/icons/.git/refs/heads"
+      File.mkdir_p!(Path.join(context.project, heads))
+      sandbox = Path.join(context.base, "sandbox")
+
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+      assert File.dir?(Path.join(sandbox, heads))
+
+      # A second sync prunes nothing it manages — the empty directory included.
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+      assert File.dir?(Path.join(sandbox, heads))
+
+      # Gone from the source, it is pruned like any other entry.
+      File.rm_rf!(Path.join(context.project, "deps"))
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+      refute File.exists?(Path.join(sandbox, "deps"))
+    end
+
     test "preserves a previous build between runs, but a fresh run wipes it", context do
       sandbox = Path.join(context.base, "sandbox")
 

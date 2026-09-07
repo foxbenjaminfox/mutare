@@ -1560,6 +1560,18 @@ What changes for a default run, and what was weighed:
   semantics (wipe on reuse, pid-salted path, cleanup on completion) say
   `keep_sandbox: false` explicitly.
 
+**Empty directories (0.1.2).** The flip changed which materialiser a first run uses: the
+throwaway path bulk-copies with `File.cp_r!`, which copies an empty directory; the kept
+path `sync`s, which mirrored files and symlinks and treated directories as "implied by the
+files under them" — so an empty directory was never created, and pruning ("any directory
+left empty") would remove one anyway. Nothing in an ordinary Elixir project has an empty
+directory, which is why the mirror was written that way and why nothing caught it — but a
+shallow git checkout under `deps/` (`depth: 1`, as Phoenix 1.8 generates for `heroicons`
+and `daisyui`) keeps `.git/refs/heads` and `.git/refs/tags` empty (packed-refs holds the
+refs), and git does not recognise a repository without a `refs/` tree. The sandbox's git
+deps then read as "lock mismatch" and the run died before the one compile. The v0.1.0
+release smoke test found it. `walk/2` now emits an empty directory as its own `:directory`
+entry, `mirror_source` creates it, and `prune_path` leaves a managed empty directory alone.
 ### Keyword-`do:` normalization (Sourceror workaround) `[done, watch]`
 Sourceror's formatter raises when rendering `def f, do: <case>` (keyword block
 whose value is a multi-line `case`). `Mutare.Transform.Render` flips every
