@@ -221,7 +221,7 @@ defmodule Mutare.Transform.Uses.Harvest do
   # round-tripped `{:use, _, args}` is exactly `use_target/2`'s arg shape, so module resolution + the
   # `nil`-is-an-atom guard are delegated there — the single home — rather than duplicated.
   defp target(sourceror_use_node, env) do
-    case Code.string_to_quoted!(Sourceror.to_string(sourceror_use_node)) do
+    case Code.string_to_quoted!(Sourceror.to_string(sourceror_use_node, Mutare.AST.render_opts())) do
       {:use, _, args} -> use_target(args, env)
       _ -> :error
     end

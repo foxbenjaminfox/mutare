@@ -39,9 +39,24 @@ defmodule Mutare.AST do
 
   `opts` are passed through to `Sourceror.to_string/2`; `line_length: :infinity` renders
   without fits-based line breaks (structural breaks — `do`/`end`, clauses — still apply).
+
+  Local calls always render with parentheses (`locals_without_parens: []`), whatever the
+  target project's `.formatter.exs` says. Left to its default, `Sourceror.to_string/2`
+  evaluates that file through `Mix.Tasks.Format` on **every** call — its `import_deps`
+  and plugins, inside Mutare's own process — and Mix can refuse it mid-run (see NOTES
+  "Rendering never consults the target's formatter configuration"). Both spellings are
+  the same code, and the metamutant only has to compile.
   """
   @spec to_string(Macro.t(), keyword()) :: String.t()
-  def to_string(ast, opts \\ []), do: ast |> strip_comments() |> Sourceror.to_string(opts)
+  def to_string(ast, opts \\ []),
+    do: ast |> strip_comments() |> Sourceror.to_string(render_opts(opts))
+
+  @doc """
+  `Sourceror.to_string/2` options with the formatter lookup pinned off — `to_string/2`'s
+  defaults, for the few places that render through Sourceror directly.
+  """
+  @spec render_opts(keyword()) :: keyword()
+  def render_opts(opts \\ []), do: Keyword.put_new(opts, :locals_without_parens, [])
 
   @doc """
   Drops Sourceror's `:leading_comments`/`:trailing_comments` from every node of `ast`.

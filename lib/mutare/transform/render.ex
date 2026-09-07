@@ -21,7 +21,7 @@ defmodule Mutare.Transform.Render do
     |> strip_annotations()
     |> normalize_keyword_blocks()
     |> normalize_for_options()
-    |> Sourceror.to_string()
+    |> Sourceror.to_string(Mutare.AST.render_opts())
   end
 
   @doc """

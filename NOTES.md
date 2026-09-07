@@ -8983,3 +8983,24 @@ regains a low-value survivor; a contract-`:ok` callback keeps the mutant that as
 outcome is asserted. Considered and rejected: a per-mutator opt-out from the stamp (every
 behaviour-gated return family would have to remember it, and the stamp is transform-enforced on
 purpose), and dropping the swap from `mutare_oban` (the mutant is the point of that family).
+
+### Rendering never consults the target's formatter configuration `[done]`
+
+`Sourceror.to_string/2`, left to its defaults, calls `Mix.Tasks.Format.formatter_for_file/1`
+to pick up `locals_without_parens` — on **every** call, evaluating the current project's
+`.formatter.exs` (its `import_deps`, its plugins) inside the calling process. Under `mix
+mutare` the current project is the *target*, so scanning a Phoenix app loaded
+`Phoenix.LiveView.HTMLFormatter` into Mutare's process once per rendered node, and on the
+v0.1.0 smoke test Mix refused the `import_deps` lookup outright ("Unknown dependency
+`:ecto_sql` given to `:import_deps` in the formatter configuration") right after an
+in-process partitioned `deps.compile` had left Mix's dependency cache in a state the
+formatter could not read — the scan died before a single mutant. The renderer has no
+business there: the metamutant is a build artifact that only has to compile, and a local
+call with or without parentheses is the same code. Every render now goes through
+`Mutare.AST.render_opts/1`, which pins `locals_without_parens: []` (`AST.to_string/2`,
+`Transform.Render`, and the two round-trip renders in `RegexLiteral` and `Uses.Harvest`).
+Observable difference: none for parsed code, since Sourceror keeps the spelling a parsed
+call's metadata records; a node built without metadata renders with parentheses, which it
+already did in every project without a `locals_without_parens` of its own (Mutare's and
+the companions' included). `ast_render_test.exs` pins it with a `.formatter.exs` naming an
+unknown dependency in the working directory.

@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reported every git dependency as a lock mismatch before the metamutant could
   compile; a freshly generated Phoenix 1.8 app (`heroicons`, `daisyui`) could
   not run Mutare at all.
+- **Rendering no longer consults the target project's `.formatter.exs`.**
+  Sourceror reads `locals_without_parens` from it through `Mix.Tasks.Format` on
+  every render — evaluating its `import_deps` and plugins inside Mutare's own
+  process — and Mix could refuse the lookup mid-scan ("Unknown dependency
+  `:ecto_sql` given to `:import_deps`"). Every render now pins the option
+  (`Mutare.AST.render_opts/1`); a parsed call keeps the spelling its metadata
+  records, and a node built without metadata renders with parentheses.
 ## [0.1.1] - 2026-09-07
 
 ### Fixed

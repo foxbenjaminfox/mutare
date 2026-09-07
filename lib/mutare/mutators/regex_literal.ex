@@ -160,7 +160,7 @@ defmodule Mutare.Mutators.RegexLiteral do
   defp round_trips?(pattern, modifiers) do
     node = {:sigil_r, [], [{:<<>>, [], [pattern]}, modifiers]}
 
-    case node |> Sourceror.to_string() |> Code.string_to_quoted() do
+    case node |> Sourceror.to_string(AST.render_opts()) |> Code.string_to_quoted() do
       {:ok, {:sigil_r, _, [{:<<>>, _, [bin]}, _]}} -> bin == pattern
       _ -> false
     end
