@@ -9021,3 +9021,72 @@ deps are added — applying only the `mix.exs` change and running `deps.get` —
 remaining changes (`.mutare.exs`) on to Igniter's final apply. Skipped under
 `Igniter.Test` (`assigns[:test_mode?]`), where fetching raises by design and the tests
 assert on the igniter's deps.
+
+### Static run selection controls emission, not ID reservation `[done]`
+
+`Schema` still discovers every candidate in each scanned file. Its count pass records
+matching local IDs only when a line filter needs them, using the Site constructor's
+actual attribution (including hosted and custom report locations), without rendering
+any diff text. The prefix-sum step then applies line selection followed by the global
+cap and passes `emit_ids` to emission. Unrestricted scans keep the tally-only count path.
+
+`ClaimState` advances every ID and retains every diagnostic Site, but creates artifacts
+only for selected, non-poisoned IDs. Unselected sites are **not poisoned**; their diffs
+are not rendered and they disappear from the final report slice after directive checks.
+Consequently a focused run no longer pays to compile a poisoning mutation on an
+unselected line. Ignored and poisoned sites still consume cap positions: the old
+from_files documentation said recovery would replace a poisoned site with the next
+candidate, but the implementation retained poisoned Sites and never did that.
+
+Wholly unselected files (or a selected slice entirely removed by recovery) retain the
+exact original source. A lifted function with no remaining lifted variants and no body
+selector needing its dispatcher falls back to its original clauses; generated group
+numbers still advance. Tests cover stable IDs across files and recovery, ignored-site
+caps and diagnostics, attributed and hosted selection, and focused compilation without
+unselected macro poison. Report-time hydration still uses the pre-filter start ID.
+
+App-build seeding compares metamutant entries with `Schema.sources` before counting
+rewritten files, attributing them to apps, or deleting beams. An unchanged entry must
+keep its seeded beam: merely retaining its key for reporting does not require a
+recompile. An entry without a recorded original still requires deletion, preserving
+the conservative behavior for manually constructed schemas.
+
+The tradeoff is real: changing selection now changes the metamutant, whereas the old
+full metamutant could be reused for every selection in the same files. Fixed-selection
+retained runs still use the byte-aware sandbox writer. This change targets cold/focused
+compiles, not free reuse while repeatedly changing flags.
+
+**The `--since` CI flow gains from this and loses nothing** — checked rather than assumed,
+because `--since` changes its selection on every run and README leads with it. Four points, in
+the order they confused the first analysis:
+
+1. **Line selection was already file-scoped.** `Schema.build/2` intersects the discovered files
+   with the ones a line filter names (`restrict_to_line_files/3`) *before* `from_files/4`. A
+   file the diff never touched was never in the schema, never rendered, never compiled — before
+   this change or after. The "old full metamutant could be reused for every selection" tradeoff
+   above is therefore **not** about unrelated files; it is about re-selecting *within* a file
+   already in scope.
+2. **What is left in scope is the diff's own files**, whose sources changed anyway. A cached
+   sandbox must recompile them whatever the metamutant looks like, so specialising them costs
+   nothing that was previously free.
+3. **Both remaining effects are gains.** Measured on a four-module fixture with
+   `--line lib/A.ex:2 --line lib/B.ex:1` (Elixir 1.19.5), before → after:
+
+   | Schema entry | before | after |
+   | --- | ---: | ---: |
+   | `lib/A.ex` (one selected candidate line) | 3,633 B | 798 B |
+   | `lib/B.ex` (named line hosts no candidate) | 3,651 B | 118 B, **byte-identical to the original** |
+
+   The one compile now scales with the diff's *mutants* rather than the diff's *files*; and a
+   file whose changed lines host nothing mutatable (a comment, a moved blank line, a rename)
+   stops being rewritten at all, so `Seed.app_build`'s `Map.reject` keeps its seeded beam
+   instead of deleting and recompiling it. End to end on a four-module project a focused run
+   reports `reused 3 app beams, recompiling 1 metamutant beam`.
+4. **The regression is confined to hand narrowing.** Running `--line foo.ex:10` and then
+   `--line foo.ex:20` over a retained sandbox recompiles `foo.ex` where it used to be reused.
+   That is a human iterating, not CI: a `--since` run's selection changes only because the
+   diff changed, which already forced the recompile.
+
+`worth_seeding?/2` had to change for point 3 to pay off: a zero *changed*-metamutant count is
+now the best case for seeding (nothing recompiles), where it used to decline and cold-compile
+the app.

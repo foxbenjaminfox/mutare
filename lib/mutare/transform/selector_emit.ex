@@ -13,17 +13,22 @@ defmodule Mutare.Transform.SelectorEmit do
   Claim an id per item, record its site, and collect one artifact per live mutant.
 
   Poison-skipped ids still advance and still record a poisoned site; they simply emit no artifact.
+
+  `site_fns` is the `{site_fn, line_fn}` pair `Mutare.Transform.ClaimState` needs: one builds
+  the recorded `Mutare.Site`, the other answers only *where* it would be recorded, for the count
+  pass's `--line` test (which must not build a `Site` — see `ClaimState`).
   """
   @spec claim_items(
           [item],
           Ctx.t(),
-          (pos_integer(), item, String.t(), {boolean(), boolean()} -> Site.t()),
+          {(pos_integer(), item, String.t(), {boolean(), boolean()} -> Site.t()),
+           (item -> pos_integer() | nil)},
           (pos_integer(), item -> artifact)
         ) :: {[artifact], Ctx.t()}
         when item: term(), artifact: term()
-  def claim_items(items, %Ctx{} = ctx, site_fn, artifact_fn) do
+  def claim_items(items, %Ctx{} = ctx, site_fns, artifact_fn) do
     Enum.flat_map_reduce(items, ctx, fn item, ctx ->
-      claim_item(ctx, item, site_fn, artifact_fn)
+      claim_item(ctx, item, site_fns, artifact_fn)
     end)
   end
 
@@ -73,17 +78,18 @@ defmodule Mutare.Transform.SelectorEmit do
 
   # The id/site/sink mechanics live on `Mutare.Transform.ClaimState` (which owns that state);
   # here we only read the pass config the claim consults (`file`/`skip_ids`) and thread the
-  # updated `claim` back onto `ctx`. The render vs. count sink branch is `ClaimState.claim/7`.
-  defp claim_item(%Ctx{config: config, claim: claim} = ctx, item, site_fn, artifact_fn) do
+  # updated `claim` back onto `ctx`. The render vs. count sink branch is `ClaimState.claim/8`.
+  defp claim_item(%Ctx{config: config, claim: claim} = ctx, item, site_fns, artifact_fn) do
     {artifacts, claim} =
       ClaimState.claim(
         claim,
         config.file,
         config.skip_ids,
         item,
-        site_fn,
+        site_fns,
         artifact_fn,
-        {config.render_site_code, config.summarize_sites}
+        {config.render_site_code, config.summarize_sites},
+        config.emit_ids
       )
 
     {artifacts, %{ctx | claim: claim}}

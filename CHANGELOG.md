@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Focused runs emit only selected mutants.** `--line`, `--since`, and
+  `--max-mutants` now reduce generated branches as well as execution. Discovery
+  still reserves every ID and checks ignore directives; poisoned and ignored
+  sites retain their cap positions. Changing selection can require recompiling
+  a retained sandbox.
+
 ## [0.1.2] - 2026-09-07
 
 ### Fixed

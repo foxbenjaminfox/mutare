@@ -230,7 +230,15 @@ defmodule Mutare.Transform do
   def transform_string_with_sites(source, opts \\ []) when is_binary(source) do
     {transformed, ctx, parsed} = plan_and_emit(source, opts)
 
-    metamutant = transformed |> silence_helper_xref() |> Render.to_source()
+    # Nothing delivered — every candidate was poisoned, statically unselected, or both — so the
+    # emitted tree *is* the parsed original: no selector, no coverage record, nothing for the
+    # helper-xref attribute to silence. Hand back the source bytes rather than round-tripping
+    # them through the renderer, which would reformat the file and make `Mutare.Sandbox`'s
+    # byte-aware writer, and `Seed.app_build`'s reuse check, see a change that isn't one.
+    metamutant =
+      if ctx.claim.emitted == 0,
+        do: source,
+        else: transformed |> silence_helper_xref() |> Render.to_source()
 
     # Reuse the AST we just parsed — its comment metadata is intact (transform
     # works on copies), so `Ignore` need not re-parse the source. A directive may
@@ -272,6 +280,7 @@ defmodule Mutare.Transform do
   # (see `Mutare.Schema.detect_ineffective_skip_lifting/3` and `detect_ineffective_config/3`).
   @spec count_report(String.t(), keyword()) :: %{
           mutants: non_neg_integer(),
+          selected_ids: [pos_integer()] | nil,
           skip_lifting_matches: MapSet.t(Lifting.skip_entry()),
           route_matches: MapSet.t(tuple()),
           mark_matches: MapSet.t(tuple())
@@ -295,6 +304,8 @@ defmodule Mutare.Transform do
 
     %{
       mutants: ClaimState.total(ctx.claim),
+      selected_ids:
+        if(ctx.claim.selection_lines, do: Enum.reverse(ctx.claim.selected_ids), else: nil),
       skip_lifting_matches: ctx.claim.skip_matches,
       route_matches: ctx.claim.route_matches,
       mark_matches: ctx.claim.mark_matches
@@ -435,6 +446,7 @@ defmodule Mutare.Transform do
       file: Keyword.get(opts, :file, "nofile"),
       mutators: opts |> Keyword.get(:mutators, @default_mutators) |> Mutare.Mutators.resolve(),
       skip_ids: Keyword.get(opts, :skip_ids, MapSet.new()),
+      emit_ids: Keyword.get(opts, :emit_ids),
       skip_lifting:
         opts |> Keyword.get(:skip_lifting, MapSet.new()) |> Lifting.validate_skip_lifting!(),
       # Default `true`: advisory warnings print once, at scan/count time. The schema's render
@@ -467,6 +479,7 @@ defmodule Mutare.Transform do
       scope: %Scope{analysis_mutators: enrich_mutators(config.mutators, MapSet.new())},
       claim: %ClaimState{
         sink: Keyword.get(opts, :sink, :render),
+        selection_lines: Keyword.get(opts, :selection_lines),
         next_id: Keyword.get(opts, :start_id, 1)
       }
     }
@@ -882,7 +895,7 @@ defmodule Mutare.Transform do
   # the original. Ids are assigned exactly as before — in-place **body** ids first
   # (`in_place_clauses` over the source clauses), then the lifted candidates in
   # `candidates/1` order — so the scheme is invisible to ids, Sites, and coverage.
-  defp emit_function_plan(%FunctionPlan{signature: {vis, name, arity}} = plan, ctx) do
+  defp emit_function_plan(%FunctionPlan{signature: {_vis, name, arity}} = plan, ctx) do
     group = ctx.claim.group + 1
     ctx = Ctx.update_claim(ctx, &%{&1 | group: group})
     base = :"#{LiftedEmit.base_name(name, arity, group, ctx.config.prefix)}"
@@ -907,13 +920,30 @@ defmodule Mutare.Transform do
       SelectorEmit.claim_items(
         FunctionPlan.candidates(plan),
         ctx,
-        &Delivery.site/4,
+        {&Delivery.site/4, &Delivery.line/1},
         fn id, candidate ->
           {index, clause} = FunctionPlan.mutated_clause(plan, candidate)
           {id, index, clause, ImportWitness.for_candidate(candidate)}
         end
       )
 
+    if claimed == [] and not references_var?(orig_clauses, var) do
+      # All lifted variants were withheld, and no body needs the dispatcher's
+      # active-id parameter. Keep the original function, including super/defaults.
+      {orig_clauses, ctx}
+    else
+      {assemble_lifted(plan, orig_clauses, claimed, base, var, super_var), ctx}
+    end
+  end
+
+  defp assemble_lifted(
+         %FunctionPlan{signature: {vis, name, arity}},
+         orig_clauses,
+         claimed,
+         base,
+         var,
+         super_var
+       ) do
     mut_ids = Enum.map(claimed, fn {id, _i, _c, _w} -> id end)
 
     # Default arguments (`def f(a, b \\ 1)`) expand to multiple arities. They stay
@@ -928,7 +958,7 @@ defmodule Mutare.Transform do
     dispatcher =
       LiftedEmit.build_dispatcher(vis, name, arity, mut_ids, base, var, defaults, super_var)
 
-    {[dispatcher | base_clauses], ctx}
+    [dispatcher | base_clauses]
   end
 
   # === in-place transform: analyze (annotate) then assign/emit ===============
@@ -1079,7 +1109,8 @@ defmodule Mutare.Transform do
 
   defp emit_site(node, candidates, ctx) do
     {clauses, ctx} =
-      SelectorEmit.claim_items(candidates, ctx, &Delivery.site/4, fn id, candidate ->
+      SelectorEmit.claim_items(candidates, ctx, {&Delivery.site/4, &Delivery.line/1}, fn id,
+                                                                                         candidate ->
         {:->, [],
          [
            [id],

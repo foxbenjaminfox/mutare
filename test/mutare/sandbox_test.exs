@@ -759,6 +759,48 @@ defmodule Mutare.SandboxTest do
   end
 
   describe "app build seeding" do
+    test "keeps beams for metamutant entries identical to their original source", context do
+      project = context.project
+      put_app_beam(project, "myapp", "lib/foo.ex", "Foo#{uniq()}")
+      put_app_beam(project, "myapp", "lib/bar.ex", "Bar#{uniq()}")
+      put_app_manifest(project, "myapp", [Path.expand(project)])
+      sources = Map.new(["lib/foo.ex", "lib/bar.ex"], &{&1, File.read!(abs(project, &1))})
+
+      schema = %Schema{
+        sources: sources,
+        metamutants: Map.update!(sources, "lib/foo.ex", &String.replace(&1, "do: 1", "do: 2"))
+      }
+
+      sandbox = Path.join(context.base, "sandbox")
+
+      assert %{outcome: :seeded, reused: 1, recompiled: 1} =
+               capture_seed(project, schema, sandbox: sandbox)
+
+      app_build = Path.join(sandbox, "_build/test/lib/myapp")
+      assert beams(app_build) |> Enum.any?(&(&1 =~ "Bar"))
+      refute beams(app_build) |> Enum.any?(&(&1 =~ "Foo"))
+    end
+
+    test "a selection that changes nothing seeds every beam and recompiles none", context do
+      project = context.project
+      put_app_beam(project, "myapp", "lib/foo.ex", "Foo#{uniq()}")
+      put_app_beam(project, "myapp", "lib/bar.ex", "Bar#{uniq()}")
+      put_app_manifest(project, "myapp", [Path.expand(project)])
+      sources = Map.new(["lib/foo.ex", "lib/bar.ex"], &{&1, File.read!(abs(project, &1))})
+
+      # A focused run whose selection reached no candidate in either file: every entry is
+      # byte-identical to its original, so nothing needs recompiling — the *best* case for
+      # seeding, not a reason to fall back to a cold compile.
+      schema = %Schema{sources: sources, metamutants: sources}
+      sandbox = Path.join(context.base, "sandbox")
+
+      assert %{outcome: :seeded, reused: 2, recompiled: 0} =
+               capture_seed(project, schema, sandbox: sandbox)
+
+      app_build = Path.join(sandbox, "_build/test/lib/myapp")
+      assert length(beams(app_build)) == 2
+    end
+
     test "seeds the build and deletes only the metamutant's beam", context do
       project = context.project
       # The mutated app: a real beam for the metamutant file and one for an untouched file.

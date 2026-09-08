@@ -158,11 +158,21 @@ defmodule Mutare.Sandbox.Seed do
     do: %{outcome: :skipped}
 
   # Gated on the actual *outcome* (`worth_seeding?/2`), not on which flag scoped the run:
-  # `metamutants` already reflects every narrowing, so the gate can't miss one (a `--only`
+  # Changed `metamutants` reflect every narrowing, so the gate can't miss one (a `--only`
   # / `paths:` narrowing has no `:only_*` field to check). Idempotent like the dep seed
   # (only fills an app the sandbox lacks), so a `keep_sandbox` re-run's preserved `_build`
   # is untouched and only the first run seeds.
-  def app_build(root, sandbox, %Schema{metamutants: metamutants}, %Options{}, project) do
+  def app_build(
+        root,
+        sandbox,
+        %Schema{metamutants: metamutants, sources: sources},
+        %Options{},
+        project
+      ) do
+    # Selection/recovery can leave entries byte-identical to their originals.
+    # They need neither forced recompilation nor a completeness check. If the
+    # original is unknown, retain the conservative beam-deletion requirement.
+    metamutants = Map.reject(metamutants, fn {rel, source} -> sources[rel] == source end)
     mix_env = Invocation.mix_env()
     src_lib = Path.join([root, "_build", mix_env, "lib"])
     dst_lib = Path.join([sandbox, "_build", mix_env, "lib"])
@@ -308,12 +318,13 @@ defmodule Mutare.Sandbox.Seed do
     %{outcome: :fallback, reason: reason}
   end
 
-  # Worth seeding when the metamutant files are a small enough fraction of the app's
+  # Worth seeding when the changed metamutant files are a small enough fraction of the app's
   # compiled modules (`total`) — i.e. we'd reuse far more than we recompile. Gating on the
   # file count (not a flag) means `--line`/`--since`/`--only`/a `paths:` narrowing, and a
   # sparse-site full run, are all handled uniformly, with no scoping mechanism to forget.
   # `total` of 0 (nothing seedable — a fresh checkout, or an app never compiled) declines.
-  defp worth_seeding?(0, _total), do: false
+  # A count of 0 does *not*: no sandbox source differs from the target, so every seeded beam
+  # stays valid and the compile does nothing — the best case for seeding, not a reason to skip.
   defp worth_seeding?(_meta_count, 0), do: false
   defp worth_seeding?(meta_count, total), do: meta_count <= total * @seed_app_build_max_fraction
 

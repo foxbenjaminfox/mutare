@@ -122,10 +122,10 @@ defmodule Mutare.Manifest do
   delimiter — so a literal argument on its own line is still spanned), and collects the ids of
   every region contained in it.
 
-  Works in **metamutant space** over *every reserved* mutant — so it is correct under
-  `--line`/`--max-mutants`, where `Mutare.Schema`'s `:sites` are filtered but the metamutant
-  still embeds (and can be poisoned by) every id. Returns `%{fun_atom => MapSet.t()}`, empty
-  when nothing matched.
+  Works in **metamutant space**: the rendered source is what the compiler read, so the ids
+  found inside a blamed macro's span are exactly the ones that could have poisoned it — no
+  mapping back to original-source coordinates is needed, or possible. Returns
+  `%{fun_atom => MapSet.t()}`, empty when nothing matched.
   """
   @spec ids_in_named_calls(String.t(), MapSet.t(atom())) :: %{optional(atom()) => MapSet.t()}
   def ids_in_named_calls(metamutant_source, names) do

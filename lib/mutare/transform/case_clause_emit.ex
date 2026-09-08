@@ -26,7 +26,8 @@ defmodule Mutare.Transform.CaseClauseEmit do
     var = ctx.config.active_var
 
     {claimed, ctx} =
-      SelectorEmit.claim_items(candidates, ctx, &Delivery.site/4, fn id, candidate ->
+      SelectorEmit.claim_items(candidates, ctx, {&Delivery.site/4, &Delivery.line/1}, fn id,
+                                                                                         candidate ->
         {id, candidate.clause_index, mutant_clause(id, candidate, var)}
       end)
 

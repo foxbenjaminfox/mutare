@@ -60,10 +60,10 @@ defmodule Mutare.Poison do
   span. Bare-name match (the call is usually an imported `from(...)`, not `Ecto.Query.from`),
   so two same-named macros are skipped together — conservative, and one of them did raise.
 
-  Attributing through the metamutant + manifest (not the schema's `:sites`) is deliberate: it
-  sees *every reserved* mutant, so it is correct under `--line`/`--max-mutants` — where `:sites`
-  is filtered but the metamutant still embeds (and can be poisoned by) an unselected mutant —
-  exactly like the line-based `ids/2` it backs up.
+  Attributing through the metamutant + manifest (not the schema's `:sites`) is deliberate, and
+  for the same reason as the line-based `ids/2` it backs up: this is positional work in
+  **metamutant** space — spans of the rendered source the compiler actually read — which
+  `:sites`, recorded in *original*-source coordinates, cannot answer.
 
   Returns `[{{module_string, fun_atom}, MapSet.t()}]` — one entry per blamed macro that
   matched at least one mutant — so the caller can drop the union and name each macro for the

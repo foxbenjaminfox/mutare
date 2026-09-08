@@ -8,7 +8,7 @@ defmodule Mutare.Schema do
   `:metamutants` (their originals are used as-is) but never crash the build — a
   single unparseable file should not sink the run. A failure *after* a clean
   parse (transform or render) is a bug in this tool, not bad input, and is left
-  to crash: see `render_one/5`.
+  to crash: see `render_one/8`.
 
   ## Two-phase build (`from_files/4`)
 
@@ -21,22 +21,25 @@ defmodule Mutare.Schema do
   every GC scan the growing live set and inflated a big file's transform
   several-fold (see NOTES "Scan is transform-bound"):
 
-    1. **Count** (`count_files/3`) — `Mutare.Transform.count_string/2` per file,
+    1. **Count** (`count_files/4`) — `Mutare.Transform.count_string/2` per file,
        in parallel. It runs the same analyze → plan → emit pipeline but skips the
-       dominant final render, returning just each file's mutant count. The count
+       dominant final render, returning each file's mutant count and, for a line
+       selection, the matching local ids (without rendering site diffs). The count
        is drift-proof: it comes from the *same* id-claiming path emission uses, so
        it equals the matching render's `next_id - start_id` by construction.
-    2. **Render** (`render_files/3`) — prefix-sum the counts so each sited file
+    2. **Render** (`render_files/5`) — prefix-sum the counts so each sited file
        knows its globally-unique `:start_id` up front, then
        `Mutare.Transform.transform_string/2` each file (with that `:start_id` and
-       the run's `:skip_ids`) in parallel. `render_one/5` re-checks the count
+       the run's `:skip_ids` and statically selected `:emit_ids`) in parallel. Every
+       candidate reserves its id and records its diagnostic site, but only selected
+       candidates emit branches. `render_one/8` re-checks the count
        against the rendered `next_id` and fails loudly on any drift, since id
        stability across files depends on the two passes agreeing.
 
   The two passes agree only because the pipeline they share — parse, `use`-expansion,
   resolution, and every mutator — is a *deterministic* function of the source and opts;
   it runs once per pass, so a nondeterministic custom mutator or extension `expand_use/3`
-  surfaces as that `render_one/5` drift crash rather than a silent id overlap.
+  surfaces as that `render_one/8` drift crash rather than a silent id overlap.
   `from_files/4` also dedups its input by relative path, so a file passed twice is
   rendered once, under one id range — never two overlapping ones.
 
@@ -162,9 +165,11 @@ defmodule Mutare.Schema do
   `:only_lines` filters the finished sites to the requested `file:line` pairs.
   `:max_mutants` then caps those sites in source order. Both filters are applied
   here so poison recovery can rebuild from the same inputs and still return the
-  same visible slice. The rendered metamutants still reserve every id, including
-  skipped ids, so a poisoned site inside the cap can be replaced by the next
-  eligible site after rebuild.
+  same visible slice. Every candidate reserves its id, including skipped ids,
+  but only selected, non-poisoned candidates emit code. Poisoned and ignored
+  sites still occupy their places inside the cap, as they do in the report.
+  Entirely unselected files retain their exact original source. Changing selection
+  can therefore change the metamutant and invalidate a retained sandbox's build.
   """
   @spec from_files([Path.t()], Path.t(), Context.t() | Options.t() | keyword(), MapSet.t()) :: t()
   def from_files(files, root \\ ".", opts \\ [], skip_ids \\ MapSet.new()) do
@@ -173,7 +178,7 @@ defmodule Mutare.Schema do
 
     # Dedup the input by relative path. A file passed more than once would otherwise be
     # rendered twice under different `:start_id`s but collapse to a single relative-path
-    # key in `render_files/3` (only the last render kept, then reused for *every*
+    # key in `render_files/5` (only the last render kept, then reused for *every*
     # occurrence) — minting duplicate, overlapping site ids and violating the
     # globally-unique-id invariant. `build/2` already dedups via `discover`; the
     # public/`rebuild` entry must too, so each source is rendered once under one id range.
@@ -208,7 +213,7 @@ defmodule Mutare.Schema do
 
     rendered =
       counted
-      |> render_jobs()
+      |> render_jobs(options.max_mutants)
       |> render_files(options, skip_ids, render_site_code, summarize_sites)
 
     rel_files
@@ -314,58 +319,86 @@ defmodule Mutare.Schema do
   # Count opts forward the same transform config as a render (`transform_opts/1`) so the
   # two passes count identically; `:start_id`/`:skip_ids` are omitted because the count is
   # independent of both (a skipped id still advances the counter).
-  # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
-  defp count_opts(%Options{} = options, rel), do: transform_opts(options) ++ [file: rel]
+  defp count_opts(%Options{} = options, rel) do
+    lines =
+      if options.only_lines do
+        for {^rel, line} <- options.only_lines, into: MapSet.new(), do: line
+      end
+
+    # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
+    transform_opts(options) ++ [file: rel, selection_lines: lines]
+  end
 
   # The count pass's side-channel matches, one map per file (the 5th element of a `:counted`
   # tuple): what the file's `:skip_lifting` entries, call routes, and mark declarations reached.
   # An unparseable file contributes nothing to any of them.
-  defp matches(nil), do: %{skip_lifting: MapSet.new(), routes: MapSet.new(), marks: MapSet.new()}
+  defp matches(nil),
+    do: %{
+      skip_lifting: MapSet.new(),
+      routes: MapSet.new(),
+      marks: MapSet.new(),
+      selected_ids: nil
+    }
 
   defp matches(report),
     do: %{
       skip_lifting: report.skip_lifting_matches,
       routes: report.route_matches,
-      marks: report.mark_matches
+      marks: report.mark_matches,
+      selected_ids: report.selected_ids
     }
 
   # The mutant count an outcome contributes to the running `:on_scan` tally (0 for a
-  # no-site or skipped file), summed per file as `count_files/3` consumes the stream.
+  # no-site or skipped file), summed per file as `count_files/4` consumes the stream.
   defp mutants_found({:counted, _rel, _src, {:sites, n}, _skips}), do: n
   defp mutants_found({:counted, _rel, _src, _outcome, _skips}), do: 0
 
   # === phase 2: render =======================================================
 
   # Prefix-sum the phase-1 counts into one render job per **sited** file —
-  # `{rel, source, start_id, count}` — handing each file the globally-unique
+  # `{rel, source, start_id, count, emit_ids}` — handing each file the globally-unique
   # `:start_id` it would have received under sequential threading (`next_id` starts at
   # 1 and advances by each file's count, in input order). No-site / skipped files
   # contribute no job (and no ids).
-  defp render_jobs(counted) do
-    {jobs, _next_id} =
-      Enum.flat_map_reduce(counted, 1, fn
-        {:counted, rel, source, {:sites, count}, _skips}, next_id ->
-          {[{rel, source, next_id, count}], next_id + count}
+  defp render_jobs(counted, max_mutants) do
+    {jobs, _state} =
+      Enum.flat_map_reduce(counted, {1, max_mutants}, fn
+        {:counted, rel, source, {:sites, count}, matches}, {next_id, remaining} ->
+          {emit_ids, remaining} = select_ids(matches.selected_ids, count, next_id, remaining)
+          {[{rel, source, next_id, count, emit_ids}], {next_id + count, remaining}}
 
-        {:counted, _rel, _source, _outcome, _skips}, next_id ->
-          {[], next_id}
+        {:counted, _rel, _source, _outcome, _skips}, state ->
+          {[], state}
       end)
 
     jobs
   end
 
-  # Emit + render every sited file in parallel throwaway workers (`render_one/5`),
+  # Counts reserve the full file range. Selection consumes the cap in exactly the
+  # same order as restrict_lines/2 then limit/2, including ignored and poisoned
+  # sites; recovery must not replace a selected poisoned site with an unselected one.
+  defp select_ids(nil, _count, _start_id, nil), do: {nil, nil}
+
+  defp select_ids(local_ids, count, start_id, remaining) do
+    local_ids = local_ids || 1..count//1
+    selected = if is_nil(remaining), do: local_ids, else: Enum.take(local_ids, remaining)
+    emit_ids = MapSet.new(selected, &(&1 + start_id - 1))
+    remaining = if remaining, do: remaining - MapSet.size(emit_ids), else: nil
+    {emit_ids, remaining}
+  end
+
+  # Emit + render every sited file in parallel throwaway workers (`render_one/8`),
   # returning `%{rel => {start_id, metamutant, sites}}` — the `start_id` rides along so
   # `assemble/3` can record it under `:start_ids`. The dominant `Sourceror.to_string` heap
   # dies with each worker. A tool bug captured by a worker is re-raised here.
   defp render_files(jobs, options, skip_ids, render_site_code, summarize_sites) do
     jobs
-    |> async_stream(fn {rel, source, start_id, count} ->
+    |> async_stream(fn {rel, source, start_id, count, emit_ids} ->
       render_one(
         rel,
         source,
         start_id,
-        count,
+        {count, emit_ids},
         options,
         skip_ids,
         render_site_code,
@@ -385,7 +418,7 @@ defmodule Mutare.Schema do
          rel,
          source,
          start_id,
-         count,
+         {count, emit_ids},
          %Options{} = options,
          skip_ids,
          render_site_code,
@@ -397,6 +430,7 @@ defmodule Mutare.Schema do
           file: rel,
           start_id: start_id,
           skip_ids: skip_ids,
+          emit_ids: emit_ids,
           render_site_code: render_site_code,
           summarize_sites: summarize_sites,
           # The count pass already ran this source through the same pipeline and printed any
@@ -460,9 +494,9 @@ defmodule Mutare.Schema do
 
   # Run `fun` over `enum` in parallel throwaway workers, **ordered** (so callers see input
   # order for id threading, scan progress, and site assembly) and untimed (a big file can
-  # take seconds). Returns a **lazy** stream the caller forces — `count_files/3` via
+  # take seconds). Returns a **lazy** stream the caller forces — `count_files/4` via
   # `Enum.map_reduce` (so it can fire `:on_scan` per file *as results arrive*, not in one
-  # end-of-phase burst), `render_files/3` via `Enum.map`. Each worker classifies its own
+  # end-of-phase burst), `render_files/5` via `Enum.map`. Each worker classifies its own
   # outcome — a result tuple or a captured `{:raise, error, stacktrace}` — so it never
   # crashes the stream; `reraise_if_raised/1` surfaces a captured tool bug in the parent,
   # with its original type and trace, rather than as an opaque `Task` exit. A worker that
@@ -677,8 +711,8 @@ defmodule Mutare.Schema do
   # Cap the schema to at most `max` mutants (`--max-mutants`), keeping the first
   # `max` sites in source order. `nil` means no cap. Applied after `finalize/1`
   # (so the sites are already in order) and inside every `from_files/4` (so a
-  # poison rebuild stays capped). Only the *run* is bounded — the metamutant
-  # sources under `:metamutants` still embed every mutant.
+  # poison rebuild stays capped). render_jobs/2 applies this same selection to
+  # emission; the full site list survives until here for directive diagnostics.
   defp limit(%__MODULE__{} = schema, nil), do: schema
 
   # mutare:ignore[relational, conditional, logical] equivalent — Options validates :max_mutants as a positive integer or nil, so this defensive guard (limit/2 is private) never sees the values that would distinguish these
@@ -687,9 +721,9 @@ defmodule Mutare.Schema do
 
   # Keep only the sites on an explicitly named `file:line` (`--line`). `nil` keeps
   # every site. Applied here — inside *every* `from_files/4` — so a poison rebuild
-  # reapplies it, exactly like `limit/2` (`--max-mutants`): the per-file metamutant
-  # still embeds every mutant, so the one compile and poison recovery are unchanged;
-  # only the suite-per-mutant run is scoped to these sites. A site's `{file, line}`
+  # reapplies it, exactly like `limit/2` (`--max-mutants`). The count pass records
+  # matching local ids so emission applies the same selection before rendering.
+  # A site's `{file, line}`
   # is its recorded original location (`file:line` as the report prints it), so a
   # filter copied from a survivor header matches.
   defp restrict_lines(%__MODULE__{} = schema, nil), do: schema

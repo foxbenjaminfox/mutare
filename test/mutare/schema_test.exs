@@ -161,6 +161,187 @@ defmodule Mutare.SchemaTest do
     assert Schema.count(schema) == 1
   end
 
+  test "focused emission reserves all ids but materializes only selected branches", %{root: root} do
+    write(root, "lib/a.ex", """
+    defmodule FocusedA do
+      def f(x), do: x + 2
+      def g(x) when x >= 3, do: x * 4
+      def g(_), do: 5
+    end
+    """)
+
+    write(root, "lib/b.ex", """
+    defmodule FocusedB do
+      def f(x), do: x - 6
+      def g(x), do: x + 7
+    end
+    """)
+
+    files = Enum.map(["lib/a.ex", "lib/b.ex"], &Path.join(root, &1))
+    full = Schema.from_files(files, root, mutators: @probe)
+    lines = MapSet.new([{"lib/a.ex", 3}, {"lib/b.ex", 3}])
+    opts = [mutators: @probe, only_lines: lines, max_mutants: 2]
+    focused = Schema.from_files(files, root, opts)
+
+    expected =
+      full.sites |> Enum.filter(&MapSet.member?(lines, {&1.file, &1.line})) |> Enum.take(2)
+
+    assert focused.sites == expected
+    assert focused.start_ids == full.start_ids
+    assert emitted_ids(focused) == Enum.map(expected, & &1.id)
+    assert focused.metamutants["lib/b.ex"] == full.sources["lib/b.ex"]
+
+    [poisoned | _] = expected
+    rebuilt = Schema.rebuild(focused, root, opts, MapSet.new([poisoned.id]))
+    assert Enum.map(rebuilt.sites, & &1.id) == Enum.map(expected, & &1.id)
+    assert hd(rebuilt.sites).poisoned
+    assert emitted_ids(rebuilt) == Enum.map(tl(expected), & &1.id)
+
+    emptied = Schema.rebuild(focused, root, opts, MapSet.new(Enum.map(expected, & &1.id)))
+    assert emptied.metamutants == full.sources
+    assert Enum.all?(emptied.sites, & &1.poisoned)
+  end
+
+  test "an unfocused run whose every mutant is poisoned keeps the original source", %{root: root} do
+    write(root, "lib/a.ex", "defmodule PoisonedWhole do\n  def f(x), do: x + 1\nend\n")
+
+    files = [Path.join(root, "lib/a.ex")]
+    full = Schema.from_files(files, root, mutators: @probe)
+    all_ids = MapSet.new(full.sites, & &1.id)
+
+    # No selection is in play (`emit_ids` is nil), so the shortcut has to notice that nothing
+    # was *delivered* — otherwise the file round-trips through the renderer and comes back
+    # reformatted, and every downstream byte comparison sees a change that isn't one.
+    emptied = Schema.from_files(files, root, [mutators: @probe], all_ids)
+    assert emptied.metamutants == full.sources
+    assert Enum.all?(emptied.sites, & &1.poisoned)
+  end
+
+  test "a focused run compiles without poison on an unselected line", %{root: root} do
+    module = Module.concat(__MODULE__, "FocusedPoison#{System.unique_integer([:positive])}")
+
+    write(root, "lib/a.ex", """
+    defmodule #{inspect(module)} do
+      def unselected(x), do: x + 2
+      def selected(x), do: x >= 3
+    end
+    """)
+
+    schema =
+      Schema.build(root,
+        mutators: [Mutare.Test.PoisonMutator, Mutare.Mutators.Relational],
+        only_lines: MapSet.new([{"lib/a.ex", 3}])
+      )
+
+    assert Enum.all?(schema.sites, &(&1.line == 3 and not &1.poisoned))
+    refute schema.metamutants["lib/a.ex"] =~ "mutare_unbound_xyz"
+    assert [{^module, _}] = Code.compile_string(schema.metamutants["lib/a.ex"])
+    assert apply(module, :unselected, [2]) == 4
+    assert apply(module, :selected, [4])
+    :code.purge(module)
+    :code.delete(module)
+  end
+
+  test "withheld lifted functions collapse while selected siblings retain their selectors",
+       %{root: root} do
+    write(root, "lib/a.ex", """
+    defmodule FocusedLift do
+      def f(x) when x >= 2, do: x
+      def f(_), do: 0
+      def g(x), do: x + 3
+    end
+    """)
+
+    schema = Schema.build(root, mutators: @probe, only_lines: MapSet.new([{"lib/a.ex", 4}]))
+    refute schema.metamutants["lib/a.ex"] =~ "defp __mutare_f"
+    assert emitted_ids(schema) == Enum.map(schema.sites, & &1.id)
+  end
+
+  defp emitted_ids(schema) do
+    schema.metamutants
+    |> Enum.flat_map(fn {_file, source} ->
+      source |> Mutare.Manifest.from_source() |> Map.fetch!(:regions) |> Enum.flat_map(& &1.ids)
+    end)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  test "ignored sites still occupy a focused cap and unselected directives stay effective",
+       %{root: root} do
+    write(root, "lib/a.ex", """
+    defmodule FocusedIgnored do
+      def first(x), do: x + 2 # mutare:ignore[arithmetic] intentional
+      def second(x), do: x - 3 # mutare:ignore[arithmetic] also intentional
+      def third(x), do: x * 4
+    end
+    """)
+
+    opts = [mutators: @probe, max_mutants: 1]
+    full = Schema.build(root, mutators: @probe)
+    focused = Schema.build(root, opts)
+    assert focused.sites == Enum.take(full.sites, 1)
+    assert [%{ignored: true, id: id}] = focused.sites
+    assert focused.ineffective_ignores == []
+    assert emitted_ids(focused) == [id]
+
+    rebuilt = Schema.rebuild(focused, root, opts, MapSet.new([id]))
+    assert [%{id: ^id, ignored: true, poisoned: true}] = rebuilt.sites
+    assert rebuilt.metamutants == full.sources
+    assert rebuilt.ineffective_ignores == []
+  end
+
+  test "line selection follows a custom mutation's attribution rather than its carrier node",
+       %{root: root} do
+    write(root, "lib/a.ex", """
+    defmodule FocusedAttributed do
+      import Mutare.Test.QueryDSL
+      def run(y) do
+        query(
+          where: 1 == y,
+          select: 2
+        )
+      end
+    end
+    """)
+
+    mutators = [Mutare.Test.AttributedQueryMutator]
+    full = Schema.build(root, mutators: mutators)
+
+    focused =
+      Schema.build(root, mutators: mutators, only_lines: MapSet.new([{"lib/a.ex", 6}]))
+
+    assert [%{line: 6, operation: :delete, id: id}] = focused.sites
+    assert focused.sites == Enum.filter(full.sites, &(&1.line == 6))
+    assert emitted_ids(focused) == [id]
+    refute focused.metamutants["lib/a.ex"] =~ "where: :mutated"
+  end
+
+  test "hosted fragments keep selected ids and an exact poison hole", %{root: root} do
+    write(root, "lib/a.ex", """
+    defmodule FocusedHosted do
+      import Mutare.Test.HostDSL
+      def first(q, n), do: filter(q, n > 1)
+      def second(q, n), do: filter(q, n > 2)
+    end
+    """)
+
+    mutators = [Mutare.Test.HostMutator]
+    opts = [mutators: mutators, only_lines: MapSet.new([{"lib/a.ex", 4}]), max_mutants: 2]
+    full = Schema.build(root, mutators: mutators)
+    focused = Schema.build(root, opts)
+    assert focused.sites == Enum.filter(full.sites, &(&1.line == 4))
+    assert [first, second] = focused.sites
+    assert emitted_ids(focused) == [first.id, second.id]
+    assert focused.metamutants["lib/a.ex"] =~ "filter(q, n > 1)"
+    refute focused.metamutants["lib/a.ex"] =~ "n >= 1"
+    refute focused.metamutants["lib/a.ex"] =~ "n < 1"
+
+    rebuilt = Schema.rebuild(focused, root, opts, MapSet.new([first.id]))
+    assert Enum.map(rebuilt.sites, & &1.id) == [first.id, second.id]
+    assert emitted_ids(rebuilt) == [second.id]
+    assert Enum.map(rebuilt.sites, & &1.poisoned) == [true, false]
+  end
+
   test ":max_mutants survives a poison rebuild, keeping the cap and stable ids", %{root: root} do
     write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
     write(root, "lib/sub/b.ex", "defmodule B do\n  def g(a, b), do: a >= b\nend\n")

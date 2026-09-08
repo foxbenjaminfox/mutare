@@ -6,7 +6,7 @@ defmodule Mutare.Transform.Config do
   # later stage. Two roles share this struct because they share that lifetime:
   #
   #   * pass configuration — the recorded `file`, the resolved `mutators`, the
-  #     poison-recovery `skip_ids` to drop, and the `skip_lifting` MFA set;
+  #     poison-recovery `skip_ids`, static selection `emit_ids`, and the `skip_lifting` MFA set;
   #   * generated-name hygiene — the private-function `prefix` and the four salted variable
   #     names the lifting/selector machinery emits (`active_var`/`super_var`/`piped_var`/
   #     `cond_var`). `Mutare.Transform.Names` derives each from a scan of the source's own
@@ -20,6 +20,7 @@ defmodule Mutare.Transform.Config do
           file: String.t(),
           mutators: [Mutare.Mutator.Spec.t()],
           skip_ids: MapSet.t(),
+          emit_ids: MapSet.t(pos_integer()) | nil,
           skip_lifting: MapSet.t(Mutare.Lifting.skip_entry()),
           warnings: boolean(),
           render_site_code: boolean(),
@@ -34,6 +35,9 @@ defmodule Mutare.Transform.Config do
   defstruct file: "nofile",
             mutators: [],
             skip_ids: MapSet.new(),
+            # Static run selection: reserve every id/site, but emit only these ids.
+            # nil retains the unrestricted metamutant; distinct from poison skip_ids.
+            emit_ids: nil,
             skip_lifting: MapSet.new(),
             # Whether this pass prints advisory warnings (`Resolve`'s routing advisories and
             # `ModulePlan`'s lifting advisories). `true` for the scan/count pass; the render

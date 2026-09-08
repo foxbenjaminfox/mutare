@@ -288,12 +288,9 @@ defmodule Mutare.Sandbox do
     end
   end
 
-  # The sandbox writer is byte-aware (not a blind `File.write!`) so poison-recovery
-  # rewrites
-  # (`rematerialize/2`) touches only the metamutants whose rendered source changed,
-  # leaving the rest at their original mtime for mix's incremental compiler. On the
-  # first fresh write the copied original always differs from its metamutant, so
-  # every mutated file is still written.
+  # The byte-aware sandbox writer lets poison recovery (`rematerialize/2`) touch
+  # only changed metamutants, preserving other mtimes for Mix's incremental compiler.
+  # Selection can leave an entry identical to its original even on the first write.
   defp write_metamutants(sandbox, %Schema{metamutants: metamutants}) do
     for {rel, source} <- metamutants do
       put_sandbox_file_if_changed(sandbox, rel, source)
@@ -302,9 +299,7 @@ defmodule Mutare.Sandbox do
 
   # Overlay each generated file (the `override_files/3` manifest) onto the bulk-copied project
   # — the fresh-mode counterpart to `sync/4`'s in-place overlay, sharing the one manifest.
-  # The byte-aware sandbox writer keeps the rest at their copied mtime; the
-  # metamutant always differs from the copied original on a fresh write, so
-  # every mutated file is still written.
+  # The byte-aware sandbox writer keeps unchanged entries at their copied mtime.
   defp write_overrides(sandbox, overrides) do
     for {rel, content} <- overrides, do: put_sandbox_file_if_changed(sandbox, rel, content)
     :ok

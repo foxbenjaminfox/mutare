@@ -381,9 +381,8 @@ defmodule Mutare.Options.Registry do
   defp validate_verbose!(value), do: validate_boolean!(:verbose, value)
 
   # nil means no cap (run every mutant); otherwise an upper bound on the number of
-  # mutants tested. The cap is applied by `Mutare.Schema` (it truncates the site
-  # list to the first N), so the metamutant still embeds every mutant — only the
-  # run is bounded.
+  # mutants tested. `Mutare.Schema` reserves every candidate's ID but emits only
+  # the selected slice, then caps the reported site list after directive checks.
   defp validate_max_mutants!(n),
     do:
       validate_nullable!(

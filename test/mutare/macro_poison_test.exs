@@ -203,11 +203,10 @@ defmodule Mutare.MacroPoisonTest do
     assert Enum.any?(run.results, &(&1.status == :poisoned))
   end
 
-  test "recovers an UNSELECTED macro poison under a scoped (--line) run" do
-    # Under `:only_lines`, `schema.sites` is filtered to the selected line, but the metamutant
-    # still *reserves and renders* every mutant — so an unselected `query(...)` mutant is still
-    # in the compiled file and still poisons. The fallback attributes through the metamutant
-    # (every reserved id), not the filtered sites, so recovery must still engage.
+  test "does not compile an unselected macro poison under a scoped (--line) run" do
+    # The full candidate set still reserves its ids, but only selected branches are emitted.
+    # An unselected `query(...)` mutant must therefore not poison the focused compile or
+    # trigger recovery for a macro the run never needed to mutate.
     %{project: project, sandbox: sandbox} =
       Project.build(:scoped_dsl, %{
         "lib/my_dsl.ex" => """
@@ -246,8 +245,7 @@ defmodule Mutare.MacroPoisonTest do
         """
       })
 
-    # Select only line 5 (`a + b`) — the `query(a > b)` on line 9 is unselected but still
-    # rendered, so it poisons the one compile.
+    # Select only line 5 (`a + b`); the `query(a > b)` on line 9 keeps its original source.
     assert {:ok, run} =
              Mutare.run(project,
                sandbox: sandbox,
@@ -255,9 +253,7 @@ defmodule Mutare.MacroPoisonTest do
                only_lines: [{"lib/report.ex", 5}]
              )
 
-    # It recovered (didn't abort): the fallback named the unselected macro, and the selected
-    # line-5 arithmetic mutant(s) actually ran.
-    assert %{macro_skipped: [%{module: "MyDsl", macro: :query}]} = run.recovery
+    assert run.recovery == nil
     assert Enum.all?(run.results, &(&1.site.line == 5))
     assert Enum.any?(run.results, &(&1.status in [:killed, :survived]))
   end

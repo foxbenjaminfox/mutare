@@ -114,6 +114,35 @@ defmodule Mutare.Transform.Candidate.Delivery do
   end
 
   @doc """
+  The source range a claimed candidate's `Mutare.Site` records.
+
+  One home for the choice, so `line/1` cannot drift from what `site/4` ends up recording: an
+  in-place candidate carrying a producing mutator's report-location override is attributed to
+  the named clause, everything else to its own offered node.
+  """
+  @spec range(Candidate.t()) :: Sourceror.Range.t() | nil
+  def range(%Candidate.InPlace{attribution: %Attribution{} = attribution} = c),
+    do: c.attribution_range || NodeRange.get(attribution.original)
+
+  def range(candidate), do: candidate.range
+
+  @doc """
+  The line `site/4` would record, without building the `Mutare.Site`.
+
+  `Mutare.Transform.ClaimState` uses it during the **count** pass to test a candidate against a
+  `--line`/`--since` selection. The count sink builds no `Site` by design — and a `Site` also
+  runs the producing mutator's `c:Mutare.Mutator.variant/2` callback, which a mere line test has
+  no business invoking a second time.
+  """
+  @spec line(Candidate.t()) :: pos_integer() | nil
+  def line(candidate) do
+    case range(candidate) do
+      %{start: start} -> start[:line]
+      _ -> nil
+    end
+  end
+
+  @doc """
   Build the recorded `Mutare.Site` for a claimed candidate id.
 
   `flags` is the `{render?, summary?}` pair carried from `Mutare.Transform.Config`: `render?` is
@@ -185,7 +214,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
          file,
          {render?, summary?}
        ) do
-    range = c.attribution_range || NodeRange.get(attribution.original)
+    range = range(c)
 
     case attribution.mutated do
       :drop ->

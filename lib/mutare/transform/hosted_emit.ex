@@ -58,7 +58,7 @@ defmodule Mutare.Transform.HostedEmit do
       end)
 
     {clauses, ctx} =
-      SelectorEmit.claim_items(carriers, ctx, &hosted_site/4, fn id, carrier ->
+      SelectorEmit.claim_items(carriers, ctx, {&hosted_site/4, &hosted_line/1}, fn id, carrier ->
         {:->, [], [[id], cand.wrap.(carrier.mutated)]}
       end)
 
@@ -90,6 +90,12 @@ defmodule Mutare.Transform.HostedEmit do
   # filtering (`nil` for the common untagged fragment). The carrier's `mutator` is the recording
   # spec — the relayed mutant's producer, or the hosting mutator itself. `flags` is the
   # `{render?, summary?}` pair (the scan's diff-deferral flag + the live-summary flag).
+  # The line `hosted_site/4` records, for the count pass's `--line` test (see
+  # `Mutare.Transform.Candidate.Delivery.line/1`): the hosted fragment's own report range, not
+  # the selector scaffolding woven around it.
+  defp hosted_line(%{candidate: %Candidate.Hosted{range: range}}),
+    do: if(range, do: range.start[:line])
+
   defp hosted_site(
          id,
          %{candidate: cand, mutated: mutated, note: note, variant: variant, mutator: mutator},
