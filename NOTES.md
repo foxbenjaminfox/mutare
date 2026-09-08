@@ -3433,6 +3433,11 @@ Several design choices worth remembering:
   is always clean.
 
 ### Clause-pattern mutation — tuple-the-scrutinee (`case`), whole-construct (`receive`/`fn`) `[done]`
+**Update (2026-09):** `fn` and `receive` now use per-clause delivery where the selector is
+already bound; see *Anonymous functions: per-clause delivery* and *Receives: per-clause
+delivery* below. The historical whole-construct account still describes their unbound-scope
+fallbacks.
+
 `case`/`receive`/`fn` clause patterns used to get *only* the structural families (swap/wildcard)
 via the whole-construct selector. They now also get **literals** and **guards**, so a clause
 pattern is mutated as fully as a function head. Two deliveries, picked by whether the construct
@@ -9348,7 +9353,7 @@ reporter. Static emission deliberately leaves this identity contract unchanged. 
 remaining invariant to implement is that unchanged B's source and configuration produce
 identical B metamutants after unrelated A candidate-count changes.
 
-### Anonymous functions and receives still copy whole clause groups `[deferred]`
+### Anonymous functions: per-clause delivery `[done in bound scopes]`
 
 A further source-volume check found `Analyze.ClausePatterns.clause_list_candidates/3`
 still delivering `fn` and `receive` head/guard changes through whole-construct
@@ -9357,9 +9362,113 @@ with 10 source clauses produced 29 mutants, 30 `fn` copies, 300 generated clause
 7,586 bytes; doubling to 20 source clauses produced 59 mutants, 60 copies, 1,200 clauses,
 and 26,866 bytes. This is the old C×M multiplication in another delivery path.
 
-A next implementation can emit one `fn` with per-clause guarded variants, preserving its
-arity and capturing the active selector at closure creation. It must keep creation-time
-coverage, raw mutant bodies, and the lexical scope seen by macros; starting in scopes
-where the active variable is already bound avoids the reflection trap found by strict
-operand factoring. `receive` needs its own mailbox-order and timeout tests before using
-an analogous rewrite. Neither rewrite is part of the current optimization.
+**Implemented (2026-09):** `Candidate.FnClause` retains one raw mutant clause and its source
+index. `FnClauseEmit` emits one `fn`, interleaving each clause's guarded variants immediately
+before the original they replace. Originals exclude only their own live mutant IDs; a mutant
+that fails its pattern or guard falls through in source order. Mutant bodies stay raw, while
+original bodies retain their body/return selectors. Arity, pins, captured source variables,
+alternative `when` guards, and `FunctionClauseError` behavior are preserved.
+
+The closure captures the already-bound active selector, and one creation-time record covers
+the complete live head/guard ID set. A closure merely constructed is still covered; body
+coverage remains invocation-time. No binding or function boundary is added around the fn,
+preserving `binding()` and the lexical environment macros inspect. In scopes lacking that
+binding (defaults, scaffold, nested modules, and implicit rescue/catch/else blocks), emission
+keeps whole-fn selection. Candidates share the immutable raw source AST; only a live fallback
+mutant rebuilds a full clause list. Removing that fallback requires a separate solution to
+the macro-reflection constraint.
+
+Fn candidates remain in the same metadata list as whole-node candidates. This preserves the
+order of custom node offers, head/guard mutations, and the return/condition mutations an outer
+construct appends later. A comparison with the previous analyzer confirmed identical complete
+Sites and next IDs for integer-only probes and the guarded benchmark with both restricted and
+default mutators. A regression pins the return-candidate ordering: separating the lists had
+initially moved whole-fn return IDs ahead of the clause IDs. Ignored, unselected, and poisoned
+IDs still reserve their original positions and generate no clauses or coverage entries.
+
+`Manifest` recognizes each fn mutant's existing Erlang activation gate, records its entire
+clause (including the mutated head/guard), and adds the whole fn as a structural-error
+fallback. A poisoned guard maps to its individual ID, and skipping that ID compiles.
+
+Repeated integer-only probes (`FnProbe.make/0`, patterns 1 through N, bodies `:ok`, Elixir
+1.19.5 / OTP 26) measured:
+
+| Source clauses | Mutants | Fn copies before → after | Fn clauses before → after | Source bytes before → after |
+| ---: | ---: | ---: | ---: | ---: |
+| 20 | 59 | 60 → 1 | 1,200 → 79 | 26,953 → 8,788 |
+| 40 | 119 | 120 → 1 | 4,800 → 159 | 101,553 → 17,798 |
+
+The existing two-argument guarded `bench/compile_shapes.exs` fixtures also become linear:
+`fn-20` shrank from 142,618 to 23,947 bytes, and `fn-40` from 560,258 to 47,907 bytes.
+With all default mutators, `fn_default-40` shrank from 720,605 to 86,976 bytes and from
+399 fns to one. Tests compare every generated mutant of a multi-argument guarded fixture
+against its independently patched source, and cover creation/body coverage, selector changes
+after construction, nested closures, lexical reflection, fallback scopes, and poison recovery.
+
+The separate receive rewrite follows below.
+
+**Review corrections:** Per-clause fn/receive mutants retain both original and replacement
+import witnesses in their raw clause body; whole-construct fallbacks wrap the replacement
+with the same witnesses. Hidden import replacements therefore still fail compilation, and
+the diagnostic maps to the affected mutant ID. In unbound scopes, fallback clause branches
+and whole-node branches share one selector. Nesting the fallback beneath a whole-node
+selector exposed its catch-all's `mutare_active` binding to raw-body macros. Regression
+tests cover both import names in both delivery modes, poison recovery, and macro-visible
+bindings when whole-node candidates coexist with head mutants.
+
+### Receives: per-clause delivery `[done in bound scopes]`
+
+`Candidate.ReceiveClause` now retains one raw mutant message clause, its source index, and
+a shared reference to the normalized raw receive. `ReceiveClauseEmit` emits one native
+`receive`, interleaving each clause's variants immediately before the original they replace.
+The shared `ClauseVariants` builder also serves `FnClauseEmit`; it gates mutant clauses by
+strict ID equality and excludes only that source clause's live IDs from its original.
+
+**Mailbox order stays with the VM.** The rewrite does not consume or requeue unmatched
+messages, add a catch-all, or implement a receive loop. For each queued message, source-order
+clause precedence is preserved; the oldest message that matches under the selected mutant
+is consumed, regardless of which clause matches it. A retargeted clause can leave its old
+message queued and select a later message, or make an earlier queued message match. A later
+clause's broadened variant never jumps ahead of an earlier original clause. Tests compare
+both the result and the complete remaining mailbox against independently patched source
+for every mutant, including literal swaps, guards, alternative `when` guards, guard drops,
+pattern swaps and duplicate-pattern wildcarding.
+
+**One timeout and one selector.** Only the `do` clause list changes. The optional `after`
+block appears once, at its original position; its expression is evaluated once, and unmatched
+arrivals do not restart the timeout. Tests cover queued and arriving messages, pinned
+references, receives without `after`, zero/finite/infinite timeouts, invalid timeout values,
+raising timeout callbacks, and after-only receives. Changing the global selector while a
+receive waits does not change its captured dispatch value. No timeout literals become
+message-pattern candidates.
+
+All live head/guard IDs are recorded once on entry, before timeout evaluation, including
+when the receive times out or its timeout expression raises. Body and after coverage stay
+in the reached body. Mutant message clauses use raw bodies; originals and the after block
+retain their emitted selectors, which cannot activate another ID during a head mutant's
+run. No binding or function boundary is introduced around the receive. As with `fn`, scopes
+without an existing selector binding retain whole-construct delivery so raw mutant macros
+see their previous bindings; rescue and nested-module fallbacks have regression tests.
+
+Keyword-form receives retain the raw whole-node offer for custom mutators, while discovery
+and fallback emission use the normalized clause list. Clause candidates remain in the same
+ordered metadata list as whole-node and enclosing condition/return candidates. Complete
+Sites and next IDs match the previous analyzer on integer-only probes and the guarded
+benchmark with both restricted and default mutators. Ignored, unselected and poison-skipped
+IDs keep their positions and emit no clause or coverage entry; withholding every head
+variant still permits body mutations. `Manifest` records each gated message clause and the
+whole receive as a structural-error fallback. A poisoned guard maps to one ID and skipping
+it recovers compilation.
+
+Integer-only probes (`ReceiveProbe.take/0`, patterns 1 through N, bodies `:ok`, `after 0 ->
+:timeout`, Elixir 1.19.5 / OTP 26) measured:
+
+| Source clauses | Mutants | Receive copies before → after | Message clauses before → after | Source bytes before → after |
+| ---: | ---: | ---: | ---: | ---: |
+| 20 | 59 | 60 → 1 | 1,200 → 79 | 29,718 → 8,831 |
+| 40 | 119 | 120 → 1 | 4,800 → 159 | 107,078 → 17,841 |
+
+For the existing guarded fixtures, `receive-20` shrank from 151,105 to 32,623 bytes and
+`receive-40` from 558,085 to 65,209 bytes. With all default mutators, `receive_default-40`
+shrank from 714,875 to 93,214 bytes and from 399 receives to one. These figures include body
+selectors; the single `after` block is excluded from the message-clause counts above.

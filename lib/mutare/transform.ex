@@ -131,6 +131,11 @@ defmodule Mutare.Transform do
       lifted group (the assembly half of `emit_function_plan/2`).
     * `Mutare.Transform.CaseClauseEmit` — the tuple-the-scrutinee delivery for
       per-clause `case` pattern/guard mutants.
+    * `Mutare.Transform.FnClauseEmit` — per-clause anonymous-function delivery,
+      capturing the selector and recording head/guard coverage at closure creation.
+    * `Mutare.Transform.ReceiveClauseEmit` — per-clause receive delivery, preserving
+      native mailbox order and one timeout evaluation; clause guards are shared with
+      anonymous functions through `Mutare.Transform.ClauseVariants`.
     * `Mutare.Transform.BindingEscapeEmit` — the tuple-export delivery for binding
       escaping `=` matches and known macros.
     * `Mutare.Transform.HostedEmit` — the selector-host delivery for hosted DSL
@@ -156,6 +161,8 @@ defmodule Mutare.Transform do
     Config,
     Ctx,
     FunctionPlan,
+    FnClauseEmit,
+    ReceiveClauseEmit,
     HostedEmit,
     ImportWitness,
     LiftedEmit,
@@ -1045,6 +1052,12 @@ defmodule Mutare.Transform do
       {:case_clause, candidates} ->
         CaseClauseEmit.emit(current, candidates, ctx)
 
+      {:fn_clause, candidates} ->
+        FnClauseEmit.emit(current, candidates, ctx)
+
+      {:receive_clause, candidates} ->
+        ReceiveClauseEmit.emit(current, candidates, ctx)
+
       # A `=`-match in statement position → a tuple-export selector (its bindings must escape,
       # so it can't be wrapped like an ordinary node).
       {:match_pattern, candidates} ->
@@ -1069,15 +1082,16 @@ defmodule Mutare.Transform do
     end
   end
 
-  # A `case`'s per-clause `:mutare_case` candidates dominate and are never gated; otherwise
-  # `:mutare` candidates are gated before the node-local classifier sees them.
+  # A `case`'s per-clause candidates dominate and are never gated; otherwise ordinary
+  # candidates are gated before classification. A fn/receive keeps its clause and whole-node
+  # candidates together so later return/condition appends retain their original id order.
   defp node_delivery_route(node) do
     case case_candidates_of(node) do
       [] ->
         node |> candidates_of() |> gate_candidates() |> Delivery.classify_node_candidates()
 
-      case_candidates ->
-        Delivery.classify_node_candidates(case_candidates)
+      clause_candidates ->
+        Delivery.classify_node_candidates(clause_candidates)
     end
   end
 

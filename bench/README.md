@@ -46,8 +46,8 @@ included in the decision. `projects.tsv` records the configured set for every pr
 | `guards-*`, `guards_default-*` | 8 / 16 / 32 comparisons | Guard duplication and exclusions, including alternative guards |
 | `arithmetic-*`, `arithmetic_default-*` | 40 / 80 / 160 additions | Literal RHS expression depth, Arithmetic-only versus defaults |
 | `arithmetic_variables-*` | Same depths, variable RHS | Operand-sharing counterexample, with defaults |
-| `fn-*`, `fn_default-*` | 10 / 20 / 40 clauses | Whole-function duplication; two arguments, guards, captured outer binding |
-| `receive-*`, `receive_default-*` | 10 / 20 / 40 clauses | Whole-receive duplication; unmatched messages, mailbox order, zero timeout |
+| `fn-*`, `fn_default-*` | 10 / 20 / 40 clauses | Per-clause function delivery; two arguments, guards, captured outer binding |
+| `receive-*`, `receive_default-*` | 10 / 20 / 40 clauses | Per-clause receive delivery; unmatched messages, mailbox order, zero timeout |
 | `head_body-{isolated,default}-NxB` | 2 / 4 / 8 head literals × 10 / 40 / 160 body statements | Raw-body duplication from pattern mutations; isolated set is IntegerLiteral |
 | `guard_body-{isolated,default}-NxB` | Same grid, guard comparisons × body statements | Raw-body duplication from guard mutations; isolated set is Relational |
 | `rescue_types-{isolated,default}-NxB` | Same grid, exception types × body statements | Type-list narrowing copies an unchanged `try` body |

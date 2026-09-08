@@ -14,8 +14,8 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   #
   # Entry points the descent calls (`Mutare.Transform.Analyze`):
   #   * case     → `case_clause_candidates/2` + `put_case_candidates/2`
-  #   * receive  → `receive_do_clauses/2` + `attach_clause_pattern_candidates/6`
-  #   * fn       → `attach_clause_pattern_candidates/5`
+  #   * receive  → `attach_receive_candidates/4`
+  #   * fn       → `attach_fn_candidates/3`
   #   * try      → `rescue_type_candidates/3`
 
   alias Mutare.AST
@@ -44,7 +44,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # node at emit; only the mutants come from here.
   # NOTE (equivalent survivors): the `++` operand_swap mutants on the candidate-group
   # concatenations in this module (here and in `clause_pattern_candidates/3`,
-  # `attach_clause_pattern_candidates/5`, `clause_guard_candidates/3`, `rescue_clause_candidates/3`)
+  # `attach_receive_candidates/4`, `clause_guard_candidates/3`, `rescue_clause_candidates/3`)
   # only reorder the produced candidates — the *set* of mutants is unchanged, just their id
   # order — so no behaviour or test distinguishes them. Left as documented survivors rather than
   # `# mutare:ignore`d to keep them visible.
@@ -155,7 +155,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # bare `pattern` (the `{:when, …}` LHS reconstructed for range/render), so just the
   # ` when guard` is dropped.
   # The shared precondition of the two guard-drop offers (`case` via `CaseClause`,
-  # `receive`/`fn` via `CasePattern`): a guard is droppable only when it is **inert** (no other
+  # `receive`/`fn` via `ReceiveClause`/`FnClause`): a guard is droppable only when it is **inert** (no other
   # family tagged it — `targets == []`) and `GuardDrop` is enabled. Returns the spec plus the
   # `{:when, pattern, guard}` node (reconstructed for the Site diff/range) and its range, or
   # `:error` when any precondition fails. Each caller supplies its own `pattern` and builds its
@@ -238,7 +238,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # pattern when Sourceror can't range it (no focused diff possible — the same guard the
   # tagged path applies via `Tag.expand_targets/2`). Each `{mutator, mutated}` becomes a
   # candidate via `build.(mutator, mutated, range)`. Shared by the `case` (`CaseClause`)
-  # and `receive`/`fn` (`CasePattern`) paths, which differ only in the struct they build.
+  # and `receive`/`fn` paths, which differ only in the struct they build.
   defp structural_mutations(pattern, used, structural, build) do
     case NodeRange.get(pattern) do
       %{} = range ->
@@ -253,79 +253,73 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
 
   def put_case_candidates(node, candidates), do: Meta.put_candidates(node, :case, candidates)
 
-  # --- receive / fn: whole-construct selector (Candidate.CasePattern) --------
+  # --- fn / receive: shared discovery, different delivery ------------------
 
-  # Analyze the construct normally (bodies/subject mutate), then attach the clause-pattern
-  # candidates so emission hosts them in the same in-place selector that wraps the whole
-  # node. `clauses` is the construct's `->` clause list; `rebuild_fn` rebuilds the whole node
-  # from a mutated clause list (the only thing that differs across receive/fn).
-  #
-  # The node-level mutator offer is preserved for parity with the generic runtime clause (a
-  # custom mutator matching the whole node; built-ins match none). `offer_node` is usually the
-  # same as `node`, but inline keyword `receive do: (...)` uses a normalized `node` for
-  # descent while preserving the raw Sourceror receive as `offer_node` so extension mutators
-  # see and report the author's shape.
-  def attach_clause_pattern_candidates(descent, node, clauses, rebuild_fn, mutators) do
-    attach_clause_pattern_candidates(descent, node, node, clauses, rebuild_fn, mutators)
+  def attach_fn_candidates(descent, {:fn, _meta, clauses} = node, mutators) do
+    analyzed = descent.recurse(node, :runtime, mutators) |> Attach.offer(node, mutators)
+
+    candidates =
+      clause_list_candidates(clauses, mutators, fn index, mutant_clause, fields ->
+        struct!(
+          Candidate.FnClause,
+          [clause_index: index, mutant_clause: mutant_clause, raw_fn: node] ++ fields
+        )
+      end)
+
+    Meta.append_candidates(analyzed, :in_place, candidates)
   end
 
-  def attach_clause_pattern_candidates(descent, node, offer_node, clauses, rebuild_fn, mutators) do
+  # The normalized node supplies the clause list and raw fallback; whole-node custom
+  # mutators still see the author's original keyword/block form through `offer_node`.
+  # Keep their candidates, and later return/condition appends, on the same ordered list.
+  def attach_receive_candidates(descent, {:receive, _meta, [blocks]} = node, offer_node, mutators) do
     # mutare:ignore[atom] equivalent — the descent's `body_context/1` maps every non-`:scaffold` context (including a mutated `:mutare`) to `:runtime`, so the clause bodies mutate identically.
     analyzed = descent.recurse(node, :runtime, mutators)
 
     candidates =
       Attach.build_candidates(offer_node, Dispatch.mutations(offer_node, mutators)) ++
-        clause_list_candidates(clauses, rebuild_fn, mutators)
+        clause_list_candidates(receive_do_clauses(blocks), mutators, fn index,
+                                                                        mutant_clause,
+                                                                        fields ->
+          struct!(
+            Candidate.ReceiveClause,
+            [clause_index: index, mutant_clause: mutant_clause, raw_receive: node] ++ fields
+          )
+        end)
 
     Attach.put_candidates_if_any(analyzed, candidates)
   end
 
-  # The receive's `do` clauses plus a rebuilder that swaps them back into `blocks`
-  # (preserving an `after` block). An absent `do` (shouldn't happen) → no clauses and an
-  # identity rebuild, so the construct is still analyzed but offers no pattern mutants.
+  # Only the receive's `do` clauses supply head/guard candidates. The `after` head is a
+  # timeout expression, not a message pattern; an after-only receive has no do clauses.
   # (`blocks` has already been `Syntax.normalize_clause_blocks/1`-ed by the `:receive`
   # analyze clause, so an inline-keyword form's clause list is a bare list here.)
-  def receive_do_clauses(blocks, meta) do
+  defp receive_do_clauses(blocks) do
     # NOTE (equivalent survivor): forcing this finder's `== :do` to `true` is equivalent — the
     # `:do` block is always the first entry of a `receive`, so `Enum.find` returns it either
     # way; `== :do → false` (returns the `after` block / nil) is killed.
     case Enum.find(blocks, fn {key, _value} -> AST.key_atom(key) == :do end) do
       # mutare:ignore[guard_drop] equivalent — a `receive`'s `:do` value is always the clause list, so the `is_list/1` guard never excludes it.
       {_do_key, clauses} when is_list(clauses) ->
-        rebuild = fn new ->
-          new_blocks =
-            Enum.map(blocks, fn {key, value} ->
-              if AST.key_atom(key) == :do, do: {key, new}, else: {key, value}
-            end)
-
-          {:receive, meta, [new_blocks]}
-        end
-
-        {clauses, rebuild}
+        clauses
 
       _ ->
-        {[], fn _new -> {:receive, meta, [blocks]} end}
+        []
     end
   end
 
   # For each clause: structural pattern rewrites + pattern-literal swaps at each pattern
-  # position, plus guard-operator swaps. Each builds a `Candidate.CasePattern` whose
-  # `replacement` is the whole construct with just that one clause's pattern/guard changed
-  # (raw clauses → first-order, no nested selectors, like a lifted mutant clause). The diff
-  # stays focused on the single changed pattern/literal/guard-operator (always rangeable).
-  defp clause_list_candidates(clauses, rebuild_fn, mutators) do
+  # position, plus guard-operator swaps. Both constructs retain only the changed clause;
+  # their injected builders choose the candidate struct. Discovery and ordering stay shared.
+  defp clause_list_candidates(clauses, mutators, build) do
     clauses
     |> Enum.with_index()
     |> Enum.flat_map(fn {clause, index} ->
-      replace_clause = fn new_clause ->
-        rebuild_fn.(List.replace_at(clauses, index, new_clause))
-      end
-
-      clause_pattern_candidates(clause, replace_clause, mutators)
+      clause_pattern_candidates(clause, &build.(index, &1, &2), mutators)
     end)
   end
 
-  defp clause_pattern_candidates(clause, replace_clause, mutators) do
+  defp clause_pattern_candidates(clause, build, mutators) do
     structural = PatternStructure.mutators(mutators)
 
     case clause_patterns(clause) do
@@ -336,51 +330,47 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
         pattern_cands =
           patterns
           |> Enum.with_index()
-          |> Enum.flat_map(
-            &position_candidates(&1, clause, replace_clause, used, mutators, structural)
-          )
+          |> Enum.flat_map(&position_candidates(&1, clause, build, used, mutators, structural))
 
-        pattern_cands ++ clause_guard_candidates(clause, replace_clause, mutators)
+        pattern_cands ++ clause_guard_candidates(clause, build, mutators)
     end
   end
 
-  defp position_candidates({pattern, pos}, clause, replace_clause, used, mutators, structural) do
-    structural_position_candidates(pattern, pos, clause, replace_clause, used, structural) ++
-      literal_position_candidates(pattern, pos, clause, replace_clause, mutators)
+  defp position_candidates({pattern, pos}, clause, build, used, mutators, structural) do
+    structural_position_candidates(pattern, pos, clause, build, used, structural) ++
+      literal_position_candidates(pattern, pos, clause, build, mutators)
   end
 
-  defp structural_position_candidates(pattern, pos, clause, replace_clause, used, structural) do
+  defp structural_position_candidates(pattern, pos, clause, build, used, structural) do
     structural_mutations(pattern, used, structural, fn mutator, mutated, range ->
-      %Candidate.CasePattern{
+      build.(put_clause_pattern_at(clause, pos, mutated),
         mutator: mutator,
         original: pattern,
         mutated: mutated,
-        replacement: replace_clause.(put_clause_pattern_at(clause, pos, mutated)),
         range: range
-      }
+      )
     end)
   end
 
-  defp literal_position_candidates(pattern, pos, clause, replace_clause, mutators) do
+  defp literal_position_candidates(pattern, pos, clause, build, mutators) do
     {tagged_pattern, {_next, targets}} =
       Tag.pattern_literal_targets(pattern, @fresh_tag_acc, mutators)
 
     Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, variant, range ->
       mutated_pattern = Tag.replace_tag(tagged_pattern, tag, mutated)
 
-      %Candidate.CasePattern{
+      build.(put_clause_pattern_at(clause, pos, mutated_pattern),
         mutator: mutator,
         original: original,
         mutated: mutated,
-        replacement: replace_clause.(put_clause_pattern_at(clause, pos, mutated_pattern)),
         range: range,
         note: note,
         variant: variant
-      }
+      )
     end)
   end
 
-  defp clause_guard_candidates(clause, replace_clause, mutators) do
+  defp clause_guard_candidates(clause, build, mutators) do
     case clause_guard(clause) do
       nil ->
         []
@@ -392,40 +382,37 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
           Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, variant, range ->
             mutated_guard = Tag.replace_tag(tagged_guard, tag, mutated)
 
-            %Candidate.CasePattern{
+            build.(put_clause_guard(clause, mutated_guard),
               mutator: mutator,
               original: original,
               mutated: mutated,
-              replacement: replace_clause.(put_clause_guard(clause, mutated_guard)),
               range: range,
               note: note,
               variant: variant
-            }
+            )
           end)
 
-        swaps ++ guard_drop_clause_pattern(clause, guard, replace_clause, targets, mutators)
+        swaps ++ guard_drop_clause_pattern(clause, guard, build, targets, mutators)
     end
   end
 
-  # A `receive`/`fn` clause's guard removed — a `CasePattern` whose `replacement` is the
-  # whole construct with this clause's `when` stripped (matching unconditionally for its
-  # pattern). Offered only for an **inert** guard (`targets == []`), when `GuardDrop` is
+  # A `receive`/`fn` clause's guard removed (matching unconditionally for its pattern).
+  # Offered only for an **inert** guard (`targets == []`), when `GuardDrop` is
   # enabled, and for a **single-pattern** clause: a multi-pattern `fn` head
   # (`fn x, y when … ->`) has no single `{:when, …}` node that renders cleanly in the diff,
   # so it is skipped (documented in NOTES). The Site diffs `pattern when guard` → `pattern`.
-  defp guard_drop_clause_pattern(clause, guard, replace_clause, targets, mutators) do
-    # The single-pattern gate is `CasePattern`-only: a multi-pattern `fn x, y when … ->` head has
+  defp guard_drop_clause_pattern(clause, guard, build, targets, mutators) do
+    # A multi-pattern `fn x, y when … ->` head has
     # no single `{:when, …}` node that renders cleanly in the diff, so it is skipped.
     with {[pattern], _used} <- clause_patterns(clause),
          {:ok, spec, when_node, range} <- guard_drop_when_node(pattern, guard, targets, mutators) do
       [
-        %Candidate.CasePattern{
+        build.(strip_clause_guard(clause),
           mutator: spec,
           original: when_node,
           mutated: pattern,
-          replacement: replace_clause.(strip_clause_guard(clause)),
           range: range
-        }
+        )
       ]
     else
       _ -> []

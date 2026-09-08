@@ -13,8 +13,9 @@ defmodule Mutare.Transform.Candidate.Delivery do
   # Three groups of variant, by *who consumes them*:
   #
   #   * node-local — carried on a node's `meta[:mutare]` / `:mutare_case` and dispatched by
-  #     `Mutare.Transform` off `route/1` (`:in_place` / `:case_clause` / `:match_pattern` /
-  #     `:macro_pattern`). `classify_node_candidates/1` admits exactly these.
+  #     `Mutare.Transform` off `route/1` (`:in_place` / `:case_clause` / `:fn_clause` /
+  #     `:receive_clause` / `:match_pattern` / `:macro_pattern`).
+  #     `classify_node_candidates/1` admits exactly these.
   #   * lifted (`Lifted` / `PatternStructure` / `GuardDrop` / `Drop`) — consumed from
   #     `Mutare.Transform.FunctionPlan`, never node-local; `route/1` reports `:lifted` and
   #     `classify_node_candidates/1` rejects them.
@@ -33,14 +34,29 @@ defmodule Mutare.Transform.Candidate.Delivery do
           | Candidate.CasePattern.t()
           | Candidate.RescueDrop.t()
           | Candidate.CaseClause.t()
+          | Candidate.FnClause.t()
+          | Candidate.ReceiveClause.t()
           | Candidate.MatchPattern.t()
           | Candidate.MacroPattern.t()
-  @type node_route :: :in_place | :case_clause | :match_pattern | :macro_pattern
+  @type node_route ::
+          :in_place
+          | :case_clause
+          | :fn_clause
+          | :receive_clause
+          | :match_pattern
+          | :macro_pattern
   @type routed_node_candidates :: :none | {node_route(), [node_candidate()]}
 
   # The routes `classify_node_candidates/1` admits — the node-local ones. The lifted / hosted
   # candidates report `:lifted` / `:hosted` and are routed by their dedicated emit paths.
-  @node_routes [:in_place, :case_clause, :match_pattern, :macro_pattern]
+  @node_routes [
+    :in_place,
+    :case_clause,
+    :fn_clause,
+    :receive_clause,
+    :match_pattern,
+    :macro_pattern
+  ]
 
   @doc """
   Filter one node's candidates by mutator policy, then drop duplicate return constants.
@@ -103,15 +119,28 @@ defmodule Mutare.Transform.Candidate.Delivery do
     end)
   end
 
-  @doc "Classify homogeneous AST-node candidates by their node-local emit route."
+  @doc """
+  Classify AST-node candidates by their node-local emit route.
+
+  A fn or receive keeps its clause candidates alongside whole-node in-place candidates,
+  preserving discovery order (including later return/condition appends). Its emitter
+  claims the entire list in that order, then interleaves clauses inside the whole-node selector
+  in bound scopes, or combines all branches in one selector in unbound scopes.
+  Every other route requires a homogeneous list.
+  """
   @spec classify_node_candidates([node_candidate()]) :: routed_node_candidates()
   def classify_node_candidates([]), do: :none
 
   def classify_node_candidates([candidate | _] = candidates) do
-    route = node_route!(candidate)
-    assert_homogeneous!(route, candidates)
+    route = Enum.find_value(candidates, &clause_list_route/1) || node_route!(candidate)
+
+    assert_compatible_routes!(route, candidates)
     {route, candidates}
   end
+
+  defp clause_list_route(%Candidate.FnClause{}), do: :fn_clause
+  defp clause_list_route(%Candidate.ReceiveClause{}), do: :receive_clause
+  defp clause_list_route(_), do: nil
 
   @doc """
   The source range a claimed candidate's `Mutare.Site` records.
@@ -189,6 +218,8 @@ defmodule Mutare.Transform.Candidate.Delivery do
   defp profile(%Candidate.CasePattern{}), do: {:in_place, :in_place, :replacement}
   defp profile(%Candidate.RescueDrop{}), do: {:in_place, :in_place_drop, :replacement}
   defp profile(%Candidate.CaseClause{}), do: {:case_clause, :in_place, nil}
+  defp profile(%Candidate.FnClause{}), do: {:fn_clause, :in_place, nil}
+  defp profile(%Candidate.ReceiveClause{}), do: {:receive_clause, :in_place, nil}
   defp profile(%Candidate.MatchPattern{}), do: {:match_pattern, :in_place, nil}
   defp profile(%Candidate.MacroPattern{}), do: {:macro_pattern, :in_place, nil}
   defp profile(%Candidate.Lifted{}), do: {:lifted, :lifted_replace, nil}
@@ -301,8 +332,10 @@ defmodule Mutare.Transform.Candidate.Delivery do
     end
   end
 
-  defp assert_homogeneous!(route, candidates) do
-    case Enum.find(candidates, &(node_route!(&1) != route)) do
+  defp assert_compatible_routes!(route, candidates) do
+    allowed = if route in [:fn_clause, :receive_clause], do: [route, :in_place], else: [route]
+
+    case Enum.find(candidates, &(node_route!(&1) not in allowed)) do
       nil ->
         :ok
 

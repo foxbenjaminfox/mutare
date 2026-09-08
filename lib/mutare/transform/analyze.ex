@@ -455,27 +455,17 @@ defmodule Mutare.Transform.Analyze do
     end
   end
 
-  # `receive`/`fn`: the same kinds of clause-pattern/guard mutations, but neither has a
-  # scrutinee to tuple (`receive` matches the mailbox; `fn` matches its call arguments), so
-  # each mutant is delivered by wrapping the **whole** construct in an in-place selector
-  # whose mutant branch is a copy with one clause's pattern/guard changed — sound because
-  # these clause bindings are local to a clause body and never escape. Each is still analyzed
-  # normally, and the `Candidate.CasePattern`s are attached so emission hosts them in the
-  # same selector. The two differ only in *where the clauses live* and *how to rebuild the
-  # whole node*, captured by the clause list + `rebuild_fn` passed to
-  # `attach_clause_pattern_candidates/5` or `/6`. (Each mutant is a full copy — C×M —
-  # acceptable for these rare, small constructs; `case` uses the per-clause path above.)
+  # `receive` retains its native mailbox scan and after block; ReceiveClause candidates
+  # interleave guarded variants before each original message clause during emission.
+  # Normalize keyword blocks for traversal while preserving the whole-node custom offer.
   defp analyze_form({:receive, meta, [blocks]} = node, :runtime, mutators) when is_list(blocks) do
     normalized_blocks = Syntax.normalize_clause_blocks(blocks)
     normalized_node = {:receive, meta, [normalized_blocks]}
-    {clauses, rebuild} = ClausePatterns.receive_do_clauses(normalized_blocks, meta)
 
-    ClausePatterns.attach_clause_pattern_candidates(
+    ClausePatterns.attach_receive_candidates(
       __MODULE__,
       normalized_node,
       node,
-      clauses,
-      rebuild,
       mutators
     )
   end
@@ -486,18 +476,10 @@ defmodule Mutare.Transform.Analyze do
   # node with the raw `node` supplying the clean diff). The return candidates ride on
   # the tail nodes inside the clause bodies; the clause-pattern candidates ride on the
   # `fn` node's own meta — different nodes, so they nest cleanly at emit.
-  defp analyze_form({:fn, meta, clauses} = node, :runtime, mutators) when is_list(clauses) do
-    rebuild = fn new -> {:fn, meta, new} end
-
-    attached =
-      ClausePatterns.attach_clause_pattern_candidates(
-        __MODULE__,
-        node,
-        clauses,
-        rebuild,
-        mutators
-      )
-
+  # FnClause candidates store one raw mutant clause each; FnClauseEmit preserves arity,
+  # captures the selector and records all head/guard ids at creation, before any invocation.
+  defp analyze_form({:fn, _meta, clauses} = node, :runtime, mutators) when is_list(clauses) do
+    attached = ClausePatterns.attach_fn_candidates(__MODULE__, node, mutators)
     Returns.annotate_fn_returns(attached, node, mutators)
   end
 

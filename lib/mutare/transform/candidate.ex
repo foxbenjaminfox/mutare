@@ -187,20 +187,10 @@ defmodule Mutare.Transform.Candidate do
   defmodule CasePattern do
     @moduledoc false
 
-    # A `receive`/`fn` *clause-pattern/guard* mutation (variable swap, duplicate→wildcard,
-    # a pattern literal, or a guard operator), delivered **in place** by the
-    # **whole-construct selector**. `receive` matches the process mailbox and `fn` matches
-    # call arguments, so neither has a scrutinee expression to tuple (the way `case` does —
-    # see `CaseClause`); the mutant is instead delivered by wrapping the *whole* construct
-    # in an in-place selector whose mutant branch is a copy of the construct with one
-    # clause's pattern (or guard) changed — sound because these clause bindings are local
-    # to a clause body and never escape. `replacement` is that whole mutated construct (the
-    # selector branch); `original`/`mutated` are the clause *pattern*/literal/guard-operator
-    # before/after (the focused one-line diff), and `range` locates it. `mutator` is the
-    # family (`PatternSwap`/`PatternWildcard`, a literal family, or a guard family). Recorded
-    # as an `:in_place` `Mutare.Site`. (Each mutant is a *full* copy of the construct — C×M —
-    # acceptable for `receive`/`fn`, which are rare and small; `case` uses the per-clause
-    # `CaseClause` instead.)
+    # A rescue type-list narrowing, delivered by a whole-try selector. `replacement`
+    # is the complete try with one rescue clause changed; `original`/`mutated`/`range`
+    # describe just that type-list edit for the in-place Site. The historical name
+    # predates per-clause delivery: cases, fns and receives now have their own variants.
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
@@ -213,6 +203,73 @@ defmodule Mutare.Transform.Candidate do
           }
 
     defstruct [:mutator, :original, :mutated, :replacement, :range, note: nil, variant: nil]
+  end
+
+  defmodule FnClause do
+    @moduledoc false
+
+    # One anonymous-function clause with its pattern/guard mutated and its body raw.
+    # FnClauseEmit interleaves it before its original, guarded by the selector captured
+    # at closure creation. The report still describes just original → mutated, in place.
+    # `raw_fn` shares the original immutable AST (no clause-list rebuilding per candidate).
+    # Only emission in a scope without a bound selector uses it to rebuild a whole-function
+    # fallback: introducing a capture there would change the bindings visible to macros.
+    @type t :: %__MODULE__{
+            clause_index: non_neg_integer(),
+            mutant_clause: Macro.t(),
+            raw_fn: Macro.t(),
+            mutator: Mutare.Mutator.Spec.t(),
+            original: Macro.t(),
+            mutated: Macro.t(),
+            range: Sourceror.Range.t(),
+            note: String.t() | nil,
+            variant: Mutare.Mutator.Mutation.variant()
+          }
+
+    defstruct [
+      :clause_index,
+      :mutant_clause,
+      :raw_fn,
+      :mutator,
+      :original,
+      :mutated,
+      :range,
+      note: nil,
+      variant: nil
+    ]
+  end
+
+  defmodule ReceiveClause do
+    @moduledoc false
+
+    # One receive clause with a mutated pattern/guard and a raw body. ReceiveClauseEmit
+    # interleaves it before its original, leaving mailbox scanning and the after block
+    # on one native receive. `raw_receive` shares the normalized source AST; only live
+    # fallback mutants rebuild the whole receive when no selector binding is in scope.
+    # The diff, note, variant and in-place Site retain the original focused mutation.
+    @type t :: %__MODULE__{
+            clause_index: non_neg_integer(),
+            mutant_clause: Macro.t(),
+            raw_receive: Macro.t(),
+            mutator: Mutare.Mutator.Spec.t(),
+            original: Macro.t(),
+            mutated: Macro.t(),
+            range: Sourceror.Range.t(),
+            note: String.t() | nil,
+            variant: Mutare.Mutator.Mutation.variant()
+          }
+
+    defstruct [
+      :clause_index,
+      :mutant_clause,
+      :raw_receive,
+      :mutator,
+      :original,
+      :mutated,
+      :range,
+      note: nil,
+      variant: nil
+    ]
   end
 
   defmodule RescueDrop do
@@ -470,7 +527,8 @@ defmodule Mutare.Transform.Candidate do
     # `mutated` the bare head call (`f(x)`), so the lifted-replace Site diffs to a
     # clean one-liner dropping just the ` when g`; `range` is the `when` head's range.
     # The `case`/`receive`/`fn` clause guards reuse `Candidate.CaseClause` /
-    # `Candidate.CasePattern` (a `nil` mutant guard / a guard-stripped construct) —
+    # `Candidate.ReceiveClause` / `Candidate.FnClause` (a `nil` mutant guard or a
+    # guard-stripped clause) —
     # only a `def`/`defp` head needs this lifted shape, the same way only it needs
     # `Candidate.Lifted` and `Candidate.Drop`.
 
@@ -513,6 +571,8 @@ defmodule Mutare.Transform.Candidate do
           | Lifted.t()
           | PatternStructure.t()
           | CasePattern.t()
+          | FnClause.t()
+          | ReceiveClause.t()
           | RescueDrop.t()
           | CaseClause.t()
           | MatchPattern.t()

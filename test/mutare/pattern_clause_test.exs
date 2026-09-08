@@ -30,9 +30,8 @@ defmodule Mutare.PatternClauseTest do
   The structural pattern families (variable swap, duplicate→wildcard) mutate the *clause
   patterns* of the in-place clause-list constructs — `case`, `receive`, and `fn`. None can
   be lifted (a `case` isn't a function clause group) and a selector can't live in a
-  pattern, so each mutant wraps the whole construct in an in-place selector whose mutant
-  branch is a copy with one clause's pattern restructured (sound — these clause bindings
-  never escape their body). Proven with one compile and runtime switching.
+  pattern. Cases, fns and receives interleave guarded variants per clause.
+  Proven with one compile and runtime switching.
   """
   # persistent_term is global; the fixture is compiled once for all tests.
   use ExUnit.Case, async: false

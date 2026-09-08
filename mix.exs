@@ -29,6 +29,9 @@ defmodule Mutare.MixProject do
     Mutare.Transform.SelectorEmit
     Mutare.Transform.LiftedEmit
     Mutare.Transform.CaseClauseEmit
+    Mutare.Transform.FnClauseEmit
+    Mutare.Transform.ReceiveClauseEmit
+    Mutare.Transform.ClauseVariants
     Mutare.Transform.ImportWitness
     Mutare.Transform.HostedEmit
     Mutare.Transform.GuardBuild

@@ -64,7 +64,7 @@ defmodule Mutare.Transform.Analyze.Syntax do
   `{key, {:__block__, _, [clauses]}}` — is otherwise indistinguishable from a *list literal*
   in that keyword's value, so shape-based clause routing misses it: the clause machinery
   (`cond` condition analysis, `case` per-clause tupling, `rescue` narrowing, receive-clause
-  copies, return tails) is `is_list`-guarded and silently skips the keyword form, and a
+  variants, return tails) is `is_list`-guarded and silently skips the keyword form, and a
   runtime descent would offer the wrapper to the `List` family (collapsing required `->`
   clauses to `[]` — poison). Unwrapping is safe on shape alone: only arrow clauses parse to a
   block whose sole child is a `clause_list?/1`, and the final render flips block keys back to

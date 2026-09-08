@@ -63,6 +63,20 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
   end
 
   describe "classify_node_candidates/1" do
+    test "fn clauses share delivery with whole-node offers and later return candidates" do
+      candidates = [%Candidate.InPlace{}, %Candidate.FnClause{}, %Candidate.Return{}]
+      assert Delivery.classify_node_candidates(candidates) == {:fn_clause, candidates}
+    end
+
+    test "receive clauses share delivery with whole-node candidates without admitting other clause kinds" do
+      candidates = [%Candidate.InPlace{}, %Candidate.ReceiveClause{}, %Candidate.Return{}]
+      assert Delivery.classify_node_candidates(candidates) == {:receive_clause, candidates}
+
+      assert_raise RuntimeError, ~r/candidate delivery route mismatch/, fn ->
+        Delivery.classify_node_candidates([%Candidate.ReceiveClause{}, %Candidate.FnClause{}])
+      end
+    end
+
     test "classifies every node-local delivery route" do
       assert Delivery.classify_node_candidates([]) == :none
 
@@ -119,6 +133,8 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
         {%Candidate.CasePattern{}, :in_place},
         {%Candidate.RescueDrop{}, :in_place},
         {%Candidate.CaseClause{}, :case_clause},
+        {%Candidate.FnClause{}, :fn_clause},
+        {%Candidate.ReceiveClause{}, :receive_clause},
         {%Candidate.MatchPattern{}, :match_pattern},
         {%Candidate.MacroPattern{}, :macro_pattern},
         {%Candidate.Lifted{}, :lifted},

@@ -2,8 +2,8 @@ defmodule Mutare.Transform.GuardBuild do
   @moduledoc false
 
   # Construction of the dispatch guards that gate a mutant clause on the active mutant id —
-  # shared by the lifted-function path (`__mutare_…` base clauses) and the `case`
-  # tuple-the-scrutinee path in `Mutare.Transform`. Pure AST builders with no `Ctx`: each
+  # shared by lifted functions, anonymous functions, receives, and tupled cases.
+  # Pure AST builders with no `Ctx`: each
   # takes the per-file dispatch variable (`var`) and ids and returns a guard expression.
   #
   # Every operator this module generates is an explicit `:erlang` call (`Mutare.AST.erlang_call/2`)

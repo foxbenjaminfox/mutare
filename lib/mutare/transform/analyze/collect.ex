@@ -28,7 +28,7 @@ defmodule Mutare.Transform.Analyze.Collect do
   #
   #   * **Structural candidates** — def-level, clause-level, and return-value shapes don't apply
   #     to a bare expression subtree. Only `Candidate.InPlace` is collected; the clause-delivery
-  #     kinds (`CaseClause`/`CasePattern`/`MatchPattern`/`MacroPattern`/`RescueDrop`) and the
+  #     kinds (`CaseClause`/`FnClause`/`ReceiveClause`/`CasePattern`/`MatchPattern`/`MacroPattern`/`RescueDrop`) and the
   #     structural-only families that produce them are dropped. Spec filtering to
   #     `mutate/1`/`mutate/2` exporters removes the structural-only families up front (which also
   #     keeps the `if`-condition hoist inert — it is gated on `Mutare.Mutators.IfCondition` being

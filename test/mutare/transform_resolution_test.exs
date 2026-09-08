@@ -896,6 +896,82 @@ defmodule Mutare.TransformResolutionTest do
                MapSet.new([site.id])
     end
 
+    for construct <- [:fn, :receive],
+        scope <- [:bound, :unbound],
+        hidden <- [:is_even, :is_odd] do
+      expression =
+        case construct do
+          :fn -> "fn n when is_even(n) -> true; _ -> false end"
+          :receive -> "receive do n when is_even(n) -> true after 0 -> false end"
+        end
+
+      definition =
+        case scope do
+          :bound -> "def f, do: (#{expression})"
+          :unbound -> "def f do raise \"enter rescue\" rescue _ -> #{expression} end"
+        end
+
+      test "#{construct} guard witnesses reject hidden #{hidden} imports in #{scope} scopes" do
+        hidden = unquote(hidden)
+        suffix = unquote("#{construct}_#{scope}_#{hidden}")
+        provider = Module.concat(__MODULE__, "HiddenInteger_#{suffix}")
+        target = Module.concat(__MODULE__, "ImportedGuard_#{suffix}")
+
+        source = """
+        defmodule #{inspect(provider)} do
+          defmacro #{hidden}(n), do: quote(do: is_integer(unquote(n)))
+
+          defmacro __using__(_) do
+            quote do
+              import Integer, except: [#{hidden}: 1]
+              import #{inspect(provider)}, only: [#{hidden}: 1]
+            end
+          end
+        end
+
+        defmodule #{inspect(target)} do
+          import Integer
+          use #{inspect(provider)}
+          #{unquote(definition)}
+        end
+        """
+
+        on_exit(fn ->
+          for module <- [provider, target] do
+            :code.purge(module)
+            :code.delete(module)
+          end
+        end)
+
+        opts = [mutators: [Mutare.Mutators.IntegerCall]]
+        {meta, sites, next} = Mutare.Transform.transform_string_with_sites(source, opts)
+        assert [%{kind: :in_place, original_code: "is_even(n)"} = site] = sites
+
+        {recovered, _, ^next} =
+          Mutare.Transform.transform_string_with_sites(
+            source,
+            opts ++ [skip_ids: MapSet.new([site.id])]
+          )
+
+        assert_compiles(source)
+        file = "lib/hidden_integer_#{suffix}.ex"
+
+        stderr =
+          assert_compile_error(meta, ["#{hidden}/1", "Integer and #{inspect(provider)}"], file)
+
+        assert Mutare.Poison.ids(stderr, %{file => meta}) == MapSet.new([site.id])
+
+        assert_compiles(recovered)
+
+        {visible, [_site], _} =
+          source
+          |> String.replace("use #{inspect(provider)}", "")
+          |> Mutare.Transform.transform_string_with_sites(opts)
+
+        assert_compiles(visible)
+      end
+    end
+
     test "a same-named local function with no import is not mutated" do
       {_meta, sites, _} =
         Mutare.Transform.transform_string_with_sites(

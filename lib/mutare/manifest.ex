@@ -333,6 +333,17 @@ defmodule Mutare.Manifest do
     {node, regions}
   end
 
+  # Per-clause fn delivery uses the same activation guard as tupled cases. Attribute
+  # each entire mutant clause (including its head), plus the whole fn as a fallback
+  # for structural errors. Ungated source fns and gated originals produce no regions.
+  defp enter({:fn, _meta, clauses} = node, regions, var),
+    do: {node, record_case(clauses, node, regions, &pattern_mutant(&1, var))}
+
+  # Receive message clauses carry the same per-clause activation gates. The after block
+  # is not a message clause; its own body selectors are visited normally by the walk.
+  defp enter({:receive, _meta, [blocks]} = node, regions, var),
+    do: {node, record_case(do_block(blocks), node, regions, &pattern_mutant(&1, var))}
+
   defp enter(node, regions, _var), do: {node, regions}
 
   defp leave(node, regions), do: {node, regions}
