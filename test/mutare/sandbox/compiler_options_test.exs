@@ -75,22 +75,116 @@ defmodule Mutare.Sandbox.CompilerOptionsTest do
     end
   end
 
-  describe "infer_signatures_off_ast/0 (inference off via the config prefix)" do
-    test "evaluating the snippet turns signature inference off, and it never raises" do
-      original = Code.get_compiler_option(:infer_signatures)
-
-      try do
-        Code.eval_quoted(CompilerOptions.infer_signatures_off_ast())
-        assert Code.get_compiler_option(:infer_signatures) == false
-      after
-        Code.put_compiler_option(:infer_signatures, original)
+  describe "project_source/1" do
+    test "renders keyword-do module bodies with an encoded hook atom" do
+      for form <- ["defmodule", "Kernel.defmodule", "Elixir.Kernel.defmodule"] do
+        source = CompilerOptions.project_source("#{form} Example, do: :ok")
+        assert {:ok, _} = Code.string_to_quoted(source)
+        assert source =~ "@before_compile :mutare_sandbox_compiler_options"
       end
     end
 
-    test "renders to source that reparses (the shape the config prefix embeds)" do
-      source = Macro.to_string(CompilerOptions.infer_signatures_off_ast())
+    test "leaves quoted definitions unchanged, including nested quotes and keyword-do bodies" do
+      quoted = """
+      quote do
+        defmodule Quoted, do: :ok
+        quote do
+          Kernel.defmodule Nested do
+            :ok
+          end
+        end
+      end
+      """
+
+      source = """
+      defmodule Example do
+        def template do
+          #{quoted}
+        end
+      end
+
+      defmodule AfterQuote, do: :ok
+      """
+
+      rendered = CompilerOptions.project_source(source)
+
+      assert length(Regex.scan(~r/@before_compile :mutare_sandbox_compiler_options/, rendered)) ==
+               2
+
+      expected = quoted |> Code.string_to_quoted!() |> Macro.to_string()
+
+      {_ast, quotes} =
+        rendered
+        |> Code.string_to_quoted!()
+        |> Macro.prewalk([], fn
+          {:quote, _, _} = node, quotes -> {node, [Macro.to_string(node) | quotes]}
+          node, quotes -> {node, quotes}
+        end)
+
+      assert expected in quotes
+    end
+
+    test "returns unparseable project templates byte-for-byte" do
+      for source <- ["defmodule <%= @module %>, do: :ok\n", "defmodule MissingEnd do\n", "[)\n"] do
+        assert CompilerOptions.project_source(source) == source
+      end
+    end
+
+    test "renders a dependency-free wrapper that reparses" do
+      source =
+        CompilerOptions.project_source("""
+        defmodule Example.MixProject do
+          use Mix.Project
+          def project, do: [app: :example, version: "0.0.0"]
+        end
+        """)
+
       assert {:ok, _} = Code.string_to_quoted(source)
-      assert source =~ "infer_signatures"
+      assert source =~ "defoverridable project: 0"
+      assert source =~ "@before_compile :mutare_sandbox_compiler_options"
+
+      # `use Mix.Project` registers the after-compile hook but defines no `project/0`, so the
+      # wrapper must check for the function too: `defoverridable` on a missing one aborts the
+      # sandbox's mix.exs, replacing Mix's own legible complaint about the broken project.
+      assert source =~ "Module.defines?(env.module, {:project, 0})"
+    end
+  end
+
+  describe "seed_manifest/1" do
+    test "adjusts only inference in recognized cache keys" do
+      for {version, tail} <- [{26, [%{}, 0, 0]}, {29, ["/sandbox", %{}, 0, 0, {%{}, %{}}]}],
+          options <- [[], [docs: false, infer_signatures: true, debug_info: false]],
+          key <- [{options, ["lib"], false}, {options, ["lib"], "/sandbox", true}] do
+        # Captured configuration containing the same option is unrelated data.
+        sources = %{compile_env: [infer_signatures: true]}
+        manifest = List.to_tuple([version, %{}, sources, %{}, [], key | tail])
+        result = CompilerOptions.seed_manifest(manifest)
+
+        expected =
+          if :infer_signatures in Code.available_compiler_options(),
+            do:
+              put_elem(
+                manifest,
+                5,
+                put_elem(key, 0, Keyword.put(options, :infer_signatures, false))
+              ),
+            else: manifest
+
+        assert result == expected
+        assert CompilerOptions.seed_manifest(result) == result
+      end
+    end
+
+    test "leaves unknown layouts and Elixir 1.20 keys untouched" do
+      for manifest <- [
+            {:manifest, [infer_signatures: true]},
+            {99, %{}, %{}, %{}, [], {[], ["lib"], false}, "/sandbox", %{}, 0, 0, {%{}, %{}}},
+            {35, %{}, %{}, %{}, [], {[], ["lib"], false, false}, "/sandbox",
+             %{infer_signatures: [:elixir]}, 0, 0, {%{}, %{}}},
+            {29, %{}, %{}, %{}, [], :unknown, "/sandbox", %{}, 0, 0, {%{}, %{}}}
+          ] do
+        assert CompilerOptions.seed_manifest(manifest) == manifest
+      end
     end
   end
 end

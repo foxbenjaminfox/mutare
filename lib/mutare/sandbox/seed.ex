@@ -16,6 +16,7 @@ defmodule Mutare.Sandbox.Seed do
   require Logger
 
   alias Mutare.{Options, Project, Schema}
+  alias Mutare.Sandbox.CompilerOptions
   alias Mutare.Sandbox.Command.Invocation
 
   # Seed the sandbox's `_build` with the dependencies' already-compiled artifacts
@@ -102,9 +103,10 @@ defmodule Mutare.Sandbox.Seed do
   #   * **Relocate the manifest** (`relocate_manifests/3`): rewrite the recorded project
   #     path to the sandbox path so mix accepts the seeded beams as the sandbox's own and
   #     reuses the unchanged files. The rewrite walks the decoded term replacing path
-  #     binaries — it depends only on the *public* term format (`binary_to_term`) and
-  #     "paths are stored as binaries", never on mix's private manifest layout, so it
-  #     survives a manifest-version bump (worst case a spurious recompile, never a no-op).
+  #     binaries, without depending on mix's private manifest layout. Separately, and *only*
+  #     for an app whose `mix.exs` the sandbox actually wrapped (`wrapped_apps/2`),
+  #     `CompilerOptions.seed_manifest/1` aligns the inference cache entry with that wrapper;
+  #     unknown layouts may cold-compile.
   #   * **Delete the metamutant's beam** (`delete_metamutant_beams/2`): a *structural*
   #     guard against the no-op — a module with no beam *must* be recompiled, from the only
   #     source available (the metamutant), regardless of any mtime/checksum heuristic.
@@ -202,10 +204,15 @@ defmodule Mutare.Sandbox.Seed do
           %{outcome: :skipped}
 
         expected ->
+          wrapped = wrapped_apps(project, to_seed)
+
           to_seed
           |> Enum.map(fn {app, src, dst} ->
             expected_app = Map.get(expected, app, MapSet.new())
-            seed_one(src, dst, expected_app, meta_sources, expanded_root, expanded_sandbox)
+
+            seed_one(src, dst, expected_app, meta_sources, expanded_root, expanded_sandbox,
+              realign_inference?: app in wrapped
+            )
           end)
           |> aggregate()
       end
@@ -221,11 +228,11 @@ defmodule Mutare.Sandbox.Seed do
   # exception — tear this app's seed back down (`teardown_one/1`) and report a `:fallback`,
   # so it alone cold-compiles. Returns a per-app `{:seeded, reused, recompiled}` (reused =
   # beams kept in this app, recompiled = beams deleted) or `{:fallback, reason}`.
-  defp seed_one(src, dst, expected_app, meta_sources, expanded_root, expanded_sandbox) do
+  defp seed_one(src, dst, expected_app, meta_sources, expanded_root, expanded_sandbox, opts) do
     File.mkdir_p!(Path.dirname(dst))
     File.cp_r!(src, dst)
     {deleted, recompiled} = delete_metamutant_beams(dst, meta_sources)
-    relocate_manifests(dst, expanded_root, expanded_sandbox)
+    relocate_manifests(dst, expanded_root, expanded_sandbox, opts[:realign_inference?])
 
     if MapSet.subset?(expected_app, deleted) do
       reused = length(Path.wildcard(Path.join([dst, "ebin", "*.beam"])))
@@ -388,13 +395,30 @@ defmodule Mutare.Sandbox.Seed do
   # pointing at the original dir, mix decides the build doesn't belong here and recompiles
   # everything. `File.write!` also restamps the manifest to "now" (>= the just-copied
   # sources), which is what makes the unchanged files non-stale and thus reused.
-  defp relocate_manifests(app_build, root, sandbox) do
+  # Which of the seedable apps had their `mix.exs` wrapped by `Mutare.Sandbox` (root plus each
+  # umbrella child — `Project.project_dirs/1`), and so will actually compile with inference off.
+  # Only those manifests may have their inference cache entry realigned: stamping an app we did
+  # not wrap invents a cache-key mismatch and cold-compiles it for nothing. The clauses mirror
+  # `expected_by_app/4` — an umbrella attributes by its declared apps, a lone seedable app is
+  # the root project, and any other shape never reaches here (that arm returns `nil`).
+  defp wrapped_apps(%Project{umbrella?: true, apps: apps}, _to_seed),
+    do: MapSet.new(apps, fn %{app: app} -> to_string(app) end)
+
+  defp wrapped_apps(_project, [{app, _src, _dst}]), do: MapSet.new([app])
+  defp wrapped_apps(_project, _to_seed), do: MapSet.new()
+
+  defp relocate_manifests(app_build, root, sandbox, realign_inference?) do
     for manifest <- Path.wildcard(Path.join([app_build, ".mix", "compile.{elixir,erlang}"])) do
       rewritten =
         manifest
         |> File.read!()
         |> :erlang.binary_to_term()
         |> rewrite_paths(root, sandbox)
+
+      rewritten =
+        if realign_inference? and Path.basename(manifest) == "compile.elixir",
+          do: CompilerOptions.seed_manifest(rewritten),
+          else: rewritten
 
       File.write!(manifest, :erlang.term_to_binary(rewritten))
     end

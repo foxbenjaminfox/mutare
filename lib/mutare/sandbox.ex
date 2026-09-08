@@ -11,6 +11,9 @@ defmodule Mutare.Sandbox do
   test bootstrap — halts itself if the Mutare process that spawned it dies,
   instead of surviving as an orphan. Everything injected is plain Erlang/Elixir
   with no dependency on Mutare, so the sandbox needs nothing added to its deps.
+  Sandbox `mix.exs` files also wrap `project/0` to disable signature inference
+  in the effective compiler options (`Mutare.Sandbox.CompilerOptions`), including
+  every umbrella child. The target's own project files remain untouched.
 
   One copy serves every concurrent mutant run: they share this sandbox and its
   `_build`, and Mix's build lock serialises only their `--no-compile` boot check —
@@ -38,7 +41,7 @@ defmodule Mutare.Sandbox do
   `Mutare.Sandbox.Command.Invocation`.
   """
 
-  alias Mutare.{Options, Schema}
+  alias Mutare.{Options, Project, Schema}
   alias Mutare.Coverage.Recorder
   alias Mutare.Run.Context
   alias Mutare.Sandbox.{CompilerOptions, Lock, Ownership, Paths, Seed}
@@ -96,17 +99,11 @@ defmodule Mutare.Sandbox do
   # otherwise irrelevant. Inert without `Invocation.owner_watch_env/0` (only
   # `Invocation.mix/4` sets it), so a manual run in a kept sandbox is unaffected.
   #
-  # The same "before the compilers run" property carries the other two snippets:
-  #
-  #   * type-signature inference off for the metamutant compile (a project-level
-  #     `elixirc_options` setting with no CLI/env form — the config prefix is the
-  #     one hook Mutare owns). Diagnostics-only, and pathological on
-  #     metamutant-shaped code; rationale and measurements live on `CompilerOptions`.
-  #   * the compile's wall-clock cap (`Invocation.compile_watcher_ast/0`) — the
-  #     same self-halt watcher as the per-mutant cap, armed by a dedicated env var
-  #     (`Invocation.compile_timeout_env/0`) that only the runner's compile
-  #     invocation sets, so every other sandbox boot evaluates it inert.
-  @infer_signatures_off Macro.to_string(CompilerOptions.infer_signatures_off_ast())
+  # The same "before the compilers run" property carries the compile's wall-clock
+  # cap (`Invocation.compile_watcher_ast/0`) — the same self-halt watcher as the
+  # per-mutant cap, armed by a dedicated env var (`Invocation.compile_timeout_env/0`)
+  # that only the runner's compile invocation sets, so every other sandbox boot
+  # evaluates it inert.
   @compile_watcher Macro.to_string(Invocation.compile_watcher_ast())
   @config_rel "config/config.exs"
   @config_bootstrap """
@@ -114,8 +111,6 @@ defmodule Mutare.Sandbox do
   #{@owner_watcher}
   # ---- injected by Mutare: wall-clock cap for the one metamutant compile -----
   #{@compile_watcher}
-  # ---- injected by Mutare: skip type-signature inference (diagnostics-only) --
-  #{@infer_signatures_off}
   # ---------------------------------------------------------------------------
   """
 
@@ -443,10 +438,35 @@ defmodule Mutare.Sandbox do
   # (`prepare/3`) `write_overrides/2`-es it over a fresh copy. Adding a generated file is one
   # edit here, automatically reaching both modes.
   defp override_files(root, %Schema{metamutants: metamutants}, project) do
-    metamutants
-    |> Map.merge(coverage_helper_files(root, project))
-    |> Map.merge(helper_files(root, project))
-    |> Map.merge(config_files(root))
+    overrides =
+      metamutants
+      |> Map.merge(coverage_helper_files(root, project))
+      |> Map.merge(helper_files(root, project))
+      |> Map.merge(config_files(root))
+      |> Map.merge(project_files(root, project))
+
+    # Wrap in place. Rebuilding the whole map would walk every metamutant entry to reach the
+    # handful of `mix.exs` ones.
+    overrides
+    |> Map.keys()
+    |> Enum.filter(&(Path.basename(&1) == "mix.exs"))
+    |> Enum.reduce(
+      overrides,
+      &Map.update!(&2, &1, fn source ->
+        CompilerOptions.project_source(source)
+      end)
+    )
+  end
+
+  # Root and real umbrella children, plus the generated support project's mix.exs
+  # already present in coverage_helper_files/2. Derived from the original project
+  # on every materialisation so retained sandboxes never stack wrappers.
+  defp project_files(root, project) do
+    for dir <- Project.project_dirs(project),
+        rel = if(dir == ".", do: "mix.exs", else: Path.join(dir, "mix.exs")),
+        {:ok, source} <- [File.read(Path.join(root, rel))],
+        into: %{},
+        do: {rel, source}
   end
 
   # The root config with the owner-death watcher prepended (see

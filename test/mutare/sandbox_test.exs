@@ -327,13 +327,8 @@ defmodule Mutare.SandboxTest do
       assert String.starts_with?(injected, "# ---- injected by Mutare: #{@owner_watch_comment}")
       assert injected =~ "config :demo, key: :value"
 
-      # The other two snippets riding the same "config runs before the compilers"
-      # property: type-signature inference off (diagnostics-only; pathological on
-      # metamutant-shaped code — `CompilerOptions.infer_signatures_off_ast/0`) and
-      # the compile's wall-clock cap (`Invocation.compile_watcher_ast/0`, armed
-      # only by the runner's compile invocation).
-      assert injected =~ "Code.put_compiler_option(:infer_signatures, false)"
-
+      # The compile's wall-clock cap rides the same early hook, armed only by
+      # the runner's compile invocation. Inference lives in project/0 instead.
       assert injected =~
                Macro.to_string(Mutare.Sandbox.Command.Invocation.compile_watcher_ast())
     end
@@ -984,6 +979,40 @@ defmodule Mutare.SandboxTest do
                capture_seed(project, schema, sandbox: sandbox)
     end
 
+    test "realigns the inference cache entry only for an app whose mix.exs was wrapped",
+         context do
+      project = context.project
+
+      # An umbrella child Mutare listed, and a seeded sibling it did not — the shape a `path:`
+      # dependency outside `deps/` takes in `_build`. Only the child's `mix.exs` is wrapped
+      # (`Project.project_dirs/1`), so only its manifest may be told inference is off; telling
+      # the sibling would invent a cache-key mismatch and cold-compile it for nothing.
+      put_app_beam(project, "child", "apps/child/lib/foo.ex", "Foo#{uniq()}")
+      put_app_beam(project, "child", "apps/child/lib/bar.ex", "Bar#{uniq()}")
+      put_app_beam(project, "sibling", "vendor/sibling/lib/sib.ex", "Sib#{uniq()}")
+      for app <- ~w(child sibling), do: put_elixir_manifest(project, app)
+
+      umbrella = %Mutare.Project{
+        umbrella?: true,
+        apps: [%{app: :child, dir: "apps/child"}],
+        mutate_scope: [%{app: :child, dir: "apps/child"}]
+      }
+
+      schema = %Schema{
+        metamutants: %{
+          "apps/child/lib/foo.ex" => "defmodule Foo do\n  def x, do: 2\nend\n"
+        }
+      }
+
+      sandbox = Path.join(context.base, "sandbox")
+
+      assert %{outcome: :seeded} =
+               capture_seed(project, schema, sandbox: sandbox, project: umbrella)
+
+      assert elixir_cache_key(sandbox, "child") == {[infer_signatures: false], ["lib"], false}
+      assert elixir_cache_key(sandbox, "sibling") == {[], ["lib"], false}
+    end
+
     test "reports :skipped when --no-seed-app-build opts out", context do
       project = context.project
       put_app_beam(project, "myapp", "lib/foo.ex", "Foo#{uniq()}")
@@ -1170,6 +1199,26 @@ defmodule Mutare.SandboxTest do
 
   # A stand-in compile manifest carrying absolute source `paths` (the only thing the
   # relocation rewrites); a plain term, since the rewrite is structure-agnostic.
+  # A manifest in the real Elixir 1.18/1.19 layout, so `CompilerOptions.seed_manifest/1`
+  # recognises it: element 5 is the compiler cache key whose options list carries inference.
+  defp put_elixir_manifest(project, app) do
+    mix_dir = Path.join([project, "_build/test/lib", app, ".mix"])
+    File.mkdir_p!(mix_dir)
+
+    manifest =
+      {29, %{}, %{}, %{}, [], {[], ["lib"], false}, Path.expand(project), %{}, 0, 0, {%{}, %{}}}
+
+    File.write!(Path.join(mix_dir, "compile.elixir"), :erlang.term_to_binary(manifest))
+  end
+
+  defp elixir_cache_key(root, app) do
+    [root, "_build/test/lib", app, ".mix/compile.elixir"]
+    |> Path.join()
+    |> File.read!()
+    |> :erlang.binary_to_term()
+    |> elem(5)
+  end
+
   defp put_app_manifest(project, app, paths) do
     mix_dir = Path.join([project, "_build/test/lib", app, ".mix"])
     File.mkdir_p!(mix_dir)

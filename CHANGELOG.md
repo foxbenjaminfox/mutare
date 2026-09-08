@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Signature inference stays disabled on Elixir 1.20.** Sandbox Mix projects now
+  return `infer_signatures: false` in their effective `elixirc_options`, including
+  umbrella children and projects with custom config paths. Mix can no longer
+  overwrite the earlier global setting with its default. Other compiler options
+  and the target checkout are preserved; subsequent baseline/probe boots use the
+  same setting.
+
 ### Changed
 
+- **Sandbox inference overrides explicit target options.** An explicit
+  `elixirc_options: [infer_signatures: true]` previously took precedence; the
+  sandbox now forces it to `false` so inference cannot stall the metamutant
+  compile. The target checkout and other compiler options remain unchanged.
 - **Smaller metamutants:** tupled cases record hosted coverage once and exclusion
   guards compress exact runs of mutant IDs. Candidate numbering and reported
   mutations remain unchanged.

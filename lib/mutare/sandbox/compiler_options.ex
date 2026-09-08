@@ -2,12 +2,11 @@ defmodule Mutare.Sandbox.CompilerOptions do
   @moduledoc """
   The switches that tune the **one** metamutant compile for speed.
 
-  Mutare compiles the metamutant exactly once before any mutant runs, so it can
-  afford to drop compile-time work that would be net-negative if paid per run —
-  and everything dropped here is *diagnostics-only*: the metamutant is a build
-  artifact whose warnings nobody reads, and none of it changes the compiled
-  code a mutant run executes. Three switches, one home (this module), three
-  delivery routes:
+  Mutare compiles the metamutant exactly once before any mutant runs. Inference
+  and verification feed diagnostics, so disabling them changes no runtime
+  behavior. The SSA alias optimization does affect generated code; measurements
+  found its compile cost bought no meaningful runtime benefit for the mutant
+  workload. Three switches, one home (this module), three delivery routes:
 
     * `compiler_env/0` — the `ERL_COMPILER_OPTIONS` entry `Mutare.Runner`
       applies to the single `mix compile` (the SSA alias pass off).
@@ -15,10 +14,14 @@ defmodule Mutare.Sandbox.CompilerOptions do
       invocation (`--no-verification`, Elixir ≥ 1.19: skips the
       `Module.ParallelChecker` verify pass — undefined-remote warnings and
       cross-module type checking).
-    * `infer_signatures_off_ast/0` — a snippet `Mutare.Sandbox` prefixes into
-      the sandbox `config/config.exs`, turning off type-signature *inference*
-      during module compilation (a project-level `elixirc_options` setting with
-      no CLI or env form, so it rides the config file Mutare already owns).
+    * `project_source/1` — wraps project modules declared in the sandbox's `mix.exs` so their
+      effective `elixirc_options` always disable type-signature *inference*.
+      This survives Mix's project cache and applies on every sandbox boot,
+      including umbrella children and projects with a custom config path.
+
+  `seed_manifest/1` reconciles the inference option in a transplanted Elixir
+  compile manifest with that wrapper. Without it, Elixir 1.18/1.19 sees changed
+  `elixirc_options` and discards every seeded app beam on the first compile.
 
   The last two exist because Elixir's type checker (≥ 1.18/1.19) is
   pathological on metamutant-shaped code: measured on phoenix_live_view
@@ -27,8 +30,9 @@ defmodule Mutare.Sandbox.CompilerOptions do
   on the metamutant compile".
 
   A per-mutant `mix test` never recompiles the lib (sources unchanged), so the
-  env and args carry nothing there; the config snippet does load on every boot
-  but only affects compilation, so it is equally inert.
+  env and args carry nothing there. The project option remains the same on later
+  baseline/probe boots, preventing inference configuration changes from making
+  Mix recheck the metamutant.
   """
 
   @erl_compiler_options_env "ERL_COMPILER_OPTIONS"
@@ -90,35 +94,170 @@ defmodule Mutare.Sandbox.CompilerOptions do
       else: []
   end
 
+  # Loaded once per sandbox VM, even when an umbrella loads many mix.exs files.
+  # The before-compile hook runs after the target's own hooks, so project/0 may
+  # itself be macro-generated. Only a module registered as a Mix project *that
+  # already defines* project/0 changes — `use Mix.Project` alone does not define
+  # it, and `defoverridable` on a missing function would abort the sandbox mix.exs
+  # rather than the target's own later failure. No Mutare dependency or
+  # undocumented Mix.ProjectStack API is needed.
+  @project_hook :mutare_sandbox_compiler_options
+  @project_bootstrap (quote do
+                        unless Code.ensure_loaded?(unquote(@project_hook)) do
+                          defmodule unquote(@project_hook) do
+                            defmacro __before_compile__(env) do
+                              if {Mix.Project, :__after_compile__} in Module.get_attribute(
+                                   env.module,
+                                   :after_compile
+                                 ) and Module.defines?(env.module, {:project, 0}) do
+                                quote do
+                                  defoverridable project: 0
+
+                                  def project do
+                                    project = super()
+
+                                    if :infer_signatures in Code.available_compiler_options() do
+                                      options =
+                                        Keyword.put(
+                                          project[:elixirc_options] || [],
+                                          :infer_signatures,
+                                          false
+                                        )
+
+                                      Keyword.put(project, :elixirc_options, options)
+                                    else
+                                      project
+                                    end
+                                  end
+                                end
+                              end
+                            end
+                          end
+                        end
+                      end)
+
   @doc """
-  AST that turns off type-signature inference for code compiled after it runs.
+  Override inference in the sandbox copy of a Mix project's effective options.
 
-  `Mutare.Sandbox` prefixes this into the sandbox `config/config.exs` (mix
-  evaluates config before the compilers run), because `:infer_signatures` is a
-  project-level `elixirc_options` setting with no CLI switch or env var — the
-  config file is the one hook Mutare already owns. Inference feeds only type
-  *diagnostics*; the compiled code is identical. On metamutant-shaped code it
-  is pathological (measured: five phoenix_live_view modules alone push a 14 s
-  compile past 80 minutes).
+  A `before_compile` hook wraps `project/0`, preserving its computed configuration
+  and every other compiler option. Only sandbox project files are rewritten;
+  the target's original options remain untouched. Unsupported Elixir versions
+  retain the original configuration.
 
-  The `rescue` makes it a no-op wherever the option doesn't exist
-  (`Code.put_compiler_option/2` raises on unknown options pre-1.18) — the same
-  safe-everywhere property `#{@metamutant_compile_opt}` gets from unknown
-  Erlang options being ignored. A target that sets `:infer_signatures`
-  explicitly in its own `elixirc_options` still wins: Mix applies project
-  options after config is loaded.
+  Project modules defined entirely in externally required files are outside this
+  source rewrite; their compiler options must currently disable inference themselves.
+  Quoted module definitions are left alone. Parsing and rendering are best-effort:
+  an unsupported project source is returned unchanged, so an unused umbrella child
+  or scaffolding template cannot abort sandbox preparation. The rendered result is
+  re-parsed before it is accepted — a `mix.exs` that Sourceror renders into something
+  Elixir will not read back would break the sandbox outright, where keeping inference
+  on merely makes its one compile slower.
+
+  Merely setting `Code.put_compiler_option(:infer_signatures, false)` before
+  compilation is insufficient: Elixir 1.20 Mix unconditionally derives inference
+  from `elixirc_options`, defaulting to true. Updating the current project stack
+  also fails when Mix pushes a cached umbrella project again. Wrapping the
+  project's return value covers both cases without interpreting its build code.
   """
-  @spec infer_signatures_off_ast() :: Macro.t()
-  def infer_signatures_off_ast do
-    quote do
-      try do
-        Code.put_compiler_option(:infer_signatures, false)
-      rescue
-        # Elixir < 1.18: the option doesn't exist (and inference doesn't either).
-        _ -> :ok
-      end
+  @spec project_source(String.t()) :: String.t()
+  def project_source(source) do
+    wrapped =
+      source
+      |> Sourceror.parse_string!()
+      |> wrap_project_modules()
+      |> Sourceror.to_string(Mutare.AST.render_opts())
+      |> then(&(Macro.to_string(@project_bootstrap) <> "\n\n" <> &1 <> "\n"))
+
+    # Renders are not guaranteed to round-trip. Accept only what Elixir can read back, since
+    # this file is the sandbox's entry point: an unparseable `mix.exs` fails every later
+    # command, while the original keeps a working sandbox that merely compiles with inference on.
+    Code.string_to_quoted!(wrapped)
+    wrapped
+  rescue
+    _ -> source
+  end
+
+  # A quote is data that can leave the sandbox, including through a macro defined
+  # in mix.exs. Never give its modules a dependency on our bootstrap.
+  defp wrap_project_modules({:quote, _meta, _args} = node), do: node
+
+  defp wrap_project_modules({form, meta, args}) when is_list(args) do
+    node = {wrap_project_modules(form), meta, Enum.map(args, &wrap_project_modules/1)}
+
+    case node do
+      {form, meta, [name, [{do_key, body}]]} ->
+        if module_definition?(form) and Mutare.AST.key_atom(do_key) == :do,
+          do: {form, meta, [name, [{do_key, append_project_hook(body)}]]},
+          else: node
+
+      _ ->
+        node
     end
   end
+
+  defp wrap_project_modules({left, right}),
+    do: {wrap_project_modules(left), wrap_project_modules(right)}
+
+  defp wrap_project_modules(list) when is_list(list), do: Enum.map(list, &wrap_project_modules/1)
+  defp wrap_project_modules(node), do: node
+
+  defp module_definition?(:defmodule), do: true
+
+  defp module_definition?({:., _, [{:__aliases__, _, parts}, :defmodule]}),
+    do: parts in [[:Kernel], [:"Elixir", :Kernel]]
+
+  defp module_definition?(_), do: false
+
+  defp append_project_hook(body) do
+    hook = Mutare.AST.literal(@project_hook)
+
+    quote do
+      unquote(body)
+      @before_compile unquote(hook)
+    end
+  end
+
+  @doc """
+  Align a freshly seeded Elixir manifest with the sandbox inference override.
+
+  Only the inference entry of the compiler cache key changes. Existing beams
+  remain valid with inference disabled; all other options, source paths and
+  dependency/configuration records retain their ordinary invalidation behavior.
+  This must only run when transplanting the target's build, never on a retained
+  sandbox build or a dependency build.
+
+  Mix's manifest is private: recognize the 1.18/1.19 layouts (versions 26–29),
+  and leave unknown layouts alone, allowing Mix to cold-compile if necessary.
+  Elixir 1.20 removes inference from this key and needs no adjustment here.
+  """
+  @spec seed_manifest(term()) :: term()
+  def seed_manifest(manifest)
+      when is_tuple(manifest) and tuple_size(manifest) in 9..11 and
+             elem(manifest, 0) in 26..29 and is_map(elem(manifest, 1)) and
+             is_map(elem(manifest, 2)) do
+    if :infer_signatures in Code.available_compiler_options() do
+      put_elem(manifest, 5, seed_cache_key(elem(manifest, 5)))
+    else
+      manifest
+    end
+  end
+
+  def seed_manifest(manifest), do: manifest
+
+  defp seed_cache_key({options, paths, optional?})
+       when is_list(options) and is_list(paths) and is_boolean(optional?),
+       do: {seed_options(options), paths, optional?}
+
+  defp seed_cache_key({options, paths, cwd, optional?})
+       when is_list(options) and is_list(paths) and is_binary(cwd) and is_boolean(optional?),
+       do: {seed_options(options), paths, cwd, optional?}
+
+  defp seed_cache_key(key), do: key
+
+  # Same ordering as project_source/1, including when Mix merges an xref
+  # :no_warn_undefined entry to the options before forming its cache key.
+  defp seed_options(options),
+    do: Keyword.put(options, :infer_signatures, false)
 
   @doc """
   Build the `ERL_COMPILER_OPTIONS` value for the metamutant compile: prepend

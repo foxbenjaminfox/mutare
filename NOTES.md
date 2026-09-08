@@ -8041,19 +8041,12 @@ Delivery is split by what each switch is (all three compile-tuning switches keep
     unknown switch makes `mix compile` abort — the opposite failure mode of
     `ERL_COMPILER_OPTIONS`, where unknown options are silently ignored. Pre-1.19 verify has
     no cross-module type checking, so nothing meaningful is forgone.
-  - `infer_signatures: false` is project-level `elixirc_options` with **no CLI or env form**,
-    so it rides the one hook Mutare already owns: the `config/config.exs` prefix (mix
-    evaluates config before the compilers run — the same property the owner-death watcher
-    uses). `CompilerOptions.infer_signatures_off_ast/0` is the snippet;
-    `Code.put_compiler_option/2` in a `try/rescue` makes it a no-op pre-1.18 (where the
-    option — and inference — don't exist). A target that sets `:infer_signatures` explicitly
-    in its own `elixirc_options` wins (Mix applies project options after config load) —
-    explicit user config beating our default is correct. Verified end-to-end on the stock
-    phoenix_live_view sandbox: config-prefix injection alone took the compile from 80+ min
-    (killed) to 21 s. Caveat inherited from the config injection: a project with a custom
-    `config_path:` never loads this file, so its compile keeps inference on — and can still
-    hit the cliff (the "no wall-clock cap on the one compile" deferred item above is the
-    matching guard).
+  - `infer_signatures: false` is project-level `elixirc_options` with **no CLI or env form**.
+    The original delivery used `Code.put_compiler_option/2` in the `config/config.exs`
+    prefix, which took the stock phoenix_live_view sandbox from 80+ min (killed) to 21 s.
+    This was superseded by the project wrapper below: Mix 1.20 overwrites the global
+    setting even without an explicit target override, and custom config paths never
+    loaded that prefix.
 
 Memory, the question that prompted the measurement, turned out secondary: peak RSS of the
 compile is base (~110 MB) + the few biggest generated modules (210–380 MB each above base;
@@ -8062,6 +8055,124 @@ floor-bounded by the single biggest module, so concurrency capping (`ELIXIR_ERL_
 `+S 2:2`) trims 23–51% of peak for 1.4–2.8× wall — a plausible future `--compile-workers`
 opt-in for memory-starved CI, not a default. `no_ssa_opt_alias` is memory-neutral (324 vs
 319 MB on the worst module). No memory work shipped; the numbers live here for when it bites.
+
+### Inference must be disabled in the effective sandbox project `[done]`
+
+Elixir 1.20.4's
+[`Mix.Tasks.Compile.Elixir`](https://github.com/elixir-lang/elixir/blob/v1.20.4/lib/mix/lib/mix/tasks/compile.elixir.ex)
+unconditionally reads inference from
+`elixirc_options`, defaults it to true, and supplies the result to the compiler. A
+global `Code.put_compiler_option(:infer_signatures, false)` during configuration therefore
+does not protect the metamutant. Observing that global setting immediately after the
+snippet runs cannot test the actual contract.
+
+`CompilerOptions.project_source/1` now appends a dependency-free `before_compile` hook
+to the sandbox's root and umbrella-child `mix.exs` modules. Only Mix project modules are
+wrapped: `project/0` calls its original implementation, preserves its computed options,
+and sets `infer_signatures: false` when the running Elixir supports it. The hook follows
+the target's own hooks, including one that generates `project/0`. Generated coverage
+support projects receive the same wrapper. The target checkout stays unchanged.
+
+This deliberately reverses the former precedence rule: an explicit target
+`infer_signatures: true` used to win over the config prefix. The sandbox now overrides
+that setting too, because inference on the generated metamutant can stall the one
+compile regardless of why the target enabled it. Other compiler options retain their
+target-defined values; the explicit/computed-options tests exercise this override.
+
+Why wrap the function instead of updating `Mix.ProjectStack` from config? Mix pushes
+cached umbrella project modules again without re-evaluating `mix.exs` or the root config;
+a stack-only override disappears at that point. A `project/0` wrapper also covers custom
+config paths without interpreting the target's configuration. Every baseline/probe boot
+sees the same inference setting, so it cannot initiate a recheck solely because that
+setting changed since the initial compile.
+
+Regression tests observe the setting inside a module compiled by real sandbox `mix
+compile`, then run baseline/probe boots and assert the compilation manifest stays
+unchanged. Explicit/computed compiler options, custom config paths, generated project
+functions, and cached umbrella children are covered as well. These tests passed on
+Elixir 1.19.5 / OTP 26 and Elixir 1.20.4 / OTP 27.3.4.13.
+
+The wrapper follows `defmodule` forms in `mix.exs` (including explicit
+`Kernel.defmodule` and keyword-`do:` bodies), stopping at quotes so exported templates
+never acquire a dependency on the sandbox bootstrap. The injected hook atom uses
+`AST.literal/1`: a bare quoted atom crashes the formatter in a keyword-`do:` body.
+Parsing and rendering are best-effort and return the original source on failure.
+Discovery includes unused umbrella directories and scaffolding templates; failing
+to optimize one must not make it required for sandbox preparation. An unusual project
+whose entire Mix project module comes from a
+separately required file does not receive the hook. Supporting that layout would require
+intercepting module creation or extending the overlay to external build sources; neither
+is inferred by evaluating the target's build code in Mutare's process.
+
+**The wrapper must agree with the transplanted build.** Elixir 1.18/1.19 includes
+`elixirc_options` in its incremental cache key. The target's manifest usually records
+`[]`; our wrapper returns `[infer_signatures: false]`. Relocating paths alone therefore
+discarded the entire app seed on the first sandbox compile, despite reporting reused
+beams. Tests that started with an empty build and checked only later boots missed it.
+`CompilerOptions.seed_manifest/1` now adjusts only that inference entry when `Seed`
+transplants an app's Elixir manifest. Disabling diagnostic inference leaves those
+original beams usable; every other cache-key component remains intact, so real option
+changes still force a rebuild. Retained sandbox builds and dependency builds never pass
+through this adjustment. Unlike path relocation, this reads a private Mix layout: it
+recognizes the 1.18/1.19 manifest versions and leaves unknown layouts alone, accepting a
+cold compile when necessary. Elixir 1.20 tracks inference separately from the cache key.
+Real-compile regressions precompile the target, select one source, and observe that
+untouched modules compile only in the target, including umbrella siblings. They also
+check explicit options plus xref exclusions, a changed `:docs` option, and subsequent
+baseline/probe boots.
+
+### The sandbox project wrapper and the seeded manifest must name the same apps `[done]`
+
+`CompilerOptions.project_source/1` only reaches the `mix.exs` files `Mutare.Sandbox` overlays,
+and those come from `Project.project_dirs/1` — the root, plus each umbrella child. Anything
+else in `_build/<env>/lib` that is not a dependency compiles with inference **on**: most
+concretely a `path:` dependency living outside `deps/`, which is seeded like an in-project app.
+
+Stamping such an app's transplanted manifest with `infer_signatures: false` is worse than not
+wrapping it. Mix computes the cache key from the app's *actual* effective options, sees a
+mismatch, and cold-compiles the whole app — so the app both hits the slow-compile cliff and
+loses its seeded beams. `Seed.wrapped_apps/2` therefore gates `seed_manifest/1` on the same
+set `project_dirs/1` produces, mirroring `expected_by_app/4`'s clause structure. Wrapper and
+stamp now derive from one list; if they ever diverge the failure is a wasted recompile, not a
+stale beam.
+
+**Not fixed, and older than this work:** `Project.umbrella_root?/1` requires a literal `apps/`
+directory, and `app_entry/1` hard-codes `Path.join("apps", name)`. An umbrella declaring
+`apps_path: "packages"` is not recognised as an umbrella at all — `resolve/2` falls through to
+`single_app/1`, discovery scans the root's (empty) `lib/`, and the run finds zero mutants and
+does nothing. That is a whole-pipeline gap, not a wrapper gap; wiring the wrapper to a layout
+the scanner cannot reach would only make it fail later. Fixing it means reading the declared
+`apps_path` value in `declares_apps_path?/1` (which today only checks the key *exists*) and
+threading it through app discovery, scoping, and umbrella test narrowing.
+
+### Interpreted module definitions `[experiment — no default change]`
+
+Elixir 1.20's `elixirc_options: [module_definition: :interpreted]` changes execution of
+module-definition code during compilation; defined functions still become ordinary BEAM
+code. The sandbox project wrapper preserves an explicit choice of this option. A gated
+integration test on Elixir 1.20.4 / OTP 27.3.4.13 runs a retained sandbox first with
+`:interpreted`, then with `:compiled`: both correctly attribute one compile-poisoning mutant,
+recover, and kill the two compile-safe mutants. A module records the effective mode during
+compilation, so the fallback is observed rather than assumed.
+
+A small compile-only experiment on that toolchain, 16 schedulers, used the pre-improvement
+`bench/compile_shapes.exs` case-100 metamutant (1,467,730 source bytes). Source generation was
+outside the timed interval; three alternating runs per mode used `mix compile --force
+--no-verification --profile time`, `MIX_ENV=test`, `MIX_DEBUG=1`, and
+`ERL_COMPILER_OPTIONS='[no_ssa_opt_alias,time]'`, with inference disabled in both projects.
+`/usr/bin/time` measured wall time, user+system CPU time, and peak RSS:
+
+| Module definitions | Median wall | Median CPU | Median peak RSS |
+| --- | ---: | ---: | ---: |
+| `:compiled` | 5.02 s | 8.92 s | 285,996 KiB |
+| `:interpreted` | 5.04 s | 8.96 s | 305,748 KiB |
+
+No compilation win on this generated shape, and about 6.9% more peak memory. This small
+synthetic experiment says nothing universal about large projects or other generated shapes;
+it does not justify a new default. Retain the explicit project opt-in, particularly given
+the interpreter's less precise error stacktraces and 20-argument limit for anonymous
+functions executed during module definition. Neither limit applies to ordinary defined
+functions in the resulting application.
 
 ### Wall-clock cap for the one metamutant compile `[done]`
 The deferred item above, built exactly as sketched there — made urgent by the type-checker
@@ -8073,8 +8184,8 @@ name each:
   - **The watcher** is the per-mutant timeout watcher verbatim (`Invocation.deadline_watcher/1`
     now builds both), armed by its own env var (`MUTARE_COMPILE_TIMEOUT`,
     `Invocation.compile_timeout_env/0`) and hosted in the `config/config.exs` prefix — the
-    same "config runs before the compilers" property the owner-death watcher and the
-    inference-off snippet use. A dedicated variable, not `MUTARE_TIMEOUT`, because the config
+    same "config runs before the compilers" property the owner-death watcher uses.
+    A dedicated variable, not `MUTARE_TIMEOUT`, because the config
     prefix is evaluated on *every* sandbox boot: only the runner's compile invocation sets it,
     so the baseline, the coverage probe, and every per-mutant `mix test` evaluate the watcher
     inert. It halts with the existing `Command.timeout_exit/0` (124) — same meaning,

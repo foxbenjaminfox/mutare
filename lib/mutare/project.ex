@@ -192,6 +192,18 @@ defmodule Mutare.Project do
     end
   end
 
+  @doc """
+  Root-relative directories that hold a Mix project file Mutare may rewrite in the sandbox.
+
+  The root, plus each umbrella child. `Mutare.Sandbox` wraps exactly these `mix.exs` files to
+  force `infer_signatures: false`, and `Mutare.Sandbox.Seed` realigns exactly the matching
+  apps' compile manifests — the two must name the same set, or an app compiles with inference
+  on while its transplanted manifest claims otherwise, and cold-compiles for nothing.
+  """
+  @spec project_dirs(t() | nil) :: [String.t()]
+  def project_dirs(%__MODULE__{umbrella?: true, apps: apps}), do: ["." | Enum.map(apps, & &1.dir)]
+  def project_dirs(_project), do: ["."]
+
   defp app_entry(name), do: %{app: String.to_atom(name), dir: Path.join("apps", name)}
   defp app_name(%{app: app}), do: to_string(app)
   defp app_dir?(path), do: File.regular?(Path.join(path, "mix.exs"))
