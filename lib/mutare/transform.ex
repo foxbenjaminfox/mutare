@@ -136,6 +136,9 @@ defmodule Mutare.Transform do
     * `Mutare.Transform.ReceiveClauseEmit` — per-clause receive delivery, preserving
       native mailbox order and one timeout evaluation; clause guards are shared with
       anonymous functions through `Mutare.Transform.ClauseVariants`.
+    * `Mutare.Transform.RescueEmit` — shares protected bodies across rescue mutants
+      when native handler dispatch can reuse an existing exception binding; other
+      shapes retain whole-try selection.
     * `Mutare.Transform.BindingEscapeEmit` — the tuple-export delivery for binding
       escaping `=` matches and known macros.
     * `Mutare.Transform.HostedEmit` — the selector-host delivery for hosted DSL
@@ -172,6 +175,7 @@ defmodule Mutare.Transform do
     Overlap,
     PipeEmit,
     Render,
+    RescueEmit,
     Result,
     Resolve,
     Scope,
@@ -1099,7 +1103,16 @@ defmodule Mutare.Transform do
   # shared with the collect walk via `Candidate.Delivery.gate/1` (see there for the policy).
   defp gate_candidates(candidates), do: Delivery.gate(candidates)
 
-  defp emit_site(node, candidates, ctx) do
+  defp emit_site({:try, _, [blocks]} = node, candidates, ctx) when is_list(blocks) do
+    case RescueEmit.emit(node, candidates, ctx) do
+      :fallback -> emit_selector_site(node, candidates, ctx)
+      result -> result
+    end
+  end
+
+  defp emit_site(node, candidates, ctx), do: emit_selector_site(node, candidates, ctx)
+
+  defp emit_selector_site(node, candidates, ctx) do
     {clauses, ctx} =
       SelectorEmit.claim_items(candidates, ctx, {&Delivery.site/4, &Delivery.line/1}, fn id,
                                                                                          candidate ->

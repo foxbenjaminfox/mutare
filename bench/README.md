@@ -26,6 +26,9 @@ on a subset, pass one or more **name prefixes** after the output directory:
 mix run bench/compile_shapes.exs /tmp/mutare-clauses fn receive rescue_
 mix run bench/compile_shapes.exs /tmp/mutare-ignore ignored
 mix run bench/compile_shapes.exs /tmp/mutare-bodies head_body-default-8x guard_body
+mix run bench/compile_shapes.exs /tmp/mutare-rescue \
+  head_body-isolated-8x guard_body-isolated-8x \
+  rescue_types-isolated-8x rescue_clauses-isolated-8x
 ```
 
 Prefixes are literal and combined with OR; `fn` selects both `fn-` and
@@ -50,8 +53,8 @@ included in the decision. `projects.tsv` records the configured set for every pr
 | `receive-*`, `receive_default-*` | 10 / 20 / 40 clauses | Per-clause receive delivery; unmatched messages, mailbox order, zero timeout |
 | `head_body-{isolated,default}-NxB` | 2 / 4 / 8 head literals × 10 / 40 / 160 body statements | Raw-body duplication from pattern mutations; isolated set is IntegerLiteral |
 | `guard_body-{isolated,default}-NxB` | Same grid, guard comparisons × body statements | Raw-body duplication from guard mutations; isolated set is Relational |
-| `rescue_types-{isolated,default}-NxB` | Same grid, exception types × body statements | Type-list narrowing copies an unchanged `try` body |
-| `rescue_clauses-{isolated,default}-NxB` | Same grid, rescue clauses × body statements | Clause removal copies an unchanged `try` body |
+| `rescue_types-{isolated,default}-NxB` | Same grid, exception types × body statements | Compare whole-`try` duplication with shared protected bodies for type-list narrowing; isolated set is RescueType |
+| `rescue_clauses-{isolated,default}-NxB` | Same grid, rescue clauses × body statements | Same comparison for rescue-clause removal; isolated set is RescueType |
 | `ignored-{arithmetic,default}-{0,50,100}` | Percentage of 1,000 functions ignored | Measure emission suppression against the same executable source |
 | `ignored-file`, `ignored-variant` | Whole-file / `arithmetic:-` directives | Completely suppressed files and selective variant suppression, with defaults |
 | `focused-{all,10,1}` | Selected mutant cap | Same 100-function source with different emission selections |
@@ -59,9 +62,19 @@ included in the decision. `projects.tsv` records the configured set for every pr
 
 Body grids vary the two dimensions independently; don't compare only their diagonal.
 Their bodies use sequential `x = x + 2` assignments, avoiding a simultaneous increase
-in expression nesting. Rescue fixtures exercise both success and handled failure,
-and include an `after` block. The smoke checks are useful controls for future
-rewrites, not substitutes for the transform's semantic regression suite.
+in expression nesting. Rescue smoke checks exercise success, every listed exception
+type, and an unhandled exception. Ordered messages from `do`, the rescue handler,
+and `after` check that the body executes once and cleanup executes exactly once,
+after handling or before propagation reaches the caller. These are baseline controls;
+a factoring change also needs mutant-level checks of exception handling and `after`
+semantics. The investigation and its remaining obligations live in NOTES.md,
+"Try/rescue: whole-construct duplication".
+
+The rescue grids use the same bound exception variable in every clause and have no
+`catch`, so they exercise the factoring path. Other rescue shapes retain whole-`try`
+delivery; the semantic tests cover those fallbacks. Factoring adds small handler-only
+tries while sharing the large protected body: total `try` count alone cannot measure
+this improvement. Compare source/AST growth as body size increases.
 
 ## Reading the output
 

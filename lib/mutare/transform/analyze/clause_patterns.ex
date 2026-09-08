@@ -478,7 +478,8 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # The `rescue` mutations: per-clause type-list narrowings (`Candidate.CasePattern`, each
   # `replacement` the whole `try` with one clause's list shrunk) plus whole-clause drops
   # (`Candidate.RescueDrop`, the `try` with one clause removed). Gated on
-  # `Mutare.Mutators.RescueType` being enabled.
+  # `Mutare.Mutators.RescueType` being enabled. RescueEmit shares the non-handler blocks
+  # of eligible tries; these full replacements also support ordinary selector fallback.
   def rescue_type_candidates(blocks, meta, mutators) do
     case Spec.find(mutators, Mutare.Mutators.RescueType) do
       nil -> []

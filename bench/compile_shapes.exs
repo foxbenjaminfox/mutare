@@ -205,7 +205,7 @@ defmodule Mutare.CompileShapes do
 
     write_file(root, "smoke.exs", """
     # Baseline only. Run after compilation with: mix run --no-compile smoke.exs
-    unless #{fixture.check}, do: raise("baseline fixture failed")
+    unless #{String.trim(fixture.check)}, do: raise("baseline fixture failed")
     """)
 
     files =
@@ -358,28 +358,67 @@ defmodule Mutare.CompileShapes do
 
   defp body_source(shape, count, size) when shape in [:rescue_types, :rescue_clauses] do
     types = Enum.take(@exceptions, count)
+    handler = "send(self(), {:compile_shape_rescue, e.__struct__}); {:rescued, e.__struct__}"
 
     rescue_clauses =
       case shape do
-        :rescue_types -> "e in [#{Enum.join(types, ", ")}] -> {:rescued, e.__struct__}"
-        :rescue_clauses -> Enum.map_join(types, "\n", &"e in #{&1} -> {:rescued, e.__struct__}")
+        :rescue_types -> "e in [#{Enum.join(types, ", ")}] -> #{handler}"
+        :rescue_clauses -> Enum.map_join(types, "\n", &"e in #{&1} -> #{handler}")
       end
 
     {"""
      defmodule CompileShape do
        def run(x, failure) do
          try do
+           send(self(), :compile_shape_do)
            if failure, do: raise(failure)
            #{body(size)}
          rescue
            #{rescue_clauses}
          after
-           Process.put(:compile_shape_after, :done)
+           send(self(), :compile_shape_after)
          end
        end
      end
-     """,
-     "CompileShape.run(20, nil) == #{20 + size * 2} and CompileShape.run(20, ArgumentError) == {:rescued, ArgumentError} and Process.get(:compile_shape_after) == :done"}
+     """, rescue_check(types, size)}
+  end
+
+  defp rescue_check(types, size) do
+    """
+    (
+      collect = fn collect, events ->
+        receive do
+          event -> collect.(collect, [event | events])
+        after
+          0 -> Enum.reverse(events)
+        end
+      end
+
+      cases = [
+        {nil, {:returned, #{20 + size * 2}}, [:compile_shape_do, :compile_shape_after]},
+        {ErlangError, {:raised, ErlangError}, [:compile_shape_do, :compile_shape_after]}
+        | for type <- [#{Enum.join(types, ", ")}] do
+            {type, {:returned, {:rescued, type}},
+             [:compile_shape_do, {:compile_shape_rescue, type}, :compile_shape_after]}
+          end
+      ]
+
+      Enum.each(cases, fn {failure, expected, expected_events} ->
+        result =
+          try do
+            {:returned, CompileShape.run(20, failure)}
+          rescue
+            e -> {:raised, e.__struct__}
+          end
+
+        events = collect.(collect, [])
+        unless {result, events} == {expected, expected_events} do
+          raise "rescue fixture failed for \#{inspect(failure)}: \#{inspect({result, events})}"
+        end
+      end)
+      true
+    )
+    """
   end
 
   defp body(size), do: Enum.join(List.duplicate("x = x + 2", size) ++ ["x"], "\n")

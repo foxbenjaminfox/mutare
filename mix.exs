@@ -31,6 +31,7 @@ defmodule Mutare.MixProject do
     Mutare.Transform.CaseClauseEmit
     Mutare.Transform.FnClauseEmit
     Mutare.Transform.ReceiveClauseEmit
+    Mutare.Transform.RescueEmit
     Mutare.Transform.ClauseVariants
     Mutare.Transform.ImportWitness
     Mutare.Transform.HostedEmit

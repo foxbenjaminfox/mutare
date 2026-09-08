@@ -486,8 +486,8 @@ defmodule Mutare.Transform.Analyze do
   # `try`: a runtime expression whose `rescue` clauses are special — they match on
   # *exception types* (`var in [A, B]` / `var` / `Type`), carry **no `when` guard**, and so
   # can't be dispatched per-clause the way `case` is. `Mutare.Mutators.RescueType` mutates them
-  # two ways, both delivered by the **whole-construct selector** (the whole `try` is wrapped,
-  # its mutant branch a copy of the `try` — sound, a rescue binding is body-local): it narrows a
+  # two ways, both represented as whole-try replacements (RescueEmit factors eligible
+  # bound-handler shapes; other shapes retain a whole-construct selector): it narrows a
   # `var in [A, B]` list by dropping one type (`Candidate.CasePattern`), and — for the idiomatic
   # multi-branch shape where each clause catches a single type and there is no list to narrow —
   # it drops a whole `rescue` clause (`Candidate.RescueDrop`, only when ≥2 clauses are present so
