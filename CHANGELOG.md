@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still reserves every ID and checks ignore directives; poisoned and ignored
   sites retain their cap positions. Changing selection can require recompiling
   a retained sandbox.
+- **Ignored mutants emit no code.** Ignore directives now suppress generated
+  branches before rendering, reducing compiler input and preventing ignored
+  replacements from poisoning the build. IDs, diagnostic sites, reasons, and
+  mutant-cap consumption are preserved; wholly withheld files keep their exact
+  original source.
 
 ## [0.1.2] - 2026-09-07
 

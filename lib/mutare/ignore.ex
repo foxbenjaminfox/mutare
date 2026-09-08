@@ -1,6 +1,6 @@
 defmodule Mutare.Ignore do
   @moduledoc """
-  Suppresses selected mutants with a source comment. Ignored mutants remain in the report but are excluded from the mutation score.
+  Suppresses selected mutants with a source comment. Ignored mutants remain in the report but are excluded from the mutation score. Their generated code is omitted from the metamutant, reducing compiler input and preventing their replacements from poisoning the build. They retain their IDs, reasons, and positions within `:max_mutants`.
 
   A trailing directive applies to its own line. A standalone directive applies to the next line of code, reading through any comment lines in between — so it works at either end of an explanatory comment block:
 

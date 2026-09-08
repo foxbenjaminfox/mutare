@@ -6,7 +6,8 @@ defmodule Mutare.Transform.Config do
   # later stage. Two roles share this struct because they share that lifetime:
   #
   #   * pass configuration — the recorded `file`, the resolved `mutators`, the
-  #     poison-recovery `skip_ids`, static selection `emit_ids`, and the `skip_lifting` MFA set;
+  #     poison-recovery `skip_ids`, static selection `emit_ids`, parsed ignore directives,
+  #     and the `skip_lifting` MFA set;
   #   * generated-name hygiene — the private-function `prefix` and salted variable names
   #     the lifting/selector machinery emits. `Mutare.Transform.Names` derives each from a scan
   #     of the source's own identifiers, so a generated name can never collide with one in scope.
@@ -20,6 +21,7 @@ defmodule Mutare.Transform.Config do
           mutators: [Mutare.Mutator.Spec.t()],
           skip_ids: MapSet.t(),
           emit_ids: MapSet.t(pos_integer()) | nil,
+          ignore_directives: Mutare.Ignore.Directives.t(),
           skip_lifting: MapSet.t(Mutare.Lifting.skip_entry()),
           warnings: boolean(),
           render_site_code: boolean(),
@@ -38,6 +40,8 @@ defmodule Mutare.Transform.Config do
             # Static run selection: reserve every id/site, but emit only these ids.
             # nil retains the unrestricted metamutant; distinct from poison skip_ids.
             emit_ids: nil,
+            # Match after Site construction so custom attribution and variant labels apply.
+            ignore_directives: %Mutare.Ignore.Directives{},
             skip_lifting: MapSet.new(),
             # Whether this pass prints advisory warnings (`Resolve`'s routing advisories and
             # `ModulePlan`'s lifting advisories). `true` for the scan/count pass; the render

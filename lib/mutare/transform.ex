@@ -41,14 +41,15 @@ defmodule Mutare.Transform do
        candidates. No ids are assigned yet.
     3. **Assign** — emission walks the plan and the annotated tree bottom-up and
        hands each candidate the next mutant id. Ids are assigned in post-order DFS
-       and the counter advances even for `:skip_ids`, so ids stay stable across
-       the poison-recovery rebuilds the runner relies on.
+       and the counter advances even for ignored, unselected, and `:skip_ids`
+       mutants. Ignore directives are matched against each recorded site's line,
+       family, and variant before deciding whether to emit its code.
     4. **Emit** — an in-place candidate becomes a tail-position selector `case`; a
        `FunctionPlan` becomes one private function (threading the active id as an
-       extra arg) behind a dispatcher, each mutant a single guarded clause.
+       extra arg) behind a dispatcher, each mutant a single guarded clause. Ignored,
+       unselected, and poisoned mutants retain their sites but emit no code.
     5. **Render** — annotations are stripped and the tree is rendered to source
-       (with a Sourceror keyword-block workaround); `# mutare:ignore` directives
-       (parsed by `Mutare.Ignore`) are applied to the recorded sites.
+       (with a Sourceror keyword-block workaround).
 
   Carrying the `Candidate.InPlace` in the node's *own* metadata is what lets
   emission find "this exact node" without a fragile `{line, column}` identity:
@@ -228,9 +229,9 @@ defmodule Mutare.Transform do
   @spec transform_string_with_sites(String.t(), keyword()) ::
           {String.t(), [Site.t()], pos_integer()}
   def transform_string_with_sites(source, opts \\ []) when is_binary(source) do
-    {transformed, ctx, parsed} = plan_and_emit(source, opts)
+    {transformed, ctx} = plan_and_emit(source, opts)
 
-    # Nothing delivered — every candidate was poisoned, statically unselected, or both — so the
+    # Nothing delivered — every candidate was ignored, poisoned, or statically unselected — so the
     # emitted tree *is* the parsed original: no selector, no coverage record, nothing for the
     # helper-xref attribute to silence. Hand back the source bytes rather than round-tripping
     # them through the renderer, which would reformat the file and make `Mutare.Sandbox`'s
@@ -240,17 +241,7 @@ defmodule Mutare.Transform do
         do: source,
         else: transformed |> silence_helper_xref() |> Render.to_source()
 
-    # Reuse the AST we just parsed — its comment metadata is intact (transform
-    # works on copies), so `Ignore` need not re-parse the source. A directive may
-    # be scoped to a mutator family *and variant label*, so the decision is per
-    # `{line, mutator, variant}`, not per line; a matching directive's reason rides
-    # along onto the site.
-    directives = Mutare.Ignore.directives_from_ast(parsed)
-    validate_ignore_qualifiers!(directives, ctx)
-
-    sites = Enum.map(Enum.reverse(ctx.claim.sites), &apply_ignore(&1, directives))
-
-    {metamutant, sites, ctx.claim.next_id}
+    {metamutant, Enum.reverse(ctx.claim.sites), ctx.claim.next_id}
   end
 
   @doc """
@@ -290,17 +281,7 @@ defmodule Mutare.Transform do
     # `Mutare.Site` per claim — only advancing the id and tallying — so the per-mutant `Sourceror`
     # render in `Mutare.Site` is skipped. The tally is the mutant count (drift-proof: same claim
     # path as a render; see `Mutare.Transform.ClaimState`).
-    {_transformed, ctx, parsed} = plan_and_emit(source, Keyword.put(opts, :sink, :count))
-
-    # Validate directives here too (region pairing + qualified `[family:label]` filters): a
-    # **zero-site** file is counted but never rendered (`transform_string/2` runs only for sited
-    # files in the two-phase build), so the count path is the only place its directives are seen —
-    # without this, a known family's bad label or a broken `-start`/`-end` pairing in such a file
-    # would silently downgrade to a soft `ineffective` warning (or less). The substring prefilter
-    # keeps the directive prewalk off every directive-free file; every scoped verb starts with
-    # `mutare:ignore`, so it admits them all.
-    if String.contains?(source, "mutare:ignore"),
-      do: validate_ignore_qualifiers!(Mutare.Ignore.directives_from_ast(parsed), ctx)
+    {_transformed, ctx} = plan_and_emit(source, Keyword.put(opts, :sink, :count))
 
     %{
       mutants: ClaimState.total(ctx.claim),
@@ -315,7 +296,7 @@ defmodule Mutare.Transform do
   @doc """
   Rebuild a source's sites with `original_code` and `mutated_code` populated.
 
-  This skips metamutant rendering and ignore application. It exists for deferred
+  This skips metamutant rendering. It exists for deferred
   diff rendering: a `mix mutare` scan can set `:render_site_code` to `false`,
   then `Mutare.Runner.Hydrate` can call this later for the few sites that need to
   be displayed.
@@ -332,7 +313,7 @@ defmodule Mutare.Transform do
   def render_sites(source, opts \\ []) when is_binary(source) do
     # Report-time re-derivation of an already-scanned source: advisory warnings printed once
     # at scan time would repeat here, so they are always off.
-    {_transformed, ctx, _parsed} =
+    {_transformed, ctx} =
       plan_and_emit(
         source,
         opts |> Keyword.put(:render_site_code, true) |> Keyword.put(:warnings, false)
@@ -361,8 +342,7 @@ defmodule Mutare.Transform do
 
   # The shared analyze → plan → emit pipeline, stopping *before* `Render.to_source/1`.
   # Returns the id-assigned (but unrendered) metamutant tree, the final `ctx` (whose `claim`
-  # carries `next_id` and the accumulated, still-reversed sites), and the pristine parsed AST
-  # (for the comment-based ignore scan). `transform_string/2` renders it and applies ignores;
+  # carries `next_id` and the accumulated, still-reversed sites). `transform_string/2` renders it;
   # `count_string/2` reads only the claim tally. Rendering is the dominant per-file cost (see
   # NOTES "Scan is transform-bound"), so splitting it out is what makes the count phase cheap;
   # the `:count` sink (carried on `ctx.claim`) makes it cheaper still by skipping per-mutant
@@ -374,8 +354,18 @@ defmodule Mutare.Transform do
     # super-forwarding closure variable, and the hoisted pipe-stage closure variable
     # (see `Mutare.Transform.Names`).
     names = Names.generated_names(parsed)
-    config = build_config(opts, names)
+    # Reuse the pristine parse for comment directives. Keep the comment walk off directive-free
+    # files; matching is deferred until each Site has its final attribution and variant labels.
+    directives =
+      if String.contains?(source, "mutare:ignore"),
+        do: Mutare.Ignore.directives_from_ast(parsed),
+        else: %Mutare.Ignore.Directives{}
+
+    config = build_config(opts, names, directives)
     ctx = build_ctx(config, opts)
+
+    # Validate in both sinks, even for zero-site files (which Schema counts but never renders).
+    validate_ignore_qualifiers!(directives, ctx)
 
     # Non-mutating extensions implement `Mutare.CallRouting`, `Mutare.UseExpansion`, or both:
     # routes extend the registry below and `expand_use/3` overrides `use`-expansion. They make the built-in
@@ -415,9 +405,7 @@ defmodule Mutare.Transform do
 
     annotated = annotate_tree(parsed, opts, extensions, macros, marks)
     ctx = record_config_matches(ctx, annotated, macros)
-    {transformed, ctx} = transform_node(annotated, ctx)
-
-    {transformed, ctx, parsed}
+    transform_node(annotated, ctx)
   end
 
   # The count pass's side channel for the ineffective-configuration diagnostic: which route keys
@@ -441,12 +429,13 @@ defmodule Mutare.Transform do
   # idempotent on specs. A skipped id's site is still recorded (`poisoned: true`, for the
   # denominator and id stability) but emits no selector/copy, so the metamutant compiles.
   # `:skip_lifting` is a user-facing compatibility escape hatch keyed by fully-qualified MFA.
-  defp build_config(opts, names) do
+  defp build_config(opts, names, directives) do
     %Config{
       file: Keyword.get(opts, :file, "nofile"),
       mutators: opts |> Keyword.get(:mutators, @default_mutators) |> Mutare.Mutators.resolve(),
       skip_ids: Keyword.get(opts, :skip_ids, MapSet.new()),
       emit_ids: Keyword.get(opts, :emit_ids),
+      ignore_directives: directives,
       skip_lifting:
         opts |> Keyword.get(:skip_lifting, MapSet.new()) |> Lifting.validate_skip_lifting!(),
       # Default `true`: advisory warnings print once, at scan/count time. The schema's render
@@ -517,18 +506,6 @@ defmodule Mutare.Transform do
       marks: marks
     )
     |> UnitReturns.annotate()
-  end
-
-  # Mark a site ignored (and record the reason) when a `# mutare:ignore` directive
-  # on its line — or a scoped `ignore-file`/`ignore-start` region covering it —
-  # admits its mutator *and* variant. A bare `[family]`/`:all` directive admits any
-  # variant; a qualified `[family:label]` admits only the matching mutant (the
-  # site's mutator-declared `variant` label). Untouched sites pass through.
-  defp apply_ignore(site, directives) do
-    case Mutare.Ignore.directive_for(directives, site.line, site.mutator, site.variant) do
-      nil -> site
-      %{reason: reason} -> %{site | ignored: true, ignore_reason: reason}
-    end
   end
 
   # Prepend `@compile {:no_warn_undefined, {:mutare_cov, :hit, 1}}` to every module

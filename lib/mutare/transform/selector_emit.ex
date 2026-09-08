@@ -12,7 +12,7 @@ defmodule Mutare.Transform.SelectorEmit do
   @doc """
   Claim an id per item, record its site, and collect one artifact per live mutant.
 
-  Poison-skipped ids still advance and still record a poisoned site; they simply emit no artifact.
+  Ignored, unselected, and poison-skipped ids still advance and record a site, but emit no artifact.
 
   `site_fns` is the `{site_fn, line_fn}` pair `Mutare.Transform.ClaimState` needs: one builds
   the recorded `Mutare.Site`, the other answers only *where* it would be recorded, for the count
@@ -77,19 +77,16 @@ defmodule Mutare.Transform.SelectorEmit do
   end
 
   # The id/site/sink mechanics live on `Mutare.Transform.ClaimState` (which owns that state);
-  # here we only read the pass config the claim consults (`file`/`skip_ids`) and thread the
-  # updated `claim` back onto `ctx`. The render vs. count sink branch is `ClaimState.claim/8`.
+  # here we pass the config it consults and thread the updated `claim` back onto `ctx`.
+  # The render vs. count sink branch is `ClaimState.claim/5`.
   defp claim_item(%Ctx{config: config, claim: claim} = ctx, item, site_fns, artifact_fn) do
     {artifacts, claim} =
       ClaimState.claim(
         claim,
-        config.file,
-        config.skip_ids,
+        config,
         item,
         site_fns,
-        artifact_fn,
-        {config.render_site_code, config.summarize_sites},
-        config.emit_ids
+        artifact_fn
       )
 
     {artifacts, %{ctx | claim: claim}}

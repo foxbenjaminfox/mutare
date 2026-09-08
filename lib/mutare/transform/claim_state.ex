@@ -27,7 +27,8 @@ defmodule Mutare.Transform.ClaimState do
   #     `{render_code?, summary?}` flags threaded to `site_fn` decide which diff text the site
   #     carries — the `Sourceror` `*_code` (deferred for a `mix mutare` scan) and/or the cheap
   #     `Macro` live `summary` (off under `--quiet`); see `Mutare.Transform.Config`. Either way a
-  #     `Site` is built and retained. Statically unselected ids also emit no artifact;
+  #     `Site` is built and retained. Ignored sites keep their reason and emit no artifact.
+  #     Statically unselected ids also emit no artifact;
   #     their diagnostic sites stay unpoisoned and carry no rendered diff text.
   #     The `{site_fn, line_fn}` pair a caller passes covers both needs: `site_fn` builds the
   #     recorded `Site`, `line_fn` answers *where* it would be recorded without building one.
@@ -41,9 +42,10 @@ defmodule Mutare.Transform.ClaimState do
   #     `Site` — and never invokes a producing mutator's `variant/2` for a position it is only
   #     locating.
   #
-  # `claim/8` is the one place the two sinks diverge; everything upstream is sink-agnostic.
+  # `claim/5` is the one place the two sinks diverge; everything upstream is sink-agnostic.
 
   alias Mutare.Site
+  alias Mutare.Transform.Config
 
   @type sink :: :render | :count
 
@@ -79,36 +81,32 @@ defmodule Mutare.Transform.ClaimState do
   @doc """
   Claim the next id for `item`, returning `{artifacts, claim}`.
 
-  Both sinks advance `next_id` and emit the live artifact (so the emitted tree, and hence the
-  set of downstream claims, is identical); they differ only in what they retain:
+  Both sinks advance `next_id` for every candidate:
 
     * `:count` — bump the tally; build no `Site`, retain none, ignore `skip_ids` (a skipped id
-      still advances the counter, so the count is independent of poison recovery).
+      still advances the counter, so the count is independent of poison recovery),
+      `emit_ids`, and ignore directives. Emit every artifact without matching ignores or
+      invoking variant callbacks.
     * `:render` — build a `Site` via `site_fn` and accumulate it; a `skip_ids` id records a
       poisoned site but emits no artifact. An id outside `emit_ids` also emits no
-      artifact, but its site remains unpoisoned for directive diagnostics.
+      artifact, but its site remains unpoisoned for directive diagnostics. Match ignores on
+      the constructed Site and retain its reason, withholding the artifact when ignored.
   """
   @spec claim(
           t(),
-          String.t(),
-          MapSet.t(),
+          Config.t(),
           item,
           {(pos_integer(), item, String.t(), {boolean(), boolean()} -> Site.t()),
            (item -> pos_integer() | nil)},
-          (pos_integer(), item -> artifact),
-          {boolean(), boolean()},
-          MapSet.t(pos_integer()) | nil
+          (pos_integer(), item -> artifact)
         ) :: {[artifact], t()}
         when item: term(), artifact: term()
   def claim(
         %__MODULE__{sink: :count} = claim,
-        _file,
-        _skip_ids,
+        _config,
         item,
         {_site_fn, line_fn},
-        artifact_fn,
-        _render_flags,
-        _emit_ids
+        artifact_fn
       ) do
     id = claim.next_id
     claim = collect_selected_id(claim, id, item, line_fn)
@@ -119,29 +117,43 @@ defmodule Mutare.Transform.ClaimState do
 
   def claim(
         %__MODULE__{sink: :render} = claim,
-        file,
-        skip_ids,
+        %Config{} = config,
         item,
         {site_fn, _line_fn},
-        artifact_fn,
-        render_flags,
-        emit_ids
+        artifact_fn
       ) do
     id = claim.next_id
-    selected? = is_nil(emit_ids) or MapSet.member?(emit_ids, id)
-    site = site_fn.(id, item, file, if(selected?, do: render_flags, else: {false, false}))
+    selected? = is_nil(config.emit_ids) or MapSet.member?(config.emit_ids, id)
+
+    flags =
+      if selected?, do: {config.render_site_code, config.summarize_sites}, else: {false, false}
+
+    site =
+      id
+      |> site_fn.(item, config.file, flags)
+      |> apply_ignore(config.ignore_directives)
+
     claim = %{claim | next_id: id + 1}
 
     cond do
-      id in skip_ids ->
+      id in config.skip_ids ->
         {[], %{claim | sites: [poison(site) | claim.sites]}}
 
-      selected? ->
+      selected? and not site.ignored ->
         {[artifact_fn.(id, item)],
          %{claim | sites: [site | claim.sites], emitted: claim.emitted + 1}}
 
       true ->
         {[], %{claim | sites: [site | claim.sites]}}
+    end
+  end
+
+  # Match the final report location and producing family's labels, including hosted/custom
+  # attribution. Apply even to unselected and poisoned sites so diagnostics and reasons survive.
+  defp apply_ignore(site, directives) do
+    case Mutare.Ignore.directive_for(directives, site.line, site.mutator, site.variant) do
+      nil -> site
+      %{reason: reason} -> %{site | ignored: true, ignore_reason: reason}
     end
   end
 

@@ -75,7 +75,7 @@ One observable difference is worth knowing: a suite that is green under plain `m
 - Umbrella-aware — target one app, several, or the whole workspace.
 - CI-friendly — `--since <ref>` to scope to changed lines, score/coverage/infra gates, machine-readable reports, and a kept sandbox (on by default; `--sandbox <path>` to point it at a CI cache) so a re-run recompiles only what changed.
 
-Suppress a known-equivalent mutant with a comment — a trailing comment marks its line as ignored, and a standalone comment applies to the next line. Ignored mutants are excluded from the score.
+Suppress a known-equivalent mutant with a comment — a trailing comment marks its line as ignored, and a standalone comment applies to the next line. Ignored mutants are excluded from the score and their generated code is omitted from the metamutant. They retain their report entries and positions within `--max-mutants`.
 
 ```elixir
 def discounted(amount, percent), do: amount - amount * percent / 100  # mutare:ignore

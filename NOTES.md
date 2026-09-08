@@ -183,9 +183,9 @@ multi-file failure still yields one culprit per error. `Mix.Tasks.Mutare`'s
 `:compile_failed` formatter leads with that hint, then the raw compiler error. The pattern lives
 in `Hint`, not with `Sandbox.Command.Output`'s verdict-forming patterns: it's read only for human remediation,
 never to form a verdict. The `HintTest` unit-tests the parsing; a `:runner` poison test bridges
-to the *real* compiler output (so a `expanding macro:` format drift is caught). Note `:skip` is
-the only fix — `# mutare:ignore` is applied *after* rendering, so the selector is still spliced
-and the compile still fails.
+to the *real* compiler output (so a `expanding macro:` format drift is caught). At the time,
+`:skip` was the only fix: ignores applied after rendering. Ignores now withhold generated code
+too; see "Ignored mutants reserve IDs but emit no code" below.
 
 ### First-run UX on unknown DSLs: narrate recovery, suggest routes, `--check` preflight `[done]`
 Aiming Mutare at a macro-heavy project it doesn't recognise (Absinthe, NimbleParsec, an
@@ -2318,8 +2318,9 @@ literals). Two failures **compound**: (1) Gettext's `__using__` registers its ba
 pre-pass expands under (the `CallerMutatingUsing` story above), so in-process expansion harvests *nothing*
 — `import Gettext.Macros` never becomes visible, the bare `gettext` calls never resolve; and (2) even with
 the import visible, a registered `{Gettext.Macros, :gettext, :skip}` only fires once the call **resolves**
-to that module, and `# mutare:ignore` can't save us either (it's applied *after* render, so it can't stop
-the selector splice that poisons). So the user *wants* to mark the macros `:skip` but **can't make the
+to that module, and at the time `# mutare:ignore` applied after render and could not stop the
+selector splice that poisons (it now can; see "Ignored mutants reserve IDs but emit no code").
+So the user *wants* to mark the macros `:skip` but **can't make the
 registration take effect** — the resolution it keys on depends on the very expansion that failed. Deadlock.
 
 **Why this is an extension, not a core special-case.** The fix has to (a) supply the `import` the failing
@@ -6331,9 +6332,9 @@ no_coverage − ignored)`), surfaced in the summary. Parsed from Sourceror's
 comment metadata (`Mutare.Ignore`), not a raw-text scan — each comment's
 `previous_eol_count` (`0` ⇒ trailing, `≥ 1` ⇒ standalone) drives the
 classification, and a literal `"# mutare:ignore"` *string* is never mistaken for
-a directive (the old text scan accepted it). It still *generates* the (unused)
-selector for an ignored mutant, so it does **not** rescue a compile-poisoning
-mutant — that's the compile-poisoning pre-filter's job, not ignore's.
+a directive (the old text scan accepted it). Originally it still generated the unused
+selector and could not rescue a compile-poisoning mutant. That limitation is resolved;
+see "Ignored mutants reserve IDs but emit no code" below.
 
 **Granular ignores + reasons (done).** The directive grew two optional parts
 after the keyword (a `[family, …]` filter, then free-text), so `Mutare.Ignore`
@@ -9241,7 +9242,7 @@ any diff text. The prefix-sum step then applies line selection followed by the g
 cap and passes `emit_ids` to emission. Unrestricted scans keep the tally-only count path.
 
 `ClaimState` advances every ID and retains every diagnostic Site, but creates artifacts
-only for selected, non-poisoned IDs. Unselected sites are **not poisoned**; their diffs
+only for selected, non-poisoned IDs (also excluding ignored IDs now; see below). Unselected sites are **not poisoned**; their diffs
 are not rendered and they disappear from the final report slice after directive checks.
 Consequently a focused run no longer pays to compile a poisoning mutation on an
 unselected line. Ignored and poisoned sites still consume cap positions: the old
@@ -9300,6 +9301,34 @@ the order they confused the first analysis:
 `worth_seeding?/2` had to change for point 3 to pay off: a zero *changed*-metamutant count is
 now the best case for seeding (nothing recompiles), where it used to decline and cold-compile
 the app.
+
+### Ignored mutants reserve IDs but emit no code `[done]`
+
+Ignore directives are parsed from the original AST before emission, then matched in
+`ClaimState` after each Site is constructed. That is the first shared point with the
+final report location, producing family, and variant labels, including hosted fragments
+and custom attribution. Ignored sites retain their IDs, reasons, diff fields, and cap
+positions, but their artifact builder is never called. Selectors, coverage records,
+lifted gates, and exclusion guards therefore contain only emitted mutants. An entirely
+withheld file returns its original source bytes, allowing app-build seeding to reuse it.
+
+The count sink still constructs no Sites and invokes no `variant/2` callbacks. It counts
+every candidate, including ignored ones, so cross-file ID ranges and cap consumption
+stay unchanged. Scope/qualifier validation runs before either sink, including for
+zero-site files. Unselected and poison-skipped sites also receive their ignore reason,
+preserving directive diagnostics and the existing combined ignored/poisoned flags.
+Report-time site hydration uses the same claim path.
+
+The motivating pre-implementation experiment used `emit_ids` on a synthetic
+1,000-function fixture with half its mutants ignored: generated source fell from
+399 KB to 221 KB. Three alternating forced compiles on Elixir 1.19.5 / OTP 26 gave
+median wall time 2.84 s → 2.26 s (about 20% faster), with 25% less peak RSS. Those are
+fixture-specific measurements; the payoff depends on how many mutants a project ignores.
+
+A source-volume check of the implementation with 1,000 `x + 2` functions, arithmetic
+mutations only, and half carrying trailing ignores retained IDs 1..1,000 and reduced
+406,761 bytes to 228,865 bytes (43.7%). The compile timings above come from the motivating
+`emit_ids` experiment; this check did not remeasure compilation.
 
 ### Raw-body outlining and runtime identity namespaces `[deferred]`
 

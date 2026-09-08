@@ -276,13 +276,19 @@ defmodule Mutare.SchemaTest do
     end
     """)
 
+    write(root, "lib/b.ex", "defmodule AfterIgnored do\n  def f(x), do: x + 1\nend\n")
+
     opts = [mutators: @probe, max_mutants: 1]
     full = Schema.build(root, mutators: @probe)
     focused = Schema.build(root, opts)
+    assert Enum.map(full.sites, & &1.id) == [1, 2, 3, 4]
+    assert emitted_ids(full) == [3, 4]
+    assert focused.start_ids == full.start_ids
     assert focused.sites == Enum.take(full.sites, 1)
     assert [%{ignored: true, id: id}] = focused.sites
     assert focused.ineffective_ignores == []
-    assert emitted_ids(focused) == [id]
+    assert emitted_ids(focused) == []
+    assert focused.metamutants == full.sources
 
     rebuilt = Schema.rebuild(focused, root, opts, MapSet.new([id]))
     assert [%{id: ^id, ignored: true, poisoned: true}] = rebuilt.sites

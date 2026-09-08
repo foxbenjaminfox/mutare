@@ -166,9 +166,9 @@ defmodule Mutare.Schema do
   `:max_mutants` then caps those sites in source order. Both filters are applied
   here so poison recovery can rebuild from the same inputs and still return the
   same visible slice. Every candidate reserves its id, including skipped ids,
-  but only selected, non-poisoned candidates emit code. Poisoned and ignored
+  but only selected candidates that are neither ignored nor poisoned emit code. Poisoned and ignored
   sites still occupy their places inside the cap, as they do in the report.
-  Entirely unselected files retain their exact original source. Changing selection
+  Files with no emitted mutants retain their exact original source. Changing selection
   can therefore change the metamutant and invalidate a retained sandbox's build.
   """
   @spec from_files([Path.t()], Path.t(), Context.t() | Options.t() | keyword(), MapSet.t()) :: t()
