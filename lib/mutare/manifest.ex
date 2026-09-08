@@ -426,16 +426,21 @@ defmodule Mutare.Manifest do
 
   defp mutant_id(_, _), do: nil
 
-  # Find a `<var> === <id>` gate anywhere in a guard, returning `<id>`. Only the
-  # gate's `===` against the dispatch variable `var` matches — a source guard's own
-  # `===` (LHS some other var) is skipped, and the originals' `!==` exclusions never
-  # match — so a clause is a mutant iff this finds an id. The first clause pins the
-  # LHS atom to `var` by repeating the binding name in the head (an equality match),
-  # so a mismatching `===` falls through to the recursive descent rather than matching.
-  defp gate_id({:===, _meta, [{var, _, _}, id_node]}, var), do: literal_int(id_node)
-
-  defp gate_id({_form, _meta, args}, var) when is_list(args),
-    do: Enum.find_value(args, &gate_id(&1, var))
+  # Find a `<var> === <id>` gate anywhere in a guard, returning `<id>`. `Transform.GuardBuild`
+  # emits it as the explicit `:erlang."=:="/2` call no target import can redirect, so that is
+  # the form recognised here — the two must move together. Only a gate against the dispatch
+  # variable `var` matches: a source guard's own `===` (LHS some other var) is skipped, and the
+  # originals' `=/=` exclusions never match, so a clause is a mutant iff this finds an id. The
+  # first clause pins the LHS atom to `var` by repeating the binding name in the head (an
+  # equality match), so a mismatching gate falls through to the recursive descent instead.
+  defp gate_id({_form, _meta, args} = node, var) when is_list(args) do
+    with {:ok, [{^var, _, _}, id_node]} <- AST.erlang_call_args(node, :"=:="),
+         id when is_integer(id) <- literal_int(id_node) do
+      id
+    else
+      _ -> Enum.find_value(args, &gate_id(&1, var))
+    end
+  end
 
   defp gate_id(list, var) when is_list(list), do: Enum.find_value(list, &gate_id(&1, var))
   defp gate_id({left, right}, var), do: gate_id(left, var) || gate_id(right, var)

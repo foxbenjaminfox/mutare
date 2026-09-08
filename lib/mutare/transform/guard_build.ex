@@ -6,6 +6,11 @@ defmodule Mutare.Transform.GuardBuild do
   # tuple-the-scrutinee path in `Mutare.Transform`. Pure AST builders with no `Ctx`: each
   # takes the per-file dispatch variable (`var`) and ids and returns a guard expression.
   #
+  # Every operator this module generates is an explicit `:erlang` call (`Mutare.AST.erlang_call/2`)
+  # — the gate, the exclusions, and the conjunctions that join them — so a target that narrows or
+  # replaces `Kernel`'s imports cannot change what a generated guard means. `Mutare.Manifest`
+  # recognises the gate in that form; the two must move together.
+  #
   # `var` is the (possibly salted) dispatch-variable name; `Recorder.catch_all_pattern/1`
   # renders it as the `mutare_active` node both the gate and the recorder read. Ids are
   # rendered with `AST.literal/1` (a clean-meta `{:__block__, [], [id]}`): a *bare* integer
@@ -17,7 +22,8 @@ defmodule Mutare.Transform.GuardBuild do
 
   @doc "The `<var> === <id>` activation gate for a mutant clause."
   @spec gate(non_neg_integer(), atom()) :: Macro.t()
-  def gate(id, var), do: {:===, [], [Recorder.catch_all_pattern(var), AST.literal(id)]}
+  def gate(id, var),
+    do: erlang(:"=:=", [Recorder.catch_all_pattern(var), AST.literal(id)])
 
   @doc """
   AND `gate` into a guard expression, distributing over a top-level `when` (`a when b` is the
@@ -30,7 +36,7 @@ defmodule Mutare.Transform.GuardBuild do
   def and_into(gate, {:when, meta, alts}),
     do: {:when, meta, Enum.map(alts, &and_into(gate, &1))}
 
-  def and_into(gate, expr), do: {:and, [], [gate, expr]}
+  def and_into(gate, expr), do: both(gate, expr)
 
   @doc """
   Collapse a clause's guard list (`[]` or a single expr; multiple is a defensive `and`-fold)
@@ -39,19 +45,71 @@ defmodule Mutare.Transform.GuardBuild do
   @spec combine([Macro.t()]) :: Macro.t() | nil
   def combine([]), do: nil
   def combine([guard]), do: guard
-  def combine([g | rest]), do: Enum.reduce(rest, g, &{:and, [], [&2, &1]})
+  def combine([g | rest]), do: Enum.reduce(rest, g, &both(&2, &1))
 
   @doc """
-  `<var> !== id1 and <var> !== id2 …` (chained `!==`, not `not in [list]` — a bare
-  small-integer list can render as a charlist). `nil` for no ids.
+  Exclude exactly the supplied integer ids, preserving holes (including poison-skipped ids).
+
+  Consecutive runs of seven or more become `<var> < first or <var> > last`; shorter runs
+  retain strict `!==` comparisons. One shared non-integer escape preserves strict inequality
+  for floats and every other term. Exclusion operators use explicit Erlang calls so a target's
+  displaced Kernel imports cannot change them. Seven saves source AST nodes even after that
+  qualification and the escape. Conjunctions are balanced so scattered ids do not produce a left-deep guard.
+  `nil` for no ids. No literal id lists are emitted (small lists can render as charlists).
   """
   @spec exclusion([non_neg_integer()], atom()) :: Macro.t() | nil
   def exclusion([], _var), do: nil
 
   def exclusion(ids, var) do
-    ids
-    |> Enum.map(&{:!==, [], [Recorder.catch_all_pattern(var), AST.literal(&1)]})
-    |> Enum.reduce(&{:and, [], [&2, &1]})
+    active = Recorder.catch_all_pattern(var)
+    runs = ids |> Enum.sort() |> Enum.dedup() |> consecutive_runs()
+
+    expressions =
+      Enum.flat_map(runs, fn {first, last} ->
+        if last - first >= 6 do
+          [
+            either(
+              erlang(:<, [active, AST.literal(first)]),
+              erlang(:>, [active, AST.literal(last)])
+            )
+          ]
+        else
+          Enum.map(first..last, &erlang(:"=/=", [active, AST.literal(&1)]))
+        end
+      end)
+
+    excluded = balanced_and(expressions)
+
+    if Enum.any?(runs, fn {first, last} -> last - first >= 6 end) do
+      either(erlang(:not, [erlang(:is_integer, [active])]), excluded)
+    else
+      excluded
+    end
+  end
+
+  defp either(left, right), do: erlang(:orelse, [left, right])
+  defp both(left, right), do: erlang(:andalso, [left, right])
+  defp erlang(name, args), do: AST.erlang_call(name, args)
+
+  defp consecutive_runs([first | rest]) do
+    rest
+    |> Enum.reduce([{first, first}], fn
+      id, [{first, last} | runs] when id == last + 1 -> [{first, id} | runs]
+      id, runs -> [{id, id} | runs]
+    end)
+    |> Enum.reverse()
+  end
+
+  defp balanced_and([expr]), do: expr
+
+  defp balanced_and(expressions) do
+    expressions
+    |> Enum.chunk_every(2)
+    |> Enum.map(fn
+      [left, right] -> both(left, right)
+      [last] -> last
+    end)
+    |> balanced_and()
   end
 
   @doc "Merge an exclusion guard with the clause's own guard (either may be `nil`)."

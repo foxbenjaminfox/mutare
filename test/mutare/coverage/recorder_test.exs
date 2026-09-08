@@ -1,6 +1,7 @@
 defmodule Mutare.Coverage.RecorderTest do
   use ExUnit.Case, async: true
 
+  alias Mutare.AST
   alias Mutare.Coverage.Recorder
 
   describe "record_var/1 — recovering the dispatch variable from a coverage record" do
@@ -26,21 +27,37 @@ defmodule Mutare.Coverage.RecorderTest do
 
     test "ignores the helper-call arm, so a self-hosting helper-module override is irrelevant" do
       record = Recorder.record_ast([1], :mutare_active)
-      {:and, m, [conj, _hit]} = record
-      forged_helper = {:and, m, [conj, {{:., [], [:some_other_helper, :hit]}, [], [42]}]}
+      {:ok, [conj, _hit]} = AST.erlang_call_args(record, :andalso)
+
+      forged_helper =
+        AST.erlang_call(:andalso, [conj, {{:., [], [:some_other_helper, :hit]}, [], [42]}])
 
       assert Recorder.record_var(forged_helper) == :mutare_active
     end
 
     test "returns nil for a non-record node — a user `x == 0 and …` without the track read" do
       not_a_record =
-        {:and, [],
-         [
-           {:and, [], [{:==, [], [{:x, [], nil}, 0]}, {:foo, [], []}]},
-           {:bar, [], []}
-         ]}
+        AST.erlang_call(:andalso, [
+          AST.erlang_call(:andalso, [AST.erlang_call(:==, [{:x, [], nil}, 0]), {:foo, [], []}]),
+          {:bar, [], []}
+        ])
 
       assert Recorder.record_var(not_a_record) == nil
+
+      # A source-level `and`/`==` is not the generated record: the builder emits explicit
+      # `:erlang` calls precisely so a target's own operators can never be mistaken for one.
+      assert Recorder.record_var(
+               {:and, [],
+                [
+                  {:and, [],
+                   [
+                     {:==, [], [{:mutare_active, [], nil}, 0]},
+                     {{:., [], [:persistent_term, :get]}, [], [Recorder.track_key(), false]}
+                   ]},
+                  {{:., [], [:mutare_cov, :hit]}, [], [[1]]}
+                ]}
+             ) == nil
+
       assert Recorder.record_var({:x, [], nil}) == nil
       assert Recorder.record_var(:not_even_a_tuple) == nil
     end
@@ -50,7 +67,12 @@ defmodule Mutare.Coverage.RecorderTest do
       # `<var> == 0` gate — so `active_zero_var/1` falls to its `nil` clause.
       track_read = {{:., [], [:persistent_term, :get]}, [], [Recorder.track_key(), false]}
       hit = {{:., [], [:mutare_cov, :hit]}, [], [[1]]}
-      malformed = {:and, [], [{:and, [], [{:not_a_gate, [], []}, track_read]}, hit]}
+
+      malformed =
+        AST.erlang_call(:andalso, [
+          AST.erlang_call(:andalso, [{:not_a_gate, [], []}, track_read]),
+          hit
+        ])
 
       assert Recorder.record_var(malformed) == nil
     end

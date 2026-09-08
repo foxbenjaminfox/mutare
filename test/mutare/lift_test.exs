@@ -110,7 +110,7 @@ defmodule Mutare.LiftTest do
 
       assert meta =~ "def classify(mutare_arg1) do"
       assert meta =~ ~r/defp __mutare_classify_1_g\d+\(/
-      assert meta =~ ~r/when mutare_active === \d+/
+      assert meta =~ ~r/when :erlang\.andalso\(:erlang\."=:="\(mutare_active, \d+\),/
 
       # Per function (each 2 clauses, clause 1 guarded): 2 guard swaps + 2 clause
       # drops = 4 lifted. Plus bump's body `n + 1` in place.
@@ -192,7 +192,7 @@ defmodule Mutare.LiftTest do
       assert meta =~ ~r/defp __mutare_0_classify_1_g1\(/
 
       assert meta =~
-               ~r/defp __mutare_0_classify_1_g1\(mutare_active, n\) when mutare_active === \d+/
+               ~r/defp __mutare_0_classify_1_g1\(mutare_active, n\)\s+when :erlang\.andalso\(:erlang\."=:="\(mutare_active, \d+\),/
 
       refute meta =~ ~r/defp __mutare_classify_1_g1\(/
 
@@ -218,7 +218,7 @@ defmodule Mutare.LiftTest do
       # the dispatch variable salts to `mutare_active_0`; the user's `mutare_active`
       # stays its own variable, so the gate reads the id and the body reads the user value
       assert meta =~ "mutare_active_0 = :persistent_term.get"
-      assert meta =~ ~r/when mutare_active_0 === \d+/
+      assert meta =~ ~r/when :erlang\.andalso\(:erlang\."=:="\(mutare_active_0, \d+\),/
       assert [{Mutare.ActiveVarCollisionFixture, _}] = Mutare.Test.Compile.string(meta)
 
       # baseline behaves like the original…

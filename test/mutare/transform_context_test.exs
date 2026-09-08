@@ -27,7 +27,7 @@ defmodule Mutare.TransformContextTest do
 
   # The hoisted per-site active-id read makes a tupled-case subject read the bound
   # `mutare_active` variable, not the inline persistent_term read.
-  defp selector_tuple(subject), do: "case {mutare_active, #{subject}}"
+  defp selector_tuple, do: "case (case {mutare_active,"
 
   describe "custom structural & call-matching mutator extension points" do
     test "a custom return-position mutator participates via return_replacements/1" do
@@ -291,7 +291,7 @@ defmodule Mutare.TransformContextTest do
       # is tupled (proof its clause pattern mutated via the tuple-the-scrutinee path).
       # (Non-convention sample atoms — :ok is owned by ConventionAtom, not :atom.)
       assert length(sites) == 9
-      assert meta =~ selector_tuple("x")
+      assert meta =~ selector_tuple()
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
@@ -346,7 +346,7 @@ defmodule Mutare.TransformContextTest do
 
       # The `1` pattern (line 4) mutates; the diff stays focused on it (`:in_place`).
       assert Enum.any?(sites, &(&1.mutator == :integer and &1.kind == :in_place and &1.line == 4))
-      assert meta =~ selector_tuple("x")
+      assert meta =~ selector_tuple()
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
   end

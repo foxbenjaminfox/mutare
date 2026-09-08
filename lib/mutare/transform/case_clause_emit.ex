@@ -8,8 +8,10 @@ defmodule Mutare.Transform.CaseClauseEmit do
   #
   # The rewrite turns `case <subject> do …` into `case {<active>, <subject>} do …`, where each
   # mutant adds a clause `{<active>, <mut_pattern>} when <active> === <id> -> <raw_body>` before
-  # its original `{<active>, <orig_pattern>} when <active> !== <its ids> -> <record>; <body>`, so
-  # exactly one wins per `(id, value)` — the per-clause (C+M) analogue of head lifting.
+  # its original `{<active>, <orig_pattern>} when <active> excludes <its ids> -> <body>`, so
+  # exactly one wins per `(id, value)` — the per-clause (C+M) analogue of head lifting. The
+  # subject is evaluated once before one shared coverage record: duplicating the full hosted
+  # id list into every original clause would reintroduce C×M generated payload.
 
   alias Mutare.AST
   alias Mutare.Coverage.Recorder
@@ -48,7 +50,6 @@ defmodule Mutare.Transform.CaseClauseEmit do
               original_clause(
                 emitted_clause,
                 Map.get(excluded, index, []),
-                all_ids,
                 var
               )
 
@@ -58,9 +59,22 @@ defmodule Mutare.Transform.CaseClauseEmit do
         new_clauses =
           if exhaustive_clauses?(emitted_clauses, excluded),
             do: rewritten,
-            else: rewritten ++ [unmatched_clause(all_ids, var)]
+            else: rewritten ++ [unmatched_clause()]
 
-        subject = {SelectorEmit.subject(ctx), emitted_subject}
+        active = Recorder.catch_all_pattern(var)
+        subject_var = {ctx.config.case_var, [], nil}
+        tuple = {active, subject_var}
+
+        # Evaluate both inputs before entering this generated-only clause. Bindings in the
+        # source scrutinee therefore escape just as they did before, while the temporary is
+        # invisible to source clause bodies, subsequent binding/0, and macros inspecting
+        # __CALLER__. The tuple preserves selector-before-scrutinee evaluation in every scope.
+        record_body = {:__block__, [], [Recorder.record_ast(all_ids, var), tuple]}
+        record_clause = {:->, [], [[tuple], record_body]}
+
+        subject =
+          {:case, [], [{SelectorEmit.subject(ctx), emitted_subject}, [do: [record_clause]]]}
+
         {{:case, meta, [subject, [{do_key, new_clauses}]]}, ctx}
     end
   end
@@ -78,37 +92,35 @@ defmodule Mutare.Transform.CaseClauseEmit do
   end
 
   @doc """
-  One original clause: `{<active>, <orig_pattern>} when <active> !== <its ids> [and <orig_guard>]
-  -> <record all ids>; <emitted_body>`. With no exclusions and no source guard the head is the
-  bare tuple (the dispatch variable still used by the record). The record prepends the *full*
-  id-set (see `emit/3`).
+  One original clause: `{<active>, <orig_pattern>} when <active> excludes <its ids>
+  [and <orig_guard>] -> <emitted_body>`. With no exclusions the tuple ignores its first
+  element: neither the original guard nor body needs this clause-local dispatch binding.
   """
-  @spec original_clause(Macro.t(), [non_neg_integer()], [non_neg_integer()], atom()) :: Macro.t()
-  def original_clause(emitted_clause, excluded_ids, all_ids, var) do
+  @spec original_clause(Macro.t(), [non_neg_integer()], atom()) :: Macro.t()
+  def original_clause(emitted_clause, excluded_ids, var) do
     {clause_meta, pattern, orig_guard, body} = emitted_clause_parts(emitted_clause)
-    tuple = {Recorder.catch_all_pattern(var), pattern}
+
+    active_pattern =
+      if excluded_ids == [], do: {:_, [], nil}, else: Recorder.catch_all_pattern(var)
+
+    tuple = {active_pattern, pattern}
     guard = GuardBuild.merge(GuardBuild.exclusion(excluded_ids, var), orig_guard)
     head = if guard, do: {:when, [], [tuple, guard]}, else: tuple
-    record_body = {:__block__, [], [Recorder.record_ast(all_ids, var), body]}
-    {:->, clause_meta, [[head], record_body]}
+    {:->, clause_meta, [[head], body]}
   end
 
   @doc """
-  The trailing unmatched fallback for a non-exhaustive tupled `case`: `{<active>,
-  mutare_unmatched} -> <record all ids>; Elixir.Kernel.raise(Elixir.CaseClauseError, term:
-  mutare_unmatched)`. The first tuple element binds the dispatch variable (used by the record)
-  and `mutare_unmatched` binds the *bare* subject (used by the raise), so neither warns unused;
-  it both attributes the hosted ids at baseline (else a value that matches no original clause
-  falls through recording nothing, scoring a re-targeting mutant `:no_coverage`) and re-raises
-  the same `CaseClauseError` the original `case` did, on the original term. `Elixir.Kernel.raise`
+  The trailing unmatched fallback for a non-exhaustive tupled `case`: `{_, mutare_unmatched}`
+  re-raises the same `CaseClauseError` the original `case` did, on the original term. Coverage
+  has already recorded the hosted ids, even when no original clause matches. `Elixir.Kernel.raise`
   and `Elixir.CaseClauseError` are both absolute so the raise is independent of the target's
   imports/aliases; `mutare_unmatched` is a case-clause-local pattern var, so a fixed name can't
   capture or collide.
   """
-  @spec unmatched_clause([non_neg_integer()], atom()) :: Macro.t()
-  def unmatched_clause(all_ids, var) do
+  @spec unmatched_clause() :: Macro.t()
+  def unmatched_clause do
     unmatched = {:mutare_unmatched, [], nil}
-    tuple = {Recorder.catch_all_pattern(var), unmatched}
+    tuple = {{:_, [], nil}, unmatched}
 
     raise_node =
       AST.absolute_call([:Kernel], :raise, [
@@ -116,8 +128,7 @@ defmodule Mutare.Transform.CaseClauseEmit do
         [term: unmatched]
       ])
 
-    body = {:__block__, [], [Recorder.record_ast(all_ids, var), raise_node]}
-    {:->, [], [[tuple], body]}
+    {:->, [], [[tuple], raise_node]}
   end
 
   @doc """

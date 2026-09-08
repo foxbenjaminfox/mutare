@@ -33,23 +33,26 @@ defmodule Mutare.Transform.LiftedEmit do
         ) ::
           [Macro.t()]
   def build_base_clauses(orig_clauses, claimed, base, var, super_var) do
-    # Every claimed candidate overrides (guard/literal/structure) or drops its clause, so its
-    # id excludes that clause's *original* version.
-    excluded = Enum.group_by(claimed, fn {_id, i, _c, _w} -> i end, fn {id, _i, _c, _w} -> id end)
+    # One grouping by source clause, not a scan of all M candidates per clause. Every claimed
+    # candidate overrides (guard/literal/structure) or drops its clause, so the group *is* both
+    # the clause's mutant clauses and the id set excluding its original version.
+    by_clause = Enum.group_by(claimed, fn {_id, index, _clause, _witness} -> index end)
 
     orig_clauses
     |> Enum.with_index()
     |> Enum.flat_map(fn {orig, index} ->
+      group = Map.get(by_clause, index, [])
+
       mutant_clauses =
-        for {id, ^index, clause, witness} <- claimed,
+        for {id, _index, clause, witness} <- group,
             clause != :drop,
             do: lifted_mutant(base, id, clause, var, super_var, witness)
 
       if ClauseAST.bodiless_header?(orig) do
         mutant_clauses
       else
-        mutant_clauses ++
-          [lifted_original(base, orig, Map.get(excluded, index, []), var, super_var)]
+        excluded = Enum.map(group, fn {id, _index, _clause, _witness} -> id end)
+        mutant_clauses ++ [lifted_original(base, orig, excluded, var, super_var)]
       end
     end)
   end

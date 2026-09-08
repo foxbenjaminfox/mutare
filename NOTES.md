@@ -9022,6 +9022,105 @@ remaining changes (`.mutare.exs`) on to Igniter's final apply. Skipped under
 `Igniter.Test` (`assigns[:test_mode?]`), where fetching raises by design and the tests
 assert on the igniter's deps.
 
+### Factor compiler input before rendering `[done; cases and guards]`
+
+The 2026-09 compile-time audit found several remaining products of independent sizes
+in generated source. The changes preserve candidate order, report IDs, and first-order
+mutation; reducing compiler input is the claim, not a proportional wall-time promise.
+
+- **Tupled cases:** `CaseClauseEmit` evaluates the selector, evaluates the instrumented
+  scrutinee once, then records the complete hosted ID set once before matching clauses.
+  A raising scrutinee records no clause coverage; unmatched successful evaluation still
+  records coverage and raises `CaseClauseError` with the original term. Body coverage
+  stays inside the reached body. The old per-original-clause/fallback records repeated
+  every hosted ID C+1 times. A 100-clause, 299-mutant integer fixture (100 `<i> -> :ok`
+  clauses, `mutators: [:integer]`, Elixir 1.19.5 / OTP 26) went from 547,769 to 57,219
+  source bytes and 36,758 to 7,571 parsed AST traversal nodes; coverage ID occurrences
+  fell from 30,199 to 299. Manifest/poison recognition remains tested.
+- **Exclusion guards:** `GuardBuild` sorts/deduplicates IDs into exact consecutive runs,
+  compresses sufficiently long runs into interval exclusions, and combines remaining
+  expressions in a balanced tree. A single non-integer escape preserves the previous
+  strict-inequality behavior for floats and other terms. Holes, including poison skips,
+  remain allowed. Excluding IDs 101..180 shrank from 399 to 31 traversal nodes, and 1,545 to
+  125 rendered bytes. The threshold is seven IDs, where the interval form still pays for
+  itself against the explicitly qualified comparisons it replaces (see below).
+- **Generator cost:** `LiftedEmit` groups claimed candidates by source clause once,
+  instead of scanning all M candidates for each of C clauses. This removes an O(CM)
+  generator scan; it is separate from compilation of the resulting source.
+
+**Every operator Mutare generates is now an explicit `:erlang` call** `[done]` — the gate
+(`GuardBuild.gate/2`), the exclusions and the conjunctions joining them, and the coverage
+record's `==`/`and` (`Recorder.record_ast/2`). `Mutare.AST.erlang_call/2` builds them and
+`erlang_call_args/2` is the only way to recognise one, so a reader
+(`Manifest.gate_id/2`, `Recorder.record_var/1`) cannot drift from the builder; the latter
+tolerates the `{:__block__, _, [:erlang]}` wrapper a Sourceror reparse adds around the module
+atom. Generated code no longer depends on the target's lexical environment, the same principle
+`AST.absolute_call/3` already applied to the `CaseClauseError` re-raise.
+
+**This was measured before being kept, and the measurement inverted twice.** Rendered size says
+it is expensive. Mutare's own `lib/` as a fixed corpus (366 files, 29,537 mutants, all default
+mutators, Elixir 1.19.5 / OTP 26):
+
+| Generated source | bytes | AST traversal nodes |
+| --- | ---: | ---: |
+| `c06f221b`, before any of this work | 9,361,532 | 923,309 |
+| this work, no operators qualified | 9,302,455 | 913,543 |
+| this work, exclusions + conjunctions qualified | 9,662,894 | 950,545 |
+| this work, everything qualified (shipped) | 11,477,485 | 1,089,037 |
+
+That is +22.6% bytes and +18.0% nodes against the unqualified build — on a change whose stated
+claim is *reducing* compiler input. Two things save it, and both had to be measured:
+
+- **Compile time and memory move the other way.** A 2,000-function fixture (`def runN(x), do:
+  x + 2`, `mutators: [:arithmetic]`), three alternating `mix compile --force --no-verification`
+  runs each, medians: qualified 2.42 s wall / 452 MB peak RSS from 786,754 bytes; unqualified
+  2.69 s / 505 MB from 598,655. **31% more source compiled 10% faster in 10% less memory.**
+  A guard-heavy fixture (`bench` case-100) is a wash — 1.01 s vs 0.99 s over seven runs each,
+  inside the spread.
+- **Why:** `Kernel.and/2` in *body* position is a macro that expands to a three-clause `case`
+  with a `badbool` error branch, while in a *guard* it already compiles straight to `andalso`.
+  The coverage record carries two body-position `and`s **per generated function**, so the
+  unqualified form paid two extra `case`s each; `:erlang.andalso` passes through untouched. The
+  guard fixture is neutral because guards never had the penalty to begin with.
+
+So rendered bytes and pre-expansion node counts are the wrong measure for this decision: they
+count what the *parser* reads, not what survives macro expansion, and here the two point in
+opposite directions. Keep measuring both, and never conclude from source size alone what a
+compile will cost.
+
+`bench/compile_shapes.exs` generates standalone, inference-disabled Mix projects for
+comparing AST/source growth and profiling already-generated code with the same runtime.
+Its README says how to run the cold-compilation and retained-sandbox selection comparisons;
+measured results are recorded here rather than beside the generator, where they would have to
+be regenerated on every change that moves a byte.
+
+### Strict arithmetic operand sharing `[deferred; experiment removed]`
+
+`StrictOperands` tried to share evaluated operands between certified Arithmetic
+variants instead of copying each ancestor's raw subtree. Keeping macro-visible lexical
+scope unchanged required import witnesses, salted temporaries, tuple-case boundaries,
+and a special flattening path for literal right operands.
+
+The initial Arithmetic-only benchmark missed IntegerLiteral's default selectors:
+requiring an emitted RHS to remain a literal blocked flattening and made an 80-addition
+fixture 1,987,142 bytes versus ordinary delivery's 832,076. Certifying selectors with
+exclusively literal branches repaired that case, but did not justify sharing generally.
+With all default mutators, a 160-addition literal-right chain shrank from 4,888,052 to
+260,019 bytes; changing the RHS to a bound variable instead grew output from 3,690,232
+to 6,257,900 bytes, despite reducing AST traversal nodes from 31,082 to 17,893.
+Nested indentation outweighed the tree reduction. Original subtree size and semantic
+eligibility did not establish that the emitted program would be smaller.
+
+The implementation and its dedicated tests were removed; ordinary selector delivery
+remains. The operand-specific certification, metadata, names, and scope walks were
+removed too. The generator remains under `bench/`, with both literal and variable RHS
+fixtures using the default set; raw `bench/results/` files are local, ignored
+measurements. The sizes above are what that experiment measured, not what the current
+tree produces — its arithmetic fixtures now render exactly as they did before it.
+Revisit only with evidence
+from representative default workloads, measuring emitted bytes and compilation as
+well as AST size, and a rule that declines sharing when its scaffolding costs more.
+
 ### Static run selection controls emission, not ID reservation `[done]`
 
 `Schema` still discovers every candidate in each scanned file. Its count pass records
@@ -9090,3 +9189,37 @@ the order they confused the first analysis:
 `worth_seeding?/2` had to change for point 3 to pay off: a zero *changed*-metamutant count is
 now the best case for seeding (nothing recompiles), where it used to decline and cold-compile
 the app.
+
+### Raw-body outlining and runtime identity namespaces `[deferred]`
+
+Sharing large raw clause bodies remains worthwhile, but extraction needs a positive
+eligibility contract: head bindings, function-sensitive macro expansion, implicit
+rescue/catch/after boundaries, and super forwarding must survive the new function
+boundary. Existing resolved-call stamps identify a call's module, not all the compile-
+time context an arbitrary macro can observe. A whitelist covering only trivial raw
+expressions would prove a much narrower benefit than general head/guard outlining.
+The target's global or explicit Erlang inlining can also undo helper sharing; an
+inlining policy belongs with an outlining design, not an incidental compiler override.
+
+Stable per-file runtime selector namespaces would prevent file A's candidate-count edit
+from rewriting file B's selectors. Human-facing dense IDs must then map separately to
+runtime IDs through selection, coverage, manifest/poison recovery, hydration, and every
+reporter. Static emission deliberately leaves this identity contract unchanged. The
+remaining invariant to implement is that unchanged B's source and configuration produce
+identical B metamutants after unrelated A candidate-count changes.
+
+### Anonymous functions and receives still copy whole clause groups `[deferred]`
+
+A further source-volume check found `Analyze.ClausePatterns.clause_list_candidates/3`
+still delivering `fn` and `receive` head/guard changes through whole-construct
+`Candidate.CasePattern.replacement` values. An integer-only anonymous-function fixture
+with 10 source clauses produced 29 mutants, 30 `fn` copies, 300 generated clauses, and
+7,586 bytes; doubling to 20 source clauses produced 59 mutants, 60 copies, 1,200 clauses,
+and 26,866 bytes. This is the old C×M multiplication in another delivery path.
+
+A next implementation can emit one `fn` with per-clause guarded variants, preserving its
+arity and capturing the active selector at closure creation. It must keep creation-time
+coverage, raw mutant bodies, and the lexical scope seen by macros; starting in scopes
+where the active variable is already bound avoids the reflection trap found by strict
+operand factoring. `receive` needs its own mailbox-order and timeout tests before using
+an analogous rewrite. Neither rewrite is part of the current optimization.

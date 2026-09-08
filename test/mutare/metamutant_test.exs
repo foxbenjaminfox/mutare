@@ -87,5 +87,44 @@ defmodule Mutare.MetamutantTest do
       assert Metamutant.pattern_subject?(hoisted_wrapped, :mutare_active)
       refute Metamutant.pattern_subject?(hoisted_wrapped)
     end
+
+    test "pattern_subject?/2 recognises only an exact coverage-recording tuple wrapper" do
+      active = {:mutare_active_0, [], nil}
+      temporary = {:mutare_case_subject, [], nil}
+      tuple = {active, temporary}
+      record = Mutare.Coverage.Recorder.record_ast([1], :mutare_active_0)
+
+      wrapper = fn subject, record, returned ->
+        {:case, [],
+         [
+           {subject, {:user_value, [], nil}},
+           [do: [{:->, [], [[tuple], {:__block__, [], [record, returned]}]}]]
+         ]}
+      end
+
+      inline = wrapper.(Metamutant.subject_ast(), record, tuple)
+      assert Metamutant.pattern_subject?(inline)
+
+      hoisted = wrapper.(active, record, tuple)
+      assert Metamutant.pattern_subject?(hoisted, :mutare_active_0)
+
+      assert Metamutant.pattern_subject?(
+               Sourceror.parse_string!(Macro.to_string(hoisted)),
+               :mutare_active_0
+             )
+
+      refute Metamutant.pattern_subject?(hoisted)
+      refute Metamutant.pattern_subject?(hoisted, :mutare_active)
+
+      refute Metamutant.pattern_subject?(
+               wrapper.(active, :ordinary_expression, tuple),
+               :mutare_active_0
+             )
+
+      refute Metamutant.pattern_subject?(
+               wrapper.(active, record, {temporary, active}),
+               :mutare_active_0
+             )
+    end
   end
 end

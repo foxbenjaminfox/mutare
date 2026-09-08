@@ -168,6 +168,13 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   "Owner-death reaping"). Change one half in isolation and the metamutant stops responding. (The selection key is
   resolved at *runtime* by `Selector.key/0` so Mutare can dogfood itself without clobbering its own
   active mutant — NOTES "Self-hosting".)
+- **Every operator Mutare *generates* is an explicit `:erlang` call.** The activation gate and
+  exclusion guards (`Mutare.Transform.GuardBuild`) and the coverage record
+  (`Mutare.Coverage.Recorder.record_ast/2`) all build through `Mutare.AST.erlang_call/2`, and
+  their readers (`Manifest.gate_id/2`, `Recorder.record_var/1`) recognise them *only* through
+  `AST.erlang_call_args/2` — builder and reader must move together. Generated code must never
+  depend on the target's imports; it is also faster, since `Kernel.and/2` in a body expands to a
+  `case` — NOTES "Factor compiler input before rendering".
 - **Two renderers, on purpose.** The metamutant is a build artifact (AST rewrite via
   `Sourceror.to_string`, only needs to compile); the report patches the original source. Don't try
   to make one serve both.

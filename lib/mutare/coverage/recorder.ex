@@ -170,20 +170,27 @@ defmodule Mutare.Coverage.Recorder do
   Literal arguments use clean metadata. In particular, the `0` must be wrapped as
   `{:__block__, [], [0]}`; a bare integer can render badly when this expression is
   emitted as a statement in a generated function body.
+
+  The comparison and the two conjunctions are explicit `:erlang` calls
+  (`Mutare.AST.erlang_call/2`), like the guards `Mutare.Transform.GuardBuild` emits: this
+  expression is spliced into the target's own modules, where a narrowed or replaced `Kernel`
+  import would otherwise redefine `==` and `and` under it. `record_var/1` recognises that
+  form, so the two must move together.
   """
   @spec record_ast([pos_integer()], atom()) :: Macro.t()
   def record_ast(ids, var \\ @var_name) when is_list(ids) do
-    active_zero = {:==, [], [{var, [], nil}, literal(0)]}
+    active_zero = AST.erlang_call(:==, [{var, [], nil}, literal(0)])
     track_read = {{:., [], [:persistent_term, :get]}, [], [literal(@track_key), literal(false)]}
     hit_call = {{:., [], [@helper_module, :hit]}, [], [ids_literal(ids)]}
 
-    {:and, [], [{:and, [], [active_zero, track_read]}, hit_call]}
+    AST.erlang_call(:andalso, [AST.erlang_call(:andalso, [active_zero, track_read]), hit_call])
   end
 
   @doc """
   Return the dispatch variable read by a coverage record, or `nil`.
 
-  This is the inverse of `record_ast/2`. A coverage record has this shape:
+  This is the inverse of `record_ast/2`. A coverage record has this shape, with the comparison
+  and conjunctions written as the explicit `:erlang` calls `record_ast/2` emits:
 
       <var> == 0 and :persistent_term.get(<track_key>, false) and <helper>.hit(<ids>)
 
@@ -197,22 +204,37 @@ defmodule Mutare.Coverage.Recorder do
   wrappers added during reparse are accepted.
   """
   @spec record_var(Macro.t()) :: atom() | nil
-  def record_var({:and, _, [{:and, _, [active_zero, track_read]}, _hit]}) do
-    if track_read?(track_read), do: active_zero_var(active_zero)
+  def record_var(node) do
+    with {:ok, [conjunction, _hit]} <- andalso_args(node),
+         {:ok, [active_zero, track_read]} <- andalso_args(conjunction),
+         true <- track_read?(track_read) do
+      active_zero_var(active_zero)
+    else
+      _ -> nil
+    end
   end
 
-  def record_var(_), do: nil
+  defp andalso_args(node) do
+    case AST.erlang_call_args(node, :andalso) do
+      {:ok, [_left, _right] = args} -> {:ok, args}
+      _ -> :error
+    end
+  end
 
   defp track_read?({{:., _, [mod, :get]}, _, [key | _]}),
     do: AST.unwrap_literal(mod) == :persistent_term and AST.unwrap_literal(key) == @track_key
 
   defp track_read?(_), do: false
 
-  defp active_zero_var({:==, _, [{var, _, ctx}, zero]})
-       when is_atom(var) and is_atom(ctx),
-       do: if(AST.unwrap_literal(zero) == 0, do: var)
+  defp active_zero_var(node) do
+    case AST.erlang_call_args(node, :==) do
+      {:ok, [{var, _, ctx}, zero]} when is_atom(var) and is_atom(ctx) ->
+        if AST.unwrap_literal(zero) == 0, do: var
 
-  defp active_zero_var(_), do: nil
+      _ ->
+        nil
+    end
+  end
 
   defp literal(value), do: {:__block__, [], [value]}
 

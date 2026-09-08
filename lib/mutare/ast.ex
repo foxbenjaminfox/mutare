@@ -211,6 +211,44 @@ defmodule Mutare.AST do
     do: remote_call(absolute_alias(path), fun, args)
 
   @doc """
+  Builds a call to an `:erlang` BIF or operator.
+
+  The one form no `import` can redirect: an atom module reaches `:erlang` directly,
+  where an `Elixir.Kernel.` qualification still routes through Elixir's rewriter.
+  Mutare uses it for the operators it *generates* into the metamutant — the
+  activation gate, exclusion guards, and the coverage record — so a target that
+  narrows or replaces `Kernel`'s imports cannot change what they mean. Elixir
+  compiles `:erlang.andalso/2` and `:erlang.orelse/2` to the short-circuit
+  operators, so both stay legal in a guard.
+
+      iex> Mutare.AST.erlang_call(:"=:=", [1, 2])
+      {{:., [], [:erlang, :"=:="]}, [], [1, 2]}
+  """
+  @spec erlang_call(atom(), [Macro.t()]) :: Macro.t()
+  def erlang_call(fun, args) when is_atom(fun) and is_list(args),
+    do: {{:., [], [:erlang, fun]}, [], args}
+
+  @doc """
+  Matches a call `erlang_call/2` built, returning its arguments.
+
+  Its inverse, and the one way to recognise a generated operator, so a reader cannot drift
+  from the builder. Tolerates the `{:__block__, _, [:erlang]}` wrapper a Sourceror reparse of
+  rendered metamutant source puts around the module atom — `Mutare.Manifest` and
+  `Mutare.Coverage.Recorder.record_var/1` both read reparsed source.
+
+      iex> Mutare.AST.erlang_call_args(Mutare.AST.erlang_call(:andalso, [1, 2]), :andalso)
+      {:ok, [1, 2]}
+
+      iex> Mutare.AST.erlang_call_args(quote(do: 1 and 2), :andalso)
+      :error
+  """
+  @spec erlang_call_args(Macro.t(), atom()) :: {:ok, [Macro.t()]} | :error
+  def erlang_call_args({{:., _meta, [mod, fun]}, _call_meta, args}, fun) when is_list(args),
+    do: if(unwrap_literal(mod) == :erlang, do: {:ok, args}, else: :error)
+
+  def erlang_call_args(_node, _fun), do: :error
+
+  @doc """
   Builds a remote call `mod.fun(args)` around a pre-built callee node.
 
   The general form of `absolute_call/3`: use it when the module reference is

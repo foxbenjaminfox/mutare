@@ -5,15 +5,15 @@ defmodule Mutare.CaseRunnerTest do
   coverage probe attributes the per-clause mutants, and a test that distinguishes the mutated
   pattern kills it.
 
-  Two attribution paths are exercised:
+  Shared pre-match coverage is exercised with two clause shapes:
 
-    * an **exhaustive** `case` (with a `_` catch-all) — every clause body records the full id-set,
-      so a value matching *any* clause covers them all;
+    * an **exhaustive** `case` (with a `_` catch-all) — a value matching *any* clause covers
+      the full hosted id-set;
     * a **non-exhaustive** `case` exercised *only* with a value that matches no clause — the
       regression the tuple rewrite first introduced: the tupled subject `{active, value}` fell
       through every clause recording nothing, so a mutant that would *make* that value match was
-      wrongly scored `:no_coverage`. The unmatched fallback records the ids (and re-raises the
-      original `CaseClauseError`), so it is covered and killed.
+      wrongly scored `:no_coverage`. Coverage now records the ids before matching, and the
+      unmatched fallback re-raises the original `CaseClauseError`, so it is covered and killed.
   """
   use ExUnit.Case, async: false
 
@@ -54,13 +54,13 @@ defmodule Mutare.CaseRunnerTest do
 
     # Both mutants target the `0` pattern (line 4) and change what clause 1 matches, so the
     # `label(0) == :zero` test kills them. None is left :no_coverage (the probe attributed
-    # them via the clause-body record), and the metamutant compiled exactly once.
+    # them via the pre-match record), and the metamutant compiled exactly once.
     assert run.results != []
     assert Enum.all?(run.results, &(&1.status == :killed))
     assert Enum.all?(run.results, &(&1.site.line == 4 and &1.site.mutator == :integer))
   end
 
-  test "a non-exhaustive case mutant is covered via the unmatched fallback and killed" do
+  test "a non-exhaustive case mutant is covered before the unmatched fallback and killed" do
     %{project: project, sandbox: sandbox} =
       Project.build(:narrow, %{
         "lib/narrow.ex" => """
@@ -74,7 +74,7 @@ defmodule Mutare.CaseRunnerTest do
         end
         """,
         # The suite exercises `classify` *only* with `3`, which matches no clause — so no original
-        # clause body ever runs and the only attribution path is the unmatched fallback.
+        # clause body ever runs; attribution must happen before matching the clauses.
         "test/narrow_test.exs" => """
         defmodule NarrowTest do
           use ExUnit.Case

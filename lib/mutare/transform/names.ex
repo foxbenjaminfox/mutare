@@ -51,6 +51,9 @@ defmodule Mutare.Transform.Names do
   # is salted, not underscore-prefixed.
   @cond_var :mutare_cond
 
+  # The successfully evaluated scrutinee, held while a tupled case records its hosted ids.
+  @case_var :mutare_case_subject
+
   # The placeholder a refutable hoist carries until emit knows the salted `cond_var`.
   # `Mutare.Transform.Analyze` builds the hoist (in the id-free analyze pass, which has
   # no access to the per-file salted names), spelling the temp as this var-shaped node;
@@ -72,7 +75,8 @@ defmodule Mutare.Transform.Names do
     * `:active_var` — the dispatch variable;
     * `:super_var` — the super-forwarding closure variable;
     * `:piped_var` — the hoisted pipe-stage closure variable;
-    * `:cond_var` — the condition-hoist temp.
+    * `:cond_var` — the condition-hoist temp;
+    * `:case_var` — the tupled-case scrutinee temp.
 
   All are derived from one scan of every identifier the source mentions, so a
   generated name can never equal one already in scope. A map (not a positional
@@ -84,7 +88,8 @@ defmodule Mutare.Transform.Names do
           active_var: atom(),
           super_var: atom(),
           piped_var: atom(),
-          cond_var: atom()
+          cond_var: atom(),
+          case_var: atom()
         }
   def generated_names(ast) do
     taken = taken_names(ast)
@@ -94,7 +99,8 @@ defmodule Mutare.Transform.Names do
       active_var: salted(Recorder.var_name(), taken),
       super_var: salted(@super_var, taken),
       piped_var: salted(@piped_var, taken),
-      cond_var: salted(@cond_var, taken)
+      cond_var: salted(@cond_var, taken),
+      case_var: salted(@case_var, taken)
     }
   end
 

@@ -97,7 +97,7 @@ defmodule Mutare.CasePatternTest do
   # `mutare_active` variable, not the inline persistent_term read. The variable name
   # (unlike the persistent_term key) is independent of `Selector.suite_key/0`, so this
   # holds under dogfooding.
-  defp selector_tuple(subject), do: "case {mutare_active, #{subject}}"
+  defp selector_tuple, do: "case (case {mutare_active,"
 
   test "case clause-pattern/guard mutants are delivered in place via tuple-the-scrutinee", %{
     sites: sites,
@@ -108,7 +108,8 @@ defmodule Mutare.CasePatternTest do
     refute meta =~ "__mutare_swap"
 
     # The subject is tupled with the active id (the per-clause dispatch).
-    assert meta =~ selector_tuple("n")
+    assert meta =~ "case {mutare_active, n}"
+    assert meta =~ selector_tuple()
 
     clause_sites =
       Enum.filter(
@@ -152,8 +153,8 @@ defmodule Mutare.CasePatternTest do
 
     test "a non-exhaustive case raises CaseClauseError on the bare subject, not the tuple" do
       # Without the unmatched fallback the tupled subject would raise on `{0, 3}`; the fallback
-      # re-raises the original error on the bare `3`, and — load-bearing — records the case's
-      # ids at baseline so a re-targeting mutant is not wrongly scored `:no_coverage`.
+      # re-raises the original error on the bare `3`. Coverage already recorded the case's
+      # ids before matching, so a re-targeting mutant is not wrongly scored `:no_coverage`.
       error = assert_raise CaseClauseError, fn -> F.narrow(3) end
       assert error.term == 3
     end

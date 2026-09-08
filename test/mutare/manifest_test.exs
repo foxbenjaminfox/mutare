@@ -60,7 +60,9 @@ defmodule Mutare.ManifestTest do
 
       # the bad code sits in a generated lifted mutant clause, gated by its id —
       # lines away from the public dispatcher a naive start-line match would find
-      assert meta |> String.split("\n") |> Enum.at(line - 1) =~ ~r/mutare_active === \d+/
+      assert meta |> String.split("\n") |> Enum.at(line - 1) =~
+               ~r/:erlang\."=:="\(mutare_active, \d+\)/
+
       assert Manifest.ids_at_line(manifest, line) == [poison.id]
     end
 
@@ -150,8 +152,8 @@ defmodule Mutare.ManifestTest do
       # the scenario is real: the source's `mutare_active` forced the dispatch var to
       # be salted, so the gate is `mutare_active_<n> === <id>`, not bare `mutare_active`
       gate = meta |> String.split("\n") |> Enum.at(line - 1)
-      assert gate =~ ~r/mutare_active_\d+ === \d+/
-      refute gate =~ ~r/\bmutare_active === \d+/
+      assert gate =~ ~r/:erlang\."=:="\(mutare_active_\d+, \d+\)/
+      refute gate =~ ~r/:erlang\."=:="\(mutare_active, \d+\)/
 
       assert Manifest.ids_at_line(manifest, line) == [poison.id]
     end
@@ -260,7 +262,10 @@ defmodule Mutare.ManifestTest do
 
       # the mutated guard lives in a tupled, id-gated mutant clause head
       line = line_of(meta, "x >= 5")
-      assert meta |> String.split("\n") |> Enum.at(line - 1) =~ ~r/mutare_active === \d+/
+
+      assert meta |> String.split("\n") |> Enum.at(line - 1) =~
+               ~r/:erlang\."=:="\(mutare_active, \d+\)/
+
       assert Manifest.ids_at_line(manifest, line) == [relaxed.id]
     end
 
@@ -273,7 +278,7 @@ defmodule Mutare.ManifestTest do
       manifest = Manifest.from_source(meta)
 
       clause_ids = sites |> Enum.map(& &1.id) |> Enum.sort()
-      case_line = line_of(meta, "case {mutare_active, n}")
+      case_line = line_of(meta, "case (case {mutare_active, n}")
 
       assert Enum.sort(Manifest.ids_at_line(manifest, case_line)) == clause_ids
     end
@@ -311,7 +316,7 @@ defmodule Mutare.ManifestTest do
       defmodule D do
         def f(_x) do
           case {:persistent_term.get(#{pt_key()}, 0), _x} do
-            {mutare_active, 1} when mutare_active === 1 -> :a
+            {mutare_active, 1} when :erlang."=:="(mutare_active, 1) -> :a
             {mutare_active, _} -> :b
           end
         end
@@ -320,7 +325,7 @@ defmodule Mutare.ManifestTest do
 
       manifest = Manifest.from_source(src)
 
-      line = line_of(src, "mutare_active === 1")
+      line = line_of(src, ~s|:erlang."=:="(mutare_active, 1)|)
       assert Manifest.ids_at_line(manifest, line) == [1]
     end
 

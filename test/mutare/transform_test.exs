@@ -13,7 +13,7 @@ defmodule Mutare.TransformTest do
   # `mutare_active` variable, not the inline persistent_term read. The variable name
   # (unlike the persistent_term key) is independent of `Selector.suite_key/0`, so this
   # holds under dogfooding.
-  defp selector_tuple(subject), do: "case {mutare_active, #{subject}}"
+  defp selector_tuple, do: "case (case {mutare_active,"
 
   @sample """
   defmodule Sample do
@@ -178,10 +178,10 @@ defmodule Mutare.TransformTest do
     refute meta =~ "when case"
 
     # Lifted into one private group that takes the active id as an extra arg, with
-    # each guard mutant a single clause gated `when mutare_active === <id> …` — not
+    # each guard mutant a single clause gated on `mutare_active === <id>` — not
     # a full per-mutant copy of the clause group.
     assert meta =~ ~r/defp __mutare_f_1_g\d+\(mutare_active,/
-    assert meta =~ ~r/when mutare_active === \d+ and/
+    assert meta =~ ~r/when :erlang\.andalso\(:erlang\."=:="\(mutare_active, \d+\),/
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
@@ -515,7 +515,7 @@ defmodule Mutare.TransformTest do
     # in a guard.
     assert Enum.any?(sites, &(&1.original_form == :> and &1.kind == :in_place))
     assert Enum.any?(sites, &(&1.original_form == :+ and &1.kind == :in_place))
-    assert meta =~ selector_tuple("x")
+    assert meta =~ selector_tuple()
     refute meta =~ "when (case"
     refute meta =~ "when case"
     assert {:ok, _} = Code.string_to_quoted(meta)

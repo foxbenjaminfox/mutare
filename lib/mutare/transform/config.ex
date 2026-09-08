@@ -7,10 +7,9 @@ defmodule Mutare.Transform.Config do
   #
   #   * pass configuration — the recorded `file`, the resolved `mutators`, the
   #     poison-recovery `skip_ids`, static selection `emit_ids`, and the `skip_lifting` MFA set;
-  #   * generated-name hygiene — the private-function `prefix` and the four salted variable
-  #     names the lifting/selector machinery emits (`active_var`/`super_var`/`piped_var`/
-  #     `cond_var`). `Mutare.Transform.Names` derives each from a scan of the source's own
-  #     identifiers, so a generated name can never collide with one in scope.
+  #   * generated-name hygiene — the private-function `prefix` and salted variable names
+  #     the lifting/selector machinery emits. `Mutare.Transform.Names` derives each from a scan
+  #     of the source's own identifiers, so a generated name can never collide with one in scope.
   #
   # Split out of the old monolithic `Ctx` so the *mutable* scope/claim state lives elsewhere
   # (`Mutare.Transform.{Scope,ClaimState}`); a stage reading config can't accidentally write
@@ -29,7 +28,8 @@ defmodule Mutare.Transform.Config do
           active_var: atom(),
           super_var: atom(),
           piped_var: atom(),
-          cond_var: atom()
+          cond_var: atom(),
+          case_var: atom()
         }
 
   defstruct file: "nofile",
@@ -85,5 +85,8 @@ defmodule Mutare.Transform.Config do
             # (`Mutare.Transform.Analyze`'s condition hoisting). `:mutare_cond` canonically;
             # salted per file like `active_var`. Emit substitutes it for the placeholder the
             # (id-free) analyze pass leaves behind.
-            cond_var: :mutare_cond
+            cond_var: :mutare_cond,
+            # The tupled-case scrutinee held across its single hosted-id coverage record.
+            # Salted away from source variables by `Names`, like the other generated temps.
+            case_var: :mutare_case_subject
 end

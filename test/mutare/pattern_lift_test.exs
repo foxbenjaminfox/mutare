@@ -58,7 +58,7 @@ defmodule Mutare.PatternLiftTest do
     # one private group taking the active id as an extra arg…
     assert meta =~ ~r/defp __mutare_coord_1_g\d+\(mutare_active,/
     # …with the swap mutant as a single clause gated by its id
-    assert meta =~ ~r/when mutare_active === \d+/
+    assert meta =~ ~r/when :erlang\."=:="\(mutare_active, \d+\)/
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 

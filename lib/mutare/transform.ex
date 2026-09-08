@@ -464,7 +464,8 @@ defmodule Mutare.Transform do
       active_var: names.active_var,
       super_var: names.super_var,
       piped_var: names.piped_var,
-      cond_var: names.cond_var
+      cond_var: names.cond_var,
+      case_var: names.case_var
     }
   end
 

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Smaller metamutants:** tupled cases record hosted coverage once and exclusion
+  guards compress exact runs of mutant IDs. Candidate numbering and reported
+  mutations remain unchanged.
+- **Generated operators no longer depend on the target's imports.** The activation
+  gate, exclusion guards, and the coverage record are emitted as explicit `:erlang`
+  calls, so a module that narrows or replaces `Kernel`'s `and`, `==`, `===`, `!==`,
+  `<`, `>`, `not`, or `is_integer` cannot change what they mean. Function-heavy
+  modules also compile measurably faster and in less memory, because `Kernel.and/2`
+  in a body expands to a `case` and the coverage record carries two per function.
 - **Focused runs emit only selected mutants.** `--line`, `--since`, and
   `--max-mutants` now reduce generated branches as well as execution. Discovery
   still reserves every ID and checks ignore directives; poisoned and ignored

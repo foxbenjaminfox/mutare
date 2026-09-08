@@ -46,6 +46,7 @@ defmodule Mutare.Metamutant do
   """
 
   alias Mutare.AST
+  alias Mutare.Coverage.Recorder
 
   @baseline Mutare.Selector.baseline()
 
@@ -120,10 +121,11 @@ defmodule Mutare.Metamutant do
   @doc """
   Returns whether `node` is a tupled selector subject.
 
-  The tuple-the-scrutinee path emits case subjects as
-  `{<selector_subject>, <scrutinee>}`. The mutant clauses then gate on the active
-  id in guards, so `Mutare.Manifest` recognises the dispatch by checking the
-  tuple's first element with `subject?/2`.
+  The tuple-the-scrutinee path starts with `{<selector_subject>, <scrutinee>}`.
+  A generated single-clause case records coverage after evaluating this tuple and returns
+  the tuple unchanged; its temporary bindings stay outside source clause scopes. Recognise
+  that wrapper only through its coverage record and matching input/output variables.
+  The mutant clauses gate on the active id in guards.
 
   Both the bare two-tuple and the `{:__block__, _, [{first, scrutinee}]}` wrapper
   produced by literal-encoded reparse are accepted. `var` is passed through so the
@@ -143,7 +145,32 @@ defmodule Mutare.Metamutant do
   """
   @spec pattern_subject?(Macro.t(), atom() | nil) :: boolean()
   def pattern_subject?(node, var \\ nil)
-  def pattern_subject?({:__block__, _meta, [{first, _scrutinee}]}, var), do: subject?(first, var)
+  def pattern_subject?({:__block__, _meta, [inner]}, var), do: pattern_subject?(inner, var)
   def pattern_subject?({first, _scrutinee}, var), do: subject?(first, var)
+
+  def pattern_subject?({:case, _, [input, [{key, clauses}]]}, var) do
+    with [{:->, _, [[pattern], {:__block__, _, [record, returned]}]}] <- clauses,
+         recorded_var when not is_nil(recorded_var) <- Recorder.record_var(record),
+         true <- AST.key_atom(key) == :do,
+         true <- is_nil(var) or var == recorded_var,
+         true <- pattern_subject?(input, var),
+         {^recorded_var, _} = variables <- tuple_variables(pattern) do
+      tuple_variables(returned) == variables
+    else
+      _ -> false
+    end
+  end
+
   def pattern_subject?(_node, _var), do: false
+
+  defp tuple_variables(node) do
+    case AST.unwrap_literal(node) do
+      {{first, _, first_ctx}, {second, _, second_ctx}}
+      when is_atom(first) and is_atom(first_ctx) and is_atom(second) and is_atom(second_ctx) ->
+        {first, second}
+
+      _ ->
+        nil
+    end
+  end
 end

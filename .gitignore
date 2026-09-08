@@ -4,6 +4,9 @@
 # If you run "mix test --cover", coverage assets end up here.
 /cover/
 
+# Local benchmark measurements depend on the machine and toolchain.
+/bench/results/
+
 # The directory Mix downloads your dependencies sources to.
 /deps/
 
