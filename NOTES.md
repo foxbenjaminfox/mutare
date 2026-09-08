@@ -9335,7 +9335,7 @@ mutations only, and half carrying trailing ignores retained IDs 1..1,000 and red
 406,761 bytes to 228,865 bytes (43.7%). The compile timings above come from the motivating
 `emit_ids` experiment; this check did not remeasure compilation.
 
-### Raw-body outlining and runtime identity namespaces `[deferred]`
+### Raw-body outlining and runtime identity namespaces `[outlining deferred; namespaces done]`
 
 Sharing large raw clause bodies remains worthwhile, but extraction needs a positive
 eligibility contract: head bindings, function-sensitive macro expansion, implicit
@@ -9346,12 +9346,82 @@ expressions would prove a much narrower benefit than general head/guard outlinin
 The target's global or explicit Erlang inlining can also undo helper sharing; an
 inlining policy belongs with an outlining design, not an incidental compiler override.
 
-Stable per-file runtime selector namespaces would prevent file A's candidate-count edit
-from rewriting file B's selectors. Human-facing dense IDs must then map separately to
-runtime IDs through selection, coverage, manifest/poison recovery, hydration, and every
-reporter. Static emission deliberately leaves this identity contract unchanged. The
-remaining invariant to implement is that unchanged B's source and configuration produce
-identical B metamutants after unrelated A candidate-count changes.
+The namespace half is implemented separately below. Outlining remains deferred.
+
+### Stable per-file runtime identities `[done]`
+
+Schema builds now distinguish report ids from runtime identities. `Site.id` keeps the
+existing prefix-summed report number; `Site.runtime_id` is `{root_relative_file, local_id}`.
+`ClaimState` still reserves every report id and applies selection, ignores, and poison skips
+there, but hands each artifact builder the local integer. No report offset enters generated
+source. The two-pass schema build remains: counts still resolve global selection before
+emission. Standalone transforms omit the internal `:runtime_namespace` option and retain
+integer selection, including their existing `:start_id` semantics.
+
+The precise invariant is **unchanged B source, transform inputs, and effective local emission
+selection → byte-identical B metamutant**, even when A's candidate count or discovery scope
+changes B's report range. Unchanged options alone are insufficient: a fixed global
+`:max_mutants` can give B fewer selected candidates after A gains some. Renaming B or editing
+its own candidate sequence can change its runtime identities. This is not a persistent mutant
+identity for reusing historical verdicts, nor a promise that Mix will ignore real compile-time
+dependencies on A.
+
+One persistent-term slot holds `{namespace, local_id}`. A generated projection yields the
+local integer for the active file, `0` at baseline, and `:inactive` for other files. Function
+bodies hoist that projection with their existing selector read; inline/default positions
+keep it self-contained. Gates and interval exclusions still use local integers, and inactive
+files short-circuit coverage before reading its tracking flag. Selection remains one write,
+with the existing self-hosting key override. The dependency-free bootstrap combines
+`MUTARE_ACTIVE_MUTANT` with `MUTARE_MUTANT_NAMESPACE`; integer/baseline invocations explicitly
+clear an inherited namespace.
+
+**The translation does not spread through reporters.** `RuntimeId.index/1` translates the
+coverage dump's five collections before the runner consumes them. The helper namespaces ids
+before its per-process seen-cache and ETS writes, so two files' local id 1 stay distinct even
+within one test. An unknown runtime id invalidates coverage and falls back to run-all.
+`RuntimeId.file_index/1` translates lazy Manifest findings before Poison unions files;
+the macro fallback now retains its call-site file until that conversion. Manifest recognises
+the projection and excludes its zero branch from mutant regions. Hydration still derives
+report ids from `schema.start_ids`; public DTOs and every reporter keep integer report ids.
+
+Self-hosted fixture transforms now emit calls to the existing private coverage stand-in as
+well. Previously only the stand-in's definition moved aside: a fixture still called the real
+helper and could add unrelated ids to the outer probe. Strict runtime-to-report translation
+would reject that polluted dump. Harness-built metamutants keep the real helper; fixture
+calls and their xref attributes resolve through `Recorder.fixture_module/0` in the suite's
+process. The bootstrap and written helper remain independent of that override.
+
+**2026-09-08 investigation:** the existing retained-default fixture recompiled A and B after
+an A-only candidate-count edit under global ids. A temporary namespace spike kept B's bytes
+identical and recompiled only A; both no-change controls compiled nothing. The implementation's
+`namespace_runner_test` verifies that result through the real sandbox, then reruns mutation
+testing with B's changed report id. It also checks shared-test coverage and two-file poison
+recovery. `runtime_id_test` compares per-mutant standalone/namespaced behavior, including
+hosted fragments, defaults, guards, case/fn/rescue/binding delivery, and variable-name collisions.
+
+Separate persistent-term slots per file were tried and removed. With inactive files reading
+zero, every selector checked the coverage flag. In a temporary Arithmetic-only fixture
+(Elixir 1.19.5 / OTP 26), seven alternating samples of 100,000 function calls gave the following
+median microseconds. The legacy selector held an unrelated integer; namespaced variants held
+an unrelated file identity. No coverage was enabled.
+
+| Selectors per function | Legacy integer | Separate file slots | Global projection prototype |
+| --- | ---: | ---: | ---: |
+| 1 | 3,293 | 6,648 | 3,477 |
+| 10 | 4,300 | 14,733 | 4,141 |
+| 100 | 23,714 | 104,708 | 19,118 |
+
+These are mechanism measurements, not suite speedup claims. The measured projection prototype
+used `-1` for an inactive file; the implementation uses the atom `:inactive`, preserving the
+coverage short-circuit without generating a unary operator. Projection adds source and compiler
+work at each read, and namespace arguments add coverage payload; the gain is avoiding unrelated
+retained-build recompilation. There is no claim of faster cold compilation or scan caching.
+
+The final `:inactive` implementation was then measured with the same fixture and sampling
+protocol, without concurrent tests or benchmarks. Legacy versus namespaced medians were
+3,917 vs 3,872 µs (one selector), 4,643 vs 4,395 µs (ten), and 24,980 vs 19,673 µs
+(one hundred). This narrow inactive-file check found no runtime regression; it does not
+measure coverage-probe overhead or establish a general application speedup.
 
 ### Try/rescue: whole-construct duplication `[benchmarked; eligible shapes factored]`
 

@@ -79,13 +79,16 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
     **function lifting + a dispatcher** (guards, head patterns, clause structure — where a `case`
     is illegal). Placement is positional; mutators never choose. `Overlap` drops a leaf mutant a
     call rewrite already covers.
-- **`Mutare.Schema`** — runs `Transform` across discovered files, threading **globally-unique,
-  stable** mutant ids via a two-phase parallel build (count → prefix-sum → render). Honors
+- **`Mutare.Schema`** — runs `Transform` across discovered files, assigning globally-unique
+  report ids via a two-phase parallel build (count → prefix-sum → render). `Mutare.RuntimeId`
+  separates those numbers from stable per-file runtime identities; see NOTES "Stable per-file
+  runtime identities". Honors
   `:paths`/`:exclude`/`:only_files`/`:only_lines` (`--line` and `--since`, which both scope by
   changed *lines*)/`:max_mutants`/`:skip_ids`
   (poison recovery; the id counter advances even for skipped ids, so ids stay stable across rebuilds).
 - **`Mutare.Manifest` / `Mutare.Metamutant`** — the lazily-built map from a metamutant line range
-  back to the mutant id(s) living there, so **Poison** can attribute a compile error. Keyed by id;
+  back to the local mutant id(s) living there, so **Poison** can attribute a compile error and
+  translate to report ids. Keyed by id;
   no metamutant↔original line mapping.
 - **`Mutare.Sandbox`** (+ `Ownership`, `Lock`, `Seed`, `Command`, `Command.Invocation`/`Output`,
   `CompilerOptions`) — materializes a temp copy of the target, overwrites the metamutant sources,
@@ -158,7 +161,8 @@ another family's.
 These span modules, so no single moduledoc holds them. Internalize them before substantial changes.
 
 - **The selection/coverage/timeout/owner-death contracts are split across modules and baked into
-  generated code.** The `:persistent_term` selection key and `MUTARE_ACTIVE_MUTANT` live in
+  generated code.** The `:persistent_term` selection key, `MUTARE_ACTIVE_MUTANT`, and
+  `MUTARE_MUTANT_NAMESPACE` live in
   `Mutare.Selector`; the timeout and owner-death env vars + watchers in
   `Mutare.Sandbox.Command.Invocation` and their exit codes in `Mutare.Sandbox.Command`; the
   coverage contract (`MUTARE_COVERAGE`, `:mutare_track`, the ETS tables, `MutareCov`, the dump

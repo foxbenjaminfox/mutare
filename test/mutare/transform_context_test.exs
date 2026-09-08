@@ -761,7 +761,7 @@ defmodule Mutare.TransformContextTest do
     # only be observed where the helper is absent — Mutare's own VM ships a
     # `:mutare_cov` test stand-in — so the end-to-end check lives in
     # `Mutare.UmbrellaTest`; here we pin that the attribute is emitted, per module.)
-    @attr "@compile {:no_warn_undefined, {#{inspect(Mutare.Coverage.Recorder.helper_module())}, :hit, 1}}"
+    @attr "@compile {:no_warn_undefined, {#{inspect(Mutare.Coverage.Recorder.fixture_module())}, :hit, 1}}"
 
     @multi_module """
     defmodule Outer do
@@ -790,7 +790,7 @@ defmodule Mutare.TransformContextTest do
       # If the helper module/arity ever drifts from what `record_ast/1` emits, the
       # attribute would stop matching the call and the warning would silently
       # return — so assert both reference the same `<helper>.hit(...)`.
-      helper = inspect(Mutare.Coverage.Recorder.helper_module())
+      helper = inspect(Mutare.Coverage.Recorder.fixture_module())
 
       {meta, _sites, _next_id} =
         Mutare.Transform.transform_string_with_sites(

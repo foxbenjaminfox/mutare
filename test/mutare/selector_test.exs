@@ -12,11 +12,15 @@ defmodule Mutare.SelectorTest do
   setup do
     saved_override = System.get_env(Selector.override_env())
     saved_selector = System.get_env(Selector.env_var())
+    saved_namespace = System.get_env(Selector.namespace_env())
     saved_active = :persistent_term.get(Selector.default_key(), Selector.baseline())
+    System.delete_env(Selector.namespace_env())
 
     on_exit(fn ->
       restore_env(Selector.override_env(), saved_override)
       restore_env(Selector.env_var(), saved_selector)
+      restore_env(Selector.namespace_env(), saved_namespace)
+
       :persistent_term.put(Selector.default_key(), saved_active)
     end)
   end
@@ -105,5 +109,45 @@ defmodule Mutare.SelectorTest do
     rendered = Macro.to_string(Selector.bootstrap_ast())
 
     assert Mutare.Sandbox.bootstrap() =~ rendered
+  end
+
+  test "bootstrap selects a file and clears the previous file across repeated helpers" do
+    System.put_env(Selector.env_var(), "7")
+    System.put_env(Selector.namespace_env(), "lib/a.ex")
+    Code.eval_quoted(Selector.bootstrap_ast())
+    assert :persistent_term.get(Selector.default_key()) == {"lib/a.ex", 7}
+
+    System.put_env(Selector.namespace_env(), "lib/b.ex")
+    Code.eval_quoted(Selector.bootstrap_ast())
+    assert :persistent_term.get(Selector.default_key()) == {"lib/b.ex", 7}
+    Code.eval_quoted(Selector.bootstrap_ast())
+    assert :persistent_term.get(Selector.default_key()) == {"lib/b.ex", 7}
+
+    System.put_env(Selector.env_var(), "0")
+    Code.eval_quoted(Selector.bootstrap_ast())
+    assert :persistent_term.get(Selector.default_key()) == 0
+  end
+
+  test "integer invocations clear an inherited namespace and namespaces are reserved" do
+    assert Selector.environment(0) == [{Selector.env_var(), "0"}, {Selector.namespace_env(), nil}]
+
+    assert Selector.environment({"apps/core/lib/a.ex", 3}) ==
+             [{Selector.env_var(), "3"}, {Selector.namespace_env(), "apps/core/lib/a.ex"}]
+
+    assert Selector.namespace_env() in Mutare.Sandbox.Command.Invocation.reserved_env_names()
+  end
+
+  test "namespaced selection also respects the suite key override" do
+    harness = :persistent_term.get(Selector.default_key(), :unset)
+    System.put_env(Selector.override_env(), Selector.suite_key())
+    previous = Selector.active()
+
+    try do
+      Selector.put({"namespace_isolation.ex", 2})
+      assert Selector.active() == {"namespace_isolation.ex", 2}
+      assert :persistent_term.get(Selector.default_key(), :unset) == harness
+    after
+      Selector.put(previous)
+    end
   end
 end

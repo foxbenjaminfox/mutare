@@ -1,7 +1,7 @@
 defmodule Mutare.Schema do
   @moduledoc """
   The mutant schema for a whole project: every in-scope source transformed into
-  its metamutant, with globally-unique mutant ids threaded across files.
+  its metamutant, with globally-unique report ids and stable per-file runtime ids.
 
   This is what the runner compiles once and the report reads from.
   Files that have no mutation sites, or that *fail to parse*, are left out of
@@ -12,9 +12,14 @@ defmodule Mutare.Schema do
 
   ## Two-phase build (`from_files/4`)
 
-  Mutant ids are baked into each metamutant's selector clauses, so a naive
-  per-file render can't run concurrently — file *i*'s `:start_id` is file
-  *i-1*'s `next_id`. The build decouples id assignment from rendering in two
+  Report ids reserve contiguous ranges in file order — file *i*'s `:start_id`
+  is file *i-1*'s `next_id`. Emitted selectors instead use local integers under
+  the root-relative file namespace (`Mutare.RuntimeId`). An unrelated file's
+  candidate-count change therefore leaves this file's metamutant byte-identical,
+  provided its source, transform inputs, and effective emission selection stay
+  the same. A global cap can change that selection even with unchanged options.
+
+  The build determines report ranges and global selection before rendering in two
   passes, both run in **throwaway worker processes** so each file's heavy,
   short-lived ASTs (the emitted tree, Sourceror's render buffers) die with their
   worker instead of accumulating in the scan's long-lived heap, where they made
@@ -30,7 +35,8 @@ defmodule Mutare.Schema do
     2. **Render** (`render_files/5`) — prefix-sum the counts so each sited file
        knows its globally-unique `:start_id` up front, then
        `Mutare.Transform.transform_string/2` each file (with that `:start_id` and
-       the run's `:skip_ids` and statically selected `:emit_ids`) in parallel. Every
+       the file's `:runtime_namespace`, and the run's report-space `:skip_ids` and
+       statically selected `:emit_ids`) in parallel. Every
        candidate reserves its id and records its diagnostic site, but only selected
        candidates emit branches. `render_one/8` re-checks the count
        against the rendered `next_id` and fails loudly on any drift, since id
@@ -429,6 +435,7 @@ defmodule Mutare.Schema do
         [
           file: rel,
           start_id: start_id,
+          runtime_namespace: rel,
           skip_ids: skip_ids,
           emit_ids: emit_ids,
           render_site_code: render_site_code,
@@ -561,7 +568,8 @@ defmodule Mutare.Schema do
   @doc """
   Transform options for re-rendering one file's sites.
 
-  The returned keyword list is `transform_opts/1` plus `:file` and `:start_id`.
+  The returned keyword list is `transform_opts/1` plus `:file`, `:start_id`, and
+  the file's `:runtime_namespace`.
   `Mutare.Runner.Hydrate` uses it when a scan deferred site-code rendering and a
   report later needs the original/mutated code for one displayed site.
 
@@ -573,7 +581,7 @@ defmodule Mutare.Schema do
   """
   @spec render_opts(Options.t(), String.t(), pos_integer()) :: keyword()
   def render_opts(%Options{} = options, file, start_id) do
-    transform_opts(options) ++ [file: file, start_id: start_id]
+    transform_opts(options) ++ [file: file, start_id: start_id, runtime_namespace: file]
   end
 
   defp finalize(%__MODULE__{} = schema) do

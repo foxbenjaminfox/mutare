@@ -146,7 +146,7 @@ defmodule Mutare.Runner.CoverageProbe do
     dump = Path.join(root, Recorder.dump_file())
 
     with true <- Command.success?(attempt_probe(sandbox, root, dump, env, cap, @probe_attempts)),
-         {:ok, coverage} <- Coverage.read_dump(dump) do
+         {:ok, coverage} <- Coverage.read_dump(dump, Mutare.RuntimeId.index(schema.sites)) do
       select(mode, schema, coverage)
     else
       _ -> :run_all

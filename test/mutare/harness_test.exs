@@ -19,7 +19,7 @@ defmodule Mutare.HarnessTest do
   The `through the runner` tests then drive a harness error through the *whole*
   `Mutare.run/2` pipeline. A post-baseline harness error can't be produced by a
   broken sandbox (that fails the baseline first), so a target test simulates one
-  deterministically: it reads the public `:mutare_active` selection key and
+  deterministically: it reads the `MUTARE_ACTIVE_MUTANT` local selector integer and
   `System.halt`s with an off-contract code for exactly one mutant — baseline
   (id 0) stays green. That exercises the runner's harness path end to end: the
   per-mutant warning, and the abort guard (`:max_harness_error_rate`).
@@ -148,7 +148,7 @@ defmodule Mutare.HarnessTest do
 
           test "f" do
             # Simulate a harness-level failure for this one mutant only.
-            if :persistent_term.get(:mutare_active, 0) == 1, do: System.halt(99)
+            if System.get_env("MUTARE_ACTIVE_MUTANT") == "1", do: System.halt(99)
             assert H.f(1, 2) == 3
           end
         end
@@ -217,7 +217,7 @@ defmodule Mutare.HarnessTest do
           use ExUnit.Case
 
           test "f" do
-            if :persistent_term.get(:mutare_active, 0) == 1 do
+            if System.get_env("MUTARE_ACTIVE_MUTANT") == "1" do
               IO.puts(:stderr, "Runtime terminating during boot " <>
                 "({badarg,[{io,put_chars,[standard_error,...]}]})")
               System.halt(158)
@@ -271,7 +271,7 @@ defmodule Mutare.HarnessTest do
           use ExUnit.Case
 
           test "f" do
-            if :persistent_term.get(:mutare_active, 0) == 1 do
+            if System.get_env("MUTARE_ACTIVE_MUTANT") == "1" do
               # Count this attempt (cwd is the sandbox root), then die as the
               # OOM killer's victim would.
               File.write!("sigkill_attempts.log", ".", [:append])

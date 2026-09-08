@@ -81,8 +81,10 @@ defmodule Mutare.Sandbox.Command.Invocation do
   `{output, exit_status}`.
 
   `MIX_ENV=test` and `MUTARE_ACTIVE_MUTANT=<mutant_id>` are always set; `mutant_id`
-  is the integer the metamutant switches on (`Mutare.Selector.baseline/0` for a
-  baseline run), rendered into the env var here. `opts`:
+  is a runtime identity (`Mutare.Selector.baseline/0` for a baseline run). For a
+  schema mutant, `Selector.environment/1` splits its `{file, local_id}` into the
+  namespace and integer environment variables; integer calls clear any inherited
+  namespace. `opts`:
 
     * `:cap` (ms, or `nil`) — handed to the injected timeout watcher, which halts
       the run itself if it overruns, so there is no process tree to kill and
@@ -90,7 +92,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
     * `:env` — further environment variables (the coverage probe sets its capture
       flag this way).
   """
-  @spec mix(Path.t(), [String.t()], non_neg_integer(),
+  @spec mix(Path.t(), [String.t()], Mutare.RuntimeId.t(),
           cap: pos_integer() | nil,
           env: [{String.t(), String.t()}]
         ) :: {String.t(), non_neg_integer()}
@@ -101,7 +103,6 @@ defmodule Mutare.Sandbox.Command.Invocation do
         # Arm the owner-death watcher: this run's stdin is our pipe, so EOF on it
         # means we died and the run must halt itself rather than orphan.
         {@owner_watch_env, "1"},
-        {Mutare.Selector.env_var(), Integer.to_string(mutant_id)},
         # Self-hosting isolation: give the suite-under-test a private selection
         # key so its own `Selector.put/1` calls can't clobber the harness's
         # active-mutant slot. Inert on a normal target (no `Mutare.Selector`
@@ -115,6 +116,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
         {Mutare.Coverage.Recorder.fixture_override_env(),
          Mutare.Coverage.Recorder.suite_fixture_module()}
       ]
+      |> Kernel.++(Mutare.Selector.environment(mutant_id))
       |> maybe_cap(opts[:cap])
       |> Kernel.++(opts[:env] || [])
 
@@ -140,6 +142,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
       # Carries the `:max_heap_mb` cap (`heap_cap_env/1`) when that option is on.
       @erl_options_env,
       Mutare.Selector.env_var(),
+      Mutare.Selector.namespace_env(),
       Mutare.Selector.override_env(),
       Mutare.Coverage.Recorder.env_var(),
       Mutare.Coverage.Recorder.dump_path_env(),
@@ -202,7 +205,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
   `env` is extra environment passed straight through to `mix/4` (the runner uses
   it to set a per-worker partition var, e.g. `MIX_TEST_PARTITION`); `[]` adds none.
   """
-  @spec timed_mix(Path.t(), [String.t()], non_neg_integer(), pos_integer() | nil, [
+  @spec timed_mix(Path.t(), [String.t()], Mutare.RuntimeId.t(), pos_integer() | nil, [
           {String.t(), String.t()}
         ]) ::
           {non_neg_integer(), String.t(), non_neg_integer()}

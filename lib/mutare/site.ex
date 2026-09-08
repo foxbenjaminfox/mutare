@@ -4,6 +4,11 @@ defmodule Mutare.Site do
 
   One source expression may produce several sites, one for each replacement. Each site records its id, source range, mutator, replacement kind, before/after code, ignore state, and optional variant or advisory note. `Mutare.transform_string/2` returns sites alongside the generated metamutant source.
 
+  `id` is the run's report number. Schema builds also record `runtime_id` as
+  `{root_relative_file, local_id}`; standalone transforms leave it `nil`, using
+  `id` for selection too. `Mutare.RuntimeId` owns the boundary conversions. The
+  public `Mutare.MutationSite` DTO and every reporter retain integer report ids.
+
   A runner may defer rendering `original_code` and `mutated_code`, leaving them `nil` until the result needs to be displayed. `summary` may hold a cheaper one-line description for live progress. `Mutare.transform_string/2` renders the code fields by default.
   """
 
@@ -11,6 +16,7 @@ defmodule Mutare.Site do
 
   @type t :: %__MODULE__{
           id: pos_integer(),
+          runtime_id: Mutare.RuntimeId.t() | nil,
           file: String.t(),
           line: pos_integer() | nil,
           column: pos_integer() | nil,
@@ -33,6 +39,8 @@ defmodule Mutare.Site do
 
   defstruct [
     :id,
+    # nil for standalone transforms; schema builds carry {file namespace, local id}.
+    :runtime_id,
     :file,
     :line,
     :column,

@@ -62,7 +62,9 @@ defmodule Mutare.Transform.FnClauseEmit do
         _ ->
           rewritten = ClauseVariants.interleave(clauses, heads, var)
           ids = Enum.map(heads, &elem(&1, 0))
-          {:__block__, [], [Recorder.record_ast(ids, var), {:fn, meta, rewritten}]}
+
+          {:__block__, [],
+           [Recorder.record_ast(ids, var, ctx.config.runtime_namespace), {:fn, meta, rewritten}]}
       end
 
     select(default, whole, ctx)

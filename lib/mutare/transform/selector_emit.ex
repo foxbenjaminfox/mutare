@@ -42,7 +42,7 @@ defmodule Mutare.Transform.SelectorEmit do
   @spec selector_case(Macro.t(), [Macro.t()], Ctx.t()) :: Macro.t()
   def selector_case(default_node, mutant_clauses, %Ctx{config: %Config{active_var: var}} = ctx) do
     ids = ids_from_clauses(mutant_clauses)
-    catch_all = catch_all_clause(ids, default_node, var)
+    catch_all = catch_all_clause(ids, default_node, var, ctx.config.runtime_namespace)
     Render.selector_case(subject(ctx), mutant_clauses ++ [catch_all])
   end
 
@@ -65,14 +65,17 @@ defmodule Mutare.Transform.SelectorEmit do
       }),
       do: {var, [], nil}
 
-  def subject(%Ctx{}), do: Mutare.Metamutant.subject_ast()
+  def subject(%Ctx{config: config}), do: Mutare.Metamutant.subject_ast(config.runtime_namespace)
 
   @doc "The selector catch-all branch: baseline plus every inactive mutant."
-  @spec catch_all_clause([pos_integer()], Macro.t(), atom()) :: Macro.t()
-  def catch_all_clause([], default_node, _var), do: {:->, [], [[{:_, [], nil}], default_node]}
+  @spec catch_all_clause([pos_integer()], Macro.t(), atom(), String.t() | nil) :: Macro.t()
+  def catch_all_clause(ids, default_node, var, namespace \\ nil)
 
-  def catch_all_clause(ids, default_node, var) do
-    body = {:__block__, [], [Recorder.record_ast(ids, var), default_node]}
+  def catch_all_clause([], default_node, _var, _namespace),
+    do: {:->, [], [[{:_, [], nil}], default_node]}
+
+  def catch_all_clause(ids, default_node, var, namespace) do
+    body = {:__block__, [], [Recorder.record_ast(ids, var, namespace), default_node]}
     {:->, [], [[Recorder.catch_all_pattern(var)], body]}
   end
 

@@ -43,6 +43,22 @@ defmodule Mutare.Metamutant do
 
   `Mutare.Selector` owns the runtime constants (the `:persistent_term` key and
   the baseline id); this module owns their AST.
+
+  Schema builds pass a file namespace to `subject_ast/1`. Its read projects the
+  single global selection before any local selector or lifted guard sees it:
+
+      case :persistent_term.get(:mutare_active, 0) do
+        {"lib/example.ex", mutare_local_id} -> mutare_local_id
+        0 -> 0
+        _ -> :inactive
+      end
+
+  This projection is hoisted with the read in function bodies; default arguments
+  and other inline positions keep it self-contained. Local gates and exclusions
+  remain integer-based. `:inactive` differs from baseline so other files' coverage
+  gates short-circuit without consulting the tracking flag. `subject?/2` recognises
+  the complete projection, including after literal-encoded reparse. Its inner case
+  has no positive integer branches and therefore contributes no mutant to Manifest.
   """
 
   alias Mutare.AST
@@ -59,15 +75,17 @@ defmodule Mutare.Metamutant do
 
   @doc """
   The selector subject `Transform` splices into every selector/dispatcher `case`:
-  `:persistent_term.get(<key>, <baseline>)`.
+  `:persistent_term.get(<key>, <baseline>)`, optionally projected into a file namespace.
 
   ## Examples
 
       iex> Mutare.Metamutant.subject_ast() |> Mutare.Metamutant.subject?()
       true
   """
-  @spec subject_ast() :: Macro.t()
-  def subject_ast do
+  @spec subject_ast(String.t() | nil) :: Macro.t()
+  def subject_ast(namespace \\ nil)
+
+  def subject_ast(nil) do
     # Block-wrap the literal args (the clean-meta convention). Bare literals render
     # fine as a `case` *subject*, but as a match RHS — `mutare_active =
     # :persistent_term.get(:mutare_active, 0)` in a lifted dispatcher — the Elixir
@@ -78,14 +96,29 @@ defmodule Mutare.Metamutant do
      [{:__block__, [], [Mutare.Selector.key()]}, {:__block__, [], [@baseline]}]}
   end
 
+  def subject_ast(namespace) when is_binary(namespace) and namespace != "" do
+    # This binding lives only inside a generated clause with no user code. It
+    # cannot capture a source variable or escape into the surrounding scope.
+    local = {:mutare_local_id, [], nil}
+
+    clauses = [
+      {:->, [], [[{AST.literal(namespace), local}], local]},
+      {:->, [], [[AST.literal(@baseline)], AST.literal(@baseline)]},
+      {:->, [], [[{:_, [], nil}], AST.literal(:inactive)]}
+    ]
+
+    {:case, [], [subject_ast(), [do: clauses]]}
+  end
+
   @doc """
   Returns whether `node` is a selector subject.
 
-  `Mutare.Manifest` uses this while walking rendered metamutant source. Two shapes
+  `Mutare.Manifest` uses this while walking rendered metamutant source. Three shapes
   match:
 
     * the inline read built by `subject_ast/0`:
       `:persistent_term.get(<key>, <baseline>)`
+    * the namespace projection built by `subject_ast/1`
     * the hoisted read used inside function bodies: a bare reference to the active
       mutant variable `var`
 
@@ -111,6 +144,24 @@ defmodule Mutare.Metamutant do
     do:
       AST.unwrap_literal(mod) == :persistent_term and
         AST.unwrap_literal(key) == Mutare.Selector.key()
+
+  def subject?({:case, _, [read, [{key, clauses}]]}, _var) do
+    with true <- AST.key_atom(key) == :do,
+         [
+           {:->, _, [[pair], returned]},
+           {:->, _, [[baseline_pattern], baseline_value]},
+           {:->, _, [[{:_, _, _}], inactive]}
+         ] <- clauses,
+         {namespace, {name, _, context}} <- AST.unwrap_literal(pair),
+         true <- is_binary(AST.unwrap_literal(namespace)) and is_atom(name) and is_atom(context),
+         {^name, _, ^context} <- returned do
+      subject?(read) and AST.unwrap_literal(baseline_pattern) == @baseline and
+        AST.unwrap_literal(baseline_value) == @baseline and
+        AST.unwrap_literal(inactive) == :inactive
+    else
+      _ -> false
+    end
+  end
 
   def subject?({name, _meta, context}, var)
       when is_atom(name) and is_atom(context) and not is_nil(var),

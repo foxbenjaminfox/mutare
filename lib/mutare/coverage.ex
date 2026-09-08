@@ -44,6 +44,12 @@ defmodule Mutare.Coverage do
 
   `Mutare.Runner.CoverageProbe` reconciles them all.
 
+  Schema dumps use `{file_namespace, local_id}` identities; standalone transforms
+  use integers. `read_dump/2` accepts `Mutare.RuntimeId.index(schema.sites)` and
+  translates every collection to report ids before the runner consumes it. An
+  unknown identity invalidates the dump and triggers run-all, never false
+  no-coverage. `read_dump/1` exposes the runtime identities as recorded.
+
   Why not `:cover`: its counters live in a single global table keyed
   `{module, line}` with no per-process partition, so attributing coverage to a
   test in one run needs a per-test snapshot, and the only global per-test signal
@@ -71,26 +77,30 @@ defmodule Mutare.Coverage do
   default to empty so an old dump still reads (degrading `:tests` to `:coverage`).
   """
   @type t :: %{
-          aggregate: MapSet.t(pos_integer()),
-          by_file: %{String.t() => MapSet.t(pos_integer())},
-          unlabeled: MapSet.t(pos_integer()),
-          by_test: %{pos_integer() => MapSet.t(String.t())},
-          wholefile: MapSet.t(pos_integer())
+          aggregate: MapSet.t(Mutare.RuntimeId.t()),
+          by_file: %{String.t() => MapSet.t(Mutare.RuntimeId.t())},
+          unlabeled: MapSet.t(Mutare.RuntimeId.t()),
+          by_test: %{Mutare.RuntimeId.t() => MapSet.t(String.t())},
+          wholefile: MapSet.t(Mutare.RuntimeId.t())
         }
 
   @doc """
   Read and decode the probe's coverage dump at `path`.
+
+  An optional runtime-to-report index translates every recorded identity. Omitting
+  it returns raw runtime identities, useful for inspecting a standalone dump.
 
   Returns `{:error, _}` on anything unusable (missing file, truncated/garbled
   payload, unexpected shape — including a well-formed outer map whose *nested* keys,
   ids or collections are the wrong type) — the caller degrades such uncertainty to
   running the whole suite, never to a false `:no_coverage`. It raises for no input.
   """
-  @spec read_dump(Path.t()) :: {:ok, t()} | {:error, term()}
-  def read_dump(path) do
+  @spec read_dump(Path.t(), map() | nil) :: {:ok, t()} | {:error, term()}
+  def read_dump(path, report_ids \\ nil) do
     with {:ok, binary} <- File.read(path),
          {:ok, decoded} <- decode(binary),
-         :ok <- valid_shape(decoded) do
+         :ok <- valid_shape(decoded),
+         {:ok, decoded} <- translate(decoded, report_ids) do
       %{aggregate: aggregate, by_file: by_file} = decoded
       unlabeled = Map.get(decoded, :unlabeled, [])
       by_test = Map.get(decoded, :by_test, %{})
@@ -118,6 +128,27 @@ defmodule Mutare.Coverage do
     end
   end
 
+  # Convert every id-bearing field together. A missing identity is uncertainty,
+  # never an absent hit: the runner must fall back to running every mutant.
+  defp translate(decoded, nil), do: {:ok, decoded}
+
+  defp translate(decoded, report_ids) do
+    id = &Map.fetch!(report_ids, &1)
+    ids = &Enum.map(&1, id)
+
+    {:ok,
+     %{
+       aggregate: ids.(decoded.aggregate),
+       by_file: Map.new(decoded.by_file, fn {file, hits} -> {file, ids.(hits)} end),
+       unlabeled: ids.(Map.get(decoded, :unlabeled, [])),
+       by_test:
+         Map.new(Map.get(decoded, :by_test, %{}), fn {hit, names} -> {id.(hit), names} end),
+       wholefile: ids.(Map.get(decoded, :wholefile, []))
+     }}
+  rescue
+    error in KeyError -> {:error, {:unknown_runtime_id, error.key}}
+  end
+
   # The decoded payload must be a map carrying the keys and field types the rest of the module
   # assumes. A valid-but-wrong-shaped term (e.g. an atom, or a map missing `:aggregate`/`:by_file`)
   # routes to `:bad_shape` → the caller's run-all fallback, never a false `:no_coverage` and never
@@ -142,8 +173,11 @@ defmodule Mutare.Coverage do
 
   defp valid_shape(_other), do: :bad_shape
 
-  # Mutant ids are assigned from 1 upward by `Mutare.Schema`'s prefix-sum, so `pos_integer()` is
-  # the real contract, matching `t:t/0`.
+  # Integer ids belong to standalone transforms; schema ids include their file
+  # namespace. Baseline zero is never a recorded mutant.
+  defp id?({namespace, id}),
+    do: is_binary(namespace) and namespace != "" and is_integer(id) and id > 0
+
   defp id?(id), do: is_integer(id) and id > 0
 
   defp ids?(list), do: is_list(list) and Enum.all?(list, &id?/1)

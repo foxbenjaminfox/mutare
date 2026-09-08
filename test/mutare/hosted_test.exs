@@ -100,7 +100,7 @@ defmodule Mutare.HostedTest do
       # The selector `case` is spliced into `filter`'s condition position…
       assert meta =~ "filter(\n      [:ok],\n      case mutare_active do"
       # …and the catch-all records the hosted ids (inert outside the probe).
-      assert meta =~ ":mutare_cov.hit("
+      assert meta =~ "#{inspect(Mutare.Coverage.Recorder.fixture_module())}.hit("
     end
   end
 

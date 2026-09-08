@@ -32,12 +32,13 @@ defmodule Mutare.Transform.CaseClauseEmitTest do
       Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.IntegerLiteral])
 
     assert length(sites) > 100
+    helper = Recorder.fixture_module()
 
     {_ast, payloads} =
       metamutant
       |> Code.string_to_quoted!()
       |> Macro.prewalk([], fn
-        {{:., _, [:mutare_cov, :hit]}, _, [ids]} = node, payloads -> {node, [ids | payloads]}
+        {{:., _, [^helper, :hit]}, _, [ids]} = node, payloads -> {node, [ids | payloads]}
         node, payloads -> {node, payloads}
       end)
 
@@ -205,7 +206,12 @@ defmodule Mutare.Transform.CaseClauseEmitTest do
     {metamutant, sites, _} = Transform.transform_string_with_sites(source, mutators: mutators)
 
     # Keep the generated coverage gate, replacing only the sink with a process-local observer.
-    observed = String.replace(metamutant, ":mutare_cov.hit(", "#{inspect(CoverageSink)}.hit(")
+    observed =
+      String.replace(
+        metamutant,
+        "#{inspect(Recorder.fixture_module())}.hit(",
+        "#{inspect(CoverageSink)}.hit("
+      )
 
     ExUnit.CaptureIO.capture_io(:stderr, fn -> Code.compile_string(observed) end)
 

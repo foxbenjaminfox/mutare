@@ -218,6 +218,10 @@ defmodule Mutare.Transform do
       feed `use`-expansion (the
       extension's `opts` ride along to `expand_use/3`'s context). Defaults to `[]`.
     * `:start_id` — first mutant id to assign (default `1`)
+    * `:runtime_namespace` — internal schema plumbing: when set to a nonempty
+      file string, emit local ids from one under that namespace while Sites and
+      `:skip_ids`/`:emit_ids` retain the `:start_id` report range. Omitted by the
+      public standalone path, which keeps integer runtime selection.
     * `:expand_uses` — when `true` (the default), expand module-level `use` statements with
       static args and feed their injected `import`/`alias` directives into resolution (see
       `Mutare.Transform.Uses`); `false` freezes the pre-expansion behaviour (and, with it, any
@@ -250,7 +254,8 @@ defmodule Mutare.Transform do
     metamutant =
       if ctx.claim.emitted == 0,
         do: source,
-        else: transformed |> silence_helper_xref() |> Render.to_source()
+        else:
+          transformed |> silence_helper_xref(ctx.config.runtime_namespace) |> Render.to_source()
 
     {metamutant, Enum.reverse(ctx.claim.sites), ctx.claim.next_id}
   end
@@ -443,6 +448,8 @@ defmodule Mutare.Transform do
   defp build_config(opts, names, directives) do
     %Config{
       file: Keyword.get(opts, :file, "nofile"),
+      runtime_namespace: Keyword.get(opts, :runtime_namespace),
+      id_origin: Keyword.get(opts, :start_id, 1),
       mutators: opts |> Keyword.get(:mutators, @default_mutators) |> Mutare.Mutators.resolve(),
       skip_ids: Keyword.get(opts, :skip_ids, MapSet.new()),
       emit_ids: Keyword.get(opts, :emit_ids),
@@ -526,8 +533,8 @@ defmodule Mutare.Transform do
   # `defimpl` define modules with mutatable bodies; `defprotocol` has no bodies (so
   # no `hit/1` call) and is left alone. A prewalk reaches nested modules too — an
   # ancestor without its own call gets a harmless no-op attribute.
-  defp silence_helper_xref(ast) do
-    attr = Recorder.no_warn_attr_ast()
+  defp silence_helper_xref(ast, namespace) do
+    attr = Recorder.no_warn_attr_ast(namespace)
 
     Macro.prewalk(ast, fn
       {form, meta, args} when form in [:defmodule, :defimpl] and is_list(args) and args != [] ->
@@ -749,17 +756,20 @@ defmodule Mutare.Transform do
         {{key, value}, ctx}
       end)
 
-    {if(lifted?, do: body_kw, else: prepend_do_prologue(body_kw, ctx.config.active_var)), ctx}
+    {if(lifted?,
+       do: body_kw,
+       else: prepend_do_prologue(body_kw, ctx.config.active_var, ctx.config.runtime_namespace)
+     ), ctx}
   end
 
   # Prepend `<var> = :persistent_term.get(...)` to the `:do` block — but only when that
   # block actually references the hoisted variable (i.e. it spliced at least one hoisted
   # selector). With no reference the binding would draw an "unused variable" warning, so
   # an unmutated `:do` block is left untouched.
-  defp prepend_do_prologue(body_kw, var) do
+  defp prepend_do_prologue(body_kw, var, namespace) do
     Enum.map(body_kw, fn {key, value} = pair ->
       if AST.key_atom(key) == :do and references_var?(value, var),
-        do: {key, prepend_statement(value, LiftedEmit.active_read(var))},
+        do: {key, prepend_statement(value, LiftedEmit.active_read(var, namespace))},
         else: pair
     end)
   end
@@ -921,7 +931,14 @@ defmodule Mutare.Transform do
       # active-id parameter. Keep the original function, including super/defaults.
       {orig_clauses, ctx}
     else
-      {assemble_lifted(plan, orig_clauses, claimed, base, var, super_var), ctx}
+      {assemble_lifted(
+         plan,
+         orig_clauses,
+         claimed,
+         base,
+         ctx.config,
+         super_var
+       ), ctx}
     end
   end
 
@@ -930,9 +947,10 @@ defmodule Mutare.Transform do
          orig_clauses,
          claimed,
          base,
-         var,
+         config,
          super_var
        ) do
+    var = config.active_var
     mut_ids = Enum.map(claimed, fn {id, _i, _c, _w} -> id end)
 
     # Default arguments (`def f(a, b \\ 1)`) expand to multiple arities. They stay
@@ -945,7 +963,16 @@ defmodule Mutare.Transform do
     base_clauses = LiftedEmit.build_base_clauses(orig_clauses, claimed, base, var, super_var)
 
     dispatcher =
-      LiftedEmit.build_dispatcher(vis, name, arity, mut_ids, base, var, defaults, super_var)
+      LiftedEmit.build_dispatcher(
+        vis,
+        name,
+        arity,
+        mut_ids,
+        base,
+        config,
+        defaults,
+        super_var
+      )
 
     [dispatcher | base_clauses]
   end

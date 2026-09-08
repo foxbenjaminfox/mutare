@@ -299,7 +299,7 @@ defmodule Mutare.Sandbox.Command do
   `nil`) bounds an overrun via the watcher. `env` is extra environment (the runner
   sets a per-worker partition var here, e.g. `MIX_TEST_PARTITION`); `[]` adds none.
   """
-  @spec timed_test(Path.t(), [String.t()], non_neg_integer(), pos_integer() | nil, [
+  @spec timed_test(Path.t(), [String.t()], Mutare.RuntimeId.t(), pos_integer() | nil, [
           {String.t(), String.t()}
         ]) :: Result.t()
   def timed_test(sandbox, test_args, mutant_id, cap \\ nil, env \\ []) do

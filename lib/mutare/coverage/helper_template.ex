@@ -55,6 +55,10 @@ defmodule Mutare.Coverage.HelperTemplate do
   def dump_path_env, do: @dump_path_env
   def root_env, do: @root_env
 
+  # Namespace before the seen-cache as well as ETS: local id 1 in two files is
+  # two independent hits, even when both execute in the same test process.
+  def hit(namespace, ids), do: hit(Enum.map(ids, &{namespace, &1}))
+
   def hit(ids) do
     # Best-effort, never crash: a missing aggregate table means there is nowhere to
     # record, so skip (mirrors the dead-pid label guards below). A real probe run

@@ -35,6 +35,13 @@ defmodule Mutare.Poison do
   covers — the runner falls back to `macro_poison/2`, which attributes by the macro *name*
   the compiler blamed (via `Mutare.Manifest.ids_in_named_calls/2`) instead of by line. Only
   when *both* fail does the run abort.
+
+  A schema metamutant contains local integer ids. The runner supplies
+  `Mutare.RuntimeId.file_index(schema.sites)` to `ids/3` and `macro_poison/3` so
+  attribution translates `{file, local_id}` to report ids before merging files.
+  Without an index these APIs return the integers read from the metamutant, as
+  used by standalone transforms. The macro fallback retains the call-site file
+  through that conversion; two files' local id 1 must never collapse together.
   """
 
   alias Mutare.Manifest
@@ -69,17 +76,22 @@ defmodule Mutare.Poison do
   matched at least one mutant — so the caller can drop the union and name each macro for the
   narration and the `{Module, :fun, :raw}` suggestion.
   """
-  @spec macro_poison(String.t(), %{optional(String.t()) => String.t()}) ::
+  @spec macro_poison(String.t(), %{optional(String.t()) => String.t()}, map() | nil) ::
           [{{String.t(), atom()}, MapSet.t()}]
-  def macro_poison(compile_output, metamutants) do
+  def macro_poison(compile_output, metamutants, report_ids \\ nil) do
     macros = Hint.expanding_macros(compile_output)
     names = MapSet.new(macros, fn {_module, fun} -> fun end)
 
     ids_by_name =
       compile_output
       |> candidate_files(metamutants)
-      |> Enum.reduce(%{}, fn source, acc ->
-        merge_ids(acc, Manifest.ids_in_named_calls(source, names))
+      |> Enum.reduce(%{}, fn {file, source}, acc ->
+        ids =
+          Map.new(Manifest.ids_in_named_calls(source, names), fn {name, ids} ->
+            {name, MapSet.new(translate(ids, file, report_ids))}
+          end)
+
+        merge_ids(acc, ids)
       end)
 
     macros
@@ -101,7 +113,7 @@ defmodule Mutare.Poison do
     |> Enum.uniq()
     |> Enum.flat_map(fn file ->
       case Map.fetch(metamutants, file) do
-        {:ok, source} -> [source]
+        {:ok, source} -> [{file, source}]
         :error -> []
       end
     end)
@@ -146,20 +158,26 @@ defmodule Mutare.Poison do
   lines is parsed once. Returns an empty set when nothing could be mapped (the
   caller then aborts).
   """
-  @spec ids(String.t(), %{optional(String.t()) => String.t()}) :: MapSet.t()
-  def ids(compile_output, metamutants) do
+  @spec ids(String.t(), %{optional(String.t()) => String.t()}, map() | nil) :: MapSet.t()
+  def ids(compile_output, metamutants, report_ids \\ nil) do
     {ids, _cache} =
       compile_output
       |> error_locations()
       |> Enum.flat_map_reduce(%{}, fn {file, line}, cache ->
         case manifest_for(file, metamutants, cache) do
-          {nil, cache} -> {[], cache}
-          {manifest, cache} -> {Manifest.ids_at_line(manifest, line), cache}
+          {nil, cache} ->
+            {[], cache}
+
+          {manifest, cache} ->
+            {translate(Manifest.ids_at_line(manifest, line), file, report_ids), cache}
         end
       end)
 
     MapSet.new(ids)
   end
+
+  defp translate(ids, _file, nil), do: ids
+  defp translate(ids, file, report_ids), do: Enum.map(ids, &Map.fetch!(report_ids, {file, &1}))
 
   # The manifest for `file`, built once from its stored metamutant source and
   # memoized in `cache`. A `nil` (file not in the map) is cached too, so a stray

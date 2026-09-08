@@ -60,7 +60,9 @@ defmodule Mutare.Transform.ReceiveClauseEmit do
         _ ->
           rewritten = map_message_clauses(node, &ClauseVariants.interleave(&1, heads, var))
           ids = Enum.map(heads, &elem(&1, 0))
-          {:__block__, [], [Recorder.record_ast(ids, var), rewritten]}
+
+          {:__block__, [],
+           [Recorder.record_ast(ids, var, ctx.config.runtime_namespace), rewritten]}
       end
 
     select(default, whole, ctx)

@@ -421,8 +421,10 @@ defmodule Mutare.Manifest do
 
   # The integer pattern of a mutant clause (`<id> -> …`); `nil` for the catch-all.
   # Sourceror wraps the literal in a `:__block__`; a bare integer is also accepted.
-  defp clause_id({:__block__, _meta, [id]}) when is_integer(id), do: id
-  defp clause_id(id) when is_integer(id), do: id
+  # Namespace projections also switch on the global selector but their zero
+  # branch is baseline, never a mutant or a poison-attribution fallback.
+  defp clause_id({:__block__, _meta, [id]}) when is_integer(id) and id > 0, do: id
+  defp clause_id(id) when is_integer(id) and id > 0, do: id
   defp clause_id(_), do: nil
 
   # The mutant id a *lifted mutant clause* carries in its `when <var> === <id> …`
@@ -446,7 +448,7 @@ defmodule Mutare.Manifest do
   # equality match), so a mismatching gate falls through to the recursive descent instead.
   defp gate_id({_form, _meta, args} = node, var) when is_list(args) do
     with {:ok, [{^var, _, _}, id_node]} <- AST.erlang_call_args(node, :"=:="),
-         id when is_integer(id) <- literal_int(id_node) do
+         id when is_integer(id) and id > 0 <- literal_int(id_node) do
       id
     else
       _ -> Enum.find_value(args, &gate_id(&1, var))

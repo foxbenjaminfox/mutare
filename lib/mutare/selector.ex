@@ -5,7 +5,16 @@ defmodule Mutare.Selector do
   The active mutant is constant for an entire suite run, so it is read once from
   the environment at boot and stashed in `:persistent_term` (O(1) reads, built
   for write-once/read-many). Every selector site in the metamutant reads this
-  key on each execution.
+  key, normally hoisted to one read per function activation.
+
+  A schema mutant is stored as `{root_relative_file, local_id}` in that single
+  slot. `Mutare.Metamutant` projects it to the local integer for the active file,
+  `0` at baseline, or `:inactive` for other files. Thus only one file can be active
+  and inactive files still short-circuit coverage before its tracking-flag read.
+  Standalone transforms continue to select by plain integer, including `:start_id`.
+  The bootstrap combines `MUTARE_ACTIVE_MUTANT` (the local integer) with
+  `MUTARE_MUTANT_NAMESPACE` (the file); the runner translates report ids before
+  setting these. An absent namespace retains standalone integer selection.
 
   This module owns both sides of that contract: `Mutare.Metamutant` uses its key
   and baseline when building selectors, while `Mutare.Sandbox` renders
@@ -34,6 +43,7 @@ defmodule Mutare.Selector do
 
   @key :mutare_active
   @env_var "MUTARE_ACTIVE_MUTANT"
+  @namespace_env "MUTARE_MUTANT_NAMESPACE"
   @baseline 0
   # The env var that lets a sandbox suite-under-test select on a private key (see
   # the moduledoc). Set by `Mutare.Sandbox.Command` on every sandbox `mix`; unset
@@ -67,13 +77,26 @@ defmodule Mutare.Selector do
   @spec env_var() :: String.t()
   def env_var, do: @env_var
 
+  @doc "Environment variable carrying a schema mutant's root-relative file namespace."
+  @spec namespace_env() :: String.t()
+  def namespace_env, do: @namespace_env
+
+  @doc "Selection environment, explicitly clearing an inherited namespace for integer ids."
+  @spec environment(Mutare.RuntimeId.t()) :: [{String.t(), String.t() | nil}]
+  def environment({namespace, id})
+      when is_binary(namespace) and namespace != "" and is_integer(id) and id > 0,
+      do: [{@env_var, Integer.to_string(id)}, {@namespace_env, namespace}]
+
+  def environment(id) when is_integer(id) and id >= 0,
+    do: [{@env_var, Integer.to_string(id)}, {@namespace_env, nil}]
+
   @doc "The baseline id (no mutant active)."
   @spec baseline() :: non_neg_integer()
   def baseline, do: @baseline
 
   @doc """
-  Dependency-free code that reads the selector environment variable and stores
-  the active mutant id.
+  Dependency-free code that reads the selector environment variables and stores
+  the active runtime identity. Repeated umbrella helpers write the same single slot.
 
   `Mutare.Sandbox` renders this AST directly into the target project's test
   bootstrap, so the target does not need Mutare as a dependency.
@@ -82,30 +105,47 @@ defmodule Mutare.Selector do
   def bootstrap_ast do
     key = @key
     env_var = @env_var
+    namespace_env = @namespace_env
     baseline = @baseline
 
     quote do
-      :persistent_term.put(
-        unquote(key),
+      mutare_id =
         case System.get_env(unquote(env_var)) do
           nil -> unquote(baseline)
           "" -> unquote(baseline)
           raw -> String.to_integer(raw)
+        end
+
+      :persistent_term.put(
+        unquote(key),
+        case System.get_env(unquote(namespace_env)) do
+          namespace when is_binary(namespace) and namespace != "" and mutare_id > 0 ->
+            {namespace, mutare_id}
+
+          _ ->
+            mutare_id
         end
       )
     end
   end
 
   @doc "Set the active mutant id directly for in-process execution."
-  @spec put(non_neg_integer()) :: :ok
+  @spec put(Mutare.RuntimeId.t()) :: :ok
   # Writes `key/0` — the *runtime* key, so under dogfooding this lands in the
   # suite-under-test's private slot (`suite_key/0`), not the harness's
   # `:mutare_active`. That key isolation is why this is no longer `# mutare:ignore`d:
   # exercising `put/1` used to clobber the harness's active mutant (a false
   # survivor), but now it cannot, so its guard is honestly killable when dogfooding.
-  def put(id) when is_integer(id) and id >= 0, do: :persistent_term.put(key(), id)
+  def put(id) when is_integer(id) and id >= 0 do
+    :persistent_term.put(key(), id)
+  end
+
+  def put({namespace, id})
+      when is_binary(namespace) and namespace != "" and is_integer(id) and id > 0 do
+    :persistent_term.put(key(), {namespace, id})
+  end
 
   @doc "The active mutant id for in-process execution (`0` if unset)."
-  @spec active() :: non_neg_integer()
+  @spec active() :: Mutare.RuntimeId.t()
   def active, do: :persistent_term.get(key(), @baseline)
 end

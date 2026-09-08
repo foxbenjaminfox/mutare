@@ -43,6 +43,9 @@ defmodule Mutare.Transform.ClaimState do
   #     locating.
   #
   # `claim/5` is the one place the two sinks diverge; everything upstream is sink-agnostic.
+  # For a namespaced schema render, next_id, Sites, skips, and selection remain
+  # in report space; only artifact_fn receives id - id_origin + 1. Every delivery
+  # path therefore emits local integers without changing its placement mechanics.
 
   alias Mutare.Site
   alias Mutare.Transform.Config
@@ -103,7 +106,7 @@ defmodule Mutare.Transform.ClaimState do
         when item: term(), artifact: term()
   def claim(
         %__MODULE__{sink: :count} = claim,
-        _config,
+        config,
         item,
         {_site_fn, line_fn},
         artifact_fn
@@ -111,7 +114,7 @@ defmodule Mutare.Transform.ClaimState do
     id = claim.next_id
     claim = collect_selected_id(claim, id, item, line_fn)
 
-    {[artifact_fn.(id, item)],
+    {[artifact_fn.(local_id(config, id), item)],
      %{claim | next_id: id + 1, count: claim.count + 1, emitted: claim.emitted + 1}}
   end
 
@@ -131,6 +134,7 @@ defmodule Mutare.Transform.ClaimState do
     site =
       id
       |> site_fn.(item, config.file, flags)
+      |> runtime_identity(config)
       |> apply_ignore(config.ignore_directives)
 
     claim = %{claim | next_id: id + 1}
@@ -140,13 +144,21 @@ defmodule Mutare.Transform.ClaimState do
         {[], %{claim | sites: [poison(site) | claim.sites]}}
 
       selected? and not site.ignored ->
-        {[artifact_fn.(id, item)],
+        {[artifact_fn.(local_id(config, id), item)],
          %{claim | sites: [site | claim.sites], emitted: claim.emitted + 1}}
 
       true ->
         {[], %{claim | sites: [site | claim.sites]}}
     end
   end
+
+  defp local_id(%Config{runtime_namespace: nil}, id), do: id
+  defp local_id(%Config{id_origin: origin}, id), do: id - origin + 1
+
+  defp runtime_identity(site, %Config{runtime_namespace: nil}), do: site
+
+  defp runtime_identity(site, %Config{} = config),
+    do: %{site | runtime_id: {config.runtime_namespace, local_id(config, site.id)}}
 
   # Match the final report location and producing family's labels, including hosted/custom
   # attribution. Apply even to unselected and poisoned sites so diagnostics and reasons survive.

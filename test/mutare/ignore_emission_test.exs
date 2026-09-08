@@ -192,11 +192,13 @@ defmodule Mutare.IgnoreEmissionTest do
   end
 
   defp coverage_ids(source) do
+    helper = Mutare.Coverage.Recorder.fixture_module()
+
     {_ast, ids} =
       source
       |> Code.string_to_quoted!()
       |> Macro.prewalk([], fn
-        {{:., _, [:mutare_cov, :hit]}, _, [ids]} = node, acc -> {node, ids ++ acc}
+        {{:., _, [^helper, :hit]}, _, [ids]} = node, acc -> {node, ids ++ acc}
         node, acc -> {node, acc}
       end)
 

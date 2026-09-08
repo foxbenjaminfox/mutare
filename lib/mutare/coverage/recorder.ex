@@ -35,7 +35,8 @@ defmodule Mutare.Coverage.Recorder do
   The spliced expression is `mutare_active == 0 and
   :persistent_term.get(:mutare_track, false) and <helper>.hit([<ids>])`:
 
-    * per-mutant runs (`mutare_active != 0`) short-circuit on the integer compare —
+    * per-mutant runs (a local id in the selected file, `:inactive` elsewhere)
+      short-circuit on the comparison with zero —
       ~zero hot-loop cost;
     * the baseline green run and Mutare's own unit tests (`:mutare_track` unset)
       short-circuit on the persistent-term read — the helper is never *called*;
@@ -44,6 +45,11 @@ defmodule Mutare.Coverage.Recorder do
 
   The helper's `hit/1` returns `true` so the `and` chain stays boolean (an `:ets`
   call returns an int/`true` and would raise `BadBooleanError` mid-`and`).
+
+  Schema emission supplies a namespace to `record_ast/3`, producing
+  `hit(namespace, local_ids)`. The helper qualifies ids before its seen-cache and
+  ETS writes; the dump contains `{namespace, local_id}` keys. `Mutare.Coverage`
+  maps them back to the current run's report ids before test selection.
   """
 
   alias Mutare.AST
@@ -82,14 +88,15 @@ defmodule Mutare.Coverage.Recorder do
   # `UndefinedFunctionError`, collapsing coverage to run-all (see NOTES,
   # "Self-hosting coverage").
   #
-  # So the *stand-in's* module name is configurable: `fixture_module/0` returns
+  # So fixture emission and the *stand-in's* module name are configurable: `fixture_module/0` returns
   # `helper_module/0` unless `fixture_override_env/0` names another.
   # `Mutare.Sandbox.Command` sets that env var (to `suite_fixture_module/0`) on
   # every sandbox `mix`, so the suite-under-test's stand-in compiles under a private
   # name (`:mutare_cov__suite_fixture`) and never collides with the real helper the
-  # sandbox writes. The real helper, the metamutant's baked `hit/1` calls, and the
-  # bootstrap all keep `helper_module/0` (the override is unset in the harness
-  # process, and a normal target has no stand-in compiled in, so this is inert).
+  # sandbox writes. Harness-built metamutants and the bootstrap keep the real
+  # helper (the override is unset there). Transforms built by the suite-under-test
+  # call its private stand-in instead: fixture hits must not pollute the outer
+  # probe with unrelated runtime ids and invalidate its coverage mapping.
   @fixture_override_env "MUTARE_COV_FIXTURE_MODULE"
   @suite_fixture_module "mutare_cov__suite_fixture"
 
@@ -125,7 +132,7 @@ defmodule Mutare.Coverage.Recorder do
   def helper_module, do: @helper_module
 
   @doc """
-  The module name Mutare's `test/support/mutare_cov.ex` stand-in defines itself as.
+  The helper used by emitted fixture code and Mutare's `test/support/mutare_cov.ex` stand-in.
 
   `helper_module/0` (`:mutare_cov`) unless `fixture_override_env/0` names another —
   the one knob self-hosting needs so the stand-in does not collide with the real
@@ -167,6 +174,8 @@ defmodule Mutare.Coverage.Recorder do
   built directly so it can share that binding and splice `ids` as a literal list
   of integers.
 
+  `namespace` selects the helper's `hit/2` form; `nil` retains standalone `hit/1`.
+
   Literal arguments use clean metadata. In particular, the `0` must be wrapped as
   `{:__block__, [], [0]}`; a bare integer can render badly when this expression is
   emitted as a statement in a generated function body.
@@ -177,11 +186,17 @@ defmodule Mutare.Coverage.Recorder do
   import would otherwise redefine `==` and `and` under it. `record_var/1` recognises that
   form, so the two must move together.
   """
-  @spec record_ast([pos_integer()], atom()) :: Macro.t()
-  def record_ast(ids, var \\ @var_name) when is_list(ids) do
+  @spec record_ast([pos_integer()], atom(), String.t() | nil) :: Macro.t()
+  def record_ast(ids, var \\ @var_name, namespace \\ nil) when is_list(ids) do
     active_zero = AST.erlang_call(:==, [{var, [], nil}, literal(0)])
     track_read = {{:., [], [:persistent_term, :get]}, [], [literal(@track_key), literal(false)]}
-    hit_call = {{:., [], [@helper_module, :hit]}, [], [ids_literal(ids)]}
+
+    args =
+      if is_nil(namespace),
+        do: [ids_literal(ids)],
+        else: [AST.literal(namespace), ids_literal(ids)]
+
+    hit_call = {{:., [], [fixture_module(), :hit]}, [], args}
 
     AST.erlang_call(:andalso, [AST.erlang_call(:andalso, [active_zero, track_read]), hit_call])
   end
@@ -256,12 +271,13 @@ defmodule Mutare.Coverage.Recorder do
   attribute suppresses only that compile-time warning and is harmless when the
   helper is compiled in the same app.
   """
-  @spec no_warn_attr_ast() :: Macro.t()
-  def no_warn_attr_ast do
-    helper = @helper_module
+  @spec no_warn_attr_ast(String.t() | nil) :: Macro.t()
+  def no_warn_attr_ast(namespace \\ nil) do
+    helper = fixture_module()
+    arity = if is_nil(namespace), do: 1, else: 2
 
     quote do
-      @compile {:no_warn_undefined, {unquote(helper), :hit, 1}}
+      @compile {:no_warn_undefined, {unquote(helper), :hit, unquote(arity)}}
     end
   end
 

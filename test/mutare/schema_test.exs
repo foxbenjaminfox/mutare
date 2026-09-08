@@ -258,9 +258,15 @@ defmodule Mutare.SchemaTest do
   end
 
   defp emitted_ids(schema) do
+    report_ids = Mutare.RuntimeId.file_index(schema.sites)
+
     schema.metamutants
-    |> Enum.flat_map(fn {_file, source} ->
-      source |> Mutare.Manifest.from_source() |> Map.fetch!(:regions) |> Enum.flat_map(& &1.ids)
+    |> Enum.flat_map(fn {file, source} ->
+      source
+      |> Mutare.Manifest.from_source()
+      |> Map.fetch!(:regions)
+      |> Enum.flat_map(& &1.ids)
+      |> Enum.map(&Map.fetch!(report_ids, {file, &1}))
     end)
     |> Enum.uniq()
     |> Enum.sort()

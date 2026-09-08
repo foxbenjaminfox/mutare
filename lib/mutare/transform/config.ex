@@ -18,6 +18,8 @@ defmodule Mutare.Transform.Config do
 
   @type t :: %__MODULE__{
           file: String.t(),
+          runtime_namespace: String.t() | nil,
+          id_origin: pos_integer(),
           mutators: [Mutare.Mutator.Spec.t()],
           skip_ids: MapSet.t(),
           emit_ids: MapSet.t(pos_integer()) | nil,
@@ -35,6 +37,8 @@ defmodule Mutare.Transform.Config do
         }
 
   defstruct file: "nofile",
+            runtime_namespace: nil,
+            id_origin: 1,
             mutators: [],
             skip_ids: MapSet.new(),
             # Static run selection: reserve every id/site, but emit only these ids.

@@ -15,7 +15,7 @@ defmodule Mutare.Transform.LiftedEmit do
 
   alias Mutare.Coverage.Recorder
   alias Mutare.Metamutant
-  alias Mutare.Transform.{ClauseAST, GuardBuild, ImportWitness, Super}
+  alias Mutare.Transform.{ClauseAST, Config, GuardBuild, ImportWitness, Super}
 
   @doc """
   The lifted function's base clauses, interleaved: for each source clause, its mutant clauses
@@ -84,21 +84,30 @@ defmodule Mutare.Transform.LiftedEmit do
           arity(),
           [non_neg_integer()],
           atom(),
-          atom(),
+          Config.t(),
           map(),
           atom() | nil
         ) ::
           Macro.t()
-  def build_dispatcher(vis, name, arity, mut_ids, base, var, defaults, super_var) do
+  def build_dispatcher(
+        vis,
+        name,
+        arity,
+        mut_ids,
+        base,
+        %Config{active_var: var, runtime_namespace: namespace},
+        defaults,
+        super_var
+      ) do
     call_args = dispatcher_args(arity)
     head_args = with_defaults(call_args, defaults)
     var_node = Recorder.catch_all_pattern(var)
-    read = active_read(var)
+    read = active_read(var, namespace)
 
     {super_args, super_stmts} = super_closure_binding(super_var, arity)
     call = {base, [], [var_node | super_args] ++ call_args}
 
-    record = if mut_ids == [], do: [], else: [Recorder.record_ast(mut_ids, var)]
+    record = if mut_ids == [], do: [], else: [Recorder.record_ast(mut_ids, var, namespace)]
     body = {:__block__, [], [read] ++ super_stmts ++ record ++ [call]}
 
     {vis, [], [{name, [], head_args}, [do: body]]}
@@ -110,8 +119,9 @@ defmodule Mutare.Transform.LiftedEmit do
   the read's shape, shared by the lifted dispatcher (here) and a non-lifted function's `:do`-block
   prologue (`Mutare.Transform`).
   """
-  @spec active_read(atom()) :: Macro.t()
-  def active_read(var), do: {:=, [], [Recorder.catch_all_pattern(var), Metamutant.subject_ast()]}
+  @spec active_read(atom(), String.t() | nil) :: Macro.t()
+  def active_read(var, namespace \\ nil),
+    do: {:=, [], [Recorder.catch_all_pattern(var), Metamutant.subject_ast(namespace)]}
 
   @doc """
   The default-argument expressions of a lifted group, keyed by 0-based head position. They live

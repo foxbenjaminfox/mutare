@@ -19,8 +19,10 @@ defmodule fixture_module do
   # itself, the sandbox already holds the real helper module named `:mutare_cov`
   # (written by `Mutare.Sandbox`, with a `dump/1` the probe needs) — so
   # `Mutare.Sandbox.Command` sets the override and this stand-in compiles under a
-  # private name there, ceding `:mutare_cov` to the real helper instead of clashing
-  # with it. See `Mutare.Coverage.Recorder`'s moduledoc and NOTES "Self-hosting
+  # private name there. Transforms built by the suite call this stand-in too, so
+  # their fixture ids cannot contaminate the real helper's coverage dump.
+  # See `Mutare.Coverage.Recorder`'s moduledoc and NOTES "Self-hosting
   # coverage".
   def hit(_ids), do: true
+  def hit(_namespace, _ids), do: true
 end

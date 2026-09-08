@@ -103,7 +103,7 @@ defmodule Mutare.Runner.Compile do
     # only signal that distinguishes a DSL rejecting the injected selector wholesale
     # (recurs under a single drop) from one mutant's broken replacement (does not).
     # See `escalate_block_poison/3`.
-    raw = Poison.ids(output, schema.metamutants)
+    raw = Poison.ids(output, schema.metamutants, Mutare.RuntimeId.file_index(schema.sites))
     {poison, struck, escalated} = escalate_block_poison(raw, schema.sites, recovery.struck)
 
     # Inline-macro attribution takes **priority** over line attribution. A macro that rejects the
@@ -165,7 +165,7 @@ defmodule Mutare.Runner.Compile do
     block_ids = block_macro_ids(schema.sites)
 
     output
-    |> Poison.macro_poison(schema.metamutants)
+    |> Poison.macro_poison(schema.metamutants, Mutare.RuntimeId.file_index(schema.sites))
     |> Enum.map(fn {macro, ids} -> {macro, MapSet.difference(ids, block_ids)} end)
     |> Enum.reject(fn {_macro, ids} -> Enum.empty?(ids) or MapSet.subset?(ids, skip_ids) end)
   end

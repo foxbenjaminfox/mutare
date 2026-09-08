@@ -433,7 +433,13 @@ defmodule Mutare.Transform.FnClauseEmitTest do
   end
 
   defp compile_observed(module, metamutant) do
-    observed = String.replace(metamutant, ":mutare_cov.hit(", "#{inspect(CoverageSink)}.hit(")
+    observed =
+      String.replace(
+        metamutant,
+        "#{inspect(Recorder.fixture_module())}.hit(",
+        "#{inspect(CoverageSink)}.hit("
+      )
+
     ExUnit.CaptureIO.capture_io(:stderr, fn -> Code.compile_string(observed) end)
 
     on_exit(fn ->
@@ -455,11 +461,13 @@ defmodule Mutare.Transform.FnClauseEmitTest do
   end
 
   defp coverage_payloads(source) do
+    helper = Recorder.fixture_module()
+
     {_, payloads} =
       source
       |> Code.string_to_quoted!()
       |> Macro.prewalk([], fn
-        {{:., _, [:mutare_cov, :hit]}, _, [ids]} = node, acc -> {node, [ids | acc]}
+        {{:., _, [^helper, :hit]}, _, [ids]} = node, acc -> {node, [ids | acc]}
         node, acc -> {node, acc}
       end)
 

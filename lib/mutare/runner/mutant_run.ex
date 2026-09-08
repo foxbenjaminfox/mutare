@@ -119,7 +119,14 @@ defmodule Mutare.Runner.MutantRun do
   # `:sigkilled`, deliberately (see `run_mutant/4`: retrying a likely-OOM-killed
   # mutant re-detonates it on the host).
   defp run_mutant_attempt(%RunCtx{} = ctx, site, test_args, env, retries, boot_retries) do
-    result = Command.timed_test(ctx.sandbox, test_args, site.id, ctx.cap, env ++ ctx.heap_env)
+    result =
+      Command.timed_test(
+        ctx.sandbox,
+        test_args,
+        Mutare.RuntimeId.of(site),
+        ctx.cap,
+        env ++ ctx.heap_env
+      )
 
     case result.outcome do
       :boot_failure when boot_retries > 0 ->

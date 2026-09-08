@@ -38,7 +38,13 @@ defmodule Mutare.Transform.BindingEscapeEmit do
       fn c -> match_inner_case(c.raw_rhs, c.mutated, export) end,
       fn ids ->
         inner = match_inner_case(emitted_rhs, original_lhs, export)
-        SelectorEmit.catch_all_clause(ids, inner, ctx.config.active_var)
+
+        SelectorEmit.catch_all_clause(
+          ids,
+          inner,
+          ctx.config.active_var,
+          ctx.config.runtime_namespace
+        )
       end
     )
   end
@@ -102,7 +108,15 @@ defmodule Mutare.Transform.BindingEscapeEmit do
       candidates,
       ctx,
       fn c -> macro_pattern_branch(c.mutant_expr, export) end,
-      fn ids -> macro_pattern_catch_all(ids, baseline, export, ctx.config.active_var) end
+      fn ids ->
+        macro_pattern_catch_all(
+          ids,
+          baseline,
+          export,
+          ctx.config.active_var,
+          ctx.config.runtime_namespace
+        )
+      end
     )
   end
 
@@ -119,9 +133,15 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   The selector catch-all for a rewritten binding-pattern macro: record the hosted ids (inert
   outside the probe), run the baseline (emitted) macro, then yield the export.
   """
-  @spec macro_pattern_catch_all([non_neg_integer()], Macro.t(), Macro.t(), atom()) :: Macro.t()
-  def macro_pattern_catch_all(ids, baseline, export, var) do
-    body = {:__block__, [], [Recorder.record_ast(ids, var), baseline, export]}
+  @spec macro_pattern_catch_all(
+          [non_neg_integer()],
+          Macro.t(),
+          Macro.t(),
+          atom(),
+          String.t() | nil
+        ) :: Macro.t()
+  def macro_pattern_catch_all(ids, baseline, export, var, namespace \\ nil) do
+    body = {:__block__, [], [Recorder.record_ast(ids, var, namespace), baseline, export]}
     {:->, [], [[Recorder.catch_all_pattern(var)], body]}
   end
 

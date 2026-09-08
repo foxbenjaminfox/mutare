@@ -69,7 +69,13 @@ defmodule Mutare.Transform.HostedEmit do
       _ ->
         ids = SelectorEmit.ids_from_clauses(clauses)
 
-        catch_all = SelectorEmit.catch_all_clause(ids, fallback, ctx.config.active_var)
+        catch_all =
+          SelectorEmit.catch_all_clause(
+            ids,
+            fallback,
+            ctx.config.active_var,
+            ctx.config.runtime_namespace
+          )
 
         case_node = SelectorEmit.raw_case(clauses, catch_all, ctx)
         {cand.splice.(node, case_node), ctx, case_node}

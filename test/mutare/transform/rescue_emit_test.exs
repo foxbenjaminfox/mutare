@@ -276,7 +276,14 @@ defmodule Mutare.Transform.RescueEmitTest do
 
   test "coverage records all live rescue ids before successful or raising body evaluation" do
     {module, sites, meta, _} = fixture("Coverage", simple_body())
-    observed = String.replace(meta, ":mutare_cov.hit(", "#{inspect(CoverageSink)}.hit(")
+
+    observed =
+      String.replace(
+        meta,
+        "#{inspect(Recorder.fixture_module())}.hit(",
+        "#{inspect(CoverageSink)}.hit("
+      )
+
     compile(module, observed)
     Process.put(:rescue_observer, self())
     :persistent_term.put(Recorder.track_key(), true)

@@ -69,7 +69,10 @@ defmodule Mutare.Transform.CaseClauseEmit do
         # source scrutinee therefore escape just as they did before, while the temporary is
         # invisible to source clause bodies, subsequent binding/0, and macros inspecting
         # __CALLER__. The tuple preserves selector-before-scrutinee evaluation in every scope.
-        record_body = {:__block__, [], [Recorder.record_ast(all_ids, var), tuple]}
+        record_body =
+          {:__block__, [],
+           [Recorder.record_ast(all_ids, var, ctx.config.runtime_namespace), tuple]}
+
         record_clause = {:->, [], [[tuple], record_body]}
 
         subject =

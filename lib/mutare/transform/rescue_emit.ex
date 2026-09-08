@@ -136,7 +136,7 @@ defmodule Mutare.Transform.RescueEmit do
     Render.block_wrap(
       {:__block__, [],
        [
-         Recorder.record_ast(ids, ctx.config.active_var),
+         Recorder.record_ast(ids, ctx.config.active_var, ctx.config.runtime_namespace),
          {:try, meta, [shared ++ [catch: [catch_clause]]]}
        ]}
     )
