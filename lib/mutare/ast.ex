@@ -218,8 +218,8 @@ defmodule Mutare.AST do
   Mutare uses it for the operators it *generates* into the metamutant — the
   activation gate, exclusion guards, and the coverage record — so a target that
   narrows or replaces `Kernel`'s imports cannot change what they mean. Elixir
-  compiles `:erlang.andalso/2` and `:erlang.orelse/2` to the short-circuit
-  operators, so both stay legal in a guard.
+  compiles an `:erlang.andalso` or `:erlang.orelse` call to the short-circuit
+  operator itself, so both stay legal in a guard.
 
       iex> Mutare.AST.erlang_call(:"=:=", [1, 2])
       {{:., [], [:erlang, :"=:="]}, [], [1, 2]}
