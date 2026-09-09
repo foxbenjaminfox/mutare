@@ -203,7 +203,12 @@ defmodule Mutare.Sandbox.CompilerOptions do
   # because the rendered string cannot distinguish "no module here" from "hook attached".
 
   # A quote is data that can leave the sandbox, including through a macro defined
-  # in mix.exs. Never give its modules a dependency on our bootstrap.
+  # in mix.exs. Never give its modules a dependency on our bootstrap. The bare form is
+  # the only one to guard, and the asymmetry with `module_definition?/1` — which does
+  # recognise a qualified `Kernel.defmodule` — is deliberate: `quote` is a special form
+  # with no qualified spelling, so `Kernel.quote` names no macro. It is an undefined
+  # remote call that evaluates its `do:` block eagerly, making a `defmodule` inside it a
+  # real definition that must be hooked like any other.
   defp wrap_project_modules({:quote, _meta, _args} = node, hooked?), do: {node, hooked?}
 
   defp wrap_project_modules({form, meta, args}, hooked?) when is_list(args) do
