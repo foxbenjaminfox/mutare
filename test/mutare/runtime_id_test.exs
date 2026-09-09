@@ -283,6 +283,60 @@ defmodule Mutare.RuntimeIdTest do
     assert ids == MapSet.new([10, 20])
   end
 
+  test "poison attributes nothing rather than raising on a pristine file's phantom ids", %{
+    tmp_dir: root
+  } do
+    File.mkdir_p!(Path.join(root, "lib"))
+    File.write!(Path.join(root, "lib/a.ex"), "defmodule PhantomA do\n def f(x), do: x + 2\nend\n")
+
+    # `lib/b.ex` writes a selector's own shape. The cap leaves it nothing to emit, so it
+    # renders pristine — no generated code anchors the salted dispatch name, and the manifest
+    # reads this `1 ->` clause back as local id 1, which no site of this run claims.
+    imitation = """
+    defmodule PhantomB do
+      def pick(mutare_active) do
+        case mutare_active do
+          1 -> :one
+          _ -> :other
+        end
+      end
+    end
+    """
+
+    File.write!(Path.join(root, "lib/b.ex"), imitation)
+
+    schema = Schema.build(root, max_mutants: 2)
+    index = RuntimeId.file_index(schema.sites)
+
+    assert schema.metamutants["lib/b.ex"] == imitation
+    assert Enum.filter(schema.sites, &(&1.file == "lib/b.ex")) == []
+    assert manifest_ids(schema.metamutants["lib/b.ex"]) == MapSet.new([1])
+
+    phantom = "** (CompileError) lib/b.ex:4: broken\n"
+    real = error_at_first_region(schema, "lib/a.ex")
+    real_ids = Poison.ids(real, schema.metamutants, index)
+
+    assert Poison.ids(phantom, schema.metamutants, index) == MapSet.new()
+    refute Enum.empty?(real_ids)
+    assert Poison.ids(real <> phantom, schema.metamutants, index) == real_ids
+
+    frames = "expanding macro: MyDsl.pick/1\nlib/b.ex:3: PhantomB.pick/1\n"
+    assert Poison.macro_poison(frames, schema.metamutants, index) == []
+  end
+
+  # A compile error pointing at the first line of generated code in `file`'s metamutant —
+  # a location that really does attribute to a mutant.
+  defp error_at_first_region(schema, file) do
+    %{lo: line} =
+      schema.metamutants
+      |> Map.fetch!(file)
+      |> Manifest.from_source()
+      |> Map.fetch!(:regions)
+      |> hd()
+
+    "** (CompileError) #{file}:#{line}: broken\n"
+  end
+
   defp manifest_ids(source),
     do:
       source

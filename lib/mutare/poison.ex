@@ -41,7 +41,10 @@ defmodule Mutare.Poison do
   attribution translates `{file, local_id}` to report ids before merging files.
   Without an index these APIs return the integers read from the metamutant, as
   used by standalone transforms. The macro fallback retains the call-site file
-  through that conversion; two files' local id 1 must never collapse together.
+  through that conversion; two files' local id 1 must never collapse together. An id the
+  index doesn't know names no mutant in this run — a file the selection left with nothing
+  to emit renders pristine, and pristine source can imitate a selector — so it is dropped,
+  degrading to "mapped nothing" rather than crashing a run mid-recovery.
   """
 
   alias Mutare.Manifest
@@ -176,8 +179,24 @@ defmodule Mutare.Poison do
     MapSet.new(ids)
   end
 
+  # Local ids read back out of a metamutant, mapped to this run's report ids. An id the index
+  # doesn't know is **dropped**, never raised on: `Mutare.Schema` guarantees every emitted mutant
+  # reaches a reported site, so an untranslatable id names no mutant — it is a phantom the
+  # manifest read out of a file the selection left nothing to emit, which renders pristine and
+  # can therefore imitate a selector in the target's own source. Attributing nothing is the
+  # honest answer and the caller already handles it (macro fallback, then abort + `Hint`);
+  # raising would kill a run mid-recovery from a compile failure. `Mutare.Coverage.read_dump/2`
+  # degrades an unrecognised runtime id the same way. NOTES "Stable per-file runtime identities".
   defp translate(ids, _file, nil), do: ids
-  defp translate(ids, file, report_ids), do: Enum.map(ids, &Map.fetch!(report_ids, {file, &1}))
+
+  defp translate(ids, file, report_ids) do
+    Enum.flat_map(ids, fn id ->
+      case Map.fetch(report_ids, {file, id}) do
+        {:ok, report_id} -> [report_id]
+        :error -> []
+      end
+    end)
+  end
 
   # The manifest for `file`, built once from its stored metamutant source and
   # memoized in `cache`. A `nil` (file not in the map) is cached too, so a stray

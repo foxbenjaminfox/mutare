@@ -9465,6 +9465,18 @@ the macro fallback now retains its call-site file until that conversion. Manifes
 the projection and excludes its zero branch from mutant regions. Hydration still derives
 report ids from `schema.start_ids`; public DTOs and every reporter keep integer report ids.
 
+**Poison drops an id its index doesn't know; it never raises on one.** Translating flipped what
+a Manifest finding has to mean: an id read out of a metamutant used to need no site behind it
+(metamutant ⊋ sites), and translating one demands metamutant ⊆ sites. Selection manufactures
+findings that own no site. A file the cap or `--line` leaves nothing to emit renders pristine, so
+no generated code anchors the salted dispatch name, and target source that happens to write a
+selector's own shape (`case mutare_active do 1 -> ...`) reads back as local id 1. That phantom was
+inert while ids passed through raw; under a bare `Map.fetch!` it killed the recovery the compile
+failure had just started — the one moment Poison exists to survive. Dropping it attributes
+nothing, which the caller already handles: the macro fallback, then the abort and its `Hint`.
+`Schema.verify_selection!/2` guarantees every emitted mutant reaches a reported site, so an
+untranslatable id is a phantom by construction, never a lost mutant.
+
 Self-hosted fixture transforms now emit calls to the existing private coverage stand-in as
 well. Previously only the stand-in's definition moved aside: a fixture still called the real
 helper and could add unrelated ids to the outer probe. Strict runtime-to-report translation
