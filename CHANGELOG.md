@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   overwrite the earlier global setting with its default. Other compiler options
   and the target checkout are preserved; subsequent baseline/probe boots use the
   same setting.
+- **A seeded app build is no longer discarded when its `mix.exs` could not be
+  wrapped.** The inference cache entry was realigned for every app Mutare *listed*,
+  not every app it actually wrapped. A `mix.exs` that builds its project in an
+  externally required file, that Sourceror cannot round-trip, or that cannot be read
+  is skipped by the rewrite; stamping its manifest anyway left inference on *and*
+  mismatched the compiler cache key, so Mix cold-compiled the whole app while the
+  seed reported its beams as reused. The rewrite now reports whether the wrap landed,
+  and only those apps are realigned.
 
 ### Changed
 

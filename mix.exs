@@ -41,6 +41,7 @@ defmodule Mutare.MixProject do
     Mutare.Transform.BindingEscapeEmit
     Mutare.Transform.Config
     Mutare.Runner.Hydrate
+    Mutare.Sandbox.Seed
     Mutare.Options.Registry
     Mutare.CallRouting.Registry
     Mutare.Mutator.Dispatch

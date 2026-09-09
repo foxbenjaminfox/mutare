@@ -78,7 +78,7 @@ defmodule Mutare.Sandbox.CompilerOptionsTest do
   describe "project_source/1" do
     test "renders keyword-do module bodies with an encoded hook atom" do
       for form <- ["defmodule", "Kernel.defmodule", "Elixir.Kernel.defmodule"] do
-        source = CompilerOptions.project_source("#{form} Example, do: :ok")
+        assert {source, true} = CompilerOptions.project_source("#{form} Example, do: :ok")
         assert {:ok, _} = Code.string_to_quoted(source)
         assert source =~ "@before_compile :mutare_sandbox_compiler_options"
       end
@@ -106,7 +106,7 @@ defmodule Mutare.Sandbox.CompilerOptionsTest do
       defmodule AfterQuote, do: :ok
       """
 
-      rendered = CompilerOptions.project_source(source)
+      assert {rendered, true} = CompilerOptions.project_source(source)
 
       assert length(Regex.scan(~r/@before_compile :mutare_sandbox_compiler_options/, rendered)) ==
                2
@@ -124,20 +124,31 @@ defmodule Mutare.Sandbox.CompilerOptionsTest do
       assert expected in quotes
     end
 
-    test "returns unparseable project templates byte-for-byte" do
+    test "returns unparseable project templates byte-for-byte, reporting no hook" do
       for source <- ["defmodule <%= @module %>, do: :ok\n", "defmodule MissingEnd do\n", "[)\n"] do
-        assert CompilerOptions.project_source(source) == source
+        assert CompilerOptions.project_source(source) == {source, false}
       end
     end
 
+    test "reports no hook for a mix.exs that defines no module of its own" do
+      # A project built entirely in an externally required file. The rewrite has nothing to
+      # hook, yet the source still comes back *changed* — the bootstrap is prepended
+      # unconditionally — so the caller cannot read the outcome off the string.
+      source = ~s|Code.require_file("build/project.exs", __DIR__)\n|
+
+      assert {rendered, false} = CompilerOptions.project_source(source)
+      assert rendered != source
+      refute rendered =~ "@before_compile"
+    end
+
     test "renders a dependency-free wrapper that reparses" do
-      source =
-        CompilerOptions.project_source("""
-        defmodule Example.MixProject do
-          use Mix.Project
-          def project, do: [app: :example, version: "0.0.0"]
-        end
-        """)
+      assert {source, true} =
+               CompilerOptions.project_source("""
+               defmodule Example.MixProject do
+                 use Mix.Project
+                 def project, do: [app: :example, version: "0.0.0"]
+               end
+               """)
 
       assert {:ok, _} = Code.string_to_quoted(source)
       assert source =~ "defoverridable project: 0"

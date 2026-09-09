@@ -846,7 +846,7 @@ module's *compile-time* surface (macros, module attributes other modules read) s
 to compile-time dependents; correct, and usually tiny since metamutants preserve the public
 function signatures. `--no-seed-app-build` (`:seed_app_build` false) opts out wholesale —
 forcing a cold compile — as a diagnostic A/B for the no-op surface or for a paranoid CI.
-Surfaced under `--verbose` (`[done]`): `Seed.app_build/5` returns a `t:summary/0`
+Surfaced under `--verbose` (`[done]`): `Seed.app_build/6` returns a `t:summary/0`
 (`:seeded` with reused/recompiled beam counts, `:partial`, a `:fallback` to a cold
 compile, or `:skipped`), which `Sandbox.prepare/3` relays on the `:on_phase` hook as
 `{:seed_app_build, summary}`; `Report.Live.seed_line/1` renders a `✓`/`↺` line for the
@@ -1465,7 +1465,7 @@ file produces a byte-identical metamutant.
 - `default_sandbox/2` returns a **stable** per-project temp dir (a SHA-256 of the
   expanded root) instead of a random one, so `mix mutare --keep-sandbox` alone
   reuses the same path. CI usually pins `--sandbox <cache>` instead.
-- `sync/4` re-materialises in place: `put_sandbox_file_if_changed/3` rewrites a
+- `sync/3` re-materialises in place: `put_sandbox_file_if_changed/3` rewrites a
   file **only when its bytes differ** (size-check, then compare), so an unchanged file keeps
   its mtime — which is the whole trick, since mix keys staleness on source mtime
   vs. the compile manifest (`File.cp_r!`/`File.write!` both bump mtime to now,
@@ -1523,7 +1523,7 @@ sandbox pays best: editing `test/` leaves the metamutant byte-identical, so the 
 `mix compile` does nothing. Fresh mode threw that away on every run, and in practice
 the flag was passed every time and its omission regretted. "Compile once" was coined
 against per-mutant recompilation; extending it from once-per-run to
-once-per-source-change is the same bet, and the machinery (`sync/4`, the byte-aware
+once-per-source-change is the same bet, and the machinery (`sync/3`, the byte-aware
 mirror, `prune/2`, the stable digest path, the live-owner `Lock`) already existed and
 was tested. So the default is now `true`; `--no-keep-sandbox` is the opt-out.
 
@@ -8149,7 +8149,7 @@ untouched modules compile only in the target, including umbrella siblings. They 
 check explicit options plus xref exclusions, a changed `:docs` option, and subsequent
 baseline/probe boots.
 
-### The sandbox project wrapper and the seeded manifest must name the same apps `[done]`
+### The seeded manifest must follow the wraps that landed, not the ones attempted `[done]`
 
 `CompilerOptions.project_source/1` only reaches the `mix.exs` files `Mutare.Sandbox` overlays,
 and those come from `Project.project_dirs/1` — the root, plus each umbrella child. Anything
@@ -8157,12 +8157,39 @@ else in `_build/<env>/lib` that is not a dependency compiles with inference **on
 concretely a `path:` dependency living outside `deps/`, which is seeded like an in-project app.
 
 Stamping such an app's transplanted manifest with `infer_signatures: false` is worse than not
-wrapping it. Mix computes the cache key from the app's *actual* effective options, sees a
-mismatch, and cold-compiles the whole app — so the app both hits the slow-compile cliff and
-loses its seeded beams. `Seed.wrapped_apps/2` therefore gates `seed_manifest/1` on the same
-set `project_dirs/1` produces, mirroring `expected_by_app/4`'s clause structure. Wrapper and
-stamp now derive from one list; if they ever diverge the failure is a wasted recompile, not a
-stale beam.
+wrapping it, and worse in two ways at once. Inference stays on, so the app keeps the
+slow-compile cliff the wrapper exists to remove; and Mix computes the cache key from the app's
+*actual* effective options, sees a mismatch, and cold-compiles the whole app, discarding the
+seed. `seed_one/7` reports `{:seeded, reused, …}` either way — its success predicate only asks
+whether every metamutant beam was deleted — so the failure arrives as a success line.
+
+**Sharing one list was not enough, and the first fix asserted rather than observed.**
+`wrapped_apps/2` originally derived the stamped set from `%Project{}.apps`, on the reasoning
+that both halves read `project_dirs/1`. They do — but the list is what Mutare *offers*, and
+three paths decline it after the list is consulted, none of them visible to the caller:
+`project_source/1` rescues an unparseable source or a render Elixir cannot read back;
+it finds no module to hook when the project is built in an externally required file
+(`Code.require_file/2`); and `Sandbox.project_files/2` drops a `mix.exs` it cannot read. The
+middle one is the trap — the source still comes back **changed**, because the bootstrap is
+prepended unconditionally, so `!=` cannot be used to recover the outcome.
+
+`project_source/1` therefore returns `{source, hooked?}`, `override_files/3` collects the paths
+that reported `true`, and `prepare/3` threads that set to `app_build/6`. Both sides still start
+from `project_dirs/1` and rebuild the key with the same `Project.project_file/1`; what changed
+is that the stamp now follows an observed outcome instead of an intention.
+
+One gap remains, and nothing available before the compile closes it: `hooked?` reports the
+*source rewrite*, while the hook makes the real decision at compile time (`Mix.Project`'s
+after-compile hook registered, `project/0` defined). A `mix.exs` holding only an unrelated
+helper module beside a required-in project reports `true` and is still declined. The manifest
+is stamped before the compile that would say so, so the residual false positive is accepted —
+it is strictly narrower than the blanket one it replaces.
+
+The regression test for the original fix was itself an instance of the bug: its fixture wrote
+no `mix.exs` at all, so nothing was ever wrapped, and it asserted that the child app *was*
+stamped. It now materialises a wrappable child and checks the sandbox copy really carries the
+hook, with a companion case where a listed app's `mix.exs` declines the wrap and must be left
+unstamped.
 
 **Not fixed, and older than this work:** `Project.umbrella_root?/1` requires a literal `apps/`
 directory, and `app_entry/1` hard-codes `Path.join("apps", name)`. An umbrella declaring

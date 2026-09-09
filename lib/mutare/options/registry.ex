@@ -356,7 +356,7 @@ defmodule Mutare.Options.Registry do
 
   # When true (the default; `--no-seed-app-build` turns it off), a narrowed run seeds the
   # mutated app's own compiled `_build` so the one `mix compile` recompiles just the
-  # metamutant file(s) — see `Mutare.Sandbox.Seed.app_build/5`. The escape hatch exists to
+  # metamutant file(s) — see `Mutare.Sandbox.Seed.app_build/6`. The escape hatch exists to
   # rule the optimisation out when diagnosing a surprising score, or to force a cold compile.
   defp validate_seed_app_build!(value), do: validate_boolean!(:seed_app_build, value)
 

@@ -984,13 +984,14 @@ defmodule Mutare.SandboxTest do
       project = context.project
 
       # An umbrella child Mutare listed, and a seeded sibling it did not — the shape a `path:`
-      # dependency outside `deps/` takes in `_build`. Only the child's `mix.exs` is wrapped
-      # (`Project.project_dirs/1`), so only its manifest may be told inference is off; telling
-      # the sibling would invent a cache-key mismatch and cold-compile it for nothing.
+      # dependency outside `deps/` takes in `_build`. Only the child's `mix.exs` is wrapped, so
+      # only its manifest may be told inference is off; telling the sibling would invent a
+      # cache-key mismatch and cold-compile it for nothing.
       put_app_beam(project, "child", "apps/child/lib/foo.ex", "Foo#{uniq()}")
       put_app_beam(project, "child", "apps/child/lib/bar.ex", "Bar#{uniq()}")
       put_app_beam(project, "sibling", "vendor/sibling/lib/sib.ex", "Sib#{uniq()}")
       for app <- ~w(child sibling), do: put_elixir_manifest(project, app)
+      put_mix_exs(project, "apps/child", "Child.MixProject")
 
       umbrella = %Mutare.Project{
         umbrella?: true,
@@ -1009,8 +1010,57 @@ defmodule Mutare.SandboxTest do
       assert %{outcome: :seeded} =
                capture_seed(project, schema, sandbox: sandbox, project: umbrella)
 
+      # The wrap landed, so the sandbox copy really will compile with inference off.
+      assert File.read!(Path.join(sandbox, "apps/child/mix.exs")) =~ "@before_compile"
+
       assert elixir_cache_key(sandbox, "child") == {[infer_signatures: false], ["lib"], false}
       assert elixir_cache_key(sandbox, "sibling") == {[], ["lib"], false}
+    end
+
+    test "leaves the inference cache entry alone when a listed app's mix.exs declined the wrap",
+         context do
+      project = context.project
+
+      # Both children are listed, so both are *offered* the inference wrapper. `late`'s
+      # mix.exs builds its project in an externally required file, leaving the rewrite nothing
+      # to hook — it will compile with inference on. Stamping its manifest anyway would both
+      # leave that pathology in place and mismatch the cache key, discarding the seed we just
+      # reported as reused. Only the app the wrap actually reached may be realigned.
+      put_app_beam(project, "early", "apps/early/lib/foo.ex", "Foo#{uniq()}")
+      put_app_beam(project, "early", "apps/early/lib/bar.ex", "Bar#{uniq()}")
+      put_app_beam(project, "late", "apps/late/lib/baz.ex", "Baz#{uniq()}")
+      put_app_beam(project, "late", "apps/late/lib/qux.ex", "Qux#{uniq()}")
+      for app <- ~w(early late), do: put_elixir_manifest(project, app)
+
+      put_mix_exs(project, "apps/early", "Early.MixProject")
+      File.mkdir_p!(Path.join(project, "apps/late"))
+
+      File.write!(
+        Path.join(project, "apps/late/mix.exs"),
+        ~s|Code.require_file("build/project.exs", __DIR__)\n|
+      )
+
+      apps = [%{app: :early, dir: "apps/early"}, %{app: :late, dir: "apps/late"}]
+      umbrella = %Mutare.Project{umbrella?: true, apps: apps, mutate_scope: apps}
+
+      schema = %Schema{
+        metamutants: %{
+          "apps/early/lib/foo.ex" => "defmodule Foo do\n  def x, do: 2\nend\n",
+          "apps/late/lib/baz.ex" => "defmodule Baz do\n  def x, do: 2\nend\n"
+        }
+      }
+
+      sandbox = Path.join(context.base, "sandbox")
+
+      assert %{outcome: :seeded} =
+               capture_seed(project, schema, sandbox: sandbox, project: umbrella)
+
+      # Both were rewritten; only `early` came back carrying a hook.
+      assert File.read!(Path.join(sandbox, "apps/early/mix.exs")) =~ "@before_compile"
+      refute File.read!(Path.join(sandbox, "apps/late/mix.exs")) =~ "@before_compile"
+
+      assert elixir_cache_key(sandbox, "early") == {[infer_signatures: false], ["lib"], false}
+      assert elixir_cache_key(sandbox, "late") == {[], ["lib"], false}
     end
 
     test "reports :skipped when --no-seed-app-build opts out", context do
@@ -1209,6 +1259,19 @@ defmodule Mutare.SandboxTest do
       {29, %{}, %{}, %{}, [], {[], ["lib"], false}, Path.expand(project), %{}, 0, 0, {%{}, %{}}}
 
     File.write!(Path.join(mix_dir, "compile.elixir"), :erlang.term_to_binary(manifest))
+  end
+
+  # A wrappable `mix.exs`: `CompilerOptions.project_source/1` finds a module to hook, so the
+  # sandbox copy really does compile with inference off.
+  defp put_mix_exs(project, dir, module) do
+    File.mkdir_p!(Path.join(project, dir))
+
+    File.write!(Path.join([project, dir, "mix.exs"]), """
+    defmodule #{module} do
+      use Mix.Project
+      def project, do: [app: :#{Path.basename(dir)}, version: "0.1.0"]
+    end
+    """)
   end
 
   defp elixir_cache_key(root, app) do

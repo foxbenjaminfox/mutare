@@ -6,7 +6,7 @@ defmodule Mutare.Sandbox.Seed do
   #
   #   * `dep_build/2` — the dependencies' beams (`@excluded` keeps `_build` out of the copy,
   #     so without this every test-env dep recompiles cold each run).
-  #   * `app_build/5` — the *mutated app's own* beams, so a narrow run (`--line`/`--since`/
+  #   * `app_build/6` — the *mutated app's own* beams, so a narrow run (`--line`/`--since`/
   #     `--only`, a `paths:` narrowing, or a sparse-site full run) recompiles only the
   #     metamutant file(s), not the whole app. In an umbrella it decides per app, so one
   #     app's partial miss cold-compiles only that app, not its cleanly-seeded siblings.
@@ -155,8 +155,15 @@ defmodule Mutare.Sandbox.Seed do
           | %{outcome: :fallback, reason: String.t()}
           | %{outcome: :skipped}
 
-  @spec app_build(Path.t(), Path.t(), Schema.t(), Options.t(), Project.t() | nil) :: summary()
-  def app_build(_root, _sandbox, _schema, %Options{seed_app_build: false}, _project),
+  @spec app_build(
+          Path.t(),
+          Path.t(),
+          Schema.t(),
+          Options.t(),
+          Project.t() | nil,
+          MapSet.t(String.t())
+        ) :: summary()
+  def app_build(_root, _sandbox, _schema, %Options{seed_app_build: false}, _project, _wrapped),
     do: %{outcome: :skipped}
 
   # Gated on the actual *outcome* (`worth_seeding?/2`), not on which flag scoped the run:
@@ -169,7 +176,8 @@ defmodule Mutare.Sandbox.Seed do
         sandbox,
         %Schema{metamutants: metamutants, sources: sources},
         %Options{},
-        project
+        project,
+        wrapped
       ) do
     # Selection/recovery can leave entries byte-identical to their originals.
     # They need neither forced recompilation nor a completeness check. If the
@@ -204,14 +212,14 @@ defmodule Mutare.Sandbox.Seed do
           %{outcome: :skipped}
 
         expected ->
-          wrapped = wrapped_apps(project, to_seed)
+          wrapped_apps = wrapped_apps(project, to_seed, wrapped)
 
           to_seed
           |> Enum.map(fn {app, src, dst} ->
             expected_app = Map.get(expected, app, MapSet.new())
 
             seed_one(src, dst, expected_app, meta_sources, expanded_root, expanded_sandbox,
-              realign_inference?: app in wrapped
+              realign_inference?: app in wrapped_apps
             )
           end)
           |> aggregate()
@@ -389,24 +397,39 @@ defmodule Mutare.Sandbox.Seed do
     end
   end
 
+  # Which of the seedable apps had their `mix.exs` wrapped by `Mutare.Sandbox`, and so will
+  # actually compile with inference off. Only those manifests may have their inference cache
+  # entry realigned: stamping an app we did not wrap leaves inference on *and* invents a
+  # cache-key mismatch that cold-compiles it, so the seed reports reuse for a build Mix then
+  # throws away.
+  #
+  # `wrapped` holds the mix.exs paths the rewrite actually hooked, not the ones it was offered
+  # — `Project.project_dirs/1` is the list both sides *try*, and three paths decline it
+  # silently (see `CompilerOptions.project_source/1`). Each app's key is rebuilt with the same
+  # `Project.project_file/1` that produced them. The clauses mirror `expected_by_app/4` — an
+  # umbrella attributes by its declared apps, a lone seedable app is the root project, and any
+  # other shape never reaches here (that arm returns `nil`).
+  defp wrapped_apps(%Project{umbrella?: true, apps: apps}, _to_seed, wrapped) do
+    for %{app: app, dir: dir} <- apps,
+        MapSet.member?(wrapped, Project.project_file(dir)),
+        into: MapSet.new(),
+        do: to_string(app)
+  end
+
+  defp wrapped_apps(_project, [{app, _src, _dst}], wrapped) do
+    if MapSet.member?(wrapped, Project.project_file(".")),
+      do: MapSet.new([app]),
+      else: MapSet.new()
+  end
+
+  defp wrapped_apps(_project, _to_seed, _wrapped), do: MapSet.new()
+
   # Rewrite the compile manifests so their recorded project path points at the sandbox.
   # The manifest stores per-source paths *relative* to the project (already portable) plus
   # an *absolute* project-root reference — and that bare root is the staleness gate: left
   # pointing at the original dir, mix decides the build doesn't belong here and recompiles
   # everything. `File.write!` also restamps the manifest to "now" (>= the just-copied
   # sources), which is what makes the unchanged files non-stale and thus reused.
-  # Which of the seedable apps had their `mix.exs` wrapped by `Mutare.Sandbox` (root plus each
-  # umbrella child — `Project.project_dirs/1`), and so will actually compile with inference off.
-  # Only those manifests may have their inference cache entry realigned: stamping an app we did
-  # not wrap invents a cache-key mismatch and cold-compiles it for nothing. The clauses mirror
-  # `expected_by_app/4` — an umbrella attributes by its declared apps, a lone seedable app is
-  # the root project, and any other shape never reaches here (that arm returns `nil`).
-  defp wrapped_apps(%Project{umbrella?: true, apps: apps}, _to_seed),
-    do: MapSet.new(apps, fn %{app: app} -> to_string(app) end)
-
-  defp wrapped_apps(_project, [{app, _src, _dst}]), do: MapSet.new([app])
-  defp wrapped_apps(_project, _to_seed), do: MapSet.new()
-
   defp relocate_manifests(app_build, root, sandbox, realign_inference?) do
     for manifest <- Path.wildcard(Path.join([app_build, ".mix", "compile.{elixir,erlang}"])) do
       rewritten =

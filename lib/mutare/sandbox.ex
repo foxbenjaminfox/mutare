@@ -166,17 +166,22 @@ defmodule Mutare.Sandbox do
     Paths.validate!(root, sandbox)
     Ownership.claim!(sandbox, options.keep_sandbox, options.sandbox != nil)
 
+    # Built once for both modes: the manifest carries the generated files, and `wrapped`
+    # names the `mix.exs` files whose inference override actually landed — which only the
+    # rewrite itself knows, and which `Seed.app_build/6` needs below.
+    {overrides, wrapped} = override_files(root, schema, project)
+
     if options.keep_sandbox do
       # Reuse the existing sandbox (and its `_build`): re-materialise it in place,
       # touching only what changed and pruning what's gone.
-      sync(root, sandbox, schema, project)
+      sync(root, sandbox, overrides)
     else
       # Bulk-copy the project, then overlay every generated file from the **one**
-      # `override_files/3` manifest `sync/4` also uses (metamutant source, coverage
+      # `override_files/3` manifest `sync/3` also uses (metamutant source, coverage
       # helper, wrapped test helper) — so adding a generated file is a single edit, not
       # one per mode.
       copy_project(root, sandbox)
-      write_overrides(sandbox, override_files(root, schema, project))
+      write_overrides(sandbox, overrides)
     end
 
     # Avoid recompiling unchanged dependencies on the one `mix compile` by seeding
@@ -198,7 +203,7 @@ defmodule Mutare.Sandbox do
     # skipped) rides the `:on_phase` hook as a `{:seed_app_build, summary}` detail event, so
     # `--verbose` can surface both the speed-up and an otherwise-silent fallback. Fired here
     # (during the runner's `:compiling` phase) since this is where the seed decision is made.
-    seed_summary = Seed.app_build(root, sandbox, schema, options, project)
+    seed_summary = Seed.app_build(root, sandbox, schema, options, project, wrapped)
     Context.hook(context, :on_phase).({:seed_app_build, seed_summary})
 
     sandbox
@@ -293,7 +298,7 @@ defmodule Mutare.Sandbox do
   end
 
   # Overlay each generated file (the `override_files/3` manifest) onto the bulk-copied project
-  # — the fresh-mode counterpart to `sync/4`'s in-place overlay, sharing the one manifest.
+  # — the fresh-mode counterpart to `sync/3`'s in-place overlay, sharing the one manifest.
   # The byte-aware sandbox writer keeps unchanged entries at their copied mtime.
   defp write_overrides(sandbox, overrides) do
     for {rel, content} <- overrides, do: put_sandbox_file_if_changed(sandbox, rel, content)
@@ -385,8 +390,7 @@ defmodule Mutare.Sandbox do
   # symlinks, which `copy_project/2`'s `File.cp_r!` preserves for free and a
   # content-only sync would silently flatten (a `0755` script arriving `0644`, a symlink
   # vanishing) — NOTES "`--keep-sandbox`: incremental materialisation for CI caching".
-  defp sync(root, sandbox, %Schema{} = schema, project) do
-    overrides = override_files(root, schema, project)
+  defp sync(root, sandbox, overrides) do
     sources = source_entries(root)
     source_set = MapSet.new(sources, fn {rel, _kind} -> rel end)
 
@@ -434,9 +438,15 @@ defmodule Mutare.Sandbox do
 
   # The files Mutare generates rather than copies, keyed by sandbox-relative path (the same
   # key space as `Schema.metamutants` and `source_entries/1`) — the **single manifest** both
-  # materialisation modes use: `sync/4` overlays it onto an existing sandbox, the fresh path
+  # materialisation modes use: `sync/3` overlays it onto an existing sandbox, the fresh path
   # (`prepare/3`) `write_overrides/2`-es it over a fresh copy. Adding a generated file is one
   # edit here, automatically reaching both modes.
+  #
+  # Returns `{overrides, wrapped}`, where `wrapped` holds the relative paths of the `mix.exs`
+  # files that came back with an inference hook actually attached. `Seed` realigns compile
+  # manifests against *that*, never against the list we tried: a file we failed to wrap
+  # compiles with inference on, and telling its manifest otherwise both leaves the pathology
+  # in place and invents a cache-key mismatch that cold-compiles the app.
   defp override_files(root, %Schema{metamutants: metamutants}, project) do
     overrides =
       metamutants
@@ -450,20 +460,21 @@ defmodule Mutare.Sandbox do
     overrides
     |> Map.keys()
     |> Enum.filter(&(Path.basename(&1) == "mix.exs"))
-    |> Enum.reduce(
-      overrides,
-      &Map.update!(&2, &1, fn source ->
-        CompilerOptions.project_source(source)
-      end)
-    )
+    |> Enum.reduce({overrides, MapSet.new()}, fn rel, {acc, wrapped} ->
+      {source, hooked?} = CompilerOptions.project_source(Map.fetch!(acc, rel))
+
+      {Map.put(acc, rel, source), if(hooked?, do: MapSet.put(wrapped, rel), else: wrapped)}
+    end)
   end
 
   # Root and real umbrella children, plus the generated support project's mix.exs
   # already present in coverage_helper_files/2. Derived from the original project
-  # on every materialisation so retained sandboxes never stack wrappers.
+  # on every materialisation so retained sandboxes never stack wrappers. An unreadable
+  # mix.exs is dropped — the third way a project dir ends up unwrapped, and why `Seed`
+  # cannot infer the wrapped set from `Project.project_dirs/1`.
   defp project_files(root, project) do
     for dir <- Project.project_dirs(project),
-        rel = if(dir == ".", do: "mix.exs", else: Path.join(dir, "mix.exs")),
+        rel = Project.project_file(dir),
         {:ok, source} <- [File.read(Path.join(root, rel))],
         into: %{},
         do: {rel, source}
@@ -565,7 +576,7 @@ defmodule Mutare.Sandbox do
   # A source symlink is recreated as a symlink carrying the *same* raw target, exactly
   # as `File.cp_r!` does on the fresh path — the link is never followed, so a link
   # pointing outside the project is copied, not chased, and nothing is ever written
-  # through it. Generated overrides are overlaid afterwards (see `sync/4`), so a path
+  # through it. Generated overrides are overlaid afterwards (see `sync/3`), so a path
   # Mutare owns replaces the link rather than dereferencing it.
   defp put_sandbox_symlink_if_changed(sandbox, rel, target) do
     path = Path.join(sandbox, rel)

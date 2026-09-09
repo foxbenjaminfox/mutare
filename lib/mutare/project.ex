@@ -195,14 +195,28 @@ defmodule Mutare.Project do
   @doc """
   Root-relative directories that hold a Mix project file Mutare may rewrite in the sandbox.
 
-  The root, plus each umbrella child. `Mutare.Sandbox` wraps exactly these `mix.exs` files to
-  force `infer_signatures: false`, and `Mutare.Sandbox.Seed` realigns exactly the matching
-  apps' compile manifests — the two must name the same set, or an app compiles with inference
-  on while its transplanted manifest claims otherwise, and cold-compiles for nothing.
+  The root, plus each umbrella child. `Mutare.Sandbox` *attempts* to wrap exactly these
+  `mix.exs` files to force `infer_signatures: false`. It is only the attempt: three paths
+  decline silently (an unreadable file, a source Sourceror cannot round-trip, a `mix.exs`
+  defining no module of its own), so `Mutare.Sandbox.Seed` realigns manifests against the
+  wraps that actually landed — reported back by `CompilerOptions.project_source/1` — not
+  against this list. Realigning an app that compiles with inference on invents a cache-key
+  mismatch and cold-compiles it for nothing.
   """
   @spec project_dirs(t() | nil) :: [String.t()]
   def project_dirs(%__MODULE__{umbrella?: true, apps: apps}), do: ["." | Enum.map(apps, & &1.dir)]
   def project_dirs(_project), do: ["."]
+
+  @doc """
+  The root-relative `mix.exs` path for a `project_dirs/1` entry.
+
+  The one derivation both halves of the inference override share: `Mutare.Sandbox` builds the
+  files it wraps from it, and `Mutare.Sandbox.Seed` rebuilds the same key to ask whether a
+  given app's wrap landed. Two spellings of this join would silently stop matching.
+  """
+  @spec project_file(String.t()) :: String.t()
+  def project_file("."), do: "mix.exs"
+  def project_file(dir), do: Path.join(dir, "mix.exs")
 
   defp app_entry(name), do: %{app: String.to_atom(name), dir: Path.join("apps", name)}
   defp app_name(%{app: app}), do: to_string(app)

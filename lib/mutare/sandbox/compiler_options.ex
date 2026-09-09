@@ -17,11 +17,15 @@ defmodule Mutare.Sandbox.CompilerOptions do
     * `project_source/1` — wraps project modules declared in the sandbox's `mix.exs` so their
       effective `elixirc_options` always disable type-signature *inference*.
       This survives Mix's project cache and applies on every sandbox boot,
-      including umbrella children and projects with a custom config path.
+      including umbrella children and projects with a custom config path. It
+      reports whether the wrap landed, since several shapes decline it silently.
 
   `seed_manifest/1` reconciles the inference option in a transplanted Elixir
   compile manifest with that wrapper. Without it, Elixir 1.18/1.19 sees changed
-  `elixirc_options` and discards every seeded app beam on the first compile.
+  `elixirc_options` and discards every seeded app beam on the first compile. It
+  must run only for an app `project_source/1` reported wrapping: applied to one
+  compiling with inference on, it manufactures the very mismatch it exists to
+  prevent, and the seed reports reuse for a build Mix discards.
 
   The last two exist because Elixir's type checker (≥ 1.18/1.19) is
   pathological on metamutant-shaped code: measured on phoenix_live_view
@@ -139,19 +143,33 @@ defmodule Mutare.Sandbox.CompilerOptions do
   @doc """
   Override inference in the sandbox copy of a Mix project's effective options.
 
+  Returns `{source, hooked?}` — the rewritten source, and whether a hook was actually
+  attached to a module defined in this file. The caller needs the second element:
+  `Mutare.Sandbox.Seed` may only realign the compile manifest of an app that really
+  will compile with inference off, and the source alone cannot answer that. A file
+  that defines no module of its own still comes back *changed* (the bootstrap is
+  prepended unconditionally), so `!=` is not a proxy for it.
+
   A `before_compile` hook wraps `project/0`, preserving its computed configuration
   and every other compiler option. Only sandbox project files are rewritten;
   the target's original options remain untouched. Unsupported Elixir versions
   retain the original configuration.
 
-  Project modules defined entirely in externally required files are outside this
-  source rewrite; their compiler options must currently disable inference themselves.
-  Quoted module definitions are left alone. Parsing and rendering are best-effort:
-  an unsupported project source is returned unchanged, so an unused umbrella child
-  or scaffolding template cannot abort sandbox preparation. The rendered result is
-  re-parsed before it is accepted — a `mix.exs` that Sourceror renders into something
-  Elixir will not read back would break the sandbox outright, where keeping inference
-  on merely makes its one compile slower.
+  Three paths decline, each reporting `false`: an unparseable source, a render Elixir
+  cannot read back, and a `mix.exs` defining no module of its own — a project module
+  built entirely in an externally required file is outside this source rewrite, and its
+  compiler options must currently disable inference themselves. Quoted module definitions
+  are left alone. Parsing and rendering are best-effort, so an unused umbrella child or a
+  scaffolding template cannot abort sandbox preparation; the rendered result is re-parsed
+  before it is accepted, since a `mix.exs` that Sourceror renders into something Elixir
+  will not read back would break the sandbox outright, where keeping inference on merely
+  makes its one compile slower.
+
+  `hooked?` reports the source rewrite, which is one step short of certainty: the hook
+  itself checks at compile time that the module is a Mix project defining `project/0`, so
+  a `mix.exs` holding only an unrelated helper module alongside a required-in project
+  reports `true` and is nonetheless declined. Nothing observable before the compile can
+  close that gap, and the manifest is stamped before it.
 
   Merely setting `Code.put_compiler_option(:infer_signatures, false)` before
   compilation is insufficient: Elixir 1.20 Mix unconditionally derives inference
@@ -159,47 +177,61 @@ defmodule Mutare.Sandbox.CompilerOptions do
   also fails when Mix pushes a cached umbrella project again. Wrapping the
   project's return value covers both cases without interpreting its build code.
   """
-  @spec project_source(String.t()) :: String.t()
+  @spec project_source(String.t()) :: {String.t(), boolean()}
   def project_source(source) do
-    wrapped =
+    {ast, hooked?} =
       source
       |> Sourceror.parse_string!()
-      |> wrap_project_modules()
+      |> wrap_project_modules(false)
+
+    rendered =
+      ast
       |> Sourceror.to_string(Mutare.AST.render_opts())
       |> then(&(Macro.to_string(@project_bootstrap) <> "\n\n" <> &1 <> "\n"))
 
     # Renders are not guaranteed to round-trip. Accept only what Elixir can read back, since
     # this file is the sandbox's entry point: an unparseable `mix.exs` fails every later
     # command, while the original keeps a working sandbox that merely compiles with inference on.
-    Code.string_to_quoted!(wrapped)
-    wrapped
+    Code.string_to_quoted!(rendered)
+    {rendered, hooked?}
   rescue
-    _ -> source
+    _ -> {source, false}
   end
+
+  # Walks the source, appending the hook to every module defined in it, and reports whether
+  # it appended any. The flag rides along rather than being recovered from the result,
+  # because the rendered string cannot distinguish "no module here" from "hook attached".
 
   # A quote is data that can leave the sandbox, including through a macro defined
   # in mix.exs. Never give its modules a dependency on our bootstrap.
-  defp wrap_project_modules({:quote, _meta, _args} = node), do: node
+  defp wrap_project_modules({:quote, _meta, _args} = node, hooked?), do: {node, hooked?}
 
-  defp wrap_project_modules({form, meta, args}) when is_list(args) do
-    node = {wrap_project_modules(form), meta, Enum.map(args, &wrap_project_modules/1)}
+  defp wrap_project_modules({form, meta, args}, hooked?) when is_list(args) do
+    {form, hooked?} = wrap_project_modules(form, hooked?)
+    {args, hooked?} = wrap_project_modules(args, hooked?)
+    node = {form, meta, args}
 
     case node do
       {form, meta, [name, [{do_key, body}]]} ->
         if module_definition?(form) and Mutare.AST.key_atom(do_key) == :do,
-          do: {form, meta, [name, [{do_key, append_project_hook(body)}]]},
-          else: node
+          do: {{form, meta, [name, [{do_key, append_project_hook(body)}]]}, true},
+          else: {node, hooked?}
 
       _ ->
-        node
+        {node, hooked?}
     end
   end
 
-  defp wrap_project_modules({left, right}),
-    do: {wrap_project_modules(left), wrap_project_modules(right)}
+  defp wrap_project_modules({left, right}, hooked?) do
+    {left, hooked?} = wrap_project_modules(left, hooked?)
+    {right, hooked?} = wrap_project_modules(right, hooked?)
+    {{left, right}, hooked?}
+  end
 
-  defp wrap_project_modules(list) when is_list(list), do: Enum.map(list, &wrap_project_modules/1)
-  defp wrap_project_modules(node), do: node
+  defp wrap_project_modules(list, hooked?) when is_list(list),
+    do: Enum.map_reduce(list, hooked?, &wrap_project_modules/2)
+
+  defp wrap_project_modules(node, hooked?), do: {node, hooked?}
 
   defp module_definition?(:defmodule), do: true
 
