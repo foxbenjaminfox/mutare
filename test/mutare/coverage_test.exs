@@ -449,6 +449,52 @@ defmodule Mutare.CoverageTest do
 
   describe "no-coverage skipping (end to end)" do
     @tag :runner
+    test "selecting only uncovered code skips it even when the probe records no hits" do
+      %{project: project, sandbox: sandbox} =
+        Project.build(:focused_cov, %{
+          "lib/nc.ex" => """
+          defmodule NC do
+            def covered(x), do: x + 1
+            def dead(x), do: x - 1
+          end
+          """,
+          "test/nc_test.exs" => """
+          defmodule NCTest do
+            use ExUnit.Case
+            test "covered", do: assert(NC.covered(2) == 3)
+          end
+          """
+        })
+
+      for lines <- [[3], nil, [2, 3]] do
+        only_lines = if lines, do: MapSet.new(lines, &{"lib/nc.ex", &1})
+
+        assert {:ok, run} =
+                 Mutare.run(project,
+                   sandbox: sandbox,
+                   mutators: [Mutare.Mutators.Arithmetic],
+                   only_lines: only_lines
+                 )
+
+        assert %Result{status: :no_coverage, duration_ms: 0, output: nil, exit_status: nil} =
+                 Enum.find(run.results, &(&1.site.line == 3))
+
+        if lines == [3] do
+          assert length(run.results) == 1
+
+          assert {:ok, %{aggregate: aggregate}} =
+                   Coverage.read_dump(Path.join(sandbox, Recorder.dump_file()))
+
+          assert MapSet.size(aggregate) == 0
+        else
+          assert [%Result{status: :killed}, %Result{status: :no_coverage}] = run.results
+        end
+
+        assert Mutare.Report.score(run.results) == 100.0
+      end
+    end
+
+    @tag :runner
     test "a mutant on an unexecuted line is :no_coverage and is not run" do
       %{project: project, sandbox: sandbox} =
         Project.build(:cov, %{
@@ -978,6 +1024,34 @@ defmodule Mutare.CoverageTest do
       assert length(run.results) == 2
       assert Enum.all?(run.results, &(&1.status == :killed))
       refute Enum.any?(run.results, &(&1.status == :no_coverage))
+    end
+
+    @tag :runner
+    test "a green probe with a missing capture table falls back to running every mutant" do
+      %{project: project, sandbox: sandbox} =
+        Project.build(:missing_capture, %{
+          "lib/calc.ex" => "defmodule Calc do\n  def add(x), do: x + 1\nend\n",
+          "test/test_helper.exs" => """
+          ExUnit.start()
+          if System.get_env("MUTARE_COVERAGE"), do: :ets.delete(:mutare_cov_agg)
+          """,
+          "test/calc_test.exs" => """
+          defmodule CalcTest do
+            use ExUnit.Case
+            test "add", do: assert(Calc.add(2) == 3)
+          end
+          """
+        })
+
+      assert capture_log(fn ->
+               assert {:ok, run} =
+                        Mutare.run(project,
+                          sandbox: sandbox,
+                          mutators: [Mutare.Mutators.Arithmetic]
+                        )
+
+               assert [%Result{status: :killed}] = run.results
+             end) =~ "missing_coverage_table"
     end
   end
 end

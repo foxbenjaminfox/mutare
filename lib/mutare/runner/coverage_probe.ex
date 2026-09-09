@@ -62,9 +62,10 @@ defmodule Mutare.Runner.CoverageProbe do
   would otherwise surface as a harness error, not a kill).
 
   Coverage is advisory, never authoritative. Anything uncertain — a non-zero
-  probe exit, an unreadable dump, or an empty dump (the probe recorded nothing,
-  so the capture itself likely failed) — degrades to `:run_all`: we never skip a
-  mutant on doubt. But because `:run_all` makes every covered mutant run the
+  probe exit, an unreadable dump, or missing capture tables — degrades to
+  `:run_all`: we never skip a mutant on doubt. A valid empty dump means none of
+  the emitted mutants ran; focused selection can legitimately leave the entire
+  aggregate empty. But because `:run_all` makes every covered mutant run the
   whole suite — prohibitive on a large project — a failed probe run is retried
   once before degrading: the baseline was green moments earlier, so a probe
   failure is usually a flaky test, and one extra suite run is cheap next to a
@@ -105,8 +106,8 @@ defmodule Mutare.Runner.CoverageProbe do
   @typedoc """
   What the probe decided for the whole run:
 
-    * `:run_all` — coverage is unusable or uncertain (couldn't read the dump, or
-      not a single id was recorded, which means the capture itself likely failed).
+    * `:run_all` — coverage is unusable or uncertain (the probe failed, the dump
+      couldn't be read, or capture tables were missing).
       Run *every* mutant against the whole suite — never skip on doubt.
     * `{:selective, outcomes}` — a per-mutant decision. `outcomes` is **total**:
       every mutant id maps to an explicit `outcome`, so a `:no_coverage` mutant
@@ -257,21 +258,17 @@ defmodule Mutare.Runner.CoverageProbe do
   Decide the per-mutant `t:selection/0` from an already-decoded coverage dump.
 
   The pure core of `run/5` (no IO): given the `mode`, the `Mutare.Schema` (for the
-  total id list), and a `Mutare.Coverage.t()`, it returns `:run_all` (empty
-  aggregate — the capture recorded nothing, so it likely failed) or a **total**
-  `{:selective, outcomes}`. Exposed so the mode reconciliation — including `:tests`
-  narrowing and its whole-file/whole-suite fallbacks — is unit-testable without
-  spawning a probe.
+  total id list), and a valid `Mutare.Coverage.t()`, it returns a **total**
+  `{:selective, outcomes}`. An empty aggregate marks every mutant `:no_coverage`;
+  `run/5` handles probe failures and unusable dumps before selection. Exposed so
+  the mode reconciliation — including `:tests` narrowing and its whole-file/whole-suite
+  fallbacks — is unit-testable without spawning a probe.
   """
-  @spec select(:tests | :coverage | :full, Schema.t(), Coverage.t()) :: selection()
+  @spec select(:tests | :coverage | :full, Schema.t(), Coverage.t()) ::
+          {:selective, %{pos_integer() => outcome()}}
   def select(mode, %Schema{} = schema, coverage) do
-    if MapSet.size(coverage.aggregate) == 0 do
-      :run_all
-    else
-      ids = Enum.map(schema.sites, & &1.id)
-      outcomes = Map.new(ids, fn id -> {id, outcome(mode, id, coverage)} end)
-      {:selective, outcomes}
-    end
+    outcomes = Map.new(schema.sites, fn %{id: id} -> {id, outcome(mode, id, coverage)} end)
+    {:selective, outcomes}
   end
 
   # `:full` — covered (ran at all) → whole suite; otherwise `:no_coverage`.

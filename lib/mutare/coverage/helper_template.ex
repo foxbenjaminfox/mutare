@@ -185,52 +185,58 @@ defmodule Mutare.Coverage.HelperTemplate do
   defp filterable_name?(_), do: false
 
   def dump(_suite_result) do
-    # Serialise plain data (lists, not `MapSet`s) so the reader makes no assumption about a
-    # struct's wire representation. `tab_list/1` tolerates a vanished table (→ `[]`) for the
-    # same self-hosting reason `hit/1` does: dogfooding Mutare runs its own coverage tests,
-    # which create and tear down these named tables, so an `after_suite` dump can find one
-    # already gone. An empty/partial dump just degrades the caller to run-all selection (the
-    # `Mutare.Runner.CoverageProbe` empty-aggregate path) — far better than crashing the probe.
-    aggregate = for {id} <- tab_list(@agg_table), do: id
-    unlabeled = for {id} <- tab_list(@unlabeled_table), do: id
-    wholefile = for {id} <- tab_list(@wholefile_table), do: id
-
-    by_file =
-      Enum.reduce(tab_list(@attr_table), %{}, fn {{mod, id}}, acc ->
-        case source_file(mod) do
-          nil -> acc
-          file -> Map.update(acc, file, [id], &[id | &1])
-        end
-      end)
-
-    # Per-test-case attribution, keyed by mutant id → the runnable test names that covered it. Names
-    # are strings (the `mix test --only test:<name>` value); `:tests` unions them with the covering
-    # files from `by_file`. Keyed by id, not file: an id in a shared lib function covered by tests
-    # in several modules carries every covering name, and the covering files ride `by_file`.
-    by_test =
-      Enum.reduce(tab_list(@test_table), %{}, fn {{_mod, name, id}}, acc ->
-        Map.update(acc, id, [to_string(name)], &[to_string(name) | &1])
-      end)
-
-    payload = %{
-      aggregate: aggregate,
-      by_file: by_file,
-      unlabeled: unlabeled,
-      by_test: by_test,
-      wholefile: wholefile
-    }
-
     # Every umbrella app's `after_suite` calls this; the ETS tables are shared and accumulate-only,
     # so each write is the full union and the last app to finish wins. The path is absolute (set by
-    # the probe) so a per-app cwd doesn't scatter N partial dumps. Do NOT split this into per-app
-    # files — the single union is the point.
+    # the probe) so a per-app cwd doesn't scatter N partial dumps. An error must overwrite any
+    # earlier dump too: leaving that file in place would let the reader trust stale coverage.
     dump_path = System.get_env(@dump_path_env) || @dump_file
-    File.write!(dump_path, :erlang.term_to_binary(payload))
+    File.write!(dump_path, :erlang.term_to_binary(dump_payload()))
   end
 
-  # `:ets.tab2list/1`, but `[]` for a table that doesn't exist (see `dump/1`).
-  defp tab_list(table) do
-    if :ets.whereis(table) == :undefined, do: [], else: :ets.tab2list(table)
+  defp dump_payload do
+    # Serialise plain data (lists, not `MapSet`s) so the reader makes no assumption about a
+    # struct's wire representation. A missing table means capture failed, whereas existing
+    # empty tables mean no emitted mutant ran. Read all five successfully before producing a
+    # coverage map; otherwise write an explicit error without crashing the after-suite hook.
+    with {:ok, aggregate} <- table_entries(@agg_table),
+         {:ok, unlabeled} <- table_entries(@unlabeled_table),
+         {:ok, wholefile} <- table_entries(@wholefile_table),
+         {:ok, attributed} <- table_entries(@attr_table),
+         {:ok, tests} <- table_entries(@test_table) do
+      aggregate = for {id} <- aggregate, do: id
+      unlabeled = for {id} <- unlabeled, do: id
+      wholefile = for {id} <- wholefile, do: id
+
+      by_file =
+        Enum.reduce(attributed, %{}, fn {{mod, id}}, acc ->
+          case source_file(mod) do
+            nil -> acc
+            file -> Map.update(acc, file, [id], &[id | &1])
+          end
+        end)
+
+      # Per-test-case attribution, keyed by mutant id → the runnable test names that covered it.
+      # Names are strings (the `mix test --only test:<name>` value); `:tests` unions them with the
+      # covering files from `by_file`. An id in a shared lib carries every covering test name.
+      by_test =
+        Enum.reduce(tests, %{}, fn {{_mod, name, id}}, acc ->
+          Map.update(acc, id, [to_string(name)], &[to_string(name) | &1])
+        end)
+
+      %{
+        aggregate: aggregate,
+        by_file: by_file,
+        unlabeled: unlabeled,
+        by_test: by_test,
+        wholefile: wholefile
+      }
+    end
+  end
+
+  defp table_entries(table) do
+    {:ok, :ets.tab2list(table)}
+  rescue
+    ArgumentError -> {:error, {:missing_coverage_table, table}}
   end
 
   # The owning test's `{module, name}` label, used to attribute coverage to a test *file*. Resolved

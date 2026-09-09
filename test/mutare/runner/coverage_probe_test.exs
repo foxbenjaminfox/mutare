@@ -90,8 +90,16 @@ defmodule Mutare.Runner.CoverageProbeTest do
       assert {:selective, %{9 => :no_coverage}} = CoverageProbe.select(:tests, schema([9]), cov)
     end
 
-    test "an empty aggregate degrades to :run_all" do
-      assert CoverageProbe.select(:tests, schema([1]), coverage([])) == :run_all
+    test "a valid empty aggregate skips every mutant in every selection mode" do
+      for mode <- [:tests, :coverage, :full] do
+        selection = CoverageProbe.select(mode, schema([1, 2]), coverage([]))
+        assert selection == {:selective, %{1 => :no_coverage, 2 => :no_coverage}}
+
+        assert CoverageProbe.summarize(selection) ==
+                 %{covered: 0, no_coverage: 2, run_all?: false}
+
+        refute CoverageProbe.broad_runs?(selection)
+      end
     end
   end
 

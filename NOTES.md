@@ -4676,7 +4676,8 @@ and the common module-scoped `setup_all` both attribute and stay tight; only
 genuinely owner-less coverage (`on_exit`/a bare spawn/a `setup_all`-spawned `Task`)
 goes whole-suite. `:run_all` is the single conservative fallback: a non-zero probe exit (the dump may
 be partial — e.g. `max_failures` aborts before later files), an unreadable dump, or
-an empty dump (the capture recorded nothing → it likely failed). The rule
+missing capture tables. A valid empty dump means no emitted mutant ran; see
+"Empty coverage is a valid focused-run result" below. The rule
 throughout: never skip on doubt — run everything rather than silently drop a mutant
 from the score's denominator.
 
@@ -4792,6 +4793,27 @@ at compile time but forces a list rendering. Any future hand-built integer-list
 literal spliced into generated code has the same trap — wrap, don't pass a bare
 list. (Note `inspect/1` charlists too, so tests assert against
 `inspect(ids, charlists: :as_lists)`.)
+
+### Empty coverage is a valid focused-run result `[fixed]`
+
+Selective emission means a `--line` / `--since` run can emit mutants only in code
+the suite never reaches. The probe then succeeds with an empty aggregate. Treating
+that as capture failure forced `:run_all`, ran every uncovered mutant, and reported
+false survivors that entered the score denominator. Adding one covered mutant to
+the selection made the problem disappear, because the aggregate was no longer empty.
+
+Probe health now comes from its exit status and a successfully read dump, independently
+of hit count. The helper must read all five capture tables before writing coverage;
+if any table is missing, it writes `{:error, {:missing_coverage_table, table}}`.
+Previously it substituted an empty list for a missing table, making failed capture
+indistinguishable from zero hits. The error overwrites any earlier dump (essential
+when umbrella callbacks share a dump path), and the reader logs it and retains the
+run-all fallback. A valid empty dump yields `:no_coverage` for every selected mutant
+in all three selection modes, with no mutant subprocesses and no score denominator.
+
+The regression fixture tests the same uncovered function alone, in a full run, and
+alongside a covered function. Separate tests remove each capture table, verify an
+earlier valid dump is invalidated, and exercise the real runner's failure fallback.
 
 ### Baseline split from the coverage probe (done)
 The probe used to *double* as the green baseline check, which conflated two

@@ -42,7 +42,9 @@ defmodule Mutare.Coverage do
       an id — narrowing to named tests would drop the covering context and
       manufacture a false survivor.
 
-  `Mutare.Runner.CoverageProbe` reconciles them all.
+  `Mutare.Runner.CoverageProbe` reconciles them all. A valid empty aggregate means
+  no emitted mutant was covered. The helper writes an explicit error if any
+  capture table is missing, so lost capture data cannot masquerade as zero hits.
 
   Schema dumps use `{file_namespace, local_id}` identities; standalone transforms
   use integers. `read_dump/2` accepts `Mutare.RuntimeId.index(schema.sites)` and
@@ -91,9 +93,10 @@ defmodule Mutare.Coverage do
   it returns raw runtime identities, useful for inspecting a standalone dump.
 
   Returns `{:error, _}` on anything unusable (missing file, truncated/garbled
-  payload, unexpected shape — including a well-formed outer map whose *nested* keys,
-  ids or collections are the wrong type) — the caller degrades such uncertainty to
-  running the whole suite, never to a false `:no_coverage`. It raises for no input.
+  payload, a capture error from the helper, unexpected shape — including a
+  well-formed outer map whose *nested* keys, ids or collections are the wrong type)
+  — the caller degrades such uncertainty to running the whole suite, never to a
+  false `:no_coverage`. It raises for no input.
   """
   @spec read_dump(Path.t(), map() | nil) :: {:ok, t()} | {:error, term()}
   def read_dump(path, report_ids \\ nil) do
@@ -171,6 +174,7 @@ defmodule Mutare.Coverage do
        else: :bad_shape
   end
 
+  defp valid_shape({:error, {:missing_coverage_table, _table} = reason}), do: {:error, reason}
   defp valid_shape(_other), do: :bad_shape
 
   # Integer ids belong to standalone transforms; schema ids include their file
