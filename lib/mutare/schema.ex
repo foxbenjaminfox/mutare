@@ -49,6 +49,12 @@ defmodule Mutare.Schema do
   `from_files/4` also dedups its input by relative path, so a file passed twice is
   rendered once, under one id range — never two overlapping ones.
 
+  The *slice* is checked the same way. A `--line` / `--max-mutants` run narrows twice —
+  emission in `render_jobs/2`, the reported sites at the end of `from_files/4` — so
+  `from_files/4` compares the finished site ids against the ids it selected for emission
+  and raises on any difference: a reported site whose mutant never reached the metamutant
+  would run the suite unmutated and be scored a survivor.
+
   Both passes preserve exact `:start_id` threading (the prefix sum reproduces the
   old sequential thread) and the *let-it-crash* contract: a worker classifies an
   unparseable source as a skipped file but re-raises any other exception, with its
@@ -217,10 +223,8 @@ defmodule Mutare.Schema do
     render_site_code = not context.defer_site_code
     summarize_sites = context.summarize_sites
 
-    rendered =
-      counted
-      |> render_jobs(options.max_mutants)
-      |> render_files(options, skip_ids, render_site_code, summarize_sites)
+    jobs = render_jobs(counted, options.max_mutants)
+    rendered = render_files(jobs, options, skip_ids, render_site_code, summarize_sites)
 
     rel_files
     |> assemble(counted, rendered)
@@ -230,6 +234,7 @@ defmodule Mutare.Schema do
     |> detect_ineffective_config(counted, options)
     |> restrict_lines(options.only_lines)
     |> limit(options.max_mutants)
+    |> verify_selection!(jobs)
   end
 
   @doc """
@@ -465,6 +470,72 @@ defmodule Mutare.Schema do
             "render), so the counts agree only if that pipeline is deterministic for one source — " <>
             "a nondeterministic custom mutator or `Mutare.UseExpansion.expand_use/3` (both run in each " <>
             "pass) is the usual cause. Cross-file id stability depends on the counts matching."
+  end
+
+  # `verify_count!/3` for the *slice*: the sites the report will show must be exactly the ids
+  # `render_jobs/2` handed the renderer to emit. Both narrow the same `--line`/`--max-mutants`
+  # selection, from different material — emission from the count pass's matching local ids and a
+  # running cap remainder, the report from `restrict_lines/2` + `limit/2` over the finished sites —
+  # and they land on the same slice only because files and ids reach both in one order. No
+  # structure enforces that order, so a plausible tidy-up (sorting `:sites`, reordering
+  # `assemble/3`, moving a filter) slides the two apart silently, and a reported site whose mutant
+  # never reached the metamutant runs the suite unmutated: every one of them scores as a
+  # *survivor*. Compare the sets rather than trust the order — NOTES "The reported slice and the
+  # emitted slice are checked against each other".
+  defp verify_selection!(%__MODULE__{sites: sites} = schema, jobs) do
+    reported = MapSet.new(sites, & &1.id)
+    selected = Enum.reduce(jobs, MapSet.new(), &MapSet.union(&2, job_ids(&1)))
+    unemitted = MapSet.difference(reported, selected)
+    unreported = MapSet.difference(selected, reported)
+
+    if MapSet.size(unemitted) == 0 and MapSet.size(unreported) == 0 do
+      schema
+    else
+      raise "Mutare.Schema: selection drift — the reported sites and the emitted mutants " <>
+              "disagree. " <>
+              unemitted_clause(sites, unemitted) <>
+              unreported_clause(unreported) <>
+              "`render_jobs/2` picks the ids the metamutant emits and `restrict_lines/2` + " <>
+              "`limit/2` pick the sites the report shows; the two derive one slice separately and " <>
+              "agree only while sites stay in file/id order. A reported site with no emitted " <>
+              "mutant runs the suite unmutated and is scored a survivor."
+    end
+  end
+
+  # A render job's selected ids: the explicit `emit_ids`, or — for a file no line filter or cap
+  # narrowed — its whole reserved range.
+  defp job_ids({_rel, _source, start_id, count, nil}),
+    do: MapSet.new(start_id..(start_id + count - 1)//1)
+
+  defp job_ids({_rel, _source, _start_id, _count, emit_ids}), do: emit_ids
+
+  # The two directions read differently, so name each: a reported id nothing emitted is the false
+  # survivor; an emitted id nothing reports is a mutant the run compiled but will never test.
+  defp unemitted_clause(sites, ids) do
+    case MapSet.size(ids) do
+      0 ->
+        ""
+
+      size ->
+        located =
+          sites
+          |> Enum.filter(&MapSet.member?(ids, &1.id))
+          |> Enum.take(3)
+          |> Enum.map_join(", ", &"#{&1.id} at #{&1.file}:#{&1.line}")
+
+        "#{size} reported site(s) have no emitted mutant (#{located}). "
+    end
+  end
+
+  defp unreported_clause(ids) do
+    case MapSet.size(ids) do
+      0 ->
+        ""
+
+      size ->
+        listed = ids |> Enum.sort() |> Enum.take(3) |> Enum.join(", ")
+        "#{size} emitted id(s) reach no reported site (#{listed}). "
+    end
   end
 
   # === assembly ==============================================================

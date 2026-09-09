@@ -28,6 +28,41 @@ defmodule Mutare.SchemaTest do
     def clear, do: :persistent_term.erase(@key)
   end
 
+  # `DriftingMutator`'s attribution twin: it produces one mutation every pass, but names a
+  # different report location each time — the carrier `+` node on the first call (the count pass),
+  # the right operand's own line on later ones (the render pass). Mutant counts never disagree, so
+  # `verify_count!/3` sees nothing; a `--line` run's emitted slice and reported slice come apart.
+  # The call counter is keyed by the left operand's name, so concurrent tests each drift their own
+  # source rather than sharing one global count.
+  defmodule DriftingLineMutator do
+    @behaviour Mutare.Mutator
+
+    alias Mutare.Mutator.Mutation
+
+    @impl Mutare.Mutator
+    def name, do: :drifting_line
+
+    @impl Mutare.Mutator
+    def mutate({:+, meta, [{var, _, _} = left, right]}) do
+      key = key(var)
+      calls = :persistent_term.get(key, 0)
+      :persistent_term.put(key, calls + 1)
+      mutated = {:-, meta, [left, right]}
+
+      case calls do
+        0 -> [mutated]
+        _ -> [Mutation.new(mutated, attribution: Mutation.at(right, left))]
+      end
+    end
+
+    def mutate(_node), do: :skip
+
+    def reset(var), do: :persistent_term.put(key(var), 0)
+    def clear(var), do: :persistent_term.erase(key(var))
+
+    defp key(var), do: {__MODULE__, var}
+  end
+
   defmodule ExitingMutator do
     @behaviour Mutare.Mutator
 
@@ -917,6 +952,66 @@ defmodule Mutare.SchemaTest do
 
     assert_raise RuntimeError, ~r/mutant-count drift .* counted 1, rendered 2/, fn ->
       Schema.build(root, mutators: [DriftingMutator])
+    end
+  end
+
+  describe "selection drift between the reported sites and the emitted mutants" do
+    # Both sources put the `+` carrier node on line 3 and its right operand on line 4, so the pass
+    # that attributes to one selects a different line from the pass that attributes to the other.
+    # Distinct operand names keep the two concurrent tests' drift counters apart.
+    setup %{root: root} do
+      write(root, "lib/reported.ex", """
+      defmodule DriftReported do
+        def f(a, b) do
+          a +
+            b
+        end
+      end
+      """)
+
+      write(root, "lib/emitted.ex", """
+      defmodule DriftEmitted do
+        def g(c, d) do
+          c +
+            d
+        end
+      end
+      """)
+
+      DriftingLineMutator.reset(:a)
+      DriftingLineMutator.reset(:c)
+      on_exit(fn -> Enum.each([:a, :c], &DriftingLineMutator.clear/1) end)
+      :ok
+    end
+
+    test "a reported site the run never emitted crashes instead of scoring a survivor",
+         %{root: root} do
+      # The count pass attributes to line 3 and so selects nothing; the render pass attributes to
+      # line 4, which the filter keeps. The reported site's mutant is absent from the metamutant,
+      # so running it would test the unmutated suite and score a survivor — the direction that
+      # corrupts a score.
+      assert_raise RuntimeError,
+                   ~r|selection drift .* 1 reported site\(s\) have no emitted mutant \(1 at lib/reported\.ex:4\)|,
+                   fn ->
+                     Schema.build(root,
+                       mutators: [DriftingLineMutator],
+                       only_lines: MapSet.new([{"lib/reported.ex", 4}])
+                     )
+                   end
+    end
+
+    test "an emitted mutant no site reports crashes the same way", %{root: root} do
+      # The mirror image: the count pass attributes to line 3 and selects the mutant, which the
+      # metamutant then emits; the render pass attributes to line 4, so the filter drops its site
+      # and nothing would ever run it.
+      assert_raise RuntimeError,
+                   ~r|selection drift .* 1 emitted id\(s\) reach no reported site \(1\)|,
+                   fn ->
+                     Schema.build(root,
+                       mutators: [DriftingLineMutator],
+                       only_lines: MapSet.new([{"lib/emitted.ex", 3}])
+                     )
+                   end
     end
   end
 

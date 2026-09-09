@@ -9329,6 +9329,38 @@ the order they confused the first analysis:
 now the best case for seeding (nothing recompiles), where it used to decline and cold-compile
 the app.
 
+### The reported slice and the emitted slice are checked against each other `[done]`
+
+Selective emission left one slice derived twice. `render_jobs/2` decides which IDs the
+metamutant emits, from the count pass's matching local IDs and a running `--max-mutants`
+remainder; `restrict_lines/2` + `limit/2` decide which sites the report shows, by re-filtering
+the finished Sites on `{file, line}` and re-taking the cap. Nothing connected the two. They
+matched only because `assemble/3` folds files in the order `render_jobs/2` prefix-sums them
+and Sites accumulate in ID order within a file, so "first N sites" and "first N selected IDs"
+happened to name the same mutants.
+
+That coincidence is invisible at the call site, and the obvious tidy-ups break it: sorting
+`:sites` for a tidier report, reordering `assemble/3`, moving a filter past the cap. The
+resulting failure is the expensive kind — a site the report shows whose mutant was never
+emitted runs the suite unmutated, so it always passes and is scored a **survivor**, the
+corruption "Empty coverage is a valid focused-run result" reached through another door. Probed
+with an attribution that drifts between passes, the pre-guard schema returned one live
+(unpoisoned, unignored) site against a metamutant byte-identical to the original.
+
+`verify_selection!/2` now compares the two sets at the end of `from_files/4` and raises on
+either difference — a reported ID nothing emitted (the false survivor) or an emitted ID nothing
+reports (a mutant compiled but never run). It follows `verify_count!/3`: assert the invariant
+where the assertion is cheap. Cost is one `MapSet` over the sites and one over the selection,
+next to a scan that parses and renders every file. The regression fixture `DriftingLineMutator`
+names the carrier node's line on its first call and the right operand's on later ones, drifting
+the attribution without ever drifting the count — one test per direction.
+
+Deriving the sites *from* the emitted set instead — one derivation, no drift possible — was
+weighed and dropped. It cannot produce a false survivor, but it reconciles a disagreement
+instead of reporting one: emission would silently overrule whatever `restrict_lines/2`
+concluded about a site's line, and the `--line` scoping the user asked for would quietly change
+meaning. A crash names the bug; a silent reconciliation buries it.
+
 ### Ignored mutants reserve IDs but emit no code `[done]`
 
 Ignore directives are parsed from the original AST before emission, then matched in
