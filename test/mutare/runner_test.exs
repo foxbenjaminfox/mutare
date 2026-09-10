@@ -102,7 +102,9 @@ defmodule Mutare.RunnerTest do
             active = System.get_env("MUTARE_ACTIVE_MUTANT")
 
             if active not in [nil, "0"] do
-              counter = "kill_counter_\#{active}.txt"
+              # The integer is file-local, so key the counter on the file namespace too.
+              mutant = {System.get_env("MUTARE_MUTANT_NAMESPACE"), active}
+              counter = "kill_counter_\#{:erlang.phash2(mutant)}.txt"
 
               runs =
                 case File.read(counter) do
@@ -309,9 +311,10 @@ defmodule Mutare.RunnerTest do
             use ExUnit.Case
 
             test "all arithmetic sites are covered" do
-              case System.get_env("MUTARE_ACTIVE_MUTANT", "0") do
-                "0" -> :ok
-                "1" -> Process.sleep(3_000)
+              case {System.get_env("MUTARE_MUTANT_NAMESPACE"),
+                    System.get_env("MUTARE_ACTIVE_MUTANT", "0")} do
+                {_, "0"} -> :ok
+                {"lib/budget_launch_gate.ex", "1"} -> Process.sleep(3_000)
                 _ -> Process.sleep(700)
               end
 
@@ -458,7 +461,8 @@ defmodule Mutare.RunnerTest do
             use ExUnit.Case
 
             test "covers every arithmetic site" do
-              if System.get_env("MUTARE_ACTIVE_MUTANT", "0") == "1" do
+              if {System.get_env("MUTARE_MUTANT_NAMESPACE"), System.get_env("MUTARE_ACTIVE_MUTANT")} ==
+                   {"lib/straggler_report.ex", "1"} do
                 Process.sleep(2_000)
               end
 
