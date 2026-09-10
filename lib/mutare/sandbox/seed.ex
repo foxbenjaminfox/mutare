@@ -405,7 +405,7 @@ defmodule Mutare.Sandbox.Seed do
   #
   # `wrapped` holds the mix.exs paths the rewrite actually hooked, not the ones it was offered
   # — `Project.project_dirs/1` is the list both sides *try*, and three paths decline it
-  # silently (see `CompilerOptions.project_source/1`). Each app's key is rebuilt with the same
+  # (see `CompilerOptions.project_source/1`). Each app's key is rebuilt with the same
   # `Project.project_file/1` that produced them. The clauses mirror `expected_by_app/4` — an
   # umbrella attributes by its declared apps, a lone seedable app is the root project, and any
   # other shape never reaches here (that arm returns `nil`).

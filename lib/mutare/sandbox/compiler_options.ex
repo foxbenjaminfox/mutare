@@ -18,7 +18,8 @@ defmodule Mutare.Sandbox.CompilerOptions do
       effective `elixirc_options` always disable type-signature *inference*.
       This survives Mix's project cache and applies on every sandbox boot,
       including umbrella children and projects with a custom config path. It
-      reports whether the wrap landed, since several shapes decline it silently.
+      reports whether the wrap landed and, when it did not, why: several shapes
+      decline it, and a declined project compiles with inference on.
 
   `seed_manifest/1` reconciles the inference option in a transplanted Elixir
   compile manifest with that wrapper. Without it, Elixir 1.18/1.19 sees changed
@@ -140,35 +141,51 @@ defmodule Mutare.Sandbox.CompilerOptions do
                         end
                       end)
 
+  @bootstrap_source Macro.to_string(@project_bootstrap)
+  @bootstrap_quoted Code.string_to_quoted!(@bootstrap_source)
+
   @doc """
   Override inference in the sandbox copy of a Mix project's effective options.
 
-  Returns `{source, hooked?}` — the rewritten source, and whether a hook was actually
-  attached to a module defined in this file. The caller needs the second element:
-  `Mutare.Sandbox.Seed` may only realign the compile manifest of an app that really
-  will compile with inference off, and the source alone cannot answer that. A file
-  that defines no module of its own still comes back *changed* (the bootstrap is
-  prepended unconditionally), so `!=` is not a proxy for it.
+  Returns `{:hooked, source}` when a hook was attached to a module defined in this file,
+  and `{:declined, source, reason}` otherwise, `reason` being a short phrase that says why.
+  The caller needs both. `Mutare.Sandbox.Seed` may only realign the compile manifest of an
+  app that really will compile with inference off, and the source alone cannot answer that:
+  a file that defines no module of its own still comes back *changed* (the bootstrap is
+  prepended unconditionally), so `!=` is not a proxy for it. And a declined project compiles
+  with inference on, which on metamutant-shaped code can stretch the one compile from
+  seconds to hours, so `Mutare.Sandbox` narrates the reason.
 
   A `before_compile` hook wraps `project/0`, preserving its computed configuration
   and every other compiler option. Only sandbox project files are rewritten;
   the target's original options remain untouched. Unsupported Elixir versions
-  retain the original configuration.
+  retain the original configuration. Quoted module definitions are left alone.
 
-  Three paths decline, each reporting `false`: an unparseable source, a render Elixir
-  cannot read back, and a `mix.exs` defining no module of its own — a project module
-  built entirely in an externally required file is outside this source rewrite, and its
-  compiler options must currently disable inference themselves. Quoted module definitions
-  are left alone. Parsing and rendering are best-effort, so an unused umbrella child or a
-  scaffolding template cannot abort sandbox preparation; the rendered result is re-parsed
-  before it is accepted, since a `mix.exs` that Sourceror renders into something Elixir
-  will not read back would break the sandbox outright, where keeping inference on merely
-  makes its one compile slower.
+  The rewrite declines and returns the original source byte-for-byte when:
 
-  `hooked?` reports the source rewrite, which is one step short of certainty: the hook
+    * the source does not parse;
+    * the rewritten file does not parse, or Elixir reads it back as anything other than
+      the bootstrap followed by the original with a hook appended to each module body.
+      The two are compared as parsed programs, ignoring only spellings that evaluate
+      alike (metadata, block nesting, an empty block as `nil`, a charlist as a `~c`
+      sigil), so a render that still parses but moved an expression, altered a literal,
+      or lost a hook is caught instead of becoming the sandbox's entry point;
+    * the rewrite raises, throws, or exits.
+
+  Parsing and rendering are best-effort, so an unused umbrella child or a scaffolding
+  template cannot abort sandbox preparation. Keeping the original merely leaves inference
+  on, where a `mix.exs` rendered into a different program would break the sandbox or
+  change what it builds.
+
+  A `mix.exs` defining no module of its own also declines, but comes back rewritten (the
+  bootstrap is inert there): a project module built entirely in an externally required
+  file is outside this source rewrite, and its compiler options must currently disable
+  inference themselves.
+
+  `:hooked` reports the source rewrite, which is one step short of certainty: the hook
   itself checks at compile time that the module is a Mix project defining `project/0`, so
   a `mix.exs` holding only an unrelated helper module alongside a required-in project
-  reports `true` and is nonetheless declined. Nothing observable before the compile can
+  reports `:hooked` and is nonetheless declined. Nothing observable before the compile can
   close that gap, and the manifest is stamped before it.
 
   Merely setting `Code.put_compiler_option(:infer_signatures, false)` before
@@ -177,26 +194,94 @@ defmodule Mutare.Sandbox.CompilerOptions do
   also fails when Mix pushes a cached umbrella project again. Wrapping the
   project's return value covers both cases without interpreting its build code.
   """
-  @spec project_source(String.t()) :: {String.t(), boolean()}
-  def project_source(source) do
-    {ast, hooked?} =
-      source
-      |> Sourceror.parse_string!()
-      |> wrap_project_modules(false)
+  @spec project_source(String.t()) :: {:hooked, String.t()} | {:declined, String.t(), String.t()}
+  def project_source(source), do: project_source(source, &render/1)
 
-    rendered =
-      ast
-      |> Sourceror.to_string(Mutare.AST.render_opts())
-      |> then(&(Macro.to_string(@project_bootstrap) <> "\n\n" <> &1 <> "\n"))
-
-    # Renders are not guaranteed to round-trip. Accept only what Elixir can read back, since
-    # this file is the sandbox's entry point: an unparseable `mix.exs` fails every later
-    # command, while the original keeps a working sandbox that merely compiles with inference on.
-    Code.string_to_quoted!(rendered)
-    {rendered, hooked?}
+  # The seam the declining paths are tested through: `render` stands in for Sourceror's
+  # renderer, so a test can make the rewrite unfaithful, unparseable, or abort.
+  @doc false
+  @spec project_source(String.t(), (Macro.t() -> String.t())) ::
+          {:hooked, String.t()} | {:declined, String.t(), String.t()}
+  def project_source(source, render) do
+    with {:ok, ast} <- read(Sourceror.parse_string(source), "it does not parse"),
+         {ast, hooked?} = wrap_project_modules(ast, false),
+         rendered = @bootstrap_source <> "\n\n" <> render.(ast) <> "\n",
+         :ok <- same_program(rendered, source) do
+      if hooked?,
+        do: {:hooked, rendered},
+        else: {:declined, rendered, "it defines no module of its own to hook"}
+    else
+      {:error, reason} -> {:declined, source, reason}
+    end
   rescue
-    _ -> {source, false}
+    e -> {:declined, source, "the rewrite raised: " <> Exception.message(e)}
+  catch
+    kind, reason -> {:declined, source, "the rewrite aborted (#{kind} #{inspect(reason)})"}
   end
+
+  defp render(ast), do: Sourceror.to_string(ast, Mutare.AST.render_opts())
+
+  # Renders are not guaranteed to round-trip, and this file is the sandbox's entry point, so
+  # parsing is not enough: a render that still parses but moved an expression, altered a
+  # literal, or dropped a hook would ship a `mix.exs` that builds something else, or claim a
+  # hook `Seed` then trusts. Accept it only if Elixir reads back the program we meant — the
+  # bootstrap, then the original as Elixir reads it, hooked by the same walk.
+  defp same_program(rendered, source) do
+    with {:ok, actual} <- read(quoted(rendered), "the rewritten file does not parse"),
+         {:ok, original} <- read(quoted(source), "it does not parse") do
+      {expected, _hooked?} = wrap_project_modules(original, false)
+
+      if normalize(actual) == normalize({:__block__, [], [@bootstrap_quoted, expected]}),
+        do: :ok,
+        else: {:error, "rewriting it would change its meaning"}
+    end
+  end
+
+  defp quoted(string), do: Code.string_to_quoted(string, emit_warnings: false)
+
+  # Either parser's result, a syntax error reduced to one line. Sourceror and
+  # `Code.string_to_quoted/2` report the same `{location, message, token}` triple, where the
+  # raising variants would put a multi-line snippet into a progress note.
+  defp read({:ok, ast}, _failure), do: {:ok, ast}
+
+  defp read({:error, {location, message, token}}, failure),
+    do: {:error, "#{failure} (line #{location[:line]}: #{syntax_error(message, token)})"}
+
+  defp syntax_error({prefix, suffix}, token), do: prefix <> token <> suffix
+  defp syntax_error(message, token), do: message <> token
+
+  # Two readings of one program may differ in metadata and in how a few things are spelled, and
+  # in nothing else that evaluation can see. A render may parenthesise a module body into a
+  # block of its own, whose statements run exactly as they would inline, the last still giving
+  # the value; it spells an empty body as the `nil` that body evaluates to; and it may spell a
+  # single-quoted charlist as the `~c` sigil that expands to the same list at compile time
+  # (seen in call arguments and statements, not inside a keyword value). So blocks splice into
+  # their parent, a one-statement block is its statement (which also unwraps the hook's literal
+  # encoding), an empty block is `nil`, and a `~c` sigil without interpolation or modifiers is
+  # its charlist. An interpolated one stays a sigil, so a render that re-spells it declines.
+  defp normalize(ast) do
+    Macro.postwalk(ast, fn
+      {:__block__, _meta, exprs} ->
+        exprs |> Enum.flat_map(&statements/1) |> block()
+
+      {:sigil_c, _meta, [{:<<>>, _, [chars]}, []]} when is_binary(chars) ->
+        chars |> Macro.unescape_string() |> String.to_charlist()
+
+      {form, _meta, args} ->
+        {form, [], args}
+
+      node ->
+        node
+    end)
+  end
+
+  # Children are already normalised, so any block left here holds two or more statements.
+  defp statements({:__block__, _meta, exprs}), do: exprs
+  defp statements(expr), do: [expr]
+
+  defp block([]), do: nil
+  defp block([expr]), do: expr
+  defp block(exprs), do: {:__block__, [], exprs}
 
   # Walks the source, appending the hook to every module defined in it, and reports whether
   # it appended any. The flag rides along rather than being recovered from the result,

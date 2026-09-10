@@ -41,6 +41,8 @@ defmodule Mutare.Sandbox do
   `Mutare.Sandbox.Command.Invocation`.
   """
 
+  require Logger
+
   alias Mutare.{Options, Project, Schema}
   alias Mutare.Coverage.Recorder
   alias Mutare.Run.Context
@@ -168,8 +170,11 @@ defmodule Mutare.Sandbox do
 
     # Built once for both modes: the manifest carries the generated files, and `wrapped`
     # names the `mix.exs` files whose inference override actually landed — which only the
-    # rewrite itself knows, and which `Seed.app_build/6` needs below.
-    {overrides, wrapped} = override_files(root, schema, project)
+    # rewrite itself knows, and which `Seed.app_build/6` needs below. `declined` pairs each
+    # other `mix.exs` with the rewrite's reason: its project compiles with inference on, which
+    # can stretch the one compile from seconds to hours, so each is narrated before it starts.
+    {overrides, wrapped, declined} = override_files(root, schema, project)
+    narrate_declined(context, declined)
 
     if options.keep_sandbox do
       # Reuse the existing sandbox (and its `_build`): re-materialise it in place,
@@ -442,11 +447,12 @@ defmodule Mutare.Sandbox do
   # (`prepare/3`) `write_overrides/2`-es it over a fresh copy. Adding a generated file is one
   # edit here, automatically reaching both modes.
   #
-  # Returns `{overrides, wrapped}`, where `wrapped` holds the relative paths of the `mix.exs`
-  # files that came back with an inference hook actually attached. `Seed` realigns compile
-  # manifests against *that*, never against the list we tried: a file we failed to wrap
-  # compiles with inference on, and telling its manifest otherwise both leaves the pathology
-  # in place and invents a cache-key mismatch that cold-compiles the app.
+  # Returns `{overrides, wrapped, declined}`, where `wrapped` holds the relative paths of the
+  # `mix.exs` files that came back with an inference hook actually attached, and `declined`
+  # pairs every other one with the rewrite's reason. `Seed` realigns compile manifests against
+  # `wrapped`, never against the list we tried: a file we failed to wrap compiles with
+  # inference on, and telling its manifest otherwise both leaves the pathology in place and
+  # invents a cache-key mismatch that cold-compiles the app.
   defp override_files(root, %Schema{metamutants: metamutants}, project) do
     overrides =
       metamutants
@@ -460,11 +466,29 @@ defmodule Mutare.Sandbox do
     overrides
     |> Map.keys()
     |> Enum.filter(&(Path.basename(&1) == "mix.exs"))
-    |> Enum.reduce({overrides, MapSet.new()}, fn rel, {acc, wrapped} ->
-      {source, hooked?} = CompilerOptions.project_source(Map.fetch!(acc, rel))
+    |> Enum.reduce({overrides, MapSet.new(), []}, fn rel, {acc, wrapped, declined} ->
+      case CompilerOptions.project_source(Map.fetch!(acc, rel)) do
+        {:hooked, source} ->
+          {Map.put(acc, rel, source), MapSet.put(wrapped, rel), declined}
 
-      {Map.put(acc, rel, source), if(hooked?, do: MapSet.put(wrapped, rel), else: wrapped)}
+        {:declined, source, reason} ->
+          {Map.put(acc, rel, source), wrapped, [{rel, reason} | declined]}
+      end
     end)
+  end
+
+  # Log (opt-in debug) and relay each declined wrap on `:on_phase`, as `Seed` does for its own
+  # fallback, so `--verbose` can say why the one compile runs long. In path order, so the
+  # narration is stable from run to run.
+  defp narrate_declined(context, declined) do
+    on_phase = Context.hook(context, :on_phase)
+
+    for {file, reason} <- Enum.sort(declined) do
+      Logger.debug("Mutare: #{file} keeps type-signature inference on — " <> reason)
+      on_phase.({:inference_override_declined, %{file: file, reason: reason}})
+    end
+
+    :ok
   end
 
   # Root and real umbrella children, plus the generated support project's mix.exs

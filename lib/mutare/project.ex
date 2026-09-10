@@ -197,11 +197,11 @@ defmodule Mutare.Project do
 
   The root, plus each umbrella child. `Mutare.Sandbox` *attempts* to wrap exactly these
   `mix.exs` files to force `infer_signatures: false`. It is only the attempt: three paths
-  decline silently (an unreadable file, a source Sourceror cannot round-trip, a `mix.exs`
-  defining no module of its own), so `Mutare.Sandbox.Seed` realigns manifests against the
-  wraps that actually landed — reported back by `CompilerOptions.project_source/1` — not
-  against this list. Realigning an app that compiles with inference on invents a cache-key
-  mismatch and cold-compiles it for nothing.
+  decline it (an unreadable file, a source Sourceror cannot faithfully round-trip, a
+  `mix.exs` defining no module of its own), so `Mutare.Sandbox.Seed` realigns manifests
+  against the wraps that actually landed — reported back by
+  `CompilerOptions.project_source/1` — not against this list. Realigning an app that
+  compiles with inference on invents a cache-key mismatch and cold-compiles it for nothing.
   """
   @spec project_dirs(t() | nil) :: [String.t()]
   def project_dirs(%__MODULE__{umbrella?: true, apps: apps}), do: ["." | Enum.map(apps, & &1.dir)]

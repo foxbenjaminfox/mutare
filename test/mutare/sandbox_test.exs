@@ -1063,6 +1063,50 @@ defmodule Mutare.SandboxTest do
       assert elixir_cache_key(sandbox, "late") == {[], ["lib"], false}
     end
 
+    test "narrates each mix.exs whose inference wrap declined, with the reason", context do
+      project = context.project
+
+      # A declined wrap leaves its project compiling with inference on, which can stretch the
+      # one compile from seconds to hours, so `--verbose` must be able to say which and why.
+      # The root is an unparseable template, kept byte-for-byte; `late` builds its project in
+      # a required file; `early` wraps and must not be mentioned.
+      root_source = "defmodule <%= @module %>.MixProject, do: :ok\n"
+      File.write!(Path.join(project, "mix.exs"), root_source)
+      put_mix_exs(project, "apps/early", "Early.MixProject")
+      File.mkdir_p!(Path.join(project, "apps/late"))
+
+      File.write!(
+        Path.join(project, "apps/late/mix.exs"),
+        ~s|Code.require_file("build/project.exs", __DIR__)\n|
+      )
+
+      apps = [%{app: :early, dir: "apps/early"}, %{app: :late, dir: "apps/late"}]
+      umbrella = %Mutare.Project{umbrella?: true, apps: apps, mutate_scope: apps}
+      sandbox = Path.join(context.base, "sandbox")
+      test_pid = self()
+
+      hook = fn
+        {:inference_override_declined, info} -> send(test_pid, {:declined, info})
+        _ -> :ok
+      end
+
+      Sandbox.prepare(project, %Schema{metamutants: %{}},
+        sandbox: sandbox,
+        project: umbrella,
+        on_phase: hook
+      )
+
+      assert_received {:declined,
+                       %{
+                         file: "apps/late/mix.exs",
+                         reason: "it defines no module of its own to hook"
+                       }}
+
+      assert_received {:declined, %{file: "mix.exs", reason: "it does not parse" <> _}}
+      refute_received {:declined, %{file: "apps/early/mix.exs"}}
+      assert File.read!(Path.join(sandbox, "mix.exs")) == root_source
+    end
+
     test "reports :skipped when --no-seed-app-build opts out", context do
       project = context.project
       put_app_beam(project, "myapp", "lib/foo.ex", "Foo#{uniq()}")

@@ -270,6 +270,16 @@ defmodule Mutare.Report.LiveTest do
       assert Live.detail_line({:coverage_done, %{run_all?: true, cap_ms: 9300}}) ==
                "  ✓ coverage: run-all (no per-mutant selection) · cap 9.3s"
     end
+
+    test "a declined inference override names the file, the reason, and the cost" do
+      event =
+        {:inference_override_declined,
+         %{file: "apps/late/mix.exs", reason: "it defines no module of its own to hook"}}
+
+      assert Live.detail_line(event) ==
+               "  ↺ could not disable type-signature inference for apps/late/mix.exs " <>
+                 "(it defines no module of its own to hook); the compile may be much slower"
+    end
   end
 
   describe "seed_line/1" do

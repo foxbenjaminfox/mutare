@@ -133,6 +133,11 @@ defmodule Mutare.Runner do
       (`Mutare.Sandbox.Seed.summary/0` — `:seeded` with reused/recompiled beam
       counts, a `:fallback` to a cold compile, or `:skipped`). `--verbose` renders
       the first two.
+    * `{:inference_override_declined, %{file: file, reason: reason}}` — emitted during
+      `:compiling` by `Mutare.Sandbox`, once per `mix.exs` whose inference override did
+      not land (`Mutare.Sandbox.CompilerOptions.project_source/1`). That project compiles
+      with type-signature inference on, which can make the one compile far slower;
+      `reason` says why in a short phrase. `--verbose` renders it.
     * `{:poison_round, info}` — one compile-poison recovery round: the compile
       failed, the implicated mutants were dropped, and a rebuild + recompile is
       starting. `info` is `%{dropped: [%{id: id, file: file, line: line,

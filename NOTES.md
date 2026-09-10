@@ -8200,6 +8200,51 @@ the scanner cannot reach would only make it fail later. Fixing it means reading 
 `apps_path` value in `declares_apps_path?/1` (which today only checks the key *exists*) and
 threading it through app discovery, scoping, and umbrella test narrowing.
 
+### A declined inference wrap is narrated, and the render check compares programs `[done]`
+
+The entry above made the seed follow the wraps that landed, but left the declining paths as
+silent as before. A declined `mix.exs` compiles with inference on (the 14 s → 80+ min cliff), and
+nothing said so: the compile simply ran long enough to look like a hang. Three changes followed
+from one review finding.
+
+**Narrated like Seed's own fallback.** `project_source/1` now returns `{:hooked, source}` or
+`{:declined, source, reason}`. `Sandbox.prepare/3` logs each decline at debug level and fires
+`{:inference_override_declined, %{file: _, reason: _}}` on `:on_phase`, which `Live` renders under
+`--verbose`. The no-module path is narrated too: it is not a rescue, but it has the same
+symptom. Only `prepare/3` narrates. Poison recovery's `rematerialize/2` never re-wraps, so the
+note appears once per run. Verbose-only follows Seed's precedent and is not a settled judgement:
+poison rounds print in every mode for the same "reads as a hang" reason. The cost of every-mode
+here is that a persistent condition (a scaffolding template, a required-in project) would print
+on every run.
+
+**`rescue` gained a `catch`.** A `throw` or `exit` from Sourceror or the formatter escaped the
+bare `rescue` and aborted sandbox preparation, the opposite of best-effort.
+
+**The guard compares what Elixir reads, not whether it reads.** `Code.string_to_quoted!(rendered)`
+proved only that the render parsed. A Sourceror slip that still parses (a moved expression, an
+altered literal, a dropped hook) would have become the sandbox's entry point. A dropped hook would
+also still report `hooked?`, which `Seed` trusts. Now Elixir's parse of the render must equal the
+bootstrap followed by Elixir's parse of the original, hooked by the same walk. The walk runs
+unchanged on both AST dialects, because `AST.key_atom/1` reads either keyword encoding and
+normalisation unwraps the hook's literal block. Normalisation erases only what a render
+legitimately re-spells:
+
+  - metadata;
+  - block nesting (Sourceror parenthesises a hooked module body into its own block);
+  - an empty block, which Sourceror renders as `nil`;
+  - a `~c` sigil without interpolation or modifiers, which Sourceror emits for a single-quoted
+    charlist in call arguments and statements (it keeps the quotes inside a keyword value).
+
+Each normalised form evaluates exactly as what it replaces, so no change of meaning can pass
+through them. An interpolated charlist is not normalised, so a render that re-spells one declines.
+
+Measured over every `mix.exs` under `~/dev` (5,053 files, 982 distinct): 971 hooked and 11
+declined as unparseable. The 11 are Phoenix installer EEx templates, which the old guard declined
+too. None was declined for meaning. The first version of the check declined one real file,
+`System.cmd("make", ['clean'], …)` in a do-block; that was the `~c` re-spelling, found this way
+and now pinned by the layout-only test. No real Sourceror slip turned up, so the check guards a
+class of failure, not a known instance.
+
 ### Interpreted module definitions `[experiment — no default change]`
 
 Elixir 1.20's `elixirc_options: [module_definition: :interpreted]` changes execution of

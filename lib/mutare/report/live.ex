@@ -241,6 +241,13 @@ defmodule Mutare.Report.Live do
   def handle_cast({:phase, {:seed_app_build, summary}}, state),
     do: {:noreply, maybe_seed_note(state, summary)}
 
+  # A `mix.exs` whose inference override did not land (fired by `Mutare.Sandbox` during the
+  # compile phase, once per file): its project compiles with type-signature inference on,
+  # which can stretch the one compile from seconds to hours. A verbose-only `↺` note naming
+  # the file and the reason, so a long compile does not go unexplained; inert otherwise.
+  def handle_cast({:phase, {:inference_override_declined, _info} = event}, state),
+    do: {:noreply, maybe_detail(state, event)}
+
   # The run configuration (worker count, partition) is stashed, not printed: the
   # worker count rides onto the next `{:running, total}` label (verbose only).
   def handle_cast({:phase, {:run_config, cfg}}, state),
@@ -398,12 +405,18 @@ defmodule Mutare.Report.Live do
   def verbose_leave(status), do: Map.fetch!(@verbose_labels, status)
 
   @doc """
-  Renders a verbose phase-completion event as a persistent status line.
+  Renders a verbose detail event as a persistent status line: a phase's completion, or a
+  `mix.exs` whose inference override did not land.
   """
   @spec detail_line(tuple()) :: String.t()
   def detail_line({:compiled, ms}), do: "  ✓ compiled in #{humanize_ms(ms)}"
   def detail_line({:baseline_done, ms}), do: "  ✓ baseline green in #{humanize_ms(ms)}"
   def detail_line({:coverage_done, summary}), do: "  ✓ " <> coverage_note(summary)
+
+  def detail_line({:inference_override_declined, %{file: file, reason: reason}}) do
+    "  ↺ could not disable type-signature inference for #{file} (#{reason}); " <>
+      "the compile may be much slower"
+  end
 
   @doc """
   Renders the app-build seed's outcome (`Mutare.Sandbox.Seed.summary/0`) as a persistent

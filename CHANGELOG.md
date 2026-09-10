@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mismatched the compiler cache key, so Mix cold-compiled the whole app while the
   seed reported its beams as reused. The rewrite now reports whether the wrap landed,
   and only those apps are realigned.
+- **A `mix.exs` Mutare cannot wrap is reported instead of silently slowing the
+  compile.** When the inference override cannot be applied (the file does not
+  parse, rewriting it would change its meaning, it defines no module of its own, or
+  the rewrite fails), its project compiles with signature inference on, which can
+  stretch the one compile from seconds to hours. `--verbose` now names each such
+  file and the reason; it is also logged at debug level.
+- **The `mix.exs` rewrite is checked for meaning, not just syntax.** It was accepted
+  whenever the rendered file parsed; Elixir must now read it back as the original
+  plus the hook, or the original is kept. A `throw` or `exit` during the rewrite no
+  longer escapes sandbox preparation.
 
 ### Changed
 

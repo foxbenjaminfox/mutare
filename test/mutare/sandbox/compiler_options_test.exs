@@ -78,7 +78,7 @@ defmodule Mutare.Sandbox.CompilerOptionsTest do
   describe "project_source/1" do
     test "renders keyword-do module bodies with an encoded hook atom" do
       for form <- ["defmodule", "Kernel.defmodule", "Elixir.Kernel.defmodule"] do
-        assert {source, true} = CompilerOptions.project_source("#{form} Example, do: :ok")
+        assert {:hooked, source} = CompilerOptions.project_source("#{form} Example, do: :ok")
         assert {:ok, _} = Code.string_to_quoted(source)
         assert source =~ "@before_compile :mutare_sandbox_compiler_options"
       end
@@ -106,7 +106,7 @@ defmodule Mutare.Sandbox.CompilerOptionsTest do
       defmodule AfterQuote, do: :ok
       """
 
-      assert {rendered, true} = CompilerOptions.project_source(source)
+      assert {:hooked, rendered} = CompilerOptions.project_source(source)
 
       assert length(Regex.scan(~r/@before_compile :mutare_sandbox_compiler_options/, rendered)) ==
                2
@@ -124,25 +124,28 @@ defmodule Mutare.Sandbox.CompilerOptionsTest do
       assert expected in quotes
     end
 
-    test "returns unparseable project templates byte-for-byte, reporting no hook" do
+    test "declines unparseable project templates, returning them byte-for-byte" do
       for source <- ["defmodule <%= @module %>, do: :ok\n", "defmodule MissingEnd do\n", "[)\n"] do
-        assert CompilerOptions.project_source(source) == {source, false}
+        assert {:declined, ^source, "it does not parse (line 1: " <> _} =
+                 CompilerOptions.project_source(source)
       end
     end
 
-    test "reports no hook for a mix.exs that defines no module of its own" do
+    test "declines a mix.exs that defines no module of its own" do
       # A project built entirely in an externally required file. The rewrite has nothing to
       # hook, yet the source still comes back *changed* — the bootstrap is prepended
       # unconditionally — so the caller cannot read the outcome off the string.
       source = ~s|Code.require_file("build/project.exs", __DIR__)\n|
 
-      assert {rendered, false} = CompilerOptions.project_source(source)
+      assert {:declined, rendered, "it defines no module of its own to hook"} =
+               CompilerOptions.project_source(source)
+
       assert rendered != source
       refute rendered =~ "@before_compile"
     end
 
     test "renders a dependency-free wrapper that reparses" do
-      assert {source, true} =
+      assert {:hooked, source} =
                CompilerOptions.project_source("""
                defmodule Example.MixProject do
                  use Mix.Project
@@ -158,6 +161,90 @@ defmodule Mutare.Sandbox.CompilerOptionsTest do
       # wrapper must check for the function too: `defoverridable` on a missing one aborts the
       # sandbox's mix.exs, replacing Mix's own legible complaint about the broken project.
       assert source =~ "Module.defines?(env.module, {:project, 0})"
+    end
+
+    defp mix_project do
+      """
+      defmodule Example.MixProject do
+        use Mix.Project
+        def project, do: [app: :example, version: "0.1.0"]
+      end
+      """
+    end
+
+    test "accepts a render that changes only layout" do
+      # Sourceror re-spells much of this (the heredoc's indentation, a module body wrapped in a
+      # block of its own, an empty body as `nil`, the charlist in `clean/0` as a `~c` sigil),
+      # yet each reads back as the same program, so every module is hooked.
+      source = ~S'''
+      defmodule Example.MixProject do
+        use Mix.Project
+        @version "0.1.0"
+
+        # Configuration.
+        def project do
+          [
+            app: :example,
+            version: @version,
+            erlc_options: ['+debug_info'],
+            description: """
+              A heredoc
+                with indentation
+            """,
+            deps: deps()
+          ]
+        end
+
+        defp deps, do: [{:dep, "~> 1.0", only: [:dev, :test]}]
+
+        # Outside a keyword value, Sourceror spells this charlist as `~c"clean"`.
+        defp clean do
+          System.cmd("make", ['clean'], stderr_to_stdout: true)
+        end
+      end
+
+      defmodule Empty do
+      end
+      '''
+
+      assert {:hooked, rendered} = CompilerOptions.project_source(source)
+
+      assert length(Regex.scan(~r/@before_compile :mutare_sandbox_compiler_options/, rendered)) ==
+               2
+    end
+
+    test "declines a render that parses but reads back as a different program" do
+      source = mix_project()
+
+      # Both parse, which is all the old guard asked. The changed literal ships a different
+      # project; the verbatim original lacks the hook the walk reported, which `Seed` would
+      # then trust when it realigns the manifest.
+      for render <- [
+            &(&1 |> Sourceror.to_string() |> String.replace("0.1.0", "0.2.0")),
+            fn _ast -> source end
+          ] do
+        assert CompilerOptions.project_source(source, render) ==
+                 {:declined, source, "rewriting it would change its meaning"}
+      end
+    end
+
+    test "declines a render that does not parse back" do
+      source = mix_project()
+
+      assert {:declined, ^source, "the rewritten file does not parse (line " <> _} =
+               CompilerOptions.project_source(source, fn _ast -> "defmodule (" end)
+    end
+
+    test "declines, instead of escaping, when the rewrite raises, throws, or exits" do
+      source = mix_project()
+
+      for {render, reason} <- [
+            {fn _ast -> raise "boom" end, "the rewrite raised: boom"},
+            {fn _ast -> throw(:boom) end, "the rewrite aborted (throw :boom)"},
+            {fn _ast -> exit(:boom) end, "the rewrite aborted (exit :boom)"}
+          ] do
+        assert CompilerOptions.project_source(source, render) == {:declined, source, reason}
+      end
     end
   end
 
