@@ -379,17 +379,21 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       refute Enum.any?(:ets.tab2list(H.test_table()), fn {{_m, _n, id}} -> id == 871 end)
     end
 
-    test "hit/1 tracks ids seen by the current process" do
+    test "hit tracks ids seen by the current process, per namespace" do
       # Coverage is set-like. The helper records an id once per process and then returns early for
-      # repeated hits, keeping the probe closer to target timing in hot loops.
+      # repeated hits, keeping the probe closer to target timing in hot loops. Each namespace (`nil`
+      # for `hit/1`) has its own cache entry, so local id 701 in a file is a distinct hit.
       tid = :ets.whereis(H.agg_table())
 
       H.hit([701])
       H.hit([701, 702])
+      H.hit("lib/seen.ex", [701])
 
-      assert {^tid, seen} = Process.get(:mutare_cov_seen)
-      assert Map.has_key?(seen, 701)
-      assert Map.has_key?(seen, 702)
+      assert {^tid, seen} = Process.get({:mutare_cov_seen, nil})
+      assert {^tid, file_seen} = Process.get({:mutare_cov_seen, "lib/seen.ex"})
+      assert Enum.sort(Map.keys(seen)) == [701, 702]
+      assert Map.keys(file_seen) == [701]
+      assert :ets.lookup(H.agg_table(), {"lib/seen.ex", 701}) == [{{"lib/seen.ex", 701}}]
       # This runs in the test process, which carries a runnable test name (a `$process_label` on
       # 1.19+, a `:"test …"` stack frame on 1.18) — so the per-process seen-key is the *per-test*
       # form `{:test, module, name}`, not the module-only `{:labeled, module}` a non-runnable
@@ -431,9 +435,9 @@ defmodule Mutare.Coverage.HelperTemplateTest do
 
       payload = dump |> File.read!() |> :erlang.binary_to_term()
 
-      assert 501 in payload.aggregate
-      assert payload.by_file["lib/mutare/mutators/arithmetic.ex"] == [501]
-      assert is_list(payload.unlabeled)
+      assert 501 in payload.aggregate[nil]
+      assert payload.by_file["lib/mutare/mutators/arithmetic.ex"] == %{nil => [501]}
+      assert is_map(payload.unlabeled)
     end
 
     test "serialises per-test names (by id) and the whole-file id set", %{dump: dump} do
@@ -448,9 +452,9 @@ defmodule Mutare.Coverage.HelperTemplateTest do
 
       payload = dump |> File.read!() |> :erlang.binary_to_term()
 
-      # Names are strings (the `--only test:<name>` value), keyed by mutant id.
-      assert Enum.sort(payload.by_test[511]) == ["test doubles", "test halves"]
-      assert 512 in payload.wholefile
+      # Names are strings (the `--only test:<name>` value), keyed by namespace, then mutant id.
+      assert Enum.sort(payload.by_test[nil][511]) == ["test doubles", "test halves"]
+      assert 512 in payload.wholefile[nil]
     end
 
     test "drops an id whose module cannot be loaded (source_file → nil)", %{dump: dump} do
@@ -462,8 +466,8 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       payload = dump |> File.read!() |> :erlang.binary_to_term()
 
       # The unloadable module contributes no by_file entry, but its id is still in the aggregate.
-      assert 601 in payload.aggregate
-      refute payload.by_file |> Map.values() |> List.flatten() |> Enum.member?(601)
+      assert 601 in payload.aggregate[nil]
+      refute Enum.any?(Map.values(payload.by_file), &(601 in Map.get(&1, nil, [])))
     end
   end
 

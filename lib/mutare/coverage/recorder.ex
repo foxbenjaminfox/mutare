@@ -47,9 +47,11 @@ defmodule Mutare.Coverage.Recorder do
   call returns an int/`true` and would raise `BadBooleanError` mid-`and`).
 
   Schema emission supplies a namespace to `record_ast/3`, producing
-  `hit(namespace, local_ids)`. The helper qualifies ids before its seen-cache and
-  ETS writes; the dump contains `{namespace, local_id}` keys. `Mutare.Coverage`
-  maps them back to the current run's report ids before test selection.
+  `hit(namespace, local_ids)`. The helper keeps a seen-cache per namespace and
+  qualifies an id as `{namespace, local_id}` only when recording it to ETS, so
+  local id 1 in two files stays two hits; the dump groups local ids by namespace.
+  `Mutare.Coverage` flattens them and maps them back to the current run's report
+  ids before test selection.
   """
 
   alias Mutare.AST

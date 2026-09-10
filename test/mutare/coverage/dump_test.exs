@@ -47,6 +47,27 @@ defmodule Mutare.Coverage.DumpTest do
     assert coverage.wholefile == MapSet.new()
   end
 
+  test "namespaced ids are grouped by file in the dump and read back as runtime identities", %{
+    path: path,
+    test: test
+  } do
+    # Local id 1 in two files is two hits, even from one process.
+    H.hit("lib/a.ex", [1, 2])
+    H.hit("lib/b.ex", [1])
+    assert :ok = H.dump(:ignored_suite_result)
+
+    payload = path |> File.read!() |> :erlang.binary_to_term()
+
+    assert Map.new(payload.aggregate, fn {namespace, ids} -> {namespace, Enum.sort(ids)} end) ==
+             %{"lib/a.ex" => [1, 2], "lib/b.ex" => [1]}
+
+    ids = [{"lib/a.ex", 1}, {"lib/a.ex", 2}, {"lib/b.ex", 1}]
+    assert {:ok, coverage} = Coverage.read_dump(path)
+    assert coverage.aggregate == MapSet.new(ids)
+    assert coverage.by_file == %{Path.relative_to_cwd(__ENV__.file) => MapSet.new(ids)}
+    assert coverage.by_test == Map.new(ids, &{&1, MapSet.new([Atom.to_string(test)])})
+  end
+
   for table <- @tables do
     @tag missing_table: table
     test "missing #{table} invalidates coverage and replaces any earlier dump", %{

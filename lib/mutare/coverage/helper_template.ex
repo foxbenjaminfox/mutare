@@ -14,10 +14,11 @@ defmodule Mutare.Coverage.HelperTemplate do
   # (`:ets`, `:proc_lib`, `Process`, `File`, `Code`, `System`, `Enum`, `Map`, `Keyword`, `Path`),
   # never a `Mutare.*` module.
   #
-  # `hit/1` records into the shared ETS tables; `dump/1` (run by `after_suite`) serialises them to
-  # the dump file, mapping each test module to its source file. The label read is OTP-version
-  # tolerant: `:proc_lib.get_label/1` on OTP 27+, the `:"$process_label"` process-dictionary key
-  # on OTP 26 and earlier. `hit/1` returns `true` so the spliced `and` chain stays boolean.
+  # `hit/2` records into the shared ETS tables (`hit/1` is its form for a standalone transform's
+  # un-namespaced ids); `dump/1` (run by `after_suite`) serialises them to the dump file, mapping
+  # each test module to its source file. The label read is OTP-version tolerant:
+  # `:proc_lib.get_label/1` on OTP 27+, the `:"$process_label"` process-dictionary key on OTP 26 and
+  # earlier. Both `hit` forms return `true` so the spliced `and` chain stays boolean.
   #
   # Attribution is recorded at TWO granularities from the one `{module, name}` label. The module
   # half always maps to a test *file* (`@attr_table`) — the granularity file-level selection
@@ -44,8 +45,8 @@ defmodule Mutare.Coverage.HelperTemplate do
 
   # The contract constants, exposed so `Mutare.Coverage.Recorder` sources them from here — the
   # single source of truth shared by the table-creation bootstrap and the dump reader. (These
-  # accessors are harmless in the written sandbox helper, where only `hit/1` and `dump/1` are
-  # ever called.)
+  # accessors are harmless in the written sandbox helper, where only `hit` and `dump/1` are ever
+  # called.)
   def agg_table, do: @agg_table
   def attr_table, do: @attr_table
   def unlabeled_table, do: @unlabeled_table
@@ -55,11 +56,11 @@ defmodule Mutare.Coverage.HelperTemplate do
   def dump_path_env, do: @dump_path_env
   def root_env, do: @root_env
 
-  # Namespace before the seen-cache as well as ETS: local id 1 in two files is
-  # two independent hits, even when both execute in the same test process.
-  def hit(namespace, ids), do: hit(Enum.map(ids, &{namespace, &1}))
+  # Schema-built metamutants call `hit/2` with their file's namespace; a standalone transform calls
+  # `hit/1`, whose integer ids are already the runtime identity (namespace `nil`).
+  def hit(ids), do: hit(nil, ids)
 
-  def hit(ids) do
+  def hit(namespace, ids) do
     # Best-effort, never crash: a missing aggregate table means there is nowhere to
     # record, so skip (mirrors the dead-pid label guards below). A real probe run
     # never hits this — the bootstrap creates the tables in the test-helper process,
@@ -77,7 +78,7 @@ defmodule Mutare.Coverage.HelperTemplate do
       tid ->
         label = label()
 
-        case unrecorded_ids(tid, ids, label) do
+        case unrecorded_ids(tid, namespace, ids, label) do
           [] -> true
           unrecorded -> record(unrecorded, label)
         end
@@ -90,36 +91,59 @@ defmodule Mutare.Coverage.HelperTemplate do
   # selection runs the whole suite. The process-local cache therefore suppresses only repeats under
   # the same attribution key (or anything after an unlabeled hit, which already dominates).
   #
-  # The ETS table id is part of the cache so tests (and self-hosting edge cases) that delete/recreate
-  # the named tables get a fresh seen set instead of silently suppressing new-table writes.
-  defp unrecorded_ids(tid, ids, label) do
-    seen =
-      case Process.get(@seen_key) do
-        {^tid, seen} when is_map(seen) -> seen
+  # The ETS table id is part of each cache entry so tests (and self-hosting edge cases) that
+  # delete/recreate the named tables get a fresh seen set instead of silently suppressing new-table
+  # writes.
+  #
+  # The cache is consulted on every instrumented execution, and in a hot loop nearly every call finds
+  # all its ids cached — so that path must stay cheap. Each namespace has its own process-dictionary
+  # entry, `{@seen_key, namespace} => {tid, %{id => %{key => true}}}`, which costs one hashed lookup
+  # per call however many files the process has run and whatever their paths' lengths. (One map
+  # keyed by namespace stays flat up to 32 keys, and a flat map compares its binary keys one at a
+  # time — NOTES "Stable per-file runtime identities".) An entry is written back only when one of
+  # its ids is new, and an id is qualified as `{namespace, id}` — the identity ETS and the dump
+  # carry, which keeps local id 1 in two files as two hits even within one process — only once it
+  # is to be recorded.
+  defp unrecorded_ids(tid, namespace, ids, label) do
+    cache_key = {@seen_key, namespace}
+
+    file_seen =
+      case Process.get(cache_key) do
+        {^tid, file_seen} when is_map(file_seen) -> file_seen
         _ -> %{}
       end
 
     key = attribution_key(label)
 
-    {seen, unrecorded} =
-      Enum.reduce(ids, {seen, []}, fn id, {seen, unrecorded} ->
-        keys = Map.get(seen, id, %{})
+    case uncached(ids, file_seen, key) do
+      [] ->
+        []
 
-        cond do
-          Map.has_key?(keys, :unlabeled) ->
-            {seen, unrecorded}
+      new ->
+        file_seen =
+          Enum.reduce(new, file_seen, fn id, file_seen ->
+            Map.update(file_seen, id, %{key => true}, &Map.put(&1, key, true))
+          end)
 
-          Map.has_key?(keys, key) ->
-            {seen, unrecorded}
-
-          true ->
-            {Map.put(seen, id, Map.put(keys, key, true)), [id | unrecorded]}
-        end
-      end)
-
-    Process.put(@seen_key, {tid, seen})
-    Enum.reverse(unrecorded)
+        Process.put(cache_key, {tid, file_seen})
+        Enum.map(new, &qualify(namespace, &1))
+    end
   end
+
+  # The ids not yet recorded under `key`; an unlabeled record dominates every key. Matching the map
+  # in place, rather than folding an accumulator, allocates nothing when every id is cached.
+  defp uncached([], _file_seen, _key), do: []
+
+  defp uncached([id | ids], file_seen, key) do
+    case file_seen do
+      %{^id => %{unlabeled: _}} -> uncached(ids, file_seen, key)
+      %{^id => %{^key => _}} -> uncached(ids, file_seen, key)
+      _ -> [id | uncached(ids, file_seen, key)]
+    end
+  end
+
+  defp qualify(nil, id), do: id
+  defp qualify(namespace, id), do: {namespace, id}
 
   # A concrete (runnable-test) label dedups per `{mod, name}`, so one id recorded under test A does
   # not suppress the same id under sibling test B in the same module — both names must reach
@@ -203,24 +227,31 @@ defmodule Mutare.Coverage.HelperTemplate do
          {:ok, wholefile} <- table_entries(@wholefile_table),
          {:ok, attributed} <- table_entries(@attr_table),
          {:ok, tests} <- table_entries(@test_table) do
-      aggregate = for {id} <- aggregate, do: id
-      unlabeled = for {id} <- unlabeled, do: id
-      wholefile = for {id} <- wholefile, do: id
+      aggregate = group(for {id} <- aggregate, do: id)
+      unlabeled = group(for {id} <- unlabeled, do: id)
+      wholefile = group(for {id} <- wholefile, do: id)
 
       by_file =
-        Enum.reduce(attributed, %{}, fn {{mod, id}}, acc ->
+        attributed
+        |> Enum.reduce(%{}, fn {{mod, id}}, acc ->
           case source_file(mod) do
             nil -> acc
             file -> Map.update(acc, file, [id], &[id | &1])
           end
         end)
+        |> Map.new(fn {file, ids} -> {file, group(ids)} end)
 
-      # Per-test-case attribution, keyed by mutant id → the runnable test names that covered it.
+      # Per-test-case attribution: namespace → local id → the runnable test names that covered it.
       # Names are strings (the `mix test --only test:<name>` value); `:tests` unions them with the
       # covering files from `by_file`. An id in a shared lib carries every covering test name.
       by_test =
         Enum.reduce(tests, %{}, fn {{_mod, name, id}}, acc ->
-          Map.update(acc, id, [to_string(name)], &[to_string(name) | &1])
+          {namespace, local} = unqualify(id)
+          name = to_string(name)
+
+          Map.update(acc, namespace, %{local => [name]}, fn locals ->
+            Map.update(locals, local, [name], &[name | &1])
+          end)
         end)
 
       %{
@@ -238,6 +269,19 @@ defmodule Mutare.Coverage.HelperTemplate do
   rescue
     ArgumentError -> {:error, {:missing_coverage_table, table}}
   end
+
+  # Every id collection in the dump groups local ids under the namespace they were recorded with
+  # (`nil` for `hit/1`'s integers). The external term format shares nothing, so a flat list of
+  # `{namespace, id}` would spell the file path out in full once per recorded id.
+  defp group(ids) do
+    Enum.reduce(ids, %{}, fn id, acc ->
+      {namespace, local} = unqualify(id)
+      Map.update(acc, namespace, [local], &[local | &1])
+    end)
+  end
+
+  defp unqualify({_namespace, _id} = qualified), do: qualified
+  defp unqualify(id), do: {nil, id}
 
   # The owning test's `{module, name}` label, used to attribute coverage to a test *file*. Resolved
   # for the process that ran the line (`self()`), and — failing that — for each process in its

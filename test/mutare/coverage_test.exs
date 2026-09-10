@@ -61,12 +61,13 @@ defmodule Mutare.CoverageTest do
          %{tmp_dir: dir} do
       path = Path.join(dir, "dump.terms")
 
+      # A standalone transform's integer ids, grouped under the `nil` namespace.
       payload = %{
-        aggregate: [1, 2, 3],
-        by_file: %{"test/a_test.exs" => [1, 2], "test/b_test.exs" => [3]},
-        unlabeled: [2],
-        by_test: %{1 => ["test alpha", "test beta"], 3 => ["test gamma"]},
-        wholefile: [3]
+        aggregate: %{nil => [1, 2, 3]},
+        by_file: %{"test/a_test.exs" => %{nil => [1, 2]}, "test/b_test.exs" => %{nil => [3]}},
+        unlabeled: %{nil => [2]},
+        by_test: %{nil => %{1 => ["test alpha", "test beta"], 3 => ["test gamma"]}},
+        wholefile: %{nil => [3]}
       }
 
       File.write!(path, :erlang.term_to_binary(payload))
@@ -93,7 +94,7 @@ defmodule Mutare.CoverageTest do
     test "tolerates a dump without :unlabeled/:by_test/:wholefile keys (all default to empty)",
          %{tmp_dir: dir} do
       path = Path.join(dir, "legacy.terms")
-      File.write!(path, :erlang.term_to_binary(%{aggregate: [1], by_file: %{}}))
+      File.write!(path, :erlang.term_to_binary(%{aggregate: %{nil => [1]}, by_file: %{}}))
 
       assert {:ok, %{unlabeled: unlabeled, by_test: by_test, wholefile: wholefile}} =
                Coverage.read_dump(path)
@@ -108,10 +109,10 @@ defmodule Mutare.CoverageTest do
          %{tmp_dir: dir} do
       for {label, extra} <- [
             {"by_test-not-a-map", %{by_test: [1, 2]}},
-            {"wholefile-not-a-list", %{wholefile: %{}}}
+            {"wholefile-ungrouped", %{wholefile: [1]}}
           ] do
         path = Path.join(dir, "bad_new_key_#{label}.terms")
-        payload = Map.merge(%{aggregate: [1], by_file: %{}}, extra)
+        payload = Map.merge(%{aggregate: %{nil => [1]}, by_file: %{}}, extra)
         File.write!(path, :erlang.term_to_binary(payload))
 
         assert capture_log(fn ->
@@ -123,24 +124,34 @@ defmodule Mutare.CoverageTest do
     @tag :tmp_dir
     test "errors (for run-all fallback) on a nested value of the wrong type", %{tmp_dir: dir} do
       # The outer map is well-formed, so only a check that descends *into* the collections
-      # catches these. Un-checked, the first two raised `Protocol.UndefinedError` out of
-      # `read_dump/1` (`MapSet.new(:not_a_list)`) and the binary cases fed non-strings to
-      # `mix test` argv — either way an exception instead of the documented run-all fallback.
+      # catches these. Un-checked, a non-enumerable value would raise `Protocol.UndefinedError`
+      # out of `read_dump/1`, and a non-string would reach `mix test` argv — either way an
+      # exception instead of the documented run-all fallback.
+      ok = %{nil => [1]}
+
       for {label, payload} <- [
-            {"by_file-value-not-a-list",
-             %{aggregate: [1], by_file: %{"test/a_test.exs" => :not_a_list}}},
-            {"by_test-value-not-a-list", %{aggregate: [1], by_file: %{}, by_test: %{1 => :nope}}},
-            {"by_file-key-not-a-string", %{aggregate: [1], by_file: %{:atom_key => [1]}}},
+            {"aggregate-ungrouped", %{aggregate: [1], by_file: %{}}},
+            {"namespace-empty", %{aggregate: %{"" => [1]}, by_file: %{}}},
+            {"namespace-not-a-string", %{aggregate: %{lib: [1]}, by_file: %{}}},
+            {"group-not-a-list", %{aggregate: %{nil => :not_a_list}, by_file: %{}}},
+            {"by_file-value-ungrouped", %{aggregate: ok, by_file: %{"test/a_test.exs" => [1]}}},
+            {"by_test-value-not-a-map", %{aggregate: ok, by_file: %{}, by_test: %{nil => [1]}}},
+            {"by_test-names-not-a-list",
+             %{aggregate: ok, by_file: %{}, by_test: %{nil => %{1 => :nope}}}},
+            {"by_file-key-not-a-string", %{aggregate: ok, by_file: %{:atom_key => ok}}},
             {"by_test-name-not-a-string",
-             %{aggregate: [1], by_file: %{}, by_test: %{1 => [:atom_name]}}},
-            {"by_test-key-not-an-id", %{aggregate: [1], by_file: %{}, by_test: %{"1" => ["t"]}}},
-            {"aggregate-element-not-an-id", %{aggregate: [:a, {:b}], by_file: %{}}},
-            {"id-not-positive", %{aggregate: [0], by_file: %{}}},
-            {"unlabeled-element-not-an-id", %{aggregate: [1], by_file: %{}, unlabeled: ["x"]}},
-            {"wholefile-element-not-an-id", %{aggregate: [1], by_file: %{}, wholefile: [nil]}},
+             %{aggregate: ok, by_file: %{}, by_test: %{nil => %{1 => [:atom_name]}}}},
+            {"by_test-key-not-an-id",
+             %{aggregate: ok, by_file: %{}, by_test: %{nil => %{"1" => ["t"]}}}},
+            {"aggregate-element-not-an-id", %{aggregate: %{nil => [:a, {:b}]}, by_file: %{}}},
+            {"id-not-positive", %{aggregate: %{nil => [0]}, by_file: %{}}},
+            {"unlabeled-element-not-an-id",
+             %{aggregate: ok, by_file: %{}, unlabeled: %{nil => ["x"]}}},
+            {"wholefile-element-not-an-id",
+             %{aggregate: ok, by_file: %{}, wholefile: %{nil => [nil]}}},
             {"by_file-nested-id-not-an-id",
-             %{aggregate: [1], by_file: %{"test/a_test.exs" => [1, :two]}}},
-            {"by_file-is-a-struct", %{aggregate: [1], by_file: MapSet.new([1])}}
+             %{aggregate: ok, by_file: %{"test/a_test.exs" => %{nil => [1, :two]}}}},
+            {"by_file-is-a-struct", %{aggregate: ok, by_file: MapSet.new([1])}}
           ] do
         path = Path.join(dir, "nested_#{label}.terms")
         File.write!(path, :erlang.term_to_binary(payload))

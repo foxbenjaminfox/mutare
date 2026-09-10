@@ -191,12 +191,13 @@ defmodule Mutare.RuntimeIdTest do
     b = {"lib/b.ex", 1}
     path = Path.join(root, "coverage.terms")
 
+    # The dump groups local ids under their file namespace.
     payload = %{
-      aggregate: [a, b],
-      by_file: %{"test/b_test.exs" => [b]},
-      unlabeled: [a],
-      by_test: %{b => ["test b"]},
-      wholefile: [b]
+      aggregate: %{"lib/a.ex" => [1], "lib/b.ex" => [1]},
+      by_file: %{"test/b_test.exs" => %{"lib/b.ex" => [1]}},
+      unlabeled: %{"lib/a.ex" => [1]},
+      by_test: %{"lib/b.ex" => %{1 => ["test b"]}},
+      wholefile: %{"lib/b.ex" => [1]}
     }
 
     File.write!(path, :erlang.term_to_binary(payload))
@@ -210,9 +211,14 @@ defmodule Mutare.RuntimeIdTest do
              wholefile: MapSet.new([17])
            }
 
+    # Without an index, the same dump reads back as the runtime identities it recorded.
+    assert {:ok, raw} = Coverage.read_dump(path)
+    assert raw.aggregate == MapSet.new([a, b])
+    assert raw.by_test == %{b => MapSet.new(["test b"])}
+
     # An unknown id in *any* field must invalidate the dump, even when its aggregate is valid.
     for field <- Map.keys(payload) do
-      field_only = Map.merge(%{aggregate: [], by_file: %{}}, Map.take(payload, [field]))
+      field_only = Map.merge(%{aggregate: %{}, by_file: %{}}, Map.take(payload, [field]))
       File.write!(path, :erlang.term_to_binary(field_only))
 
       assert capture_log(fn ->

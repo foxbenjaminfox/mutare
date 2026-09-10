@@ -9502,9 +9502,11 @@ with the existing self-hosting key override. The dependency-free bootstrap combi
 clear an inherited namespace.
 
 **The translation does not spread through reporters.** `RuntimeId.index/1` translates the
-coverage dump's five collections before the runner consumes them. The helper namespaces ids
-before its per-process seen-cache and ETS writes, so two files' local id 1 stay distinct even
-within one test. An unknown runtime id invalidates coverage and falls back to run-all.
+coverage dump's five collections before the runner consumes them. The helper keeps one
+process-dictionary seen-cache entry per namespace and qualifies an id as `{namespace, local_id}`
+only when it writes the id to ETS, so two files' local id 1 stay distinct even within one test;
+the dump groups local ids by namespace, and `Coverage.read_dump/2` flattens them before
+translating. An unknown runtime id invalidates coverage and falls back to run-all.
 `RuntimeId.file_index/1` translates lazy Manifest findings before Poison unions files;
 the macro fallback now retains its call-site file until that conversion. Manifest recognises
 the projection and excludes its zero branch from mutant regions. Hydration still derives
@@ -9560,6 +9562,60 @@ protocol, without concurrent tests or benchmarks. Legacy versus namespaced media
 3,917 vs 3,872 µs (one selector), 4,643 vs 4,395 µs (ten), and 24,980 vs 19,673 µs
 (one hundred). This narrow inactive-file check found no runtime regression; it does not
 measure coverage-probe overhead or establish a general application speedup.
+
+**2026-09-10: coverage probe hot path and dump.** `hit/2` first built a `{namespace, id}` list
+on every call, ahead of the seen-cache check, and the cache keyed each id by that tuple, so a
+repeat hit also hashed the file path once per id; the old `hit/1` had used its literal id list
+directly. The dump spelled the path out once per id, because the external term format shares
+nothing. The helper now keeps one process-dictionary entry per namespace,
+`{:mutare_cov_seen, namespace} => {tid, %{id => keys}}`, qualifies an id only when recording it,
+and writes an entry back only when one of its ids is new; `dump/1` groups every id collection by
+namespace, and `Coverage.read_dump/2` flattens the groups before translating. The probe deletes
+the dump before each attempt, so the reader keeps no flat-format fallback.
+
+A scratch benchmark compiled HEAD's helper next to the working tree's in one VM, rebuilt the
+nested-map variant by patching the working tree's cache function, gave each variant one warmed
+worker holding a test label and 150 cached ids in each of N files, and took 11 interleaved
+samples of 300,000 calls on an otherwise idle 16-core machine (load average 1.7). Paths were
+either all 28 bytes with a 23-byte shared prefix or varied in length. Medians, in ns per call:
+
+| Paths, cached files | Ids per site | Pre-namespace `hit/1` | `hit/2`, per-hit tuples | Nested map | Pdict entry per namespace (adopted) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| same-length, 30 | 1 | 214 | 274 | 278 | 219 |
+| same-length, 30 | 4 | 293 | 527 | 333 | 275 |
+| same-length, 30 | 16 | 668 | 1,562 | 574 | 508 |
+| same-length, 100 | 1 | 217 | 278 | 216 | 218 |
+| same-length, 100 | 4 | 298 | 516 | 273 | 273 |
+| same-length, 100 | 16 | 650 | 1,552 | 510 | 512 |
+| varied-length, 30 | 1 | 217 | 277 | 189 | 209 |
+| varied-length, 30 | 4 | 292 | 513 | 244 | 264 |
+| varied-length, 30 | 16 | 674 | 1,564 | 484 | 499 |
+| varied-length, 100 | 1 | 218 | 284 | 222 | 207 |
+| varied-length, 100 | 4 | 298 | 519 | 276 | 263 |
+| varied-length, 100 | 16 | 666 | 1,609 | 527 | 509 |
+
+A first fix nested one map by namespace (`%{namespace => %{id => keys}}`, the "Nested map"
+column) and left a residual. A map of 32 or fewer keys is flat, and a lookup compares its binary
+keys one at a time; paths of equal length compare byte by byte up to their first difference.
+With 30 same-length paths cached, a 1-id hit cost 1.30× the pre-namespace call — no better than
+the per-hit tuples it replaced. Past 32 namespaces the map hashes, and varied lengths end most
+compares at the size check; with 30 varied-length paths the flat scan even beat the dictionary
+hash (189 vs 209 ns at 1 id). The process dictionary hashes every key, so an entry per namespace
+costs one hash of the path per call however many files the process has run: from 5% below to 2%
+above the pre-namespace call at 1 id, 6–12% below at 4 ids, 21–26% below at 16. The price is one
+dictionary entry per executed file instead of one in total.
+
+Dump sizes are exact, not sampled: 200 files × 150 ids, each file's test module covering all of
+its ids.
+
+| Tests per module | Pre-namespace integers | Flat `{namespace, id}` | Grouped |
+| --- | ---: | ---: | ---: |
+| 1 | 1,090 KiB | 3,905 KiB | 791 KiB |
+| 3 | 2,027 KiB | 4,842 KiB | 1,729 KiB |
+
+Grouping undercuts even the pre-namespace dump: local ids stay below 256 and encode in two
+bytes, where report ids above 255 take five. Test names, repeated once per id in `by_test`, make
+up most of the three-test row.
 
 ### Try/rescue: whole-construct duplication `[benchmarked; eligible shapes factored]`
 

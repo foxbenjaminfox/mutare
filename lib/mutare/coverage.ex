@@ -30,8 +30,8 @@ defmodule Mutare.Coverage do
       manufacture a false survivor.
 
   Two more keys carry the finer **test-case** granularity `:tests` selection uses
-  (both keyed by mutant id, both empty in a dump written before this contract, so an
-  old dump degrades `:tests` to `:coverage`):
+  (both keyed by mutant id; either one absent reads as empty, degrading `:tests` to
+  `:coverage`):
 
     * `:by_test` — `%{mutant id => MapSet(runnable test names)}`: the individual
       ExUnit tests (`test `/`doctest `/`property ` names) that covered each id, so a
@@ -46,11 +46,14 @@ defmodule Mutare.Coverage do
   no emitted mutant was covered. The helper writes an explicit error if any
   capture table is missing, so lost capture data cannot masquerade as zero hits.
 
-  Schema dumps use `{file_namespace, local_id}` identities; standalone transforms
-  use integers. `read_dump/2` accepts `Mutare.RuntimeId.index(schema.sites)` and
-  translates every collection to report ids before the runner consumes it. An
-  unknown identity invalidates the dump and triggers run-all, never false
-  no-coverage. `read_dump/1` exposes the runtime identities as recorded.
+  Schema dumps record `{file_namespace, local_id}` identities; standalone
+  transforms record integers. On disk, each id collection groups local ids under
+  their namespace (`nil` for integers), so a file path appears once per group, not
+  once per id. `read_dump/2` flattens the groups and accepts
+  `Mutare.RuntimeId.index(schema.sites)` to translate every collection to report
+  ids before the runner consumes it. An unknown identity invalidates the dump and
+  triggers run-all, never false no-coverage. `read_dump/1` exposes the runtime
+  identities as recorded.
 
   Why not `:cover`: its counters live in a single global table keyed
   `{module, line}` with no per-process partition, so attributing coverage to a
@@ -75,8 +78,8 @@ defmodule Mutare.Coverage do
     * `wholefile` — ids with a labeled but non-narrowable attribution
       (`setup_all`/`on_exit`), which `:tests` must not narrow to named tests.
 
-  `by_test`/`wholefile` are absent from a dump written before this contract; they
-  default to empty so an old dump still reads (degrading `:tests` to `:coverage`).
+  An absent `by_test`/`wholefile` key reads as empty (degrading `:tests` to
+  `:coverage`).
   """
   @type t :: %{
           aggregate: MapSet.t(Mutare.RuntimeId.t()),
@@ -104,10 +107,13 @@ defmodule Mutare.Coverage do
          {:ok, decoded} <- decode(binary),
          :ok <- valid_shape(decoded),
          {:ok, decoded} <- translate(decoded, report_ids) do
-      %{aggregate: aggregate, by_file: by_file} = decoded
-      unlabeled = Map.get(decoded, :unlabeled, [])
-      by_test = Map.get(decoded, :by_test, %{})
-      wholefile = Map.get(decoded, :wholefile, [])
+      %{
+        aggregate: aggregate,
+        by_file: by_file,
+        unlabeled: unlabeled,
+        by_test: by_test,
+        wholefile: wholefile
+      } = decoded
 
       {:ok,
        %{
@@ -131,26 +137,36 @@ defmodule Mutare.Coverage do
     end
   end
 
-  # Convert every id-bearing field together. A missing identity is uncertainty,
-  # never an absent hit: the runner must fall back to running every mutant.
-  defp translate(decoded, nil), do: {:ok, decoded}
-
+  # Flatten each namespace group back to runtime identities and, given an index, convert those to
+  # report ids — every id-bearing field together. A missing identity is uncertainty, never an absent
+  # hit: the runner must fall back to running every mutant.
   defp translate(decoded, report_ids) do
-    id = &Map.fetch!(report_ids, &1)
-    ids = &Enum.map(&1, id)
+    id = if report_ids, do: &Map.fetch!(report_ids, &1), else: & &1
+
+    ids = fn grouped ->
+      for {namespace, locals} <- grouped, local <- locals, do: id.(runtime_id(namespace, local))
+    end
+
+    by_test =
+      for {namespace, names_by_id} <- Map.get(decoded, :by_test, %{}),
+          {local, names} <- names_by_id,
+          into: %{},
+          do: {id.(runtime_id(namespace, local)), names}
 
     {:ok,
      %{
        aggregate: ids.(decoded.aggregate),
-       by_file: Map.new(decoded.by_file, fn {file, hits} -> {file, ids.(hits)} end),
-       unlabeled: ids.(Map.get(decoded, :unlabeled, [])),
-       by_test:
-         Map.new(Map.get(decoded, :by_test, %{}), fn {hit, names} -> {id.(hit), names} end),
-       wholefile: ids.(Map.get(decoded, :wholefile, []))
+       by_file: Map.new(decoded.by_file, fn {file, grouped} -> {file, ids.(grouped)} end),
+       unlabeled: ids.(Map.get(decoded, :unlabeled, %{})),
+       by_test: by_test,
+       wholefile: ids.(Map.get(decoded, :wholefile, %{}))
      }}
   rescue
     error in KeyError -> {:error, {:unknown_runtime_id, error.key}}
   end
+
+  defp runtime_id(nil, id), do: id
+  defp runtime_id(namespace, id), do: {namespace, id}
 
   # The decoded payload must be a map carrying the keys and field types the rest of the module
   # assumes. A valid-but-wrong-shaped term (e.g. an atom, or a map missing `:aggregate`/`:by_file`)
@@ -165,11 +181,11 @@ defmodule Mutare.Coverage do
   # documented `{:error, _}` contract. The traversal is O(dump) and runs once, right after a full
   # instrumented suite — free next to what it guards.
   defp valid_shape(%{aggregate: aggregate, by_file: by_file} = decoded) do
-    if ids?(aggregate) and
-         ids?(Map.get(decoded, :unlabeled, [])) and
-         ids?(Map.get(decoded, :wholefile, [])) and
-         map_of?(by_file, &is_binary/1, &ids?/1) and
-         map_of?(Map.get(decoded, :by_test, %{}), &id?/1, &names?/1),
+    if grouped_ids?(aggregate) and
+         grouped_ids?(Map.get(decoded, :unlabeled, %{})) and
+         grouped_ids?(Map.get(decoded, :wholefile, %{})) and
+         map_of?(by_file, &is_binary/1, &grouped_ids?/1) and
+         map_of?(Map.get(decoded, :by_test, %{}), &namespace?/1, &names_by_id?/1),
        do: :ok,
        else: :bad_shape
   end
@@ -177,16 +193,19 @@ defmodule Mutare.Coverage do
   defp valid_shape({:error, {:missing_coverage_table, _table} = reason}), do: {:error, reason}
   defp valid_shape(_other), do: :bad_shape
 
-  # Integer ids belong to standalone transforms; schema ids include their file
-  # namespace. Baseline zero is never a recorded mutant.
-  defp id?({namespace, id}),
-    do: is_binary(namespace) and namespace != "" and is_integer(id) and id > 0
+  # Ids arrive grouped under the file namespace a schema build recorded them with, or under `nil` for
+  # a standalone transform's integers. Baseline zero is never a recorded mutant.
+  defp grouped_ids?(grouped), do: map_of?(grouped, &namespace?/1, &ids?/1)
+
+  defp namespace?(namespace), do: is_nil(namespace) or (is_binary(namespace) and namespace != "")
 
   defp id?(id), do: is_integer(id) and id > 0
 
   defp ids?(list), do: is_list(list) and Enum.all?(list, &id?/1)
 
   defp names?(list), do: is_list(list) and Enum.all?(list, &is_binary/1)
+
+  defp names_by_id?(map), do: map_of?(map, &id?/1, &names?/1)
 
   # `Map.to_list/1` rather than enumerating `map` directly: a struct is a map, and enumerating one
   # that implements `Enumerable` (a `MapSet`, say) yields bare elements the `{k, v}` clause would
