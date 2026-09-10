@@ -35,7 +35,16 @@ defmodule Mutare.Sandbox.CompilerOptionsIntegrationTest do
   end
   """
 
-  for options <- [[], [infer_signatures: true, docs: false, no_warn_undefined: [MissingModule]]] do
+  # Keep both option sets and the `xref:` exclusion. This is the only test that checks a
+  # seeded cache key against the key Mix forms from the wrapped `project/0`, entry order
+  # included: Mix compares the two with `!=`, and the `seed_manifest/1` unit test restates
+  # the implementation's `Keyword.put/3`. Mix folds `xref: [exclude: ...]` into
+  # `:no_warn_undefined`, appending that entry when the options lack one, so `[]` catches a
+  # seed that appends `:infer_signatures` rather than prepending it. The second set catches
+  # a wrapper or seed that updates the entry in place, but only while `:infer_signatures`
+  # sits behind `:docs`. Elixir 1.20 left inference out of the key, so only 1.18/1.19
+  # exercise any of this.
+  for options <- [[], [docs: false, infer_signatures: true, no_warn_undefined: [MissingModule]]] do
     @seed_options options
     test "first sandbox compile reuses the target build with options #{inspect(options)}" do
       fixture =

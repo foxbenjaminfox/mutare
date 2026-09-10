@@ -258,6 +258,10 @@ defmodule Mutare.Sandbox.CompilerOptionsTest do
         manifest = List.to_tuple([version, %{}, sources, %{}, [], key | tail])
         result = CompilerOptions.seed_manifest(manifest)
 
+        # `expected` restates the implementation's own `Keyword.put/3`, so this cannot tell
+        # whether that order is the right one — the one Mix forms from the wrapped `project/0`
+        # and compares with `!=`. Only CompilerOptionsIntegrationTest's "first sandbox compile
+        # reuses the target build" cases check that.
         expected =
           if :infer_signatures in Code.available_compiler_options(),
             do:
