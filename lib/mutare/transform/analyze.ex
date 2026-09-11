@@ -877,6 +877,14 @@ defmodule Mutare.Transform.Analyze do
       else: {{:., dm, [analyze(recv, :runtime, mutators), fun]}, meta, args}
   end
 
+  # An **anonymous call** `callee.(args)` — `f.(x)`, `m.field.(x)`, and the immediately-invoked
+  # `(fn … end).(x)` — has a one-element dot head with no function name. Its callee is never a module
+  # reference, always a runtime value, so it is analyzed like any non-module receiver. Without this an
+  # inline `fn` was invisible to every family (its guards, patterns *and* bodies) while the same `fn`
+  # bound to a variable first mutated fully — the analysis happening at the binding site, not the call.
+  defp descend_receiver({{:., dm, [callee]}, meta, args}, mutators),
+    do: {{:., dm, [analyze(callee, :runtime, mutators)]}, meta, args}
+
   defp descend_receiver(node, _mutators), do: node
 
   # Whether a dot-call receiver is a **module reference** (opaque — the module side of a remote call)

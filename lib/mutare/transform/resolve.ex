@@ -227,6 +227,14 @@ defmodule Mutare.Transform.Resolve do
     end
   end
 
+  # An **anonymous call** `callee.(args)` (`f.(x)`, `(fn … end).(x)`): the one-element dot head has
+  # no function name and its callee is never a module reference, so walk it like the non-module
+  # receiver above — an aliased/imported/known-macro call inside an immediately-invoked `fn` gets its
+  # stamp. (Analyze's `descend_receiver/2` has the matching clause.)
+  defp walk({{:., dot_meta, [callee]}, call_meta, args}, env) when is_list(args) do
+    {{:., dot_meta, [walk(callee, %{env | pipe_mode: :unpiped})]}, call_meta, descend(args, env)}
+  end
+
   # A `defmodule … do … end`: stamp the head (an `__aliases__` head with its resolved module — the
   # same `:mutare_alias` contract as a remote call's — so `Mutare.Lifting.module_from_alias/2` can
   # resolve a top-level aliased head like `alias Real.Parent, as: RP; defmodule RP.Child`; a dynamic

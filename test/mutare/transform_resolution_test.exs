@@ -1215,6 +1215,67 @@ defmodule Mutare.TransformResolutionTest do
       assert Enum.map(skipped, & &1.mutator) == []
       assert Enum.any?(control, &(&1.mutator == :integer))
     end
+
+    # An anonymous call `callee.(args)` has a one-element dot head; its callee is always a runtime
+    # value. The immediately-invoked `(fn … end).(x)` is the shape that bites: bound to a variable
+    # first, the same `fn` is analyzed at the binding site, so the two must produce identical mutants.
+    test "an immediately-invoked fn gets the same guard/pattern/body mutants as a bound one" do
+      iife = """
+      defmodule M do
+        def f(x) do
+          (fn
+             y when y > 0 -> y + 1
+             _ -> 0
+           end).(x)
+        end
+      end
+      """
+
+      bound = """
+      defmodule M do
+        def f(x) do
+          g = fn
+            y when y > 0 -> y + 1
+            _ -> 0
+          end
+
+          g.(x)
+        end
+      end
+      """
+
+      {meta, iife_sites, _} = Mutare.Transform.transform_string_with_sites(iife)
+      {_, bound_sites, _} = Mutare.Transform.transform_string_with_sites(bound)
+
+      inner = fn sites ->
+        for s <- sites,
+            s.mutator != :return_value,
+            do: {s.mutator, s.original_code, s.mutated_code}
+      end
+
+      assert inner.(iife_sites) != []
+      assert Enum.sort(inner.(iife_sites)) == Enum.sort(inner.(bound_sites))
+      # The guard mutant rides the per-clause fn delivery, which compiles in callee position.
+      assert {:relational, "y > 0", "y >= 0"} in inner.(iife_sites)
+      assert_compiles(meta)
+    end
+
+    test "an aliased call inside an immediately-invoked fn resolves through the alias" do
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(
+          """
+          defmodule M do
+            alias Enum, as: E
+            def f(x), do: (fn xs -> E.filter(xs, & &1) end).(x)
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
+      assert {"E.filter(xs, & &1)", "E.reject(xs, & &1)"} in pairs
+      assert_compiles(meta)
+    end
   end
 
   describe "StringCall (complementary String call swaps)" do
