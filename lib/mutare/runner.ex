@@ -2,7 +2,7 @@ defmodule Mutare.Runner do
   @moduledoc """
   Compile once, then run the suite once per mutant in a fresh OS process.
 
-  The flow protects the one-compile invariant: we compile the sandbox a single time, run the tests as a baseline to ensure it passes, then launch one `mix test` process per mutant with `MUTARE_ACTIVE_MUTANT` set. Sources never change between runs, so mix's incremental compiler finds nothing to rebuild — the per-mutant cost is process boot plus the suite (only up to the first failure for a kill), never recompilation.
+  The flow protects the one-compile invariant: we compile the sandbox a single time, run the tests as a baseline to ensure it passes, then launch one `mix test` process per mutant with `MUTARE_MUTANT_NAMESPACE` and `MUTARE_ACTIVE_MUTANT` set to its file and its id within that file. Sources never change between runs, so mix's incremental compiler finds nothing to rebuild — the per-mutant cost is process boot plus the suite (only up to the first failure for a kill), never recompilation.
 
   The compile step distinguishes Mix dependency validation from actual compile-poisoning. A dependency failure returns `:dependency_failed` immediately: dropping mutant ids cannot repair copied dependency state, so it never enters poison recovery. The Mix task then points remediation at the original project rather than the disposable sandbox. The compile also carries a wall-clock cap (`:compile_timeout`, default 30 minutes, `nil` to disable): a config-hosted sibling of the per-mutant timeout watcher self-halts a pathological compile, surfaced as `:compile_timed_out` — likewise never fed to poison recovery, since there is no error to attribute and a rebuild cannot make an oversized compile faster.
 

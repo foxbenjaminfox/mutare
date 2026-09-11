@@ -20,8 +20,9 @@ belongs in its moduledoc. Keep this navigational.
 Mutare is a **mutation testing tool for Elixir**, built on one bet: **compile once**.
 It rewrites a target project's source into a single *metamutant* program that embeds every
 mutant behind a `:persistent_term` runtime switch, compiles it once, then runs the suite once
-per mutant by flipping `MUTARE_ACTIVE_MUTANT`. Read `PHILOSOPHY.md` and `NOTES.md` before
-substantial changes — they are unusually load-bearing and will save you re-deriving things.
+per mutant by setting `MUTARE_MUTANT_NAMESPACE` (the mutant's file) and `MUTARE_ACTIVE_MUTANT`
+(its id within that file). Read `PHILOSOPHY.md` and `NOTES.md` before substantial changes —
+they are unusually load-bearing and will save you re-deriving things.
 
 ## Commands
 

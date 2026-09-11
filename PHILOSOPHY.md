@@ -15,8 +15,8 @@ rebuilds the project once per mutant. Mutare's entire reason to exist is a singl
 bet:
 
 > **Compile once.** Embed every mutant in one program behind a runtime switch,
-> compile that program a single time, and run the suite N times by flipping an
-> environment variable.
+> compile that program a single time, and run the suite N times by flipping
+> environment variables.
 
 This is not one feature among many. It is *the spine*. Every other decision in
 the project is subordinate to it, and the right question to ask of any proposed

@@ -4,9 +4,11 @@ defmodule Mutare.Sandbox do
 
   We copy the project to a dedicated directory (excluding build output), write
   each metamutant over its original, and inject a tiny bootstrap into
-  `test/test_helper.exs` that reads `MUTARE_ACTIVE_MUTANT` into `:persistent_term`
-  before the suite starts. A second injection prefixes `config/config.exs` with
-  the owner-death watcher (`Mutare.Sandbox.Command.Invocation.owner_watch_ast/0`),
+  `test/test_helper.exs` that combines `MUTARE_MUTANT_NAMESPACE` (the active
+  mutant's file) and `MUTARE_ACTIVE_MUTANT` (its id within that file) into one
+  `:persistent_term` entry before the suite starts. A second injection prefixes
+  `config/config.exs` with the owner-death watcher
+  (`Mutare.Sandbox.Command.Invocation.owner_watch_ast/0`),
   so every sandbox `mix` — including the one-time compile, which runs before any
   test bootstrap — halts itself if the Mutare process that spawned it dies,
   instead of surviving as an orphan. Everything injected is plain Erlang/Elixir
