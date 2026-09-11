@@ -16,6 +16,7 @@ defmodule Mutare.Transform.Analyze.Attach do
   #   * `put_candidates_if_any/2` — `put_candidates/2` guarded on a non-empty list
   #   * `append_candidates/3`     — append in-place candidates from a range-built list,
   #                                 preserving any already there
+  #   * `ranged_candidates/2`     — build candidates from a raw node's range (`[]` if unrangeable)
   #
   # `Meta` owns the raw key access (keyed by logical kind); `Attach` owns the higher-level
   # "ask the mutators, build `Candidate.InPlace`s, range them" operations the descent needs.
@@ -238,17 +239,30 @@ defmodule Mutare.Transform.Analyze.Attach do
 
   @doc """
   Append in-place candidates to a node, **preserving** any already there (so an operator candidate
-  keeps its id before a return/condition one at a shared node). The candidate list is built by
-  `build_fun.(range)` from `raw`'s source range — kept at the call site because the condition and
-  return-tail descents build different `Candidate` structs. The node is returned unchanged when
-  `raw` can't be ranged (no mutant recorded). The shared half of `Analyze.Conditions`/
-  `Analyze.Returns`' tail attachment.
+  keeps its id before a condition one at a shared node). The candidate list is built from `raw`
+  by `ranged_candidates/2`; the node is returned unchanged when `raw` can't be ranged (no mutant
+  recorded). `Analyze.Conditions`' condition attachment.
   """
   @spec append_candidates(Macro.t(), Macro.t(), (map() -> [struct()])) :: Macro.t()
   def append_candidates(node, raw, build_fun) do
+    case ranged_candidates(raw, build_fun) do
+      [] -> node
+      candidates -> Meta.append_candidates(node, :in_place, candidates)
+    end
+  end
+
+  @doc """
+  The candidates `build_fun.(range)` builds from `raw`'s source range, or `[]` when `raw` can't
+  be ranged (no mutant recorded). `build_fun` stays at the call site because the condition and
+  return-tail attachments build different `Candidate` structs. The shared range step of
+  `append_candidates/3` and `Analyze.Returns`, which builds on the raw tree and delivers to the
+  analyzed one by node identity.
+  """
+  @spec ranged_candidates(Macro.t(), (map() -> [struct()])) :: [struct()]
+  def ranged_candidates(raw, build_fun) do
     case NodeRange.get(raw) do
-      %{} = range -> Meta.append_candidates(node, :in_place, build_fun.(range))
-      _ -> node
+      %{} = range -> build_fun.(range)
+      _ -> []
     end
   end
 end

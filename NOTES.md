@@ -5805,11 +5805,13 @@ Three properties make it sound and self-limiting:
     paths. The recursion preserves this transitively.
   - **Delivery is unchanged.** A branch tail is an ordinary runtime body position,
     so the `Candidate.Return` rides the same in-place selector — no emission/`Site`/
-    lifting change. The walker navigates the analyzed (operator candidates already
+    lifting change. The walker navigated the analyzed (operator candidates already
     attached) and raw (clean, for the diff `original`) trees in lockstep, bailing to
-    the leaf clause on any structural surprise, so the diff still renders just the
-    branch tuple. The condition of an `if`/`unless` is left untouched (wrapping it is
-    the binding-escape machinery's job, not the return walk's).
+    the leaf clause on any structural surprise — *superseded*: the surprise was real
+    (the `if`-condition hoist), and the walk now reads the raw tree alone and delivers
+    by node identity; see "Return tails are delivered by node identity". The condition
+    of an `if`/`unless` is left untouched (wrapping it is the binding-escape
+    machinery's job, not the return walk's).
 
 One deliberate consequence: when *every* branch tail is a bare literal a value
 family already mutates (`case x do :a -> 1; :b -> 2 end`), `ReturnValue` now returns
@@ -10101,3 +10103,35 @@ this rewrite, so nothing about the environment a body's macros observe changes.
 Not done, and related: a `receive … after expr` timeout is still analyzed as a pattern (the
 generic `->` clause), so a non-literal timeout's operators aren't mutated; fixing that needs a
 timeout-mark row for the literal case (see "Argument marks").
+
+### Return tails are delivered by node identity `[done]`
+
+`Analyze.Returns` used to walk the analyzed tree and the raw tree in lockstep: the analyzed side
+is where candidates attach, the raw side supplied each candidate's clean `original`/`range`. The
+premise was that the two are one tree plus metadata, so a disagreement between them (a different
+form, a different statement or clause count) was treated as impossible and fell back quietly — to
+making the whole node one tail, or to skipping the block. The premise was false.
+`Conditions.hoist_if/6` rewrites a tail `if` whose condition binds a variable the body reads into
+`{:__block__, [], hoists ++ [if]}`, while the raw side is still the `if`. So the walk mutated the
+whole `if` as one tail: the per-branch return mutants vanished, a coarse `if … end → nil`/`:mutare`
+pair took their place, and in a unit-returning function that pair slipped past the `UnitReturns`
+stamps, which sit on the branch leaves — a return mutant on a function the classification exempts.
+The same happened in a `fn` clause body. Nothing warned.
+
+Now the walk reads the raw tree alone — the single-tree walker classification already ran, so both
+modes decide "return path" on the author's code — and files each tail's candidates under its
+`Resolve.nid/1`. `deliver/2` prewalks the analyzed tree and appends them to the node carrying that
+identity, wherever the analyzer moved it. Identity survives because the analyzer wraps and moves
+nodes but keeps each node's meta — the property `Overlap` already relies on to match raw and
+analyzed copies by nid. A tail left undelivered, or one that would carry candidates but has no
+identity, raises: an analyze rewrite that loses a tail node is a bug, and attaching its candidates
+to whatever node occupies the position records a mutant for code the author did not write there.
+The lockstep guards (same-form matches, `length(a) == length(r)`) went with it, and so did the
+equivalent survivor the statement-count guard left in dogfood runs.
+
+**Rejected: teaching the lockstep walk the hoist shape.** Right for today's one rewrite, silent
+again at the next.
+
+**Cost.** One prewalk of the analyzed body per `def` clause and per `fn` (a nested `fn` is
+re-walked by each enclosing level), where lockstep touched only the tail spine. Small beside
+offering every node to every mutator.

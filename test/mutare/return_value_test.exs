@@ -415,11 +415,11 @@ defmodule Mutare.ReturnValueTest do
 
   describe "return-analysis mechanics (Mutare.Transform.Analyze.Returns)" do
     test "operator mutants in rescue/catch/else clause bodies survive alongside returns" do
-      # `map_clauses/3` keeps the *analyzed* clause body (operator candidates and
-      # all) and uses the raw copy only for the clean return diff. Swapping the two — so it
-      # rebuilds from the un-analyzed `raw` body — would silently drop every operator mutant
-      # inside a rescue/catch/else body. Requires both ReturnValue (to enter the clause-return
-      # path at all) and an operator family (to have something to lose).
+      # `annotate_returns/3` delivers the return candidates onto the *analyzed* body (operator
+      # candidates and all) and reads the raw copy only to find the tails and build the clean
+      # return diff. Returning the walked `raw` body instead would silently drop every operator
+      # mutant inside a rescue/catch/else body. Requires both ReturnValue (to enter the
+      # clause-return path at all) and an operator family (to have something to lose).
       source = """
       defmodule T do
         def f(x) do
@@ -444,10 +444,9 @@ defmodule Mutare.ReturnValueTest do
     end
 
     test "the return tail of a 3+ statement body is its last statement (Enum.split/-1)" do
-      # `map_return_tails/3` splits off the *last* statement with `Enum.split(stmts, -1)`. Miscoding
+      # `walk_tails/4` splits off the *last* statement with `Enum.split(stmts, -1)`. Miscoding
       # the index as `1` would split off the *first* statement and the `[last]` match would
-      # raise for any 3-or-more-statement block — so this fixes the index for both the
-      # analyzed and the raw split.
+      # raise for any 3-or-more-statement block — so this fixes the index.
       source = """
       defmodule T do
         def f(x) do
@@ -465,6 +464,27 @@ defmodule Mutare.ReturnValueTest do
 
       assert returns != []
       assert Enum.all?(returns, &(&1.original_code == "b * 3"))
+    end
+
+    test "a tail the analyzed tree no longer carries raises instead of attaching elsewhere" do
+      # The candidates go to the analyzed node sharing the raw tail's identity. An analyzer
+      # rewrite that dropped a tail's meta leaves them no host — that must fail loudly, not
+      # surface as a return mutant on some other node.
+      {:def, _, [_head, raw_kw]} =
+        "def f(x), do: foo(x)"
+        |> Sourceror.parse_string!()
+        |> Mutare.Transform.Resolve.NodeIds.stamp()
+
+      analyzed_kw =
+        Enum.map(raw_kw, fn {key, {form, meta, args}} ->
+          {key, {form, Keyword.delete(meta, Mutare.Transform.MetaKeys.nid_key()), args}}
+        end)
+
+      assert_raise RuntimeError, ~r/found no host node.*line 1: foo\(x\)/s, fn ->
+        Mutare.Transform.Analyze.Returns.annotate_returns(analyzed_kw, raw_kw, [
+          Mutare.Mutator.Spec.coerce(ReturnValue)
+        ])
+      end
     end
   end
 
@@ -612,6 +632,76 @@ defmodule Mutare.ReturnValueTest do
     after
       :code.purge(Mutare.ReturnValueBranchCompile)
       :code.delete(Mutare.ReturnValueBranchCompile)
+    end
+
+    # With a condition mutator enabled, the analyzer hoists an `if` condition's escaping
+    # binding: `if (v = lookup(k)) != nil do … end` comes back as `v = lookup(k); if v != nil
+    # do … end`, a `__block__` where the source has an `if`. Its return tails are still the
+    # branches.
+    @hoisting [ReturnValue, Mutare.Mutators.IfCondition]
+
+    # `{metamutant, %{original_code => [mutated_code]}}` for the return sites of `source`
+    # under `@hoisting`.
+    defp hoisted_returns(source) do
+      {meta, sites, _} = Mutare.Transform.transform_string_with_sites(source, mutators: @hoisting)
+
+      {meta,
+       sites
+       |> Enum.filter(&(&1.mutator == :return_value))
+       |> Enum.group_by(& &1.original_code, & &1.mutated_code)}
+    end
+
+    test "a hoisted `if` still descends to its branch tails, and compiles" do
+      {meta, by_original} =
+        hoisted_returns("""
+        defmodule Mutare.ReturnValueHoistedIf do
+          def f(k) do
+            if (v = lookup(k)) != nil do
+              {:found, v}
+            else
+              {:missing, k}
+            end
+          end
+
+          defp lookup(k), do: k
+        end
+        """)
+
+      assert meta =~ "v = lookup(k)\n"
+
+      # `lookup/1`'s own tail `k` aside, the return mutants sit on the two branch tails —
+      # not on the whole `if`.
+      assert Map.delete(by_original, "k") == %{
+               "{:found, v}" => ["nil", ":mutare"],
+               "{:missing, k}" => ["nil", ":mutare"]
+             }
+
+      assert {[{Mutare.ReturnValueHoistedIf, _}], _log} =
+               with_log(fn -> Mutare.Test.Compile.string(meta) end)
+    after
+      :code.purge(Mutare.ReturnValueHoistedIf)
+      :code.delete(Mutare.ReturnValueHoistedIf)
+    end
+
+    test "a hoisted `if` in a unit-returning function gets no return mutant" do
+      # `UnitReturns` stamps the two `:ok` branch tails; the whole `if` carries no stamp, so
+      # offering it as one tail would put a return mutant on a unit-returning function.
+      {meta, by_original} =
+        hoisted_returns("""
+        defmodule T do
+          def f(k) do
+            if (v = lookup(k)) != nil do
+              send(self(), v)
+              :ok
+            else
+              :ok
+            end
+          end
+        end
+        """)
+
+      assert meta =~ "v = lookup(k)\n"
+      assert by_original == %{}
     end
   end
 
@@ -781,6 +871,24 @@ defmodule Mutare.ReturnValueTest do
 
       assert by_original["big(x)"] == ["nil", ":mutare"]
       assert by_original["small(x)"] == ["nil", ":mutare"]
+    end
+
+    test "a hoisted `if` in a fn body descends to its branch tails" do
+      {meta, by_original} =
+        hoisted_returns("""
+        defmodule T do
+          def f(xs) do
+            Enum.map(xs, fn k ->
+              if (v = lookup(k)) != nil, do: {:found, v}, else: {:missing, k}
+            end)
+          end
+        end
+        """)
+
+      assert meta =~ "v = lookup(k)\n"
+      assert by_original["{:found, v}"] == ["nil", ":mutare"]
+      assert by_original["{:missing, k}"] == ["nil", ":mutare"]
+      refute Enum.any?(Map.keys(by_original), &String.starts_with?(&1, "if "))
     end
 
     test "only the tail of a multi-statement fn body, not intermediate statements" do
