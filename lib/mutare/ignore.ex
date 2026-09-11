@@ -151,9 +151,17 @@ defmodule Mutare.Ignore do
       |> Enum.filter(&(&1.previous_eol_count > 0))
       |> MapSet.new(& &1.line)
 
-    {scoped_tokens, line_directives} =
+    {scoped_tokens, line_tokens} =
       all
-      |> Enum.filter(&directive?/1)
+      # Each directive comment is matched against `@directive` exactly once, here: the token
+      # carries the verb's scope and the text after the verb, and every consumer below reads
+      # the token rather than re-matching.
+      |> Enum.flat_map(fn comment ->
+        case parse_directive(comment) do
+          nil -> []
+          {scope, rest} -> [{comment, scope, rest}]
+        end
+      end)
       # Put the directives in document (source) order, then stamp each with that order as its
       # `source_order`. `comments/1` accumulates in `prewalk` *visit* order — not document order —
       # so sort by the comment's own physical line (stable, so the rare two comments sharing a line
@@ -166,18 +174,20 @@ defmodule Mutare.Ignore do
       # it, already document-ordered). Region pairing is also order-sensitive, and reads the same
       # sorted stream.
       # mutare:ignore[call_removal] equivalent for realistic source, per above
-      |> Enum.sort_by(& &1.line)
+      |> Enum.sort_by(fn {comment, _scope, _rest} -> comment.line end)
       |> Enum.with_index()
       # One document-order index domain across *all* directive comments (scoped ones included, and
       # the `-end` delimiters, which produce no directive) — gaps are fine, comparability is what
       # the tie-break needs.
-      |> Enum.split_with(fn {comment, _order} -> verb_scope(comment.text) != :line end)
+      |> Enum.split_with(fn {{_comment, scope, _rest}, _order} -> scope != :line end)
 
     {scoped, scope_errors} = pair_scoped(scoped_tokens)
 
     by_line =
-      line_directives
-      |> Enum.map(fn {comment, order} -> to_directive(comment, order, comment_lines) end)
+      line_tokens
+      |> Enum.map(fn {{comment, :line, rest}, order} ->
+        to_directive(comment, rest, order, comment_lines)
+      end)
       |> Enum.group_by(& &1.line)
 
     %Directives{
@@ -189,12 +199,14 @@ defmodule Mutare.Ignore do
     }
   end
 
-  # The verb suffix a directive comment carries: `:line` (bare `ignore`), `:file`, `:start`, or
-  # `:end`. Only called on comments `directive?/1` accepted, so the regex always matches.
-  defp verb_scope(text) do
+  # Read a comment as a directive: `{scope, rest}` — the verb's scope (`:line` for the bare
+  # `ignore`, else `:file`/`:start`/`:end`) and everything after the verb (the filter and/or
+  # reason) — or `nil` for any other comment.
+  defp parse_directive(%{text: text}) do
     case Regex.named_captures(@directive, text) do
-      %{"scope" => ""} -> :line
-      %{"scope" => scope} -> String.to_existing_atom(scope)
+      %{"scope" => "", "rest" => rest} -> {:line, rest}
+      %{"scope" => scope, "rest" => rest} -> {String.to_existing_atom(scope), rest}
+      nil -> nil
     end
   end
 
@@ -209,20 +221,23 @@ defmodule Mutare.Ignore do
   #   * a `-start` still open at end of file → `{:unterminated_region, line}`.
   defp pair_scoped(tokens) do
     {directives, open, errors} =
-      Enum.reduce(tokens, {[], nil, []}, fn {comment, order}, {directives, open, errors} ->
-        case {verb_scope(comment.text), open} do
+      Enum.reduce(tokens, {[], nil, []}, fn {{comment, scope, rest}, order},
+                                            {directives, open, errors} ->
+        case {scope, open} do
           {:file, _open} ->
-            {[scoped_directive(comment, order, :file) | directives], open, errors}
+            {[scoped_directive(comment, rest, order, :file) | directives], open, errors}
 
           {:start, nil} ->
-            {directives, {comment, order}, errors}
+            {directives, {comment, rest, order}, errors}
 
-          {:start, {open_comment, _order}} ->
+          {:start, {open_comment, _rest, _order}} ->
             {directives, open, [{:nested_region, comment.line, open_comment.line} | errors]}
 
-          {:end, {start_comment, order}} ->
-            scope = {:region, start_comment.line, comment.line}
-            {[scoped_directive(start_comment, order, scope) | directives], nil, errors}
+          {:end, {start_comment, start_rest, order}} ->
+            region = {:region, start_comment.line, comment.line}
+
+            {[scoped_directive(start_comment, start_rest, order, region) | directives], nil,
+             errors}
 
           {:end, nil} ->
             {directives, nil, [{:unmatched_end, comment.line} | errors]}
@@ -232,21 +247,17 @@ defmodule Mutare.Ignore do
     errors =
       case open do
         nil -> errors
-        {comment, _order} -> [{:unterminated_region, comment.line} | errors]
+        {comment, _rest, _order} -> [{:unterminated_region, comment.line} | errors]
       end
 
     {Enum.reverse(directives), Enum.reverse(errors)}
   end
 
-  # A `:file` or region directive from its (start) comment: the filter/reason grammar after the
-  # verb is exactly the line directive's; `line` is the comment's own line (a region's `first`),
-  # so line-keyed sorts stay total across scopes.
-  defp scoped_directive(%{text: text, line: line}, source_order, scope) do
-    {mutators, reason} =
-      @directive
-      |> Regex.named_captures(text)
-      |> Map.fetch!("rest")
-      |> parse_rest()
+  # A `:file` or region directive from its (start) comment's `rest`: the filter/reason grammar
+  # after the verb is exactly the line directive's; `line` is the comment's own line (a region's
+  # `first`), so line-keyed sorts stay total across scopes.
+  defp scoped_directive(%{line: line}, rest, source_order, scope) do
+    {mutators, reason} = parse_rest(rest)
 
     %Directive{
       scope: scope,
@@ -311,7 +322,7 @@ defmodule Mutare.Ignore do
   defp unknown_verbs(comments) do
     comments
     |> Enum.filter(fn %{text: text} = comment ->
-      Regex.match?(@namespace, text) and not directive?(comment)
+      Regex.match?(@namespace, text) and is_nil(parse_directive(comment))
     end)
     |> Enum.map(fn %{line: line, text: text} -> {line, head(text)} end)
     |> Enum.sort()
@@ -620,14 +631,9 @@ defmodule Mutare.Ignore do
     acc
   end
 
-  defp directive?(%{text: text}), do: Regex.match?(@directive, text)
-
-  defp to_directive(%{text: text} = comment, source_order, comment_lines) do
-    {mutators, reason} =
-      @directive
-      |> Regex.named_captures(text)
-      |> Map.fetch!("rest")
-      |> parse_rest()
+  # A line directive from its comment and the `rest` after the verb.
+  defp to_directive(comment, rest, source_order, comment_lines) do
+    {mutators, reason} = parse_rest(rest)
 
     %Directive{
       line: suppressed_line(comment, comment_lines),
