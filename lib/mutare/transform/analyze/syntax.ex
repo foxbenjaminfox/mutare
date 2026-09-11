@@ -2,10 +2,9 @@ defmodule Mutare.Transform.Analyze.Syntax do
   @moduledoc false
 
   # The block-key vocabulary the analyze dispatch and its handler submodules share —
-  # `do_key?`/`clause_block_key?`/`block_key?` — with **no dependency on the descent**. Kept
-  # here (not as `Mutare.Transform.Analyze` predicates the handlers call back into) so they are a
-  # one-way leaf rather than a module cycle. (The other cross-module reader, the known-macro
-  # routing stamp, already lives in `Mutare.Transform.Meta.routing/1`.)
+  # `do_key?`/`clause_block_key?`/`block_key?` — with **no dependency on the descent**, so a
+  # handler can classify a key without going through the dispatch. (The other cross-module
+  # reader, the known-macro routing stamp, already lives in `Mutare.Transform.Meta.routing/1`.)
 
   alias Mutare.AST
 
@@ -23,7 +22,7 @@ defmodule Mutare.Transform.Analyze.Syntax do
 
   @doc """
   Whether `key` names a `:do` block. Shared by clause-block routing
-  (`Analyze.DefClause.normalize_clause_blocks/1`, `analyze_do_blocks/3`), the trailing-keyword
+  (`Analyze.DefClause.normalize_clause_blocks/1`, `analyze_do_blocks/2`), the trailing-keyword
   `do:` guard, and `Mutare.Transform.Analyze.Returns` (which classifies the `:do` tail as a
   return path) — the one home for the predicate rather than reclassifying the atom.
   """

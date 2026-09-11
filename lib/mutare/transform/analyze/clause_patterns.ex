@@ -4,18 +4,15 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # Clause-list pattern mutation for `case`, `receive`/`fn`, and `try`/`rescue`.
   # Split out of `Mutare.Transform.Analyze`: the main descent routes the three
   # constructs here to build their pattern/guard/structure candidates, which the
-  # heavy `Tag` / `PatternStructure` machinery dominates. The dependency is one-way
-  # (Analyze → ClausePatterns): the one place a construct is analyzed *normally* (a
-  # `receive`/`fn`'s bodies before attaching clause candidates) re-enters the walk
-  # through the **injected `descent`** (the `Mutare.Transform.Analyze` module, passed
-  # in by the caller) rather than naming it statically — so this module is a
-  # parametrized fragment of the walk, not a cycle. Candidate construction goes
-  # through the dependency-neutral `Attach`.
+  # heavy `Tag` / `PatternStructure` machinery dominates. The one place a construct is
+  # analyzed *normally* (a `receive`/`fn`'s bodies before attaching clause candidates)
+  # re-enters the walk through `Analyze.recurse/3`; candidate construction goes through
+  # `Attach`.
   #
   # Entry points the descent calls (`Mutare.Transform.Analyze`):
   #   * case     → `case_clause_candidates/2` + `put_case_candidates/2`
-  #   * receive  → `attach_receive_candidates/4`
-  #   * fn       → `attach_fn_candidates/3`
+  #   * receive  → `attach_receive_candidates/3`
+  #   * fn       → `attach_fn_candidates/2`
   #   * try      → `rescue_type_candidates/3`
   #   * with / for / try guard-only clauses → `guard_only_candidates/2` (with
   #     `located_clauses/1` / `located_block/2` naming each clause for the emitter)
@@ -24,6 +21,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Spec
   alias Mutare.Transform.{Candidate, Meta, NodeRange, PatternStructure, Tag}
+  alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.Attach
 
   # A fresh `{tag_counter, targets}` accumulator for a single-node tag walk. The candidates
@@ -46,7 +44,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # node at emit; only the mutants come from here.
   # NOTE (equivalent survivors): the `++` operand_swap mutants on the candidate-group
   # concatenations in this module (here and in `clause_pattern_candidates/3`,
-  # `attach_receive_candidates/4`, `clause_guard_candidates/3`, `rescue_clause_candidates/3`)
+  # `attach_receive_candidates/3`, `clause_guard_candidates/3`, `rescue_clause_candidates/3`)
   # only reorder the produced candidates — the *set* of mutants is unchanged, just their id
   # order — so no behaviour or test distinguishes them. Left as documented survivors rather than
   # `# mutare:ignore`d to keep them visible.
@@ -257,8 +255,8 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
 
   # --- fn / receive: shared discovery, different delivery ------------------
 
-  def attach_fn_candidates(descent, {:fn, _meta, clauses} = node, mutators) do
-    analyzed = descent.recurse(node, :runtime, mutators) |> Attach.offer(node, mutators)
+  def attach_fn_candidates({:fn, _meta, clauses} = node, mutators) do
+    analyzed = Analyze.recurse(node, :runtime, mutators) |> Attach.offer(node, mutators)
 
     candidates =
       clause_list_candidates(clauses, mutators, fn index, mutant_clause, fields ->
@@ -274,9 +272,9 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # The normalized node supplies the clause list and raw fallback; whole-node custom
   # mutators still see the author's original keyword/block form through `offer_node`.
   # Keep their candidates, and later return/condition appends, on the same ordered list.
-  def attach_receive_candidates(descent, {:receive, _meta, [blocks]} = node, offer_node, mutators) do
+  def attach_receive_candidates({:receive, _meta, [blocks]} = node, offer_node, mutators) do
     # mutare:ignore[atom] equivalent — the descent's `body_context/1` maps every non-`:scaffold` context (including a mutated `:mutare`) to `:runtime`, so the clause bodies mutate identically.
-    analyzed = descent.recurse(node, :runtime, mutators)
+    analyzed = Analyze.recurse(node, :runtime, mutators)
 
     candidates =
       Attach.build_candidates(offer_node, Dispatch.mutations(offer_node, mutators)) ++

@@ -3,40 +3,40 @@ defmodule Mutare.Transform.Analyze.QuoteEscape do
   # The quote/unquote-escape fragment of the analyze walk, extracted from `Mutare.Transform.Analyze`.
   # A `quote` block is compile-time AST data, so its body is left raw — *except* the arguments of an
   # `unquote`/`unquote_splicing` that escape back to level 0, which are live runtime expressions and
-  # are analyzed as such (`analyze_quote_args/4`, quote-level-aware). Escapes carry one extra hazard:
+  # are analyzed as such (`analyze_quote_args/3`, quote-level-aware). Escapes carry one extra hazard:
   # a match/`:binding_pattern` inside a live unquote argument may bind a variable the caller reads
   # after the quote is built, and an in-place selector on an ancestor of that binding would trap it
   # in a `case` branch — so `prune_quote_escape_*` strips exactly the candidates that would enclose
   # an escaping binding, bottom-up, while leaving siblings/descendants live. Re-enters the general
-  # descent through the injected `descent` (`Mutare.Transform.Analyze`) at its one back-edge —
-  # `analyze_quote_escape/3`'s `descent.annotate/2` — so this stays a one-way fragment of the walk.
+  # descent at one point: `analyze_quote_escape/2`'s `Analyze.annotate/2`.
 
   alias Mutare.AST
+  alias Mutare.Transform.Analyze
   alias Mutare.Transform.{Candidate, Meta}
 
   # Walk only a quote's block value(s), leaving quote options raw. The values of
   # `do:` entries are quoted data at `quote_level`; anything under an escaping
   # `unquote` that reaches level 0 is analyzed as ordinary runtime.
-  def analyze_quote_args(descent, args, quote_level, mutators) do
-    Enum.map(args, &analyze_quote_arg(descent, &1, quote_level, mutators))
+  def analyze_quote_args(args, quote_level, mutators) do
+    Enum.map(args, &analyze_quote_arg(&1, quote_level, mutators))
   end
 
-  defp analyze_quote_arg(descent, {:__block__, meta, [kw]}, quote_level, mutators)
+  defp analyze_quote_arg({:__block__, meta, [kw]}, quote_level, mutators)
        when is_list(kw) do
-    {:__block__, meta, [analyze_quote_keyword(descent, kw, quote_level, mutators)]}
+    {:__block__, meta, [analyze_quote_keyword(kw, quote_level, mutators)]}
   end
 
-  defp analyze_quote_arg(descent, kw, quote_level, mutators) when is_list(kw) do
-    analyze_quote_keyword(descent, kw, quote_level, mutators)
+  defp analyze_quote_arg(kw, quote_level, mutators) when is_list(kw) do
+    analyze_quote_keyword(kw, quote_level, mutators)
   end
 
-  defp analyze_quote_arg(_descent, other, _quote_level, _mutators), do: other
+  defp analyze_quote_arg(other, _quote_level, _mutators), do: other
 
-  defp analyze_quote_keyword(descent, kw, quote_level, mutators) do
+  defp analyze_quote_keyword(kw, quote_level, mutators) do
     Enum.map(kw, fn
       {key, value} = pair ->
         if AST.key_atom(key) == :do,
-          do: {key, analyze_quoted_data(descent, value, quote_level, mutators)},
+          do: {key, analyze_quoted_data(value, quote_level, mutators)},
           else: pair
 
       other ->
@@ -49,10 +49,10 @@ defmodule Mutare.Transform.Analyze.QuoteEscape do
   # Quote option values are different: they belong to the quote expression itself,
   # not the quoted block, so the prune pass below still scans them at the current
   # quote level for escaping bindings.
-  defp analyze_quoted_data(descent, {:quote, meta, args} = node, quote_level, mutators)
+  defp analyze_quoted_data({:quote, meta, args} = node, quote_level, mutators)
        when is_list(args) do
     if quote_unquote_enabled?(args),
-      do: {:quote, meta, analyze_quote_args(descent, args, quote_level + 1, mutators)},
+      do: {:quote, meta, analyze_quote_args(args, quote_level + 1, mutators)},
       else: node
   end
 
@@ -69,37 +69,37 @@ defmodule Mutare.Transform.Analyze.QuoteEscape do
   # catch-all/baseline branch leaves the later read undefined. Keep mutating the live
   # argument, but prune only those candidates that would enclose the binding; descendants
   # and siblings that do not enclose it remain live.
-  defp analyze_quoted_data(descent, {form, meta, [arg]} = node, 1, mutators)
+  defp analyze_quoted_data({form, meta, [arg]} = node, 1, mutators)
        when form in [:unquote, :unquote_splicing] do
     # A `:skip`-routed unquote (`{Kernel.SpecialForms, :unquote, :skip}`) is an inert leaf: the
     # escaping argument stays as written. (The dispatcher never sees an unquote — quoted data is
     # walked here, not by `analyze/3` — so the stamp is read at this entry.)
     if Meta.skipped?(node),
       do: node,
-      else: {form, meta, [analyze_quote_escape(descent, arg, mutators)]}
+      else: {form, meta, [analyze_quote_escape(arg, mutators)]}
   end
 
-  defp analyze_quoted_data(_descent, {form, _meta, [_arg]} = node, quote_level, _mutators)
+  defp analyze_quoted_data({form, _meta, [_arg]} = node, quote_level, _mutators)
        when form in [:unquote, :unquote_splicing] and quote_level > 1,
        do: node
 
-  defp analyze_quoted_data(descent, {form, meta, args}, quote_level, mutators) when is_list(args),
+  defp analyze_quoted_data({form, meta, args}, quote_level, mutators) when is_list(args),
     do:
-      {analyze_quoted_data(descent, form, quote_level, mutators), meta,
-       Enum.map(args, &analyze_quoted_data(descent, &1, quote_level, mutators))}
+      {analyze_quoted_data(form, quote_level, mutators), meta,
+       Enum.map(args, &analyze_quoted_data(&1, quote_level, mutators))}
 
-  defp analyze_quoted_data(descent, {left, right}, quote_level, mutators),
+  defp analyze_quoted_data({left, right}, quote_level, mutators),
     do:
-      {analyze_quoted_data(descent, left, quote_level, mutators),
-       analyze_quoted_data(descent, right, quote_level, mutators)}
+      {analyze_quoted_data(left, quote_level, mutators),
+       analyze_quoted_data(right, quote_level, mutators)}
 
-  defp analyze_quoted_data(descent, list, quote_level, mutators) when is_list(list),
-    do: Enum.map(list, &analyze_quoted_data(descent, &1, quote_level, mutators))
+  defp analyze_quoted_data(list, quote_level, mutators) when is_list(list),
+    do: Enum.map(list, &analyze_quoted_data(&1, quote_level, mutators))
 
-  defp analyze_quoted_data(_descent, other, _quote_level, _mutators), do: other
+  defp analyze_quoted_data(other, _quote_level, _mutators), do: other
 
-  defp analyze_quote_escape(descent, arg, mutators) do
-    analyzed = descent.annotate(arg, mutators)
+  defp analyze_quote_escape(arg, mutators) do
+    analyzed = Analyze.annotate(arg, mutators)
     {arg, _has_binding?} = prune_quote_escape_binding_ancestors(analyzed)
     arg
   end

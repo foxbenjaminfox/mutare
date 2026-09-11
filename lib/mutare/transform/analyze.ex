@@ -16,14 +16,11 @@ defmodule Mutare.Transform.Analyze do
   #
   # The pass is split across handler submodules this dispatch routes to (`Conditions`,
   # `ClausePatterns`, `MatchPatterns`, `Routed`, `DefClause`, `Returns`, `Captures`, `CallOptions`,
-  # `QuoteEscape`), but the module graph stays **acyclic** — the abstraction is one recursive
-  # walk, not a tangle of mutual references. Candidate construction/attachment lives in the
-  # dependency-neutral `Analyze.Attach`, the block-key predicates in `Analyze.Syntax`, and the
-  # handlers that genuinely recurse receive the descent as an **injected `descent`** argument
-  # (this module, passed as `__MODULE__`) rather than naming `Analyze` statically — so each
-  # handler is a one-way fragment of the walk (`descent.annotate/2`, `descent.pattern/2`,
-  # `descent.descend/3`, `descent.recurse/3`), and the only back-edge any of them has is the
-  # injected parameter.
+  # `QuoteEscape`). Candidate construction/attachment lives in `Analyze.Attach` and the block-key
+  # predicates in `Analyze.Syntax`; a handler that genuinely recurses re-enters the walk by
+  # calling this module directly — `annotate/2`, `pattern/2`, `descend/3`, `recurse/3` — so the
+  # module graph has a runtime-call cycle between this dispatch and each such handler, on
+  # purpose (NOTES "Analyze handlers call the descent statically").
 
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
@@ -223,7 +220,7 @@ defmodule Mutare.Transform.Analyze do
   defp analyze_form({:quote, meta, args} = node, :runtime, mutators)
        when is_list(args) do
     if QuoteEscape.quote_unquote_enabled?(args),
-      do: {:quote, meta, QuoteEscape.analyze_quote_args(__MODULE__, args, 1, mutators)},
+      do: {:quote, meta, QuoteEscape.analyze_quote_args(args, 1, mutators)},
       else: node
   end
 
@@ -288,7 +285,7 @@ defmodule Mutare.Transform.Analyze do
        when vis in [:def, :defp] and is_list(body_kw) do
     head = analyze(head, :pattern, mutators)
     body_kw = Syntax.normalize_clause_blocks(body_kw)
-    analyzed_kw = DefClause.analyze_do_blocks(__MODULE__, body_kw, mutators)
+    analyzed_kw = DefClause.analyze_do_blocks(body_kw, mutators)
     annotated_kw = Returns.annotate_returns(analyzed_kw, body_kw, mutators)
     {vis, meta, [head, DefClause.host_def_rescue(annotated_kw, body_kw, mutators)]}
   end
@@ -345,7 +342,7 @@ defmodule Mutare.Transform.Analyze do
   defp analyze_form({:__block__, meta, stmts}, :runtime, mutators)
        when is_list(stmts) and length(stmts) >= 2 do
     {init, [last]} = Enum.split(stmts, -1)
-    init = Enum.map(init, &MatchPatterns.analyze_statement(__MODULE__, &1, mutators))
+    init = Enum.map(init, &MatchPatterns.analyze_statement(&1, mutators))
     {:__block__, meta, init ++ [analyze(last, :runtime, mutators)]}
   end
 
@@ -387,7 +384,7 @@ defmodule Mutare.Transform.Analyze do
   # generic descent, which pattern-routes the conditions and leaves them unmutated.
   defp analyze_form({:cond, meta, [blocks]}, context, mutators) when is_list(blocks) do
     blocks = Syntax.normalize_clause_blocks(blocks)
-    {:cond, meta, [Conditions.cond_blocks(__MODULE__, blocks, body_context(context), mutators)]}
+    {:cond, meta, [Conditions.cond_blocks(blocks, body_context(context), mutators)]}
   end
 
   # `if`/`unless`: the condition is an ordinary runtime expression *and* the one
@@ -395,7 +392,7 @@ defmodule Mutare.Transform.Analyze do
   # `true`/`false` (the "remove the decision" mutation) for the conditions a value
   # family can't reach (a bare predicate call, `is_*`, a remote boolean), the
   # boolean-operator ones being left to `Conditional`. So the condition is analyzed
-  # as a condition (`analyze_condition/3` — runtime, plus IfCondition, minus any
+  # as a condition (`analyze_condition/2` — runtime, plus IfCondition, minus any
   # selector that would trap an escaping binding; see there); the body keyword
   # (`do:`/`else:` values) is analyzed exactly as the generic runtime clause would,
   # and the whole node is still offered to mutators for parity (a custom mutator
@@ -406,7 +403,7 @@ defmodule Mutare.Transform.Analyze do
   #
   # When the condition binds a variable that escapes into the body (`if (name =
   # lookup()) != nil do …`), the plain path can't host a condition selector (it would
-  # trap the binding — see `analyze_condition/3`), so a hoistable case is restructured
+  # trap the binding — see `analyze_condition/2`), so a hoistable case is restructured
   # into a `__block__` that lifts the binding out and lets the now-binding-free
   # condition carry the decision mutant (`hoist_if/6`). Only `:runtime` — a module-level
   # (`:scaffold`) `if` runs once at compile time, so its condition is inert and falls
@@ -467,7 +464,6 @@ defmodule Mutare.Transform.Analyze do
     normalized_node = {:receive, meta, [normalized_blocks]}
 
     ClausePatterns.attach_receive_candidates(
-      __MODULE__,
       normalized_node,
       node,
       mutators
@@ -483,7 +479,7 @@ defmodule Mutare.Transform.Analyze do
   # FnClause candidates store one raw mutant clause each; FnClauseEmit preserves arity,
   # captures the selector and records all head/guard ids at creation, before any invocation.
   defp analyze_form({:fn, _meta, clauses} = node, :runtime, mutators) when is_list(clauses) do
-    attached = ClausePatterns.attach_fn_candidates(__MODULE__, node, mutators)
+    attached = ClausePatterns.attach_fn_candidates(node, mutators)
     Returns.annotate_fn_returns(attached, node, mutators)
   end
 
@@ -552,14 +548,14 @@ defmodule Mutare.Transform.Analyze do
   #
   # The LHS is *usually* an ordinary runtime expression, but when the RHS is a **known
   # macro** the piped value is that macro's effective argument 0, so it inherits position
-  # 0's treatment (`analyze_piped_value/4` — the "reach back"): a `1 |> match?(1)` pipes
+  # 0's treatment (`analyze_piped_value/3` — the "reach back"): a `1 |> match?(1)` pipes
   # its LHS into match?'s **pattern** position, and a `:raw` macro may accept a LHS that
   # is neither a valid expression nor a valid pattern. Treating it as runtime would splice
   # a selector `case` into pattern/opaque position and poison the build.
   defp analyze_form({:|>, meta, [lhs, rhs]}, :runtime, mutators) do
     {:|>, meta,
      [
-       Routed.analyze_piped_value(__MODULE__, lhs, rhs, mutators),
+       Routed.analyze_piped_value(lhs, rhs, mutators),
        analyze_pipe_stage(rhs, mutators)
      ]}
   end
@@ -593,7 +589,7 @@ defmodule Mutare.Transform.Analyze do
   # `with`: a chain of clauses (`<-`/`=`/bare-expr, every one value-discarded) followed by
   # the trailing `[do: …, else: …]` keyword. A bare `=` clause is a match used solely for
   # its bindings — which escape to later clauses and the `do` body — exactly the rewriteable
-  # position, so each clause routes through `analyze_statement/3` (a `=` gets a
+  # position, so each clause routes through `analyze_statement/2` (a `=` gets a
   # `Candidate.MatchPattern`; a `<-` keeps its LHS a `:pattern`; a bare expr is ordinary
   # runtime). The keyword tail is `Syntax.normalize_clause_blocks/1`-ed (so a keyword-form
   # `else: (p -> b)` reads like its block-form twin) and descends as usual (the `do` body's
@@ -605,10 +601,7 @@ defmodule Mutare.Transform.Analyze do
        when is_list(args) and args != [] do
     if is_list(List.last(args)) do
       {raw_clauses, [body_kw]} = Enum.split(args, -1)
-
-      clauses =
-        Enum.map(raw_clauses, &MatchPatterns.analyze_statement(__MODULE__, &1, mutators))
-
+      clauses = Enum.map(raw_clauses, &MatchPatterns.analyze_statement(&1, mutators))
       body_kw = Syntax.normalize_clause_blocks(body_kw)
       rebuilt = {:with, meta, clauses ++ [analyze(body_kw, :runtime, mutators)]}
 
@@ -896,7 +889,7 @@ defmodule Mutare.Transform.Analyze do
           else: node |> recurse_runtime(mutators) |> descend_receiver(mutators)
 
       routing ->
-        Routed.analyze_routed_call(__MODULE__, node, routing, mutators, context)
+        Routed.analyze_routed_call(node, routing, mutators, context)
     end
   end
 
@@ -936,7 +929,7 @@ defmodule Mutare.Transform.Analyze do
   # === known macros ==========================================================
 
   # The known-macro argument *routing* lives in `Mutare.Transform.Analyze.Routed`:
-  # `Routed.analyze_routed_call/5` (a written/piped stage) and `Routed.analyze_piped_value/4`
+  # `Routed.analyze_routed_call/4` (a written/piped stage) and `Routed.analyze_piped_value/3`
   # (the `|>` LHS reaching back into a macro's argument-0 treatment) route each argument by its
   # declared treatment — a pattern, an opaque `:raw` DSL body, a `:hosted` fragment — driving the
   # descent back through `annotate/2`/`pattern/2`/`offer/4`. The core walk reads the stamp via
@@ -981,17 +974,17 @@ defmodule Mutare.Transform.Analyze do
            [analyze(generator, :runtime, mutators)]}
 
       _ ->
-        MatchPatterns.analyze_match_statement(__MODULE__, {:<<>>, meta, segments}, mutators)
+        MatchPatterns.analyze_match_statement({:<<>>, meta, segments}, mutators)
     end
   end
 
   # A non-keyword qualifier — a generator (`<-`), a filter, or a **bare `=` match**.
-  # `analyze_match_statement/3` offers a `=` LHS to the structural pattern families (a `for`
+  # `analyze_match_statement/2` offers a `=` LHS to the structural pattern families (a `for`
   # `=` qualifier discards its value, so the tuple-export rewrite is sound) and leaves
   # generators/filters as ordinary runtime. (Unlike a block statement / `with` clause, a
   # *bare macro call* qualifier is a filter, not value-discarded, so it stays unrewritten.)
   defp analyze_for_arg(arg, mutators),
-    do: MatchPatterns.analyze_match_statement(__MODULE__, arg, mutators)
+    do: MatchPatterns.analyze_match_statement(arg, mutators)
 
   # One entry of a struct's field map: keep the key (a compile-time field name) raw and
   # descend only the value. A struct update (`%S{base | a: 1}`) carries a `:|` node

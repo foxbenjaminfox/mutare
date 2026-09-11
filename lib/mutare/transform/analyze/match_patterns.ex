@@ -5,18 +5,17 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # (`Candidate.MatchPattern`) and the escaping pattern arg of a binding-escaping known
   # macro (`destructure([x, y], v)` → `Candidate.MacroPattern`). Both deliver structural
   # swap/wildcard mutants by re-exporting the escaping bindings through a tuple. Split out
-  # of `Mutare.Transform.Analyze`: it builds these candidates the descent hands off to. The
-  # dependency is one-way — the only re-entry into the walk (the `:runtime` re-analysis of a
-  # statement) goes through the **injected `descent`** (the `Mutare.Transform.Analyze` module,
-  # passed in as the first argument by the caller) rather than naming it statically, and
-  # candidate attachment goes through the dependency-neutral `Attach`.
+  # of `Mutare.Transform.Analyze`: it builds these candidates the descent hands off to. The only
+  # re-entry into the walk (the `:runtime` re-analysis of a statement) is `Analyze.annotate/2`;
+  # candidate attachment goes through `Attach`.
   #
   # Entry points the descent calls (`Mutare.Transform.Analyze`):
-  #   * a runtime block's non-final statement / a `with` clause → `analyze_statement/3`
-  #   * a `for` qualifier                                       → `analyze_match_statement/3`
+  #   * a runtime block's non-final statement / a `with` clause → `analyze_statement/2`
+  #   * a `for` qualifier                                       → `analyze_match_statement/2`
 
   alias Mutare.AST
   alias Mutare.Transform.{Candidate, Meta, NodeRange, PatternStructure}
+  alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.Attach
 
   # === match (`=`) pattern structure =========================================
@@ -27,42 +26,42 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # **binding-escaping known macro** call (`destructure([x, y], v)`, declared
   # `:binding_pattern`) whose pattern arg → `MacroPattern` — its bindings escape exactly like a
   # `=`'s, so the same tuple-re-export delivery applies. Every other statement analyzes as an
-  # ordinary runtime expression. (A `for` qualifier uses `analyze_match_statement/3` instead:
+  # ordinary runtime expression. (A `for` qualifier uses `analyze_match_statement/2` instead:
   # a bare macro call there is a *filter*, not value-discarded — only the `=` shape is safe.)
-  def analyze_statement(descent, {:=, _meta, _operands} = match, mutators),
-    do: analyze_match_statement(descent, match, mutators)
+  def analyze_statement({:=, _meta, _operands} = match, mutators),
+    do: analyze_match_statement(match, mutators)
 
-  def analyze_statement(descent, node, mutators) do
+  def analyze_statement(node, mutators) do
     # A `:skip`-routed statement (`[x, y] |> destructure(v)` under `{Kernel, :|>, 2, :skip}`) is an
     # inert leaf: the dispatcher leaves it untouched, and the `:binding_pattern` route stamped on
     # its RHS *stage* must not be discovered past that boundary either.
     if Meta.skipped?(node) do
-      descent.annotate(node, mutators)
+      Analyze.annotate(node, mutators)
     else
       case binding_pattern_macro(node) do
         nil ->
-          descent.annotate(node, mutators)
+          Analyze.annotate(node, mutators)
 
         {raw_pattern, rebuild_mutant} ->
           node
-          |> descent.annotate(mutators)
+          |> Analyze.annotate(mutators)
           |> attach_macro_pattern_candidates(raw_pattern, rebuild_mutant, mutators)
       end
     end
   end
 
   # The `=`-only value-discarded path: a `for` qualifier, and the `=` shape of
-  # `analyze_statement/3`. A `=` match's LHS goes to the structural families
+  # `analyze_statement/2`. A `=` match's LHS goes to the structural families
   # (`MatchPattern`); everything else (a `<-` generator, a filter, a plain expression)
   # analyzes as ordinary runtime. A `for` qualifier deliberately stops here — a bare macro
   # call as a qualifier is a *filter* (its truthiness selects iterations), so rewriting it to
   # a binding would silently drop the filter; only a `=` (already a binding qualifier) is safe.
-  def analyze_match_statement(descent, {:=, _meta, [raw_lhs, raw_rhs]} = match, mutators) do
-    analyzed = descent.annotate(match, mutators)
+  def analyze_match_statement({:=, _meta, [raw_lhs, raw_rhs]} = match, mutators) do
+    analyzed = Analyze.annotate(match, mutators)
     attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, mutators)
   end
 
-  def analyze_match_statement(descent, other, mutators), do: descent.annotate(other, mutators)
+  def analyze_match_statement(other, mutators), do: Analyze.annotate(other, mutators)
 
   # Offer the `=`'s LHS to the structural pattern families and, if any fire, attach a
   # `Candidate.MatchPattern` per mutation to the analyzed match node — emission rewrites

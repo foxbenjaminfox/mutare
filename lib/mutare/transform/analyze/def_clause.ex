@@ -4,14 +4,13 @@ defmodule Mutare.Transform.Analyze.DefClause do
   # The body-keyword machinery of a `def`/`defp` clause: route each block (`:do`/`:after`
   # runtime, `:rescue`/`:catch`/`:else` clause lists) and host a `def … rescue …` shorthand in
   # a synthesized `try` so `RescueType` reaches it. Extracted from `Mutare.Transform.Analyze`
-  # (the `def`/`defp` clause calls `Syntax.normalize_clause_blocks/1` → `analyze_do_blocks/3` →
+  # (the `def`/`defp` clause calls `Syntax.normalize_clause_blocks/1` → `analyze_do_blocks/2` →
   # `host_def_rescue/3` — the normalization unwraps an **inline keyword** rescue/catch/else so
-  # the clause routing here sees one shape); the one-way dependency re-enters the walk only
-  # through the **injected `descent`** (the `Mutare.Transform.Analyze` module, passed in as the
-  # first argument — `:runtime` via `descent.annotate/2`, `:pattern` via `descent.pattern/2`)
-  # rather than naming it statically, with block-key predicates (`Syntax`) and candidate
-  # attachment (`Attach`) on the dependency-neutral leaves.
+  # the clause routing here sees one shape); it re-enters the walk through `Analyze.annotate/2`
+  # (`:runtime`) and `Analyze.pattern/2` (`:pattern`), with block-key predicates in `Syntax` and
+  # candidate attachment in `Attach`.
 
+  alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.{Attach, ClausePatterns, Syntax}
 
   # The body keyword of a clause (`[do: …, rescue: …, catch: …, else: …,
@@ -23,11 +22,11 @@ defmodule Mutare.Transform.Analyze.DefClause do
   # build) and only its body in `:runtime`. (`cond`, whose clause left *is*
   # runtime, is handled generically; here the routing is unambiguous because these
   # blocks always pattern-match.)
-  def analyze_do_blocks(descent, body_kw, mutators) do
+  def analyze_do_blocks(body_kw, mutators) do
     Enum.map(body_kw, fn {key, value} ->
       if Syntax.clause_block_key?(key) and is_list(value),
-        do: {key, Enum.map(value, &analyze_try_clause(descent, &1, mutators))},
-        else: {key, descent.annotate(value, mutators)}
+        do: {key, Enum.map(value, &analyze_try_clause(&1, mutators))},
+        else: {key, Analyze.annotate(value, mutators)}
     end)
   end
 
@@ -64,11 +63,11 @@ defmodule Mutare.Transform.Analyze.DefClause do
   # One `rescue`/`catch`/`else` clause: its patterns are matches (`:pattern`), its
   # body is runtime. A `when` guard among the patterns is returned whole by the
   # `:when` clause of `analyze/3` (guard mutation in a try clause isn't supported).
-  defp analyze_try_clause(descent, {:->, meta, [patterns, body]}, mutators)
+  defp analyze_try_clause({:->, meta, [patterns, body]}, mutators)
        when is_list(patterns) do
-    patterns = Enum.map(patterns, &descent.pattern(&1, mutators))
-    {:->, meta, [patterns, descent.annotate(body, mutators)]}
+    patterns = Enum.map(patterns, &Analyze.pattern(&1, mutators))
+    {:->, meta, [patterns, Analyze.annotate(body, mutators)]}
   end
 
-  defp analyze_try_clause(descent, other, mutators), do: descent.annotate(other, mutators)
+  defp analyze_try_clause(other, mutators), do: Analyze.annotate(other, mutators)
 end

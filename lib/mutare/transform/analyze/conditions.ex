@@ -6,20 +6,20 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # attach, and the `if`/`unless` *hoisting* path that lifts a spine binding out so a
   # binding-free condition can still carry the decision mutant. Split out of
   # `Mutare.Transform.Analyze`: it builds condition candidates the descent hands off to. The
-  # `cond` path re-enters the walk through the **injected `descent`** (the
-  # `Mutare.Transform.Analyze` module, passed in as the first argument — `descent.annotate/2`
-  # for the `:runtime` walk, `descent.descend/3` for an arbitrary liveness) rather than naming
-  # it statically; the `if`/`unless` helpers (`finish_condition/3`, `hoist_if?/2`, `hoist_if/6`)
-  # need no descent, since they only post-process an already-analyzed condition.
+  # `cond` path re-enters the walk through `Analyze.annotate/2` (the `:runtime` walk) and
+  # `Analyze.descend/3` (an arbitrary liveness); the `if`/`unless` helpers (`finish_condition/3`,
+  # `hoist_if?/2`, `hoist_if/6`) need no descent, since they only post-process an
+  # already-analyzed condition.
   #
   # Entry points the descent calls (`Mutare.Transform.Analyze`):
-  #   * cond          → `cond_blocks/4` (routes each clause condition → `analyze_condition/3`)
+  #   * cond          → `cond_blocks/3` (routes each clause condition → `analyze_condition/2`)
   #   * if/unless     → `hoist_if?/2` + `hoist_if/6` (hoistable) or `finish_condition/3` (plain)
 
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Spec
   alias Mutare.Transform.{Candidate, Meta, Names}
+  alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.Attach
 
   # Analyze a `cond` clause *condition*: the generic runtime walk, plus the IfCondition
@@ -43,8 +43,8 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # clause's binding can't be hoisted out without changing when it runs. `if`/`unless`
   # *can* hoist (a single unconditional condition); that richer path lives in the
   # if/unless clause above (`hoist_if?/2` + `hoist_if/6`).
-  def analyze_condition(descent, condition, mutators) do
-    analyzed = descent.annotate(condition, mutators)
+  def analyze_condition(condition, mutators) do
+    analyzed = Analyze.annotate(condition, mutators)
     finish_condition(analyzed, condition, mutators)
   end
 
@@ -86,36 +86,36 @@ defmodule Mutare.Transform.Analyze.Conditions do
   #
   # The descent hands the whole `cond`'s block list here (the `:cond` clause in
   # `Mutare.Transform.Analyze`). A `cond` clause's *left* is a runtime condition, not a
-  # pattern, so each is routed through `analyze_condition/3` (runtime + IfCondition +
+  # pattern, so each is routed through `analyze_condition/2` (runtime + IfCondition +
   # binding-safe) — unlike every other `->` construct, whose LHS is a pattern. `context` is
   # the construct's liveness: `:runtime` for an ordinary `cond`; `:scaffold` for a module-level
   # `cond` wrapping a metaprogrammed `def`, whose conditions run once at compile time with
   # mutant 0 (so a selector there could never activate) and stay inert.
-  def cond_blocks(descent, blocks, context, mutators) do
-    Enum.map(blocks, &cond_block(descent, &1, context, mutators))
+  def cond_blocks(blocks, context, mutators) do
+    Enum.map(blocks, &cond_block(&1, context, mutators))
   end
 
   # One `cond` do-block: a `{key, clauses}` pair whose key is the `:do` label (kept raw, never
   # mutated). Anything unexpected falls back to a plain descent in `context`.
-  defp cond_block(descent, {key, clauses}, context, mutators) when is_list(clauses),
-    do: {key, Enum.map(clauses, &cond_clause(descent, &1, context, mutators))}
+  defp cond_block({key, clauses}, context, mutators) when is_list(clauses),
+    do: {key, Enum.map(clauses, &cond_clause(&1, context, mutators))}
 
-  defp cond_block(descent, other, context, mutators),
-    do: descent.descend(other, context, mutators)
+  defp cond_block(other, context, mutators),
+    do: Analyze.descend(other, context, mutators)
 
-  defp cond_clause(descent, {:->, meta, [conds, body]}, context, mutators) when is_list(conds) do
+  defp cond_clause({:->, meta, [conds, body]}, context, mutators) when is_list(conds) do
     analyzed_conds =
       Enum.map(conds, fn cond_node ->
         if context == :runtime,
-          do: analyze_condition(descent, cond_node, mutators),
-          else: descent.descend(cond_node, context, mutators)
+          do: analyze_condition(cond_node, mutators),
+          else: Analyze.descend(cond_node, context, mutators)
       end)
 
-    {:->, meta, [analyzed_conds, descent.descend(body, context, mutators)]}
+    {:->, meta, [analyzed_conds, Analyze.descend(body, context, mutators)]}
   end
 
-  defp cond_clause(descent, other, context, mutators),
-    do: descent.descend(other, context, mutators)
+  defp cond_clause(other, context, mutators),
+    do: Analyze.descend(other, context, mutators)
 
   # === if/unless condition hoisting ==========================================
   #

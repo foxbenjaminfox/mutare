@@ -265,7 +265,7 @@ defmodule Mutare.Transform.Tag do
   end
 
   # One routed argument of a guard call, by its position — the guard twin of
-  # `Mutare.Transform.Analyze.Routed.route_macro_arg/4` for the positions a guard-legal value can
+  # `Mutare.Transform.Analyze.Routed.route_macro_arg/3` for the positions a guard-legal value can
   # take. `:raw`: left as written. `:interior`: walked, then the target registered for the
   # argument's *own* node is dropped (`strip_own_target/1`) while its descendants keep theirs —
   # `is_tuple({x, 1})` under `:interior` loses the `{x, 1} → {}` collapse but keeps the `1`'s

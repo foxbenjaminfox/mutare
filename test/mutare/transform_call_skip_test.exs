@@ -419,7 +419,7 @@ defmodule Mutare.TransformCallSkipTest do
     end
 
     test "a skipped pipe whose stage is a binding-pattern macro attaches no pattern mutants" do
-      # `destructure/2` is routed `:binding_pattern` by core, and `analyze_statement/3` discovers
+      # `destructure/2` is routed `:binding_pattern` by core, and `analyze_statement/2` discovers
       # that route on the pipe's RHS stage — it must stop at the skipped pipe.
       source = """
       defmodule Destructured do

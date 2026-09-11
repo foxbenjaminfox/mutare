@@ -3879,6 +3879,18 @@ recursive descent and its inseparable helpers), with the candidate-builders in f
 focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
 `MatchPatterns`).
 
+### Analyze handlers call the descent statically `[done]`
+The handler submodules that re-enter the walk (`ClausePatterns`, `Conditions`, `DefClause`,
+`MatchPatterns`, `QuoteEscape`, `Routed`) used to take the descent as an injected first argument —
+`Analyze` passed itself as `__MODULE__`, and the handlers called `descent.annotate/2` and so on —
+so that the module graph stayed acyclic. That bought nothing: a runtime call cycle between
+modules costs Elixir nothing (only a macro or struct use creates a compile-time edge, and none
+exists here), and no check enforced acyclicity. It did cost: every re-entry was a variable-module
+call on the transform's hot path (no static dispatch, invisible to Dialyzer), threaded through ~26
+handler clauses. The handlers now alias `Mutare.Transform.Analyze` and call `annotate/2` /
+`pattern/2` / `descend/3` / `recurse/3` directly; the Analyze ↔ handler cycle is the thin
+child→parent call the split entry above already accepted for `ClausePatterns`.
+
 ### Function lifting (M2): sharp edges `[various]`
 - **Recursion bounces through the dispatcher.** A self-call inside a lifted copy
   hits the public dispatcher and re-dispatches — correct, LCO survives, but ~2×
