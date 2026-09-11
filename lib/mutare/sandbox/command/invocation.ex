@@ -126,8 +126,9 @@ defmodule Mutare.Sandbox.Command.Invocation do
 
   @doc """
   The environment variable names Mutare itself sets on a sandbox `mix` — the base
-  env in `mix/4` plus the cap (`timeout_env/0`) and the coverage-probe vars folded
-  in via `:env`. The authoritative reserved set: `Mutare.Options` rejects a
+  env in `mix/4` plus the cap (`timeout_env/0`), the coverage-probe vars, and the
+  one-compile `ERL_COMPILER_OPTIONS` (`Mutare.Sandbox.CompilerOptions.compiler_env/0`)
+  folded in via `:env`. The authoritative reserved set: `Mutare.Options` rejects a
   `:partition_env` that collides with one of these, since the partition entry is
   *appended* to this list and a duplicate key's resolution is unspecified (it would
   silently clobber e.g. `MIX_ENV`). Sourced from the same accessors the env is
@@ -142,6 +143,8 @@ defmodule Mutare.Sandbox.Command.Invocation do
       @owner_watch_env,
       # Carries the `:max_heap_mb` cap (`heap_cap_env/1`) when that option is on.
       @erl_options_env,
+      # Set on the one metamutant compile, which appends the partition entry after it.
+      Mutare.Sandbox.CompilerOptions.env_var(),
       Mutare.Selector.env_var(),
       Mutare.Selector.namespace_env(),
       Mutare.Selector.override_env(),

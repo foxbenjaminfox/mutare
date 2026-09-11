@@ -53,6 +53,7 @@ defmodule Mutare.Sandbox.CompilerOptionsTest do
   test "compiler_env/0 sets ERL_COMPILER_OPTIONS with the alias-pass-off option" do
     assert [{"ERL_COMPILER_OPTIONS", value}] = CompilerOptions.compiler_env()
     assert value =~ "no_ssa_opt_alias"
+    assert CompilerOptions.env_var() == "ERL_COMPILER_OPTIONS"
   end
 
   describe "compile_args/1 (verify pass off, version-gated)" do

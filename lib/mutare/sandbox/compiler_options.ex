@@ -42,6 +42,14 @@ defmodule Mutare.Sandbox.CompilerOptions do
 
   @erl_compiler_options_env "ERL_COMPILER_OPTIONS"
 
+  @doc """
+  The name of the env var `compiler_env/0` sets (`#{@erl_compiler_options_env}`).
+  Listed in `Mutare.Sandbox.Command.Invocation.reserved_env_names/0`, since the
+  compile appends the partition entry after this one.
+  """
+  @spec env_var() :: String.t()
+  def env_var, do: @erl_compiler_options_env
+
   # Disable only the SSA *alias-analysis* sub-pass (`beam_ssa_alias`, which proves
   # term uniqueness to enable destructive in-place updates) on the one metamutant
   # compile. It is the dominant cost when compiling the metamutant's tuple-heavy

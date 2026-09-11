@@ -30,6 +30,10 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
     assert Invocation.owner_watch_env() in names
     # Carries the `:max_heap_mb` cap when that option is on.
     assert "ELIXIR_ERL_OPTIONS" in names
+    # Set on the one compile (`CompilerOptions.compiler_env/0`), which appends the
+    # partition entry after it — so a `:partition_env` naming it would duplicate the key.
+    assert "ERL_COMPILER_OPTIONS" in names
+    assert Enum.all?(Mutare.Sandbox.CompilerOptions.compiler_env(), fn {k, _} -> k in names end)
     # Sourced from the accessors that build the env, so no duplicates can creep in.
     assert names == Enum.uniq(names)
   end
