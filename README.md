@@ -5,9 +5,9 @@
 [![CI](https://github.com/foxbenjaminfox/mutare/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/foxbenjaminfox/mutare/actions/workflows/ci.yml)
 [![License](https://img.shields.io/hexpm/l/mutare.svg)](https://github.com/foxbenjaminfox/mutare/blob/master/LICENSE)
 
-Mutare is a mutation testing system for Elixir, that mutates the source you actually write, and compiles once.
+Mutare is a mutation testing system for Elixir that mutates the source you actually write, and compiles once.
 
-Mutation testing measures whether your test suite actually constrains the behavior of your code: it deliberately breaks your source code one small change at a time, and each time your tests nevertheless still pass it has located a gap in your test suite.
+Mutation testing measures whether your test suite actually constrains the behavior of your code: it deliberately breaks your source code one small change at a time, and each time your tests nevertheless still pass that is an indication of a gap in your test suite.
 
 Other Elixir mutation testing libraries, such as [Muex](https://github.com/Oeditus/muex), compile your code once per mutant, which can be quite slow, even with incremental recompilation. Mutation testing is never fast, but mutare aims to be the fastest Elixir mutation library with its compile-once approach. Mutare compiles a metamutant, a version of your program embedding all possible mutants behind runtime switches, and then selects the active mutant per test run via an environment variable.
 
@@ -68,19 +68,19 @@ Then run `mix mutare`.
 3. Run the suite per mutant. A baseline test run must pass; a coverage probe then maps each mutant to the test files that exercise it. Each mutant runs in a fresh `mix test` OS process, `:workers` at a time, each capped by a wall-clock timeout. The process learns which mutant to activate from `MUTARE_MUTANT_NAMESPACE` (its file) and `MUTARE_ACTIVE_MUTANT` (its id within that file).
 4. Report. Surviving mutants are listed in an abbreviated format as the run progresses, and you get a full report, with diffs and a mutation score, at the end. You can also enable JSON, HTML, or SARIF format output.
 
-One observable difference is worth knowing: a suite that is green under plain `mix test` can fail during Mutare's baseline run when a test asserts exact `FunctionClauseError` fields or stacktrace frames, because Mutare's function *lifting* renames those internals. See "Troubleshooting baseline-only failures" in the [`mix mutare` task docs](https://hexdocs.pm/mutare/Mix.Tasks.Mutare.html) (`mix help mutare`) for the mechanics and the `skip_lifting` escape hatch.
+Nevertheless, note that a suite that is green under plain `mix test` can fail during Mutare's baseline run when a test asserts exact `FunctionClauseError` fields or stacktrace frames, because Mutare's function *lifting* renames those internals. See "Troubleshooting baseline-only failures" in the [`mix mutare` task docs](https://hexdocs.pm/mutare/Mix.Tasks.Mutare.html) (`mix help mutare`) for the mechanics and the `skip_lifting` escape hatch.
 
 ## Features
 
 - Compile once, run N times — no per-mutant recompilation.
-- Coverage-guided selection — each mutant runs only the individual test *cases* that cover it (`--per-file` widens this to whole covering files for stateful `async: false` suites; `--full` runs the whole suite per mutant); uncovered mutants are skipped and excluded from the score.
-- Parallel workers + timeouts — mutants run concurrently, each capped; a mutation that hangs (a loop turned infinite) halts itself after the deadline and counts as a kill. A timed-out run is first confirmed with an uncontended re-run, so a merely-slow mutant is never falsely recorded as killed.
-- Compile-poison recovery — a mutant that wouldn't compile is identified from the compile error, dropped (reported as *poisoned*), and the build retried, to try and avoid a bad mutant spoiling the whole run—but ideally this shouldn't be necessary, and it usually isn't.
+- Coverage-guided selection — each mutant runs only the individual test cases that cover it (`--per-file` widens this to whole covering files for stateful `async: false` suites; `--full` runs the whole suite per mutant); uncovered mutants are skipped and excluded from the score.
+- Parallel workers + timeouts — mutants run concurrently, but capped: if a mutation hangs (e.g. a mutation that turns a loop infinite), it is halted after the deadline and counts as a kill. A timed-out run is first confirmed with an uncontended re-run, so a merely-slow mutant is never falsely recorded as killed.
 - A very broad built-in mutator set — arithmetic/operator swaps, relational and logical swaps, literals of every kind, collection/string/map call rewrites, pattern and clause restructurings, and more. See [`Mutare.Mutators`](https://hexdocs.pm/mutare/Mutare.Mutators.html), and write your own — the [Extending Mutare](https://hexdocs.pm/mutare/extending.html) guide walks through custom mutators and library extensions.
+- Compile-poison recovery — a mutant that wouldn't compile is identified from the compile error, dropped (reported as *poisoned*), and the build retried, to try and avoid a bad mutant spoiling the whole run—but ideally this shouldn't be necessary, and it usually isn't.
 - Umbrella-aware — target one app, several, or the whole workspace.
 - CI-friendly — `--since <ref>` to scope to changed lines, score/coverage/infra gates, machine-readable reports, and a kept sandbox (on by default; `--sandbox <path>` to point it at a CI cache) so a re-run recompiles only what changed.
 
-Suppress a known-equivalent mutant with a comment — a trailing comment marks its line as ignored, and a standalone comment applies to the next line. Ignored mutants are excluded from the score and their generated code is omitted from the metamutant. They retain their report entries and positions within `--max-mutants`.
+A known-equivalent mutant can be supressed with a comment. A trailing comment marks the line it is on as ignored, and a standalone comment applies to the next line. Ignored mutants are excluded from the score and their generated code is omitted from the metamutant. They retain their report entries and positions within `--max-mutants`.
 
 ```elixir
 def discounted(amount, percent), do: amount - amount * percent / 100  # mutare:ignore
@@ -103,9 +103,9 @@ Qualify a family with `:label` to suppress just one *kind* of its mutants. Here 
 def floor_zero(x), do: if(x < 0, do: 0, else: x)  # mutare:ignore[relational:<=] 0 ≤ 0 returns 0 here
 ```
 
-Each family names its own labels — `relational` → `> >= < <= == != === !==`, `integer` → `zero succ pred`, `return_value` → `empty sentinel` — and `mix mutare --list-mutators` prints every built-in family's labels. A qualified label that a known family doesn't declare is a hard error with a "did you mean", so a typo can't slip through as a silent no-op.
+Each family's own labels are named in turn — `relational` → `> >= < <= == != === !==`, `integer` → `zero succ pred`, `return_value` → `empty sentinel` — and `mix mutare --list-mutators` prints every built-in family's labels. A qualified label that is not declared by a known family is a hard error.
 
-For spans that aren't worth annotating line by line — a literal lookup table, a generated module — suppress a region with `# mutare:ignore-start` … `# mutare:ignore-end` (both take the same filter and reason, carried on the `-start`), or a whole file with `# mutare:ignore-file`:
+For spans that aren't worth annotating line by line — e.g. a literal lookup table, a generated module — you can suppress a region with `# mutare:ignore-start` … `# mutare:ignore-end` (filter/reason can be provided on the start comment), or a whole file with `# mutare:ignore-file`:
 
 ```elixir
 # mutare:ignore-start spot-checked; the round-trip property test covers the whole table
