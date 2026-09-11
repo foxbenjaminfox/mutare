@@ -7,6 +7,7 @@ defmodule Mutare.PatternLiftTest do
   """
   # persistent_term is global; the fixture is compiled once for all tests.
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.{Report, Selector}
 
@@ -32,9 +33,7 @@ defmodule Mutare.PatternLiftTest do
     # later same-arity clause is unreachable — a benign "cannot match" warning here
     # (the metamutant compiles), but it would poison only under --warnings-as-errors.
     # Captured so it doesn't clutter test output.
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      [{_module, _binary}] = Code.compile_string(metamutant)
-    end)
+    assert_compiles(metamutant)
 
     %{sites: sites, meta: metamutant}
   end
@@ -56,7 +55,7 @@ defmodule Mutare.PatternLiftTest do
   test "the group is lifted into a dispatcher + one guarded private function", %{meta: meta} do
     assert meta =~ "def coord(mutare_arg1) do"
     # one private group taking the active id as an extra arg…
-    assert meta =~ ~r/defp __mutare_coord_1_g\d+\(mutare_active,/
+    assert meta =~ ~r/defp #{lifted_pattern(:coord, 1)}\(mutare_active,/
     # …with the swap mutant as a single clause gated by its id
     assert meta =~ ~r/when :erlang\."=:="\(mutare_active, \d+\)/
     assert {:ok, _} = Code.string_to_quoted(meta)

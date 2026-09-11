@@ -9,6 +9,7 @@ defmodule Mutare.TransformDurationTest do
   # exercise the facility itself — with a custom mutator's own label, and through the user-facing
   # `argument_marks:` option that extends any declared label's table from configuration.
   use ExUnit.Case, async: true
+  import Mutare.Test.Metamutant
 
   # A third-party mutator exercising the general facility: it marks argument 1 of `Widget.render/2`
   # (and the `:mode` option of `Widget.stream/2`) with its *own* label, and declines integer
@@ -795,9 +796,5 @@ defmodule Mutare.TransformDurationTest do
       Mutare.Transform.transform_string_with_sites(source, [mutators: mutators] ++ opts)
 
     {meta, for(s <- sites, do: {s.mutator, s.original_code, s.mutated_code})}
-  end
-
-  defp assert_compiles(meta) do
-    assert [_ | _] = Mutare.Test.Compile.string(meta)
   end
 end

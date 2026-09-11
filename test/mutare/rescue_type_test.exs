@@ -8,6 +8,7 @@ defmodule Mutare.RescueTypeTest do
   """
   # persistent_term is global; the fixture is compiled once for all tests.
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.{Report, Selector, Site}
 
@@ -80,9 +81,7 @@ defmodule Mutare.RescueTypeTest do
     {metamutant, sites, _next_id} =
       Mutare.Transform.transform_string_with_sites(@source, file: "rt.ex")
 
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      [{_module, _binary}] = Code.compile_string(metamutant)
-    end)
+    assert_compiles(metamutant)
 
     %{sites: sites, meta: metamutant}
   end

@@ -1,5 +1,6 @@
 defmodule Mutare.Transform.CaseClauseEmitTest do
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.Coverage.Recorder
   alias Mutare.{Selector, Transform}
@@ -206,20 +207,7 @@ defmodule Mutare.Transform.CaseClauseEmitTest do
     {metamutant, sites, _} = Transform.transform_string_with_sites(source, mutators: mutators)
 
     # Keep the generated coverage gate, replacing only the sink with a process-local observer.
-    observed =
-      String.replace(
-        metamutant,
-        "#{inspect(Recorder.fixture_module())}.hit(",
-        "#{inspect(CoverageSink)}.hit("
-      )
-
-    ExUnit.CaptureIO.capture_io(:stderr, fn -> Code.compile_string(observed) end)
-
-    on_exit(fn ->
-      :code.purge(module)
-      :code.delete(module)
-    end)
-
+    compile_observed(module, metamutant, CoverageSink)
     {module, sites, metamutant}
   end
 end

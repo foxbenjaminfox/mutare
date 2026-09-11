@@ -2,7 +2,10 @@ defmodule Mutare.CLI.DiagnosticsTest do
   # The stderr warnings for configuration that matched nothing: `:call_routes` and `:argument_marks`
   # entries (the `:skip_lifting` mirrors). The detection lives in `Mutare.Schema` (see
   # `schema_test.exs`); this pins the wording a user sees.
-  use ExUnit.Case, async: true
+  #
+  # `async: false`: these capture the global `:stderr` device — one of them to assert it stays
+  # *empty*, which any concurrently running module's `IO.warn` would break.
+  use ExUnit.Case, async: false
 
   import ExUnit.CaptureIO
 

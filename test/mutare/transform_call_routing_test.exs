@@ -3,6 +3,7 @@ defmodule Mutare.TransformCallRoutingTest do
   # (`:call_routes` / a mutator's `call_routes/0`), and a piped value reaching the macro's effective
   # position-0 treatment. Split from transform_test.exs.
   use ExUnit.Case, async: true
+  import Mutare.Test.Metamutant
 
   # Pin context-routing probes to the two operator-swap families (stable site counts).
   @probe [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
@@ -715,9 +716,5 @@ defmodule Mutare.TransformCallRoutingTest do
       refute meta =~ "Enum.product"
       assert_compiles(meta)
     end
-  end
-
-  defp assert_compiles(meta) do
-    assert [_ | _] = Mutare.Test.Compile.string(meta)
   end
 end

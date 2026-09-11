@@ -21,7 +21,8 @@ defmodule Mutare.TransformCompilePropertyTest do
   wildcard-broadening, unused bindings), which is both stateful (the code server) and an
   order of magnitude slower than a parse.
   """
-  # Compiles modules, purges them, and captures :stderr globally — must be serial.
+  # Compiles and purges the shared `Prop` fixture name, like the other property soaks and
+  # `property_probe_test` — they must not overlap, so keep serial.
   use ExUnit.Case, async: false
   use PropCheck
 
@@ -69,20 +70,13 @@ defmodule Mutare.TransformCompilePropertyTest do
   # module it defines so the fixed `Prop` name doesn't accumulate or clash across runs.
   # Returns `:ok` or `{:error, exception}`.
   defp compile_quietly(source) do
-    {result, _io} =
-      ExUnit.CaptureIO.with_io(:stderr, fn ->
-        try do
-          source
-          |> Code.compile_string()
-          |> Enum.each(fn {module, _binary} -> purge(module) end)
+    case Mutare.Test.Compile.string_result(source) do
+      {{:ok, modules}, _diagnostics} ->
+        Enum.each(modules, fn {module, _binary} -> purge(module) end)
 
-          :ok
-        rescue
-          e -> {:error, e}
-        end
-      end)
-
-    result
+      {{:error, e}, _diagnostics} ->
+        {:error, e}
+    end
   end
 
   defp purge(module) do

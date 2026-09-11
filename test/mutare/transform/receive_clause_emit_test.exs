@@ -1,5 +1,6 @@
 defmodule Mutare.Transform.ReceiveClauseEmitTest do
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.Coverage.Recorder
   alias Mutare.{Manifest, Selector, Transform}
@@ -543,7 +544,7 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
 
     assert [{[_clause], [_after_clause]}] = receives(metamutant)
     assert coverage_payloads(metamutant) == [[selected.id]]
-    compile_observed(module, metamutant)
+    compile_observed(module, metamutant, CoverageSink)
     Selector.put(selected.id)
     assert run_mailbox(fn -> apply(module, :take, []) end, [1]) == {{:ok, 101}, []}
     assert run_mailbox(fn -> apply(module, :take, []) end, [2]) == {{:ok, 200}, [2]}
@@ -576,7 +577,7 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
     assert coverage_payloads(metamutant) == [live]
     assert [{clauses, [_]}] = receives(metamutant)
     assert length(clauses) == 3 + length(live)
-    compile_observed(module, metamutant)
+    compile_observed(module, metamutant, CoverageSink)
 
     for id <- [skipped | Enum.map(Enum.filter(sites, & &1.ignored), & &1.id)] do
       Selector.put(id)
@@ -607,14 +608,12 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
     assert Enum.sort(Manifest.ids_at_line(manifest, line_of(metamutant, "receive do"))) ==
              Enum.map(sites, & &1.id)
 
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      assert_raise CompileError, fn -> Code.compile_string(metamutant) end
-    end)
+    assert_compile_error(metamutant)
 
     {recovered, _, ^next} =
       Transform.transform_string_with_sites(source, opts ++ [skip_ids: MapSet.new([poison.id])])
 
-    compile_observed(module, recovered)
+    compile_observed(module, recovered, CoverageSink)
     assert run_mailbox(fn -> apply(module, :take, [:source]) end, [6, 1]) == {{:ok, 6}, [1]}
   end
 
@@ -686,24 +685,8 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
     {metamutant, sites, _} =
       Transform.transform_string_with_sites(source(module, body), mutators: mutators)
 
-    compile_observed(module, metamutant)
+    compile_observed(module, metamutant, CoverageSink)
     {module, sites, metamutant}
-  end
-
-  defp compile_observed(module, metamutant) do
-    observed =
-      String.replace(
-        metamutant,
-        "#{inspect(Recorder.fixture_module())}.hit(",
-        "#{inspect(CoverageSink)}.hit("
-      )
-
-    ExUnit.CaptureIO.capture_io(:stderr, fn -> Code.compile_string(observed) end)
-
-    on_exit(fn ->
-      :code.purge(module)
-      :code.delete(module)
-    end)
   end
 
   defp receives(source) do

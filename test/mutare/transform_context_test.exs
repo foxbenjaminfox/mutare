@@ -22,13 +22,12 @@ defmodule Mutare.TransformContextTest do
   # runtime defmodule's inline active-id read, and the coverage-helper xref warning. Split
   # from transform_test.exs.
   use ExUnit.Case, async: true
+  import Mutare.Test.Metamutant
 
   alias Mutare.Site
 
   # The hoisted per-site active-id read makes a tupled-case subject read the bound
   # `mutare_active` variable, not the inline persistent_term read.
-  defp selector_tuple, do: "case (case {mutare_active,"
-
   describe "custom structural & call-matching mutator extension points" do
     test "a custom return-position mutator participates via return_replacements/1" do
       {meta, triples} =
@@ -695,7 +694,7 @@ defmodule Mutare.TransformContextTest do
       {meta, sites, _next_id} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @literal)
 
-      assert meta =~ "__mutare_f_2_g1"
+      assert meta =~ lifted_name(:f, 2, 1)
       # The head literal `1` lifts; the default `2` mutates in place.
       assert MapSet.new(sites, &{&1.original_code, &1.kind}) ==
                MapSet.new([{"1", :lifted}, {"2", :in_place}])
@@ -703,8 +702,8 @@ defmodule Mutare.TransformContextTest do
       # The dispatcher's second arg keeps the `\\` default (so `f/1` still resolves)...
       assert meta =~ ~r/mutare_arg2 \\\\/
       # ...and the lifted base function takes the full arity with `\\` stripped.
-      assert meta =~ ~r/defp __mutare_f_2_g1\(mutare_active, 1, b\)/
-      refute meta =~ ~r/defp __mutare_f_2_g1\([^)]*\\\\/
+      assert meta =~ ~r/defp #{lifted_name(:f, 2, 1)}\(mutare_active, 1, b\)/
+      refute meta =~ ~r/defp #{lifted_name(:f, 2, 1)}\([^)]*\\\\/
       assert [{H, _}] = Mutare.Test.Compile.string(meta)
     end
 
@@ -1120,9 +1119,5 @@ defmodule Mutare.TransformContextTest do
 
     triples = for s <- sites, do: {s.mutator, s.original_code, s.mutated_code}
     {meta, triples}
-  end
-
-  defp assert_compiles(meta) do
-    assert [_ | _] = Mutare.Test.Compile.string(meta)
   end
 end

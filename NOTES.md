@@ -7752,8 +7752,11 @@ buys less than the duplication costs:
     `@branch_forms`, special-case `:=`) and differ only in what each accumulates. A generic
     `spine_walk(node, acc, handlers)` would collapse the skeleton — but these walks are subtle (the
     binding-escape analysis is correctness-critical and the tests lean on surviving-equivalent
-    reasoning, so a generalisation mistake wouldn't obviously fail). Pin each with property tests
-    *before* attempting it; until then, the explicit walks are safer than one clever one.
+    reasoning, so a generalisation mistake wouldn't obviously fail). The pins now exist —
+    `conditions_property_test.exs` checks each walk against a reference model and the hoist
+    rewrite against *evaluation* (value, bindings, effect order) over generated conditions
+    (`Mutare.Test.ConditionGen`), for which the walks are `@doc false` public — so the
+    generalisation is unblocked, though still not attempted; until it is, the explicit walks stay.
 
 The other two items from that pass are documented where they live: the `Uses` env-mirror **seqlock
 invariant** in `Mutare.Transform.Uses.EnvMirror`'s module comment (the home the extraction gave it),
@@ -10147,3 +10150,50 @@ again at the next.
 **Cost.** One prewalk of the analyzed body per `def` clause and per `fn` (a nested `fn` is
 re-walked by each enclosing level), where lockstep touched only the tail spine. Small beside
 offering every node to every mutator.
+
+### Test suite: async-safe compile helpers and the sync split `[done]`
+
+An audit of the suite found four kinds of drift worth fixing at once; the decisions that are not
+obvious from the code:
+
+- **Two site types, on purpose.** `Mutare.transform_string/2` (and everything in the shipped
+  `Mutare.Test`) returns public `%Mutare.MutationSite{}` DTOs, while
+  `Transform.transform_string_with_sites/2` returns the internal `%Mutare.Site{}` — the one with
+  `kind`/`placement` and the one `Site.describe/1` accepts. The suite's family tests assert on
+  placement, which is core's business, not an author's, so they cannot route through the shipped
+  helper. Hence `Mutare.Test.Metamutant.family_sites/4` (test-side, internal sites of one family);
+  wrappers that only read the diff use the shipped `diffs`/`diffs_for`. A public
+  `Mutare.Test.sites_for/4` was written and dropped: a suite refactor is no reason to grow the
+  published API, and the diff-level helpers already cover what an author needs.
+- **`Poison.ids/2`'s contract is the compiler's own stderr text.** The import-resolution poison
+  tests hand it exactly that, so they cannot use `Code.with_diagnostics` (which is what
+  `Mutare.Test.Compile` and every `Metamutant` assertion use — per-process, `async`-safe). They
+  keep a real `:stderr` capture (`Metamutant.compile_error_output/3`, the one helper that touches
+  the global device) and live in `transform_resolution_poison_test.exs`, `async: false`, so the
+  other ~1800 lines of resolution tests run async. Every other `capture_io(:stderr, fn ->
+  Code.compile_string(…) end)` in the suite was a warning-swallow and became a `Compile` call.
+- **`*_runner_test.exs` is the convention, systematically.** One `:runner` test inside an
+  otherwise pure module forces the whole module sync; every `Mutare.run/2`-driving test now
+  lives in a `*_runner_test.exs` (`poison_runner`, `baseline_runner`, `ignore_runner` joined
+  `case_runner`, `rescue_runner`, `namespace_runner`). `Report.Live` is an unnamed `GenServer`
+  and sandboxes are per-test temp dirs, so runner modules *could* run concurrently; they stay
+  sync for CPU headroom (180 s timeouts), which is also why they are out of the fast loop.
+- **What must stay `async: false`, and what doesn't help.** Selector flips (`:persistent_term`),
+  the global `:stderr`/`Mix.shell`/`Mix.env`/cwd, the property soaks' shared `Prop` fixture
+  purge, and the named `:mutare_cov_*` ETS tables. Measured before/after on the fast loop:
+  82.8 s (25.5 s async / 57.2 s sync) → 62.2 s (28.3 / 33.9). The remaining sync time *is* the
+  runtime-flip tests (the rescue/receive emit files' "every mutant matches its source patch"
+  loops are 2–5 s each), so moving flips into `*_runtime_test.exs` files would shorten nothing —
+  the audit's suggestion to do so was wrong on that point.
+- **Rendered-shape pins go through one place.** `Metamutant.lifted_pattern/3` and
+  `lifted_name/4` derive from `LiftedEmit.base_name/4`, and `selector_tuple/0` is the one
+  spelling of the in-place selector head, so a change to either composition moves every
+  assertion. Literal pins remain only where the *salting* itself is under test (`names_test`,
+  the `__mutare_0_` cases in `lift_test`).
+- **Property pins added** (`:property`-tagged): the Conditions walks (above, under
+  "Refactor candidates") and `runtime_id_property_test.exs` — for any subset of a file's ids,
+  `:skip_ids` keeps every site (a skipped one `poisoned: true`) and `next_id`, and removes exactly
+  those ids from the metamutant's manifest; a `:start_id` offset shifts report ids and nothing
+  else, skip set included. Neither is a new fact (`Mutare.Transform` and NOTES "Stable per-file
+  runtime identities" state both); they are now checked over generated modules rather than by
+  example only.

@@ -7,6 +7,7 @@ defmodule Mutare.LiftTest do
   """
   # persistent_term is global; the fixture is compiled once for all tests.
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   import ExUnit.CaptureLog
 
@@ -109,7 +110,7 @@ defmodule Mutare.LiftTest do
       {meta, _, _} = Mutare.Transform.transform_string_with_sites(@source)
 
       assert meta =~ "def classify(mutare_arg1) do"
-      assert meta =~ ~r/defp __mutare_classify_1_g\d+\(/
+      assert meta =~ ~r/defp #{lifted_pattern(:classify, 1)}\(/
       assert meta =~ ~r/when :erlang\.andalso\(:erlang\."=:="\(mutare_active, \d+\),/
 
       # Per function (each 2 clauses, clause 1 guarded): 2 guard swaps + 2 clause
@@ -128,7 +129,7 @@ defmodule Mutare.LiftTest do
         )
 
       assert meta =~ "def g(mutare_arg1) do"
-      assert meta =~ ~r/defp __mutare_g_1_g\d+\(mutare_active,/
+      assert meta =~ ~r/defp #{lifted_pattern(:g, 1)}\(mutare_active,/
       # two clauses → two clause-drop mutants, no guard mutants
       assert Enum.count(sites, &(&1.mutator == :clause_drop)) == 2
       assert {:ok, _} = Code.string_to_quoted(meta)
@@ -194,7 +195,7 @@ defmodule Mutare.LiftTest do
       assert meta =~
                ~r/defp __mutare_0_classify_1_g1\(mutare_active, n\)\s+when :erlang\.andalso\(:erlang\."=:="\(mutare_active, \d+\),/
 
-      refute meta =~ ~r/defp __mutare_classify_1_g1\(/
+      refute meta =~ ~r/defp #{lifted_name(:classify, 1, 1)}\(/
 
       # The real proof: it compiles. A fixed prefix risks an "already defined" clash.
       assert [{Mutare.PrefixCollisionFixture, _}] = Mutare.Test.Compile.string(meta)
@@ -379,7 +380,7 @@ defmodule Mutare.LiftTest do
           Mutare.Transform.transform_string_with_sites(source, file: "as.ex", mutators: @probe)
         end)
 
-      assert meta =~ ~r/defp __mutare_list_2_g\d+/
+      assert meta =~ ~r/defp #{lifted_pattern(:list, 2)}/
       assert Enum.any?(sites, &(&1.kind == :lifted))
       refute log =~ "augmented by compile-time metaprogramming"
       assert [{Mutare.ArityScopedMetaFixture, _}] = Mutare.Test.Compile.string(meta)
@@ -495,7 +496,7 @@ defmodule Mutare.LiftTest do
           Mutare.Transform.transform_string_with_sites(source, file: "ub.ex", mutators: @probe)
         end)
 
-      assert meta =~ ~r/defp __mutare_rank_2_g\d+/
+      assert meta =~ ~r/defp #{lifted_pattern(:rank, 2)}/
       assert Enum.any?(sites, &(&1.kind == :lifted))
       refute log =~ "augmented by compile-time metaprogramming"
       refute log =~ "defdelegate"
@@ -534,7 +535,7 @@ defmodule Mutare.LiftTest do
           Mutare.Transform.transform_string_with_sites(source, file: "mb.ex", mutators: @probe)
         end)
 
-      assert meta =~ ~r/defp __mutare_code_1_g\d+/
+      assert meta =~ ~r/defp #{lifted_pattern(:code, 1)}/
       assert Enum.any?(sites, &(&1.kind == :lifted))
       refute log =~ "augmented by compile-time metaprogramming"
       assert [{Mutare.MacroBodyLiftFixture, _}] = Mutare.Test.Compile.string(meta)
@@ -1094,7 +1095,7 @@ defmodule Mutare.LiftTest do
         )
 
       # The guard is lifted (it now gets guard/clause mutants it never had before)...
-      assert defaulted =~ "__mutare_h_2_g1"
+      assert defaulted =~ lifted_name(:h, 2, 1)
       assert Enum.any?(sites, &(&1.kind == :lifted))
 
       # ...the public dispatcher keeps the `\\` default (preserving the multi-arity
@@ -1102,8 +1103,8 @@ defmodule Mutare.LiftTest do
       assert defaulted =~ ~r/def h\(mutare_arg1, mutare_arg2 \\\\ /
 
       # ...and the lifted base function takes the full arity with `\\` stripped.
-      assert defaulted =~ ~r/defp __mutare_h_2_g1\(mutare_active, a, b\)/
-      refute defaulted =~ ~r/defp __mutare_h_2_g1\([^)]*\\\\/
+      assert defaulted =~ ~r/defp #{lifted_name(:h, 2, 1)}\(mutare_active, a, b\)/
+      refute defaulted =~ ~r/defp #{lifted_name(:h, 2, 1)}\([^)]*\\\\/
 
       assert [{M, _}] = Mutare.Test.Compile.string(defaulted)
     end

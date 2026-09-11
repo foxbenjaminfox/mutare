@@ -3,6 +3,7 @@ defmodule Mutare.TransformCaptureTest do
   # that match a written call match the capture, via re-capture (rename/removal). Split
   # from transform_test.exs. `async: false` — a runtime test flips the global selector.
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.Site
 
@@ -163,7 +164,7 @@ defmodule Mutare.TransformCaptureTest do
       assert meta =~ "import Elixir.Enum, only: [reject: 2]"
 
       stderr =
-        assert_compile_error(
+        compile_error_output(
           meta,
           ["reject/2", "Enum", "HiddenCaptureRejectReplacement"],
           "lib/hidden_capture_reject_replacement.ex"
@@ -466,19 +467,5 @@ defmodule Mutare.TransformCaptureTest do
       # placeholder's `1` contributes nothing. Were it mutated too we would see four sites.
       assert with_literal |> Enum.map(& &1.mutated_code) |> Enum.sort() == ["0", "2"]
     end
-  end
-
-  defp assert_compiles(meta) do
-    assert [_ | _] = Mutare.Test.Compile.string(meta)
-  end
-
-  defp assert_compile_error(meta, message, file) do
-    stderr =
-      ExUnit.CaptureIO.capture_io(:stderr, fn ->
-        assert_raise CompileError, fn -> Code.compile_string(meta, file) end
-      end)
-
-    for m <- List.wrap(message), do: assert(stderr =~ m)
-    stderr
   end
 end

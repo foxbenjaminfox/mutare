@@ -5,6 +5,7 @@ defmodule Mutare.BitwiseTest do
   sibling of Arithmetic. In place in a body, lifted in a guard. On by default.
   """
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.{Selector, Site}
 
@@ -13,10 +14,7 @@ defmodule Mutare.BitwiseTest do
   # Isolate the family: with only Bitwise enabled, every site is a bitwise mutation.
   @only [Mutare.Mutators.Bitwise]
 
-  defp sites(source) do
-    {_meta, sites, _} = Mutare.Transform.transform_string_with_sites(source, mutators: @only)
-    Enum.filter(sites, &(&1.mutator == :bitwise))
-  end
+  defp sites(source), do: family_sites(source, @only, :bitwise)
 
   # Bitwise sites for a one-line body `def f(a, b), do: <expr>`, with `Bitwise` imported
   # (needed for the operator / bare-function forms to resolve and to compile).

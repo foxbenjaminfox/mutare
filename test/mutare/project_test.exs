@@ -1,5 +1,5 @@
 defmodule Mutare.ProjectTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Mutare.Project
   alias Mutare.Test.Umbrella

@@ -6,6 +6,8 @@ defmodule Mutare.ConventionAtomTest do
   so unit calls pass a context. On by default.
   """
   use ExUnit.Case, async: true
+  import Mutare.Test
+  import Mutare.Test.Metamutant
 
   alias Mutare.Mutators.{AtomLiteral, ConventionAtom}
 
@@ -19,15 +21,13 @@ defmodule Mutare.ConventionAtomTest do
     do: ConventionAtom.mutate(parse(source), %{opts: opts})
 
   # convention sites for a one-line body `def f(a, b), do: <expr>`, isolated to this family.
-  defp body_sites(expr) do
-    {_meta, sites, _} =
-      Mutare.Transform.transform_string_with_sites(
+  defp body_sites(expr),
+    do:
+      family_sites(
         "defmodule T do\n  def f(a, b), do: #{expr}\nend\n",
-        mutators: [ConventionAtom]
+        [ConventionAtom],
+        :convention
       )
-
-    Enum.filter(sites, &(&1.mutator == :convention))
-  end
 
   defp mutated_codes(expr), do: expr |> body_sites() |> Enum.map(& &1.mutated_code)
 
@@ -106,12 +106,8 @@ defmodule Mutare.ConventionAtomTest do
     # The mutated node lives in a head/clause pattern; the convention swap rides the existing
     # literal machinery (lifting for a def head, tuple-the-scrutinee for a `case` clause).
     defp pattern_sites(src) do
-      {_m, sites, _} =
-        Mutare.Transform.transform_string_with_sites(src, mutators: [ConventionAtom])
-
-      sites
-      |> Enum.filter(&(&1.mutator == :convention))
-      |> Enum.map(&{&1.kind, &1.original_code, &1.mutated_code})
+      for s <- family_sites(src, [ConventionAtom], :convention),
+          do: {s.kind, s.original_code, s.mutated_code}
     end
 
     test "a def head pattern literal is swapped by lifting" do
@@ -132,13 +128,9 @@ defmodule Mutare.ConventionAtomTest do
     # The atom sits inside a list so it is a plain value position — a bare `:ok` body would make
     # `f/0` unit-returning, and a unit tail is never offered at all (below).
     defp both_codes(expr) do
-      {_meta, sites, _} =
-        Mutare.Transform.transform_string_with_sites(
-          "defmodule T do\n  def f, do: [#{expr}]\nend\n",
-          mutators: [ConventionAtom, AtomLiteral]
-        )
-
-      Enum.map(sites, &{&1.mutator, &1.mutated_code})
+      for {mutator, _original, mutated} <-
+            diffs("defmodule T do\n  def f, do: [#{expr}]\nend\n", [ConventionAtom, AtomLiteral]),
+          do: {mutator, mutated}
     end
 
     test ":ok yields the convention sibling, not the sentinel" do

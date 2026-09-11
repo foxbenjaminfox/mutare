@@ -98,7 +98,7 @@ defmodule Mutare.RuntimeIdTest do
 
       assert site.id == 30
       assert site.runtime_id == {file, 1}
-      Code.compile_string(meta)
+      Mutare.Test.Compile.string(meta)
 
       on_exit(fn ->
         :code.purge(module)
@@ -156,7 +156,7 @@ defmodule Mutare.RuntimeIdTest do
     end)
 
     {standalone, sites, _} = Transform.transform_string_with_sites(src, opts)
-    Code.compile_string(standalone)
+    Mutare.Test.Compile.string(standalone)
     baseline = observe(module)
 
     expected =
@@ -171,7 +171,7 @@ defmodule Mutare.RuntimeIdTest do
     {namespaced, sites, _} =
       Transform.transform_string_with_sites(src, [runtime_namespace: "lib/execution.ex"] ++ opts)
 
-    Code.compile_string(namespaced)
+    Mutare.Test.Compile.string(namespaced)
 
     for site <- sites do
       Selector.put(RuntimeId.of(site))

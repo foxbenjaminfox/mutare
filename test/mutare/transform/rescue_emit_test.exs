@@ -1,5 +1,6 @@
 defmodule Mutare.Transform.RescueEmitTest do
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.Coverage.Recorder
   alias Mutare.{Manifest, Selector, Transform}
@@ -284,7 +285,7 @@ defmodule Mutare.Transform.RescueEmitTest do
         "#{inspect(CoverageSink)}.hit("
       )
 
-    compile(module, observed)
+    compile_purging(module, observed)
     Process.put(:rescue_observer, self())
     :persistent_term.put(Recorder.track_key(), true)
     ids = Enum.map(sites, & &1.id)
@@ -452,7 +453,7 @@ defmodule Mutare.Transform.RescueEmitTest do
           global: false
         )
 
-      compile(reference, patched)
+      compile_purging(reference, patched)
       Selector.put(if site, do: site.id, else: 0)
 
       for args <- inputs do
@@ -469,17 +470,8 @@ defmodule Mutare.Transform.RescueEmitTest do
     module = fresh_module(name)
     source = "defmodule #{inspect(module)} do\n#{body}\nend"
     {meta, sites, _} = Transform.transform_string_with_sites(source, mutators: mutators)
-    compile(module, meta)
+    compile_purging(module, meta)
     {module, sites, meta, source}
-  end
-
-  defp compile(module, source) do
-    ExUnit.CaptureIO.capture_io(:stderr, fn -> Code.compile_string(source) end)
-
-    on_exit(fn ->
-      :code.purge(module)
-      :code.delete(module)
-    end)
   end
 
   defp event_count(source, value) do

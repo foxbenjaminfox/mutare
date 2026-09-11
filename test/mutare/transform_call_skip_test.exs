@@ -17,6 +17,7 @@ defmodule Mutare.TransformCallSkipTest do
   # routing keys on the resolved `{module, fun, arity}`, never on macro-ness. See NOTES "Call
   # routing: `:skip`, `:raw`, `:interior`, keyed refinements".
   use ExUnit.Case, async: true
+  import Mutare.Test.Metamutant
 
   # A mutator that rewrites the *whole* `Mixpanel.track/3` call node — the head, not an argument.
   # Under `:raw` the node is still offered, so this fires; under `:skip` it must not.
@@ -1211,8 +1212,4 @@ defmodule Mutare.TransformCallSkipTest do
         mutators: mutators,
         call_routes: routes
       )
-
-  defp assert_compiles(meta) do
-    assert [_ | _] = Mutare.Test.Compile.string(meta)
-  end
 end

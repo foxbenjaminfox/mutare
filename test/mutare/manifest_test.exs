@@ -1,5 +1,6 @@
 defmodule Mutare.ManifestTest do
   use ExUnit.Case, async: true
+  import Mutare.Test.Metamutant
 
   alias Mutare.{Manifest, Selector}
 
@@ -278,7 +279,7 @@ defmodule Mutare.ManifestTest do
       manifest = Manifest.from_source(meta)
 
       clause_ids = sites |> Enum.map(& &1.id) |> Enum.sort()
-      case_line = line_of(meta, "case (case {mutare_active, n}")
+      case_line = line_of(meta, selector_tuple() <> " n}")
 
       assert Enum.sort(Manifest.ids_at_line(manifest, case_line)) == clause_ids
     end

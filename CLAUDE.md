@@ -38,12 +38,17 @@ mix mutare examples/auth              # run the tool against a bundled demo proj
 mix run script.exs                    # ad-hoc exploration in the lib context (uses MIX_ENV=dev)
 ```
 
-`@moduletag :runner` tests (`runner_test`, `coverage_test`, `mix_task_test`, `timeout_test`,
-`poison_test`, `ignore_test`, …) shell out to real `mix test` subprocesses; `@moduletag :property`
+`:runner`-tagged tests (`runner_test`, `coverage_test`, `mix_task_test`, `timeout_test`, and every
+`*_runner_test` — `poison_runner_test`, `ignore_runner_test`, …) shell out to real `mix test`
+subprocesses, and live in their own files so the pure tests beside them can stay `async: true`
+(NOTES "Test suite: async-safe compile helpers and the sync split"); `@moduletag :property`
 tests are PropCheck soaks that render/compile/run streams of generated modules. Both are slow —
 exclude them while iterating, run the full suite before committing. `mix run` uses `:dev`, where
 `test/support/*.ex` fixtures (the custom-mutator examples) are **not** compiled — they exist only
-under `MIX_ENV=test`.
+under `MIX_ENV=test`. Test-side helpers live there too: `Mutare.Test.Compile` (warning-swallowing,
+lock-serialized compile — never `capture_io(:stderr, …)` around a compile), `Mutare.Test.Metamutant`
+(assertions and pins over emitted code, plus `family_sites/4` for one family's internal `%Site{}`s),
+and the shipped `Mutare.Test` for diff-level checks; each says when it is safe under `async: true`.
 
 ## Architecture
 

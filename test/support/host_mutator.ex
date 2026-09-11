@@ -95,7 +95,7 @@ defmodule Mutare.Test.HostMutator do
   alias Mutare.Mutator.MacroHost.Target
   alias Mutare.Mutator.Mutation
 
-  @comparisons [:>, :<, :>=, :<=]
+  import Mutare.Test.HostHelpers
 
   @impl Mutare.Mutator
   def name, do: :host_filter
@@ -150,11 +150,6 @@ defmodule Mutare.Test.HostMutator do
     ArgumentRoutes.from_visible(call, routes)
   end
 
-  defp keyword_list?(list) when is_list(list) and list != [],
-    do: Enum.all?(list, &match?({_k, _v}, &1))
-
-  defp keyword_list?(_node), do: false
-
   # Per-pair value treatments for `set`'s keyword arg: a string value is mutated and delivered
   # `:interpolated` (the DSL needs `^`); a nested keyword list recurses as `{:keyword, …}` (so a value
   # that is itself `field: value` pairs routes per-pair too — the `from(S, where: [x: v])` shape);
@@ -205,7 +200,7 @@ defmodule Mutare.Test.HostMutator do
   # `%Mutare.Mutator.Mutation{}` form — a `note` advisory the report surfaces *and* a `boundary`
   # variant label, both recorded on the Site), while the **reversal** is a bare node (no metadata)
   # — so one target exercises both forms.
-  defp flips({op, meta, [left, right]}) when op in @comparisons do
+  defp flips({op, meta, [left, right]}) when is_comparison(op) do
     [boundary, reversal] = flip_targets(op)
 
     [
@@ -226,9 +221,6 @@ defmodule Mutare.Test.HostMutator do
   defp flip_targets(:<), do: [:<=, :>]
   defp flip_targets(:>=), do: [:>, :<=]
   defp flip_targets(:<=), do: [:<, :>=]
-
-  defp comparison?({op, _meta, [_left, _right]}) when op in @comparisons, do: true
-  defp comparison?(_node), do: false
 end
 
 defmodule Mutare.Test.SubcontractHostMutator do
@@ -254,7 +246,7 @@ defmodule Mutare.Test.SubcontractHostMutator do
   alias Mutare.Mutator.MacroHost.Target
   alias Mutare.Mutator.Mutation
 
-  @comparisons [:>, :<, :>=, :<=]
+  import Mutare.Test.HostHelpers
 
   @impl Mutare.Mutator
   def name, do: :sub_host
@@ -277,7 +269,7 @@ defmodule Mutare.Test.SubcontractHostMutator do
     index = length(args) - 1
 
     case Enum.at(args, index) do
-      {op, meta, [left, right]} = condition when op in @comparisons ->
+      {op, meta, [left, right]} = condition when is_comparison(op) ->
         mutants = [
           own_reversal(op, meta, left, right) | island_mutants(op, meta, left, right, context)
         ]
@@ -306,14 +298,6 @@ defmodule Mutare.Test.SubcontractHostMutator do
       Mutation.new({op, meta, [left, mutated]}, producer: spec, note: note, variant: variant)
     end
   end
-
-  defp reverse(:>), do: :<
-  defp reverse(:<), do: :>
-  defp reverse(:>=), do: :<=
-  defp reverse(:<=), do: :>=
-
-  defp comparison?({op, _meta, [_left, _right]}) when op in @comparisons, do: true
-  defp comparison?(_node), do: false
 end
 
 defmodule Mutare.Test.HostNodeMutator do
@@ -338,7 +322,7 @@ defmodule Mutare.Test.HostNodeMutator do
   alias Mutare.Mutator.MacroHost.Target
   alias Mutare.Mutator.Mutation
 
-  @comparisons [:>, :<, :>=, :<=]
+  import Mutare.Test.HostHelpers
 
   @impl Mutare.Mutator
   def name, do: :host_node
@@ -362,7 +346,7 @@ defmodule Mutare.Test.HostNodeMutator do
   # The node-level half: a whole-call `dyn` rewrite (its own comparison reversal) plus the
   # sub-contract of the comparison's right operand over `context.mutators`.
   @impl Mutare.Mutator
-  def mutate({:dyn, meta, [{op, cmeta, [left, right]}]}, context) when op in @comparisons do
+  def mutate({:dyn, meta, [{op, cmeta, [left, right]}]}, context) when is_comparison(op) do
     reversal = {:dyn, meta, [{reverse(op), cmeta, [left, right]}]}
 
     islands =
@@ -397,7 +381,7 @@ defmodule Mutare.Test.HostNodeMutator do
     index = length(args) - 1
 
     case Enum.at(args, index) do
-      {op, meta, [left, right]} = condition when op in @comparisons ->
+      {op, meta, [left, right]} = condition when is_comparison(op) ->
         islands =
           for {spec, mutated, note, variant} <-
                 Mutare.Analyze.expression_mutations(right, context.mutators, context) do
@@ -420,14 +404,6 @@ defmodule Mutare.Test.HostNodeMutator do
   end
 
   def host(_call, _context), do: []
-
-  defp reverse(:>), do: :<
-  defp reverse(:<), do: :>
-  defp reverse(:>=), do: :<=
-  defp reverse(:<=), do: :>=
-
-  defp comparison?({op, _meta, [_left, _right]}) when op in @comparisons, do: true
-  defp comparison?(_node), do: false
 end
 
 defmodule Mutare.Test.SecondHostMutator do
@@ -479,7 +455,7 @@ defmodule Mutare.Test.DerivedVariantHostMutator do
   alias Mutare.CallRouting.Call
   alias Mutare.Mutator.MacroHost.Target
 
-  @comparisons [:>, :<, :>=, :<=]
+  import Mutare.Test.HostHelpers
 
   @impl Mutare.Mutator
   def name, do: :derived_host
@@ -489,7 +465,7 @@ defmodule Mutare.Test.DerivedVariantHostMutator do
 
   @impl Mutare.Mutator
   def variant({op, _meta, [_left, _right]}, {mutated, _mmeta, [_mleft, _mright]})
-      when op in @comparisons do
+      when is_comparison(op) do
     if mutated == reverse(op), do: "reverse"
   end
 
@@ -503,7 +479,7 @@ defmodule Mutare.Test.DerivedVariantHostMutator do
     index = length(args) - 1
 
     case Enum.at(args, index) do
-      {op, meta, [left, right]} = condition when op in @comparisons ->
+      {op, meta, [left, right]} = condition when is_comparison(op) ->
         splice = fn {form, smeta, sargs}, case_node ->
           {form, smeta, List.replace_at(sargs, index, case_node)}
         end
@@ -516,11 +492,6 @@ defmodule Mutare.Test.DerivedVariantHostMutator do
   end
 
   def host(_call, _context), do: []
-
-  defp reverse(:>), do: :<
-  defp reverse(:<), do: :>
-  defp reverse(:>=), do: :<=
-  defp reverse(:<=), do: :>=
 end
 
 defmodule Mutare.Test.CustomRangeHostMutator do
@@ -676,7 +647,7 @@ defmodule Mutare.Test.NoDeliveryHostMutator do
   @behaviour Mutare.Mutator
   @behaviour Mutare.CallRouting
 
-  @comparisons [:>, :<, :>=, :<=]
+  import Mutare.Test.HostHelpers
 
   @impl Mutare.Mutator
   def name, do: :no_delivery_host
@@ -693,9 +664,6 @@ defmodule Mutare.Test.NoDeliveryHostMutator do
     routes = Enum.map(args, fn arg -> if comparison?(arg), do: :hosted, else: :expression end)
     Mutare.CallRouting.ArgumentRoutes.from_visible(call, routes)
   end
-
-  defp comparison?({op, _meta, [_left, _right]}) when op in @comparisons, do: true
-  defp comparison?(_node), do: false
 end
 
 defmodule Mutare.Test.IncompleteHostMutator do
@@ -731,6 +699,8 @@ defmodule Mutare.Test.KeywordHostedMutator do
   @behaviour Mutare.Mutator
   @behaviour Mutare.CallRouting
   @behaviour Mutare.Mutator.MacroHost
+
+  import Mutare.Test.HostHelpers
 
   @impl Mutare.Mutator
   def name, do: :keyword_hosted
@@ -772,11 +742,6 @@ defmodule Mutare.Test.KeywordHostedMutator do
     do: if(keyword_list?(list), do: {:keyword, value_treatments(list)}, else: :hosted)
 
   defp value_treatment(_v), do: :hosted
-
-  defp keyword_list?(list) when is_list(list) and list != [],
-    do: Enum.all?(list, &match?({_k, _v}, &1))
-
-  defp keyword_list?(_node), do: false
 
   # Locate the fragments by reading the routed treatments *back* rather than re-classifying:
   # `Mutare.Calls.routed_treatments/1` on the host's own call node returns what

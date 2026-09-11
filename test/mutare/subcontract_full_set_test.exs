@@ -12,6 +12,7 @@ defmodule Mutare.SubcontractFullSetTest do
   """
   # persistent_term is global; the fixture is compiled once for all tests.
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.Selector
 
@@ -37,9 +38,7 @@ defmodule Mutare.SubcontractFullSetTest do
         mutators: @mutators
       )
 
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      [{_module, _binary}] = Code.compile_string(metamutant)
-    end)
+    assert_compiles(metamutant)
 
     %{sites: sites, meta: metamutant}
   end
@@ -145,9 +144,7 @@ defmodule Mutare.SubcontractFullSetTest do
           mutators: @mutators
         )
 
-      ExUnit.CaptureIO.capture_io(:stderr, fn ->
-        [{_module, _binary} | _] = Code.compile_string(metamutant)
-      end)
+      [{_module, _binary} | _] = Mutare.Test.Compile.string(metamutant)
 
       # The inner filter's own comparison reversal — hosted semantics inside the island,
       # recorded under the host's family.

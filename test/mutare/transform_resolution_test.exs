@@ -2,9 +2,10 @@ defmodule Mutare.TransformResolutionTest do
   # Call resolution & delivery: alias/import/Erlang-atom resolution and the pipe-aware,
   # arity-changing call families (CollectionArity, ModeSwap, Numeric, String*, CallRemoval,
   # DefaultDrop, MapKeyword, MapSet) routed through it. Split from transform_test.exs.
-  # `async: false` — the import-resolution tests capture the global `:stderr` device
-  # (`assert_compile_error`) to assert on compile diagnostics.
-  use ExUnit.Case, async: false
+  # The poison-attribution tests (which capture the global `:stderr`) live in
+  # transform_resolution_poison_test.exs; everything here is pure.
+  use ExUnit.Case, async: true
+  import Mutare.Test.Metamutant
 
   alias Mutare.Site
 
@@ -809,167 +810,6 @@ defmodule Mutare.TransformResolutionTest do
       pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
       assert {"filter(xs, fun)", "Elixir.Enum.reject(xs, fun)"} in pairs
       assert_compiles(meta)
-    end
-
-    test "a hidden except-plus-replacement import poisons instead of silently mis-resolving" do
-      {meta, sites, _} =
-        Mutare.Transform.transform_string_with_sites(
-          """
-          defmodule HiddenImportReplacement do
-            def filter(xs, fun), do: Enum.map(xs, fun)
-
-            defmacro __using__(_) do
-              quote do
-                import Enum, except: [filter: 2]
-                import HiddenImportReplacement, only: [filter: 2]
-              end
-            end
-          end
-
-          defmodule ImpHiddenReplacement do
-            import Enum
-            use HiddenImportReplacement
-
-            def f(xs, fun), do: filter(xs, fun)
-          end
-          """,
-          mutators: [Mutare.Mutators.Collection]
-        )
-
-      assert [%{mutator: :collection, original_code: "filter(xs, fun)"} = site] = sites
-      assert meta =~ "import Elixir.Enum, only: [filter: 2]"
-
-      stderr =
-        assert_compile_error(
-          meta,
-          # Elixir <1.20: "filter/2 imported from both Enum and HiddenImportReplacement";
-          # Elixir 1.20+: "conflicting filter/2 import from modules Enum and HiddenImportReplacement".
-          ["filter/2", "Enum and HiddenImportReplacement"],
-          "lib/hidden_import_replacement.ex"
-        )
-
-      assert Mutare.Poison.ids(stderr, %{"lib/hidden_import_replacement.ex" => meta}) ==
-               MapSet.new([site.id])
-    end
-
-    test "the import witness also protects lifted guard mutants" do
-      {meta, sites, _} =
-        Mutare.Transform.transform_string_with_sites(
-          """
-          defmodule HiddenIntegerReplacement do
-            defmacro is_even(n), do: quote(do: is_integer(unquote(n)))
-
-            defmacro __using__(_) do
-              quote do
-                import Integer, except: [is_even: 1]
-                import HiddenIntegerReplacement, only: [is_even: 1]
-              end
-            end
-          end
-
-          defmodule ImpHiddenGuardReplacement do
-            import Integer
-            use HiddenIntegerReplacement
-
-            def f(n) when is_even(n), do: true
-            def f(_), do: false
-          end
-          """,
-          mutators: [Mutare.Mutators.IntegerCall]
-        )
-
-      assert [%{kind: :lifted, mutator: :integer_call, original_code: "is_even(n)"} = site] =
-               Enum.filter(sites, &(&1.mutator == :integer_call))
-
-      assert meta =~ "import Elixir.Integer, only: [is_even: 1]"
-
-      stderr =
-        assert_compile_error(
-          meta,
-          # Elixir <1.20: "is_even/1 imported from both Integer and HiddenIntegerReplacement";
-          # Elixir 1.20+: "conflicting is_even/1 import from modules Integer and HiddenIntegerReplacement".
-          ["is_even/1", "Integer and HiddenIntegerReplacement"],
-          "lib/hidden_integer_replacement.ex"
-        )
-
-      assert Mutare.Poison.ids(stderr, %{"lib/hidden_integer_replacement.ex" => meta}) ==
-               MapSet.new([site.id])
-    end
-
-    for construct <- [:fn, :receive],
-        scope <- [:bound, :unbound],
-        hidden <- [:is_even, :is_odd] do
-      expression =
-        case construct do
-          :fn -> "fn n when is_even(n) -> true; _ -> false end"
-          :receive -> "receive do n when is_even(n) -> true after 0 -> false end"
-        end
-
-      definition =
-        case scope do
-          :bound -> "def f, do: (#{expression})"
-          :unbound -> "def f do raise \"enter rescue\" rescue _ -> #{expression} end"
-        end
-
-      test "#{construct} guard witnesses reject hidden #{hidden} imports in #{scope} scopes" do
-        hidden = unquote(hidden)
-        suffix = unquote("#{construct}_#{scope}_#{hidden}")
-        provider = Module.concat(__MODULE__, "HiddenInteger_#{suffix}")
-        target = Module.concat(__MODULE__, "ImportedGuard_#{suffix}")
-
-        source = """
-        defmodule #{inspect(provider)} do
-          defmacro #{hidden}(n), do: quote(do: is_integer(unquote(n)))
-
-          defmacro __using__(_) do
-            quote do
-              import Integer, except: [#{hidden}: 1]
-              import #{inspect(provider)}, only: [#{hidden}: 1]
-            end
-          end
-        end
-
-        defmodule #{inspect(target)} do
-          import Integer
-          use #{inspect(provider)}
-          #{unquote(definition)}
-        end
-        """
-
-        on_exit(fn ->
-          for module <- [provider, target] do
-            :code.purge(module)
-            :code.delete(module)
-          end
-        end)
-
-        opts = [mutators: [Mutare.Mutators.IntegerCall]]
-        {meta, sites, next} = Mutare.Transform.transform_string_with_sites(source, opts)
-        assert [%{kind: :in_place, original_code: "is_even(n)"} = site] = sites
-
-        {recovered, _, ^next} =
-          Mutare.Transform.transform_string_with_sites(
-            source,
-            opts ++ [skip_ids: MapSet.new([site.id])]
-          )
-
-        assert_compiles(source)
-        file = "lib/hidden_integer_#{suffix}.ex"
-
-        stderr =
-          assert_compile_error(meta, ["#{hidden}/1", "Integer and #{inspect(provider)}"], file)
-
-        assert Mutare.Poison.ids(stderr, %{file => meta}) == MapSet.new([site.id])
-
-        assert_compiles(recovered)
-
-        {visible, [_site], _} =
-          source
-          |> String.replace("use #{inspect(provider)}", "")
-          |> Mutare.Transform.transform_string_with_sites(opts)
-
-        assert_compiles(visible)
-      end
     end
 
     test "a same-named local function with no import is not mutated" do
@@ -1904,50 +1744,21 @@ defmodule Mutare.TransformResolutionTest do
 
   # Transform with only CollectionArity, assert the metamutant compiles, and return
   # the `{original_code, mutated_code}` pairs of its sites (for the pipe-aware tests).
-  defp arity_sites(source) do
-    {meta, sites, _next_id} =
-      Mutare.Transform.transform_string_with_sites(source,
-        mutators: [Mutare.Mutators.CollectionArity]
-      )
-
-    assert_compiles(meta)
-    for s <- sites, s.mutator == :collection_arity, do: {s.original_code, s.mutated_code}
-  end
+  defp arity_sites(source),
+    do: compiled_diffs_for(source, [Mutare.Mutators.CollectionArity], :collection_arity)
 
   # Transform with only ModeSwap, assert the metamutant compiles, and return the
   # `{original_code, mutated_code}` pairs of its sites.
-  defp mode_sites(source) do
-    {meta, sites, _next_id} =
-      Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.ModeSwap])
-
-    assert_compiles(meta)
-    for s <- sites, s.mutator == :mode_swap, do: {s.original_code, s.mutated_code}
-  end
+  defp mode_sites(source), do: compiled_diffs_for(source, [Mutare.Mutators.ModeSwap], :mode_swap)
 
   # Transform with only Numeric, assert the metamutant compiles, and return the
   # `{original_code, mutated_code}` pairs of its sites.
-  defp numeric_sites(source) do
-    {meta, sites, _next_id} =
-      Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.Numeric])
+  defp numeric_sites(source), do: compiled_diffs_for(source, [Mutare.Mutators.Numeric], :numeric)
 
+  # `diffs_for/3` over a metamutant that must also compile — one transform, both checks.
+  defp compiled_diffs_for(source, mutators, name) do
+    %{metamutant: meta, mutants: sites} = Mutare.transform_string(source, mutators: mutators)
     assert_compiles(meta)
-    for s <- sites, s.mutator == :numeric, do: {s.original_code, s.mutated_code}
-  end
-
-  defp assert_compiles(meta) do
-    assert [_ | _] = Mutare.Test.Compile.string(meta)
-  end
-
-  # `message` is either a single substring or a list of substrings that must all
-  # be present. A list lets callers match on tokens common to multiple Elixir
-  # error-message phrasings (e.g. the import-conflict wording changed in 1.20).
-  defp assert_compile_error(meta, message, file) do
-    stderr =
-      ExUnit.CaptureIO.capture_io(:stderr, fn ->
-        assert_raise CompileError, fn -> Code.compile_string(meta, file) end
-      end)
-
-    for m <- List.wrap(message), do: assert(stderr =~ m)
-    stderr
+    for s <- sites, s.mutator == name, do: {s.original_code, s.mutated_code}
   end
 end

@@ -35,6 +35,7 @@ defmodule Mutare.PatternClauseTest do
   """
   # persistent_term is global; the fixture is compiled once for all tests.
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.{Report, Selector}
 
@@ -90,9 +91,7 @@ defmodule Mutare.PatternClauseTest do
 
     # Broadening a clause's pattern can make a later clause unreachable — a benign "cannot
     # match" warning (the metamutant compiles); captured so it doesn't clutter test output.
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      [{_module, _binary}] = Code.compile_string(metamutant)
-    end)
+    assert_compiles(metamutant)
 
     %{sites: sites, meta: metamutant}
   end

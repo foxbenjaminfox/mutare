@@ -28,6 +28,7 @@ defmodule Mutare.NegativeFloatTest do
   """
   # Compiles fixture modules and flips the global `:persistent_term` selector — serial.
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.Selector
 
@@ -91,11 +92,8 @@ defmodule Mutare.NegativeFloatTest do
       end
 
     # Compile every metamutant — the real bet is one compile, so each must build, not
-    # merely parse. (Captured: nothing should warn, but a stray warning shouldn't
-    # clutter the run.)
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      for {_key, %{meta: meta}} <- metas, do: [{_, _}] = Code.compile_string(meta)
-    end)
+    # merely parse.
+    for {_key, %{meta: meta}} <- metas, do: assert_compiles(meta)
 
     metas
   end

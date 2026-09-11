@@ -12,6 +12,7 @@ defmodule Mutare.MacroPatternTest do
   """
   # persistent_term is global; the fixture is compiled once for all tests.
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.{Report, Selector}
 
@@ -69,9 +70,7 @@ defmodule Mutare.MacroPatternTest do
 
     # `trailing/1` returns the destructure value; `repeated/1`'s `[a, a]` self-constrains.
     # Any benign warning is captured so it does not clutter test output.
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      [{_module, _binary}] = Code.compile_string(metamutant)
-    end)
+    assert_compiles(metamutant)
 
     %{sites: sites, meta: metamutant}
   end
@@ -242,8 +241,7 @@ defmodule Mutare.MacroPatternTest do
         )
 
       # Recompiled per test (the fixture is redefined) — capture the benign warning.
-      {[{mod, _}], _io} =
-        ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+      [{mod, _}] = Mutare.Test.Compile.string(meta)
 
       %{mod: mod, sites: sites}
     end
@@ -292,8 +290,7 @@ defmodule Mutare.MacroPatternTest do
           mutators: [Mutare.Mutators.PatternSwap, Mutare.Test.UnpackMutator]
         )
 
-      {[{mod, _}], _io} =
-        ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+      [{mod, _}] = Mutare.Test.Compile.string(meta)
 
       %{mod: mod, sites: sites}
     end
@@ -400,8 +397,7 @@ defmodule Mutare.MacroPatternTest do
           mutators: [Mutare.Mutators.PatternSwap, Mutare.Test.UnpackMutator]
         )
 
-      {[{mod, _}], _io} =
-        ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+      [{mod, _}] = Mutare.Test.Compile.string(meta)
 
       %{mod: mod, sites: sites}
     end
@@ -453,8 +449,7 @@ defmodule Mutare.MacroPatternTest do
           call_routes: [{Mutare.Test.QueryDSL, :unpack2, 2, [:expression, :binding_pattern]}]
         )
 
-      {[{mod, _}], _io} =
-        ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+      [{mod, _}] = Mutare.Test.Compile.string(meta)
 
       %{mod: mod, sites: sites}
     end
@@ -505,8 +500,7 @@ defmodule Mutare.MacroPatternTest do
           mutators: [Mutare.Test.UnpackMutator]
         )
 
-      {[{mod, _}], _io} =
-        ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+      [{mod, _}] = Mutare.Test.Compile.string(meta)
 
       %{mod: mod, sites: sites}
     end
@@ -554,8 +548,7 @@ defmodule Mutare.MacroPatternTest do
           mutators: [Mutare.Test.UnpackMutator]
         )
 
-      {[{mod, _}], _io} =
-        ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+      [{mod, _}] = Mutare.Test.Compile.string(meta)
 
       %{mod: mod, sites: sites}
     end

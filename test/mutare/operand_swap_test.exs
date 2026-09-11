@@ -5,6 +5,7 @@ defmodule Mutare.OperandSwapTest do
   families (Arithmetic/List). In place in a body, lifted in a guard. On by default.
   """
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.Mutators.OperandSwap
   alias Mutare.{Selector, Site}
@@ -25,15 +26,8 @@ defmodule Mutare.OperandSwapTest do
   end
 
   # operand_swap sites for a one-line function body `def f(a, b), do: <expr>`.
-  defp swap_sites(expr) do
-    {_meta, sites, _} =
-      Mutare.Transform.transform_string_with_sites(
-        "defmodule T do\n  def f(a, b), do: #{expr}\nend\n",
-        mutators: @only
-      )
-
-    Enum.filter(sites, &(&1.mutator == :operand_swap))
-  end
+  defp swap_sites(expr),
+    do: family_sites("defmodule T do\n  def f(a, b), do: #{expr}\nend\n", @only, :operand_swap)
 
   defp mutated_codes(expr), do: expr |> swap_sites() |> Enum.map(& &1.mutated_code)
 

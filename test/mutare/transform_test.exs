@@ -1,5 +1,6 @@
 defmodule Mutare.TransformTest do
   use ExUnit.Case, async: true
+  import Mutare.Test.Metamutant
 
   alias Mutare.Site
 
@@ -13,8 +14,6 @@ defmodule Mutare.TransformTest do
   # `mutare_active` variable, not the inline persistent_term read. The variable name
   # (unlike the persistent_term key) is independent of `Selector.suite_key/0`, so this
   # holds under dogfooding.
-  defp selector_tuple, do: "case (case {mutare_active,"
-
   @sample """
   defmodule Sample do
     def classify(total, threshold) do
@@ -180,7 +179,7 @@ defmodule Mutare.TransformTest do
     # Lifted into one private group that takes the active id as an extra arg, with
     # each guard mutant a single clause gated on `mutare_active === <id>` — not
     # a full per-mutant copy of the clause group.
-    assert meta =~ ~r/defp __mutare_f_1_g\d+\(mutare_active,/
+    assert meta =~ ~r/defp #{lifted_pattern(:f, 1)}\(mutare_active,/
     assert meta =~ ~r/when :erlang\.andalso\(:erlang\."=:="\(mutare_active, \d+\),/
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
@@ -801,9 +800,5 @@ defmodule Mutare.TransformTest do
 
     # The `->` left side in a `cond` is a runtime condition, not a pattern.
     assert Enum.frequencies_by(sites, & &1.original_form) == %{:> => 2}
-  end
-
-  defp assert_compiles(meta) do
-    assert [_ | _] = Mutare.Test.Compile.string(meta)
   end
 end

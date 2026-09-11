@@ -1,5 +1,6 @@
 defmodule Mutare.BehavioursTest do
   use ExUnit.Case, async: true
+  import Mutare.Test
 
   alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Spec
@@ -32,13 +33,8 @@ defmodule Mutare.BehavioursTest do
   # fixture mutator (and, by default, the full built-in set is *not* used — only the fixture,
   # to isolate its sites).
   defp behaviour_sites(source, opts \\ []) do
-    {_source, sites, _next} =
-      Transform.transform_string_with_sites(
-        source,
-        [mutators: [Mutare.Test.BehaviourMutator]] ++ opts
-      )
-
-    Enum.map(sites, & &1.mutator)
+    for {mutator, _original, _mutated} <- diffs(source, [Mutare.Test.BehaviourMutator], opts),
+        do: mutator
   end
 
   describe "gathering — Behaviours.annotate" do

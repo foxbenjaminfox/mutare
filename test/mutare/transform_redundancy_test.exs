@@ -2,6 +2,7 @@ defmodule Mutare.TransformRedundancyTest do
   # Redundant-mutant suppression: cross-mutator overlap (`Transform.Overlap`), membership
   # (`in`/`not in`) redundancy, and equivalent-sibling collapsing. Split from transform_test.exs.
   use ExUnit.Case, async: true
+  import Mutare.Test.Metamutant
 
   # The families that together exercise membership: Relational flips `in` → `not in`,
   # Logical strips a `not`, Conditional forces a boolean to true/false.
@@ -582,9 +583,5 @@ defmodule Mutare.TransformRedundancyTest do
 
     triples = for s <- sites, do: {s.mutator, s.original_code, s.mutated_code}
     {meta, triples}
-  end
-
-  defp assert_compiles(meta) do
-    assert [_ | _] = Mutare.Test.Compile.string(meta)
   end
 end

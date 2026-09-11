@@ -5,16 +5,13 @@ defmodule Mutare.GenServerTest do
   (`:reply` → `:noreply`, `:noreply` ↔ `:stop`, …). Inert in non-GenServer modules.
   """
   use ExUnit.Case, async: true
+  import Mutare.Test
 
   alias Mutare.Mutators.GenServer, as: GS
 
   # `{original_code, mutated_code}` for every `:genserver` site, isolating the family
   # (clause-drop is structural and still appears, so filter it out).
-  defp genserver_mutations(source) do
-    {_meta, sites, _next} = Mutare.Transform.transform_string_with_sites(source, mutators: [GS])
-
-    for s <- sites, s.mutator == :genserver, do: {s.original_code, s.mutated_code}
-  end
+  defp genserver_mutations(source), do: diffs_for(source, [GS], :genserver)
 
   # Wrap a body of `handle_*` clauses in a `use GenServer` module.
   defp server(body), do: "defmodule S do\n  use GenServer\n\n#{body}\nend\n"

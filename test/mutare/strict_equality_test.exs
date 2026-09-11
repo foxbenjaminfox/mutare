@@ -8,6 +8,7 @@ defmodule Mutare.StrictEqualityTest do
   block).
   """
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.Mutators.StrictEquality
   alias Mutare.{Selector, Site}
@@ -18,15 +19,8 @@ defmodule Mutare.StrictEqualityTest do
   @only [StrictEquality]
 
   # strict_equality sites for a one-line function body `def f(a, b), do: <expr>`.
-  defp relax_sites(expr) do
-    {_meta, sites, _} =
-      Mutare.Transform.transform_string_with_sites(
-        "defmodule T do\n  def f(a, b), do: #{expr}\nend\n",
-        mutators: @only
-      )
-
-    Enum.filter(sites, &(&1.mutator == :strict_equality))
-  end
+  defp relax_sites(expr),
+    do: family_sites("defmodule T do\n  def f(a, b), do: #{expr}\nend\n", @only, :strict_equality)
 
   defp mutated_codes(expr), do: expr |> relax_sites() |> Enum.map(& &1.mutated_code)
 

@@ -31,7 +31,6 @@ defmodule Mutare.TransformCorpusTest do
   # so this file must not race other tests doing the same.
   use ExUnit.Case, async: false
 
-  import ExUnit.CaptureIO, only: [with_io: 2]
   import ExUnit.CaptureLog, only: [with_log: 1]
 
   alias Mutare.Selector
@@ -481,19 +480,20 @@ defmodule Mutare.TransformCorpusTest do
   # fixture itself emits), and turning a compile failure into a readable flunk
   # rather than a raw CompileError.
   defp compile!(source, label) do
-    {result, _stderr} =
-      with_io(:stderr, fn ->
-        try do
-          {:ok, Code.compile_string(source)}
-        rescue
-          error -> {:error, Exception.message(error)}
-        end
-      end)
+    case Mutare.Test.Compile.string_result(source) do
+      {{:ok, [_ | _] = modules}, _diagnostics} ->
+        modules
 
-    case result do
-      {:ok, [_ | _] = modules} -> modules
-      {:ok, []} -> flunk("#{label} compiled to no modules")
-      {:error, message} -> flunk("#{label} failed to compile: #{message}")
+      {{:ok, []}, _diagnostics} ->
+        flunk("#{label} compiled to no modules")
+
+      {{:error, error}, diagnostics} ->
+        detail =
+          diagnostics |> Enum.filter(&(&1.severity == :error)) |> Mutare.Test.Compile.messages()
+
+        flunk(
+          "#{label} failed to compile: #{Exception.message(error)}\n#{Enum.join(detail, "\n")}"
+        )
     end
   end
 end

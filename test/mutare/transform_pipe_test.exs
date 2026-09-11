@@ -3,6 +3,7 @@ defmodule Mutare.TransformPipeTest do
   # one-shot closure on the piped value (linear, not exponential, in chain depth). Split
   # from transform_test.exs.
   use ExUnit.Case, async: true
+  import Mutare.Test.Metamutant
 
   describe "a selector cannot be a bare pipe target (|> hoisting)" do
     # `x |> case … end` *parses* but fails to compile (`Kernel.|>/2` can't pipe into
@@ -144,9 +145,5 @@ defmodule Mutare.TransformPipeTest do
       assert meta =~ "Enum.take(mutare_piped)"
       assert_compiles(meta)
     end
-  end
-
-  defp assert_compiles(meta) do
-    assert [_ | _] = Mutare.Test.Compile.string(meta)
   end
 end

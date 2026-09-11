@@ -4,6 +4,7 @@ defmodule Mutare.TransformBindingHoistTest do
   # delivered). Split from transform_test.exs. `async: false` — runtime tests flip the
   # global selector.
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.Site
 
@@ -764,9 +765,5 @@ defmodule Mutare.TransformBindingHoistTest do
 
     assert [%Site{mutator: :arithmetic, original_form: :+}] = sites
     assert {:ok, _} = Code.string_to_quoted(meta)
-  end
-
-  defp assert_compiles(meta) do
-    assert [_ | _] = Mutare.Test.Compile.string(meta)
   end
 end

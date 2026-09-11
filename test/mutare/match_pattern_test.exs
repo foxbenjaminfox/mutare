@@ -9,6 +9,7 @@ defmodule Mutare.MatchPatternTest do
   """
   # persistent_term is global; the fixture is compiled once for all tests.
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.{Report, Selector}
 
@@ -84,9 +85,7 @@ defmodule Mutare.MatchPatternTest do
     # value); `underscored/1`'s re-exported `_keep` is read in the rewrite's inner-case
     # returns ("underscored variable used after being set"); plus any "cannot match"
     # broadening warning. All benign and captured so they do not clutter test output.
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      [{_module, _binary}] = Code.compile_string(metamutant)
-    end)
+    assert_compiles(metamutant)
 
     %{sites: sites, meta: metamutant}
   end
@@ -126,8 +125,7 @@ defmodule Mutare.MatchPatternTest do
 
     {meta, _sites, _next} = Mutare.Transform.transform_string_with_sites(src, file: "lex.ex")
 
-    {[{module, _binary}], _io} =
-      ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+    [{module, _binary}] = Mutare.Test.Compile.string(meta)
 
     module
   end
@@ -297,8 +295,8 @@ defmodule Mutare.MatchPatternTest do
       assert Enum.any?(sites, &(&1.mutator == :pattern_wildcard))
       assert meta =~ "{a, a} ="
 
-      {_compiled, io} = ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
-      refute io =~ "is unused"
+      warnings = compile_warnings(meta)
+      refute warnings =~ "is unused"
     end
 
     test "a bitstring size variable does not warn when unused later" do
@@ -309,8 +307,8 @@ defmodule Mutare.MatchPatternTest do
 
       assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
 
-      {_compiled, io} = ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
-      refute io =~ ~s(variable "a" is unused)
+      warnings = compile_warnings(meta)
+      refute warnings =~ ~s(variable "a" is unused)
     end
   end
 
@@ -439,10 +437,7 @@ defmodule Mutare.MatchPatternTest do
 
       assert sites == []
 
-      {compiled, _io} =
-        ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
-
-      [{module, _binary}] = compiled
+      [{module, _binary}] = Mutare.Test.Compile.string(meta)
 
       assert module.f({1, 3, 4}) == {1, 3, 3, 4}
       assert_raise MatchError, fn -> module.f({2, 3, 4}) end
@@ -474,9 +469,7 @@ defmodule Mutare.MatchPatternTest do
       assert Enum.any?(sites, &(&1.mutator == :pattern_swap and &1.mutated_code == "{b, a}"))
       assert meta =~ "{a, b, call} ="
 
-      {compiled, io} = ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
-      assert [{_module, _binary}] = compiled
-      refute io =~ "undefined variable"
+      refute compile_warnings(meta) =~ "undefined variable"
     end
 
     test "a chained match's self-constraining link keeps its occurrence multiplicity" do
@@ -501,8 +494,8 @@ defmodule Mutare.MatchPatternTest do
 
       assert meta =~ "{x, y, a, a} ="
 
-      {_compiled, io} = ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
-      refute io =~ "is unused"
+      warnings = compile_warnings(meta)
+      refute warnings =~ "is unused"
     end
 
     test "a module-attribute literal in a chain pattern is not exported as a binding" do
@@ -528,9 +521,8 @@ defmodule Mutare.MatchPatternTest do
       assert Enum.any?(sites, &(&1.mutator == :pattern_swap and &1.mutated_code == "{y, x}"))
       refute meta =~ "{x, y, tag} ="
 
-      {compiled, io} = ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
-      assert [{module, _binary}] = compiled
-      refute io =~ "undefined variable"
+      {[{module, _binary}], warnings} = compile_with_warnings(meta)
+      refute warnings =~ "undefined variable"
       assert module.f({:point, 7}) == {:point, 7}
     end
 

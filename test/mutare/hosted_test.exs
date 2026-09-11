@@ -15,6 +15,7 @@ defmodule Mutare.HostedTest do
   """
   # persistent_term is global; the fixture is compiled once for all tests.
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.Selector
 
@@ -48,9 +49,7 @@ defmodule Mutare.HostedTest do
         mutators: @mutators
       )
 
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      [{_module, _binary}] = Code.compile_string(metamutant)
-    end)
+    assert_compiles(metamutant)
 
     %{sites: sites, meta: metamutant}
   end
@@ -248,10 +247,8 @@ defmodule Mutare.HostedTest do
       assert Map.delete(stable.(sites2), target) == Map.delete(stable.(sites), target)
 
       # The skipped selector now hosts only its surviving sibling; the metamutant compiles.
-      ExUnit.CaptureIO.capture_io(:stderr, fn ->
-        source = String.replace(meta2, "Mutare.HostedFixture", "Mutare.HostedFixturePoison")
-        assert [{_module, _binary}] = Code.compile_string(source)
-      end)
+      source = String.replace(meta2, "Mutare.HostedFixture", "Mutare.HostedFixturePoison")
+      assert_compiles(source)
     end
   end
 
@@ -298,15 +295,8 @@ defmodule Mutare.HostedTest do
       assert Enum.any?(sites, &(&1.mutator == :host_filter and &1.mutated_code == "x >= 1"))
       assert Enum.any?(sites, &(&1.mutator == :second_host and &1.mutated_code == "true"))
 
-      module =
-        ExUnit.CaptureIO.capture_io(:stderr, fn ->
-          source = String.replace(meta, "Mutare.HostedFixture", "Mutare.HostedFixtureMultiHost")
-          [{module, _binary}] = Code.compile_string(source)
-          send(self(), {:multi_host_compiled, module})
-        end)
-
-      assert module == ""
-      assert_received {:multi_host_compiled, compiled}
+      source = String.replace(meta, "Mutare.HostedFixture", "Mutare.HostedFixtureMultiHost")
+      [{compiled, _binary}] = Mutare.Test.Compile.string(source)
 
       Selector.put(id(sites, :host_filter, "x >= 1", 5))
       assert apply(compiled, :direct, [1]) == [:ok]
@@ -342,13 +332,8 @@ defmodule Mutare.HostedTest do
       assert custom_site
       assert custom_site.range != host_site.range
 
-      ExUnit.CaptureIO.capture_io(:stderr, fn ->
-        source = String.replace(meta, "Mutare.HostedFixture", "Mutare.HostedFixtureCustomRange")
-        [{module, _binary}] = Code.compile_string(source)
-        send(self(), {:custom_range_host_compiled, module})
-      end)
-
-      assert_received {:custom_range_host_compiled, compiled}
+      source = String.replace(meta, "Mutare.HostedFixture", "Mutare.HostedFixtureCustomRange")
+      [{compiled, _binary}] = Mutare.Test.Compile.string(source)
 
       Selector.put(host_site.id)
       assert apply(compiled, :direct, [1]) == [:ok]
@@ -468,9 +453,7 @@ defmodule Mutare.HostedTest do
 
       # The regression catch: without the dispatch fix the mutant branch references unbound
       # `a`/`b`, so the metamutant fails to compile.
-      ExUnit.CaptureIO.capture_io(:stderr, fn ->
-        assert [{_m, _b}] = Code.compile_string(meta)
-      end)
+      assert [{_m, _b}] = Mutare.Test.Compile.string(meta)
 
       # Baseline: `x > 1` selects [1, 2] for x = 2, [0, 0] for x ≤ 1; the bindings escape to
       # `a * 10 + b`, so order is observable.
@@ -536,11 +519,7 @@ defmodule Mutare.HostedTest do
     end
 
     test "the (pinned) metamutant still compiles", %{meta: meta} do
-      ExUnit.CaptureIO.capture_io(:stderr, fn ->
-        send(self(), {:compiled, Code.compile_string(meta)})
-      end)
-
-      assert_received {:compiled, [{module, _binary}]}
+      [{module, _binary}] = Mutare.Test.Compile.string(meta)
       :code.purge(module)
       :code.delete(module)
     end
@@ -708,11 +687,7 @@ defmodule Mutare.HostedTest do
     end
 
     test "the nested-keyword metamutant compiles", %{meta: meta} do
-      ExUnit.CaptureIO.capture_io(:stderr, fn ->
-        send(self(), {:compiled, Code.compile_string(meta)})
-      end)
-
-      assert_received {:compiled, [{module, _binary}]}
+      [{module, _binary}] = Mutare.Test.Compile.string(meta)
       :code.purge(module)
       :code.delete(module)
     end
@@ -745,11 +720,7 @@ defmodule Mutare.HostedTest do
 
       # Two keyword leaves (`name`, `count`) host on one macro node — the multi-target weave; make
       # sure the woven metamutant actually compiles, not just that a `case` string is present.
-      ExUnit.CaptureIO.capture_io(:stderr, fn ->
-        send(self(), {:keyword_hosted_compiled, Code.compile_string(meta)})
-      end)
-
-      assert_received {:keyword_hosted_compiled, [{module, _binary}]}
+      [{module, _binary}] = Mutare.Test.Compile.string(meta)
       :code.purge(module)
       :code.delete(module)
     end
@@ -776,11 +747,7 @@ defmodule Mutare.HostedTest do
                &(&1.original_code == ~s|"keep"| and &1.mutated_code == ~s|"keep!"|)
              )
 
-      ExUnit.CaptureIO.capture_io(:stderr, fn ->
-        send(self(), {:nested_keyword_hosted_compiled, Code.compile_string(meta)})
-      end)
-
-      assert_received {:nested_keyword_hosted_compiled, [{module, _binary}]}
+      [{module, _binary}] = Mutare.Test.Compile.string(meta)
       :code.purge(module)
       :code.delete(module)
     end

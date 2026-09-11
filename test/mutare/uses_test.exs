@@ -1,5 +1,6 @@
 defmodule Mutare.UsesTest do
   use ExUnit.Case, async: true
+  import Mutare.Test.Metamutant
 
   alias Mutare.Transform.{Imports, Resolve, Uses}
 
@@ -73,10 +74,6 @@ defmodule Mutare.UsesTest do
       end)
 
     acc
-  end
-
-  defp assert_compiles(meta) do
-    assert [_ | _] = Mutare.Test.Compile.string(meta)
   end
 
   describe "harvesting directives (Uses.annotate)" do

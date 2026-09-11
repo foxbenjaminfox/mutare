@@ -127,9 +127,7 @@ defmodule Mutare.IgnoreEmissionTest do
       assert all_next == next_id
       assert Enum.all?(all_sites, &(&1.ignored and &1.ignore_reason == "generated fixture"))
 
-      ExUnit.CaptureIO.capture_io(:stderr, fn ->
-        assert [{^module, _}] = Code.compile_string(meta)
-      end)
+      assert [{^module, _}] = Mutare.Test.Compile.string(meta)
 
       on_exit(fn ->
         :code.purge(module)
@@ -165,9 +163,7 @@ defmodule Mutare.IgnoreEmissionTest do
     assert Enum.all?(ignored, &(&1.mutated_code == "mutare_unbound_xyz" and not &1.poisoned))
     refute meta =~ "mutare_unbound_xyz"
 
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      assert [{^module, _}] = Code.compile_string(meta)
-    end)
+    assert [{^module, _}] = Mutare.Test.Compile.string(meta)
 
     on_exit(fn ->
       :code.purge(module)

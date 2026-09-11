@@ -246,6 +246,10 @@ defmodule Mutare.Transform.Analyze.Conditions do
   defp condition_implementers(mutators),
     do: Dispatch.implementing_any(mutators, :condition_replacements, [1, 2])
 
+  # The cluster below is `@doc false` public: `conditions_property_test.exs` pins each walk
+  # against a reference model and the hoist rewrite against evaluation (value, bindings, effect
+  # order), the precondition NOTES sets for ever collapsing them into one generic walk.
+  #
   # ── NOTE on the spine-walk helper cluster (spine_rewrite, spine_bindings, eval_steps,
   # offspine_escaping_binding?, escaping_binding?, prune_binding_ancestors) ──
   #
@@ -290,32 +294,33 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # pattern's bindings) and the condition reads `tmp`. The walk stops at short-circuit
   # right operands, nested branches, and binding-isolating forms — `hoist_if?/2` has
   # already verified no escaping binding hides there.
-  defp spine_rewrite({op, meta, [left, right]}) when op in @short_circuit_ops do
+  @doc false
+  def spine_rewrite({op, meta, [left, right]}) when op in @short_circuit_ops do
     {left2, hoists} = spine_rewrite(left)
     {{op, meta, [left2, right]}, hoists}
   end
 
-  defp spine_rewrite({form, _meta, _args} = node)
-       when form in @branch_forms or form in @binding_isolating_forms,
-       do: {node, []}
+  def spine_rewrite({form, _meta, _args} = node)
+      when form in @branch_forms or form in @binding_isolating_forms,
+      do: {node, []}
 
-  defp spine_rewrite({:=, _meta, [lhs, rhs]}), do: hoist_one(lhs, rhs)
+  def spine_rewrite({:=, _meta, [lhs, rhs]}), do: hoist_one(lhs, rhs)
 
   # mutare:ignore[guard_drop] equivalent — a non-leaf AST node always carries a list of args, so the `is_list/1` guard never excludes a real node.
-  defp spine_rewrite({form, meta, args}) when is_list(args) do
+  def spine_rewrite({form, meta, args}) when is_list(args) do
     {args2, hoists} = spine_rewrite_each(args)
     {{form, meta, args2}, hoists}
   end
 
-  defp spine_rewrite({left, right}) do
+  def spine_rewrite({left, right}) do
     {left2, lh} = spine_rewrite(left)
     {right2, rh} = spine_rewrite(right)
     {{left2, right2}, lh ++ rh}
   end
 
-  defp spine_rewrite(list) when is_list(list), do: spine_rewrite_each(list)
+  def spine_rewrite(list) when is_list(list), do: spine_rewrite_each(list)
 
-  defp spine_rewrite(other), do: {other, []}
+  def spine_rewrite(other), do: {other, []}
 
   defp spine_rewrite_each(list) do
     {nodes, hoists} = list |> Enum.map(&spine_rewrite/1) |> Enum.unzip()
@@ -335,18 +340,20 @@ defmodule Mutare.Transform.Analyze.Conditions do
   end
 
   # The bindings on the unconditional spine (mirrors `spine_rewrite/1`'s reach).
-  defp spine_bindings({op, _meta, [left, _right]}) when op in @short_circuit_ops,
+  @doc false
+  def spine_bindings({op, _meta, [left, _right]}) when op in @short_circuit_ops,
     do: spine_bindings(left)
 
-  defp spine_bindings({form, _meta, _args})
-       when form in @branch_forms or form in @binding_isolating_forms,
-       do: []
+  def spine_bindings({form, _meta, _args})
+      when form in @branch_forms or form in @binding_isolating_forms,
+      do: []
 
-  defp spine_bindings({:=, _meta, _args} = node), do: [node]
+  def spine_bindings({:=, _meta, _args} = node), do: [node]
 
-  defp spine_bindings(node), do: Enum.flat_map(children(node), &spine_bindings/1)
+  def spine_bindings(node), do: Enum.flat_map(children(node), &spine_bindings/1)
 
-  defp refutable_spine_count(node) do
+  @doc false
+  def refutable_spine_count(node) do
     node
     |> spine_bindings()
     |> Enum.count(fn {:=, _meta, [lhs, _rhs]} -> not bare_var?(lhs) end)
@@ -366,7 +373,8 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # treated as possibly side-effecting). It is unsafe iff an `:other` precedes a
   # `:binding`. The common shapes evaluate their binding(s) first (`if x = e`,
   # `(x = e) != nil`, `(x = first(a)) != (y = first(b))`), so they stay hoistable.
-  defp spine_reorders?(condition) do
+  @doc false
+  def spine_reorders?(condition) do
     condition |> eval_steps() |> impure_before_binding?(false)
   end
 
@@ -380,65 +388,68 @@ defmodule Mutare.Transform.Analyze.Conditions do
 
   # A spine `=` rides into the hoist as one unit (its internals keep their relative
   # order), so it is a single `:binding` step — not descended.
-  defp eval_steps({:=, _meta, _args}), do: [:binding]
+  @doc false
+  def eval_steps({:=, _meta, _args}), do: [:binding]
 
   # A short-circuit: only the left operand is on the spine; the right is evaluated
   # conditionally and (by `offspine_escaping_binding?/1`) holds no binding, so it is one
   # opaque `:other` step after the left.
-  defp eval_steps({op, _meta, [left, _right]}) when op in @short_circuit_ops,
+  def eval_steps({op, _meta, [left, _right]}) when op in @short_circuit_ops,
     do: eval_steps(left) ++ [:other]
 
   # A nested branch / binding-isolating subtree holds no spine binding either; it is one
   # opaque `:other` step (so a `case`/`fn`/… *before* a binding correctly vetoes).
-  defp eval_steps({form, _meta, _args})
-       when form in @branch_forms or form in @binding_isolating_forms,
-       do: [:other]
+  def eval_steps({form, _meta, _args})
+      when form in @branch_forms or form in @binding_isolating_forms,
+      do: [:other]
 
   # A Sourceror scalar literal (`{:__block__, meta, [value]}`) — pure.
-  defp eval_steps({:__block__, _meta, [value]})
-       when is_atom(value) or is_number(value) or is_binary(value),
-       do: [:pure]
+  def eval_steps({:__block__, _meta, [value]})
+      when is_atom(value) or is_number(value) or is_binary(value),
+      do: [:pure]
 
   # A bare variable read — pure (an atom name with an atom hygiene context).
-  defp eval_steps({name, _meta, ctx}) when is_atom(name) and is_atom(ctx), do: [:pure]
+  def eval_steps({name, _meta, ctx}) when is_atom(name) and is_atom(ctx), do: [:pure]
 
   # Any other call/operator (including a remote `{:., …}` call): its arguments evaluate
   # left to right, then the application itself runs — one `:other` step after the args.
   # mutare:ignore[guard_drop] equivalent — a non-leaf AST node always carries a list of args, so the `is_list/1` guard never excludes a real node.
-  defp eval_steps({_form, _meta, args}) when is_list(args),
+  def eval_steps({_form, _meta, args}) when is_list(args),
     do: Enum.flat_map(args, &eval_steps/1) ++ [:other]
 
-  defp eval_steps({left, right}), do: eval_steps(left) ++ eval_steps(right)
+  def eval_steps({left, right}), do: eval_steps(left) ++ eval_steps(right)
 
   # mutare:ignore[guard_drop] equivalent — only an actual list reaches this clause (leaves match the clauses above/below), so the `is_list/1` guard is always satisfied.
-  defp eval_steps(list) when is_list(list), do: Enum.flat_map(list, &eval_steps/1)
-  defp eval_steps(leaf) when is_atom(leaf) or is_number(leaf) or is_binary(leaf), do: [:pure]
-  defp eval_steps(_other), do: [:other]
+  def eval_steps(list) when is_list(list), do: Enum.flat_map(list, &eval_steps/1)
+  def eval_steps(leaf) when is_atom(leaf) or is_number(leaf) or is_binary(leaf), do: [:pure]
+  def eval_steps(_other), do: [:other]
 
   # Is there an escaping binding *off* the unconditional spine — under a short-circuit
   # right operand or inside a nested branch — that hoisting therefore can't lift?
   # (A binding-isolating form's bindings never escape, so they are not a concern; a
   # spine `=` rides into the hoist whole, so its own nested bindings are not off-spine.)
-  defp offspine_escaping_binding?({op, _meta, [left, right]}) when op in @short_circuit_ops,
+  @doc false
+  def offspine_escaping_binding?({op, _meta, [left, right]}) when op in @short_circuit_ops,
     do: offspine_escaping_binding?(left) or escaping_binding?(right)
 
-  defp offspine_escaping_binding?({form, _meta, _args} = node) when form in @branch_forms,
+  def offspine_escaping_binding?({form, _meta, _args} = node) when form in @branch_forms,
     do: escaping_binding?(node)
 
-  defp offspine_escaping_binding?({form, _meta, _args}) when form in @binding_isolating_forms,
+  def offspine_escaping_binding?({form, _meta, _args}) when form in @binding_isolating_forms,
     do: false
 
-  defp offspine_escaping_binding?({:=, _meta, _args}), do: false
+  def offspine_escaping_binding?({:=, _meta, _args}), do: false
 
-  defp offspine_escaping_binding?(node),
+  def offspine_escaping_binding?(node),
     do: Enum.any?(children(node), &offspine_escaping_binding?/1)
 
   # Does the subtree contain an escaping `=` binding (one not isolated inside a
   # closure/comprehension/`try`/`quote`)? The presence counterpart of
   # `prune_binding_ancestors/1`'s taint.
-  defp escaping_binding?({form, _meta, _args}) when form in @binding_isolating_forms, do: false
-  defp escaping_binding?({:=, _meta, _args}), do: true
-  defp escaping_binding?(node), do: Enum.any?(children(node), &escaping_binding?/1)
+  @doc false
+  def escaping_binding?({form, _meta, _args}) when form in @binding_isolating_forms, do: false
+  def escaping_binding?({:=, _meta, _args}), do: true
+  def escaping_binding?(node), do: Enum.any?(children(node), &escaping_binding?/1)
 
   # The structural children of an AST node — the generic-recursion tail the three
   # boolean/list spine folds (`escaping_binding?`, `spine_bindings`,
@@ -478,18 +489,19 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # *proper ancestor* of an escaping `=` binding (a child subtree holds one). A `=`
   # node has no in-place candidate of its own, so it is never itself stripped; it only
   # reports its subtree as binding-bearing so its ancestors are pruned.
-  defp prune_binding_ancestors({form, _meta, _args} = node)
-       when form in @binding_isolating_forms,
-       do: {node, false}
+  @doc false
+  def prune_binding_ancestors({form, _meta, _args} = node)
+      when form in @binding_isolating_forms,
+      do: {node, false}
 
-  defp prune_binding_ancestors({form, meta, args}) when is_list(args) do
+  def prune_binding_ancestors({form, meta, args}) when is_list(args) do
     {pruned_args, child_has?} = prune_binding_ancestors_each(args)
     node = {form, meta, pruned_args}
     node = if child_has?, do: strip_inplace_candidates(node), else: node
     {node, child_has? or form == :=}
   end
 
-  defp prune_binding_ancestors({left, right}) do
+  def prune_binding_ancestors({left, right}) do
     {pruned_left, left_has?} = prune_binding_ancestors(left)
     {pruned_right, right_has?} = prune_binding_ancestors(right)
     {{pruned_left, pruned_right}, left_has? or right_has?}
@@ -498,10 +510,10 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # A bare list operand (`length([x = f(), y])`) — walk each element so a binding
   # nested in it still taints the call that holds it. A list carries no metadata, so
   # there is nothing of its own to strip.
-  defp prune_binding_ancestors(list) when is_list(list),
+  def prune_binding_ancestors(list) when is_list(list),
     do: prune_binding_ancestors_each(list)
 
-  defp prune_binding_ancestors(other), do: {other, false}
+  def prune_binding_ancestors(other), do: {other, false}
 
   defp prune_binding_ancestors_each(list) do
     {nodes, hass} = list |> Enum.map(&prune_binding_ancestors/1) |> Enum.unzip()

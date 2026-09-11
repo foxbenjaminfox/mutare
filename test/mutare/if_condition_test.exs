@@ -7,6 +7,7 @@ defmodule Mutare.IfConditionTest do
   boolean), leaving the boolean-operator ones to `Conditional`.
   """
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.Mutators.{IfCondition, StringCall}
   alias Mutare.Selector
@@ -213,10 +214,7 @@ defmodule Mutare.IfConditionTest do
 
   defp wrap(body), do: "defmodule Mutare.IfCondT do\n  #{body}\nend\n"
 
-  defp if_sites(body) do
-    {_meta, sites, _} = Mutare.Transform.transform_string_with_sites(wrap(body), mutators: @only)
-    Enum.filter(sites, &(&1.mutator == :if_condition))
-  end
+  defp if_sites(body), do: family_sites(wrap(body), @only, :if_condition)
 
   defp mutated_codes(body), do: body |> if_sites() |> Enum.map(& &1.mutated_code)
 

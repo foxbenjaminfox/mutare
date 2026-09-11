@@ -12,6 +12,7 @@ defmodule Mutare.SubcontractNodeTest do
   """
   # persistent_term is global; the fixture is compiled once for all tests.
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.Selector
 
@@ -48,9 +49,7 @@ defmodule Mutare.SubcontractNodeTest do
         mutators: @mutators
       )
 
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      [{_module, _binary}] = Code.compile_string(metamutant)
-    end)
+    assert_compiles(metamutant)
 
     %{sites: sites, meta: metamutant}
   end

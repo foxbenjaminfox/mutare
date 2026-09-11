@@ -11,6 +11,7 @@ defmodule Mutare.SuperTest do
   """
   # persistent_term is global; switch the active mutant serially.
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.{Selector, Transform.Super}
 
@@ -72,7 +73,7 @@ defmodule Mutare.SuperTest do
       # The dispatcher (the overriding function) binds the forwarding closure...
       assert meta =~ ~r{mutare_super = &super/1}
       # ...and threads it to the base as the second argument.
-      assert meta =~ ~r/__mutare_greet_1_g\d+\(mutare_active, mutare_super,/
+      assert meta =~ ~r/#{lifted_pattern(:greet, 1)}\(mutare_active, mutare_super,/
       # The relocated base clauses call super *through* the closure, never directly —
       # one forwarded call per clause.
       assert meta =~ "mutare_super.(name)"
@@ -89,7 +90,7 @@ defmodule Mutare.SuperTest do
         """)
 
       refute meta =~ "mutare_super"
-      assert meta =~ ~r/__mutare_classify_1_g\d+\(mutare_active, n\)/
+      assert meta =~ ~r/#{lifted_pattern(:classify, 1)}\(mutare_active, n\)/
     end
   end
 
@@ -175,8 +176,8 @@ defmodule Mutare.SuperTest do
           def tag(other), do: {:plain, other}
         """)
 
-      assert meta =~ ~r/__mutare_tag_1_g\d+\(mutare_active, _, other\)/
-      assert meta =~ ~r/__mutare_tag_1_g\d+\(mutare_active, mutare_super, :wrap\)/
+      assert meta =~ ~r/#{lifted_pattern(:tag, 1)}\(mutare_active, _, other\)/
+      assert meta =~ ~r/#{lifted_pattern(:tag, 1)}\(mutare_active, mutare_super, :wrap\)/
 
       assert mod.tag(:wrap) == {:wrapped, {:base, :wrap}}
       assert mod.tag(:other) == {:plain, :other}
@@ -197,7 +198,7 @@ defmodule Mutare.SuperTest do
 
       # The super-free clause's head carries the bare `_` and its own `_mutare_super`,
       # not two `_mutare_super`.
-      assert meta =~ ~r/__mutare_tag_1_g\d+\(mutare_active, _, _mutare_super\)/
+      assert meta =~ ~r/#{lifted_pattern(:tag, 1)}\(mutare_active, _, _mutare_super\)/
       refute meta =~ ~r/mutare_active, _mutare_super, _mutare_super/
 
       # Baseline dispatch must not raise: with the bug the duplicated `_mutare_super`

@@ -1,5 +1,6 @@
 defmodule Mutare.Transform.FnClauseEmitTest do
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
 
   alias Mutare.Coverage.Recorder
   alias Mutare.{Manifest, Selector, Transform}
@@ -414,7 +415,7 @@ defmodule Mutare.Transform.FnClauseEmitTest do
     assert coverage_payloads(metamutant) == [live]
     assert [clauses] = fn_clauses(metamutant)
     assert length(clauses) == 3 + length(live)
-    compile_observed(module, metamutant)
+    compile_observed(module, metamutant, CoverageSink)
 
     for id <- [skipped | Enum.map(Enum.filter(sites, & &1.ignored), & &1.id)] do
       Selector.put(id)
@@ -443,15 +444,13 @@ defmodule Mutare.Transform.FnClauseEmitTest do
     assert Enum.sort(Manifest.ids_at_line(manifest, line_of(metamutant, "fn"))) ==
              Enum.map(sites, & &1.id)
 
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      assert_raise CompileError, fn -> Code.compile_string(metamutant) end
-    end)
+    assert_compile_error(metamutant)
 
     {recovered, recovered_sites, ^next} =
       Transform.transform_string_with_sites(source, opts ++ [skip_ids: MapSet.new([poison.id])])
 
     assert Enum.find(recovered_sites, &(&1.id == poison.id)).poisoned
-    compile_observed(module, recovered)
+    compile_observed(module, recovered, CoverageSink)
     assert apply(module, :make, [:source]).(6) == 6
   end
 
@@ -475,24 +474,8 @@ defmodule Mutare.Transform.FnClauseEmitTest do
     {metamutant, sites, _} =
       Transform.transform_string_with_sites(source(module, body), mutators: mutators)
 
-    compile_observed(module, metamutant)
+    compile_observed(module, metamutant, CoverageSink)
     {module, sites, metamutant}
-  end
-
-  defp compile_observed(module, metamutant) do
-    observed =
-      String.replace(
-        metamutant,
-        "#{inspect(Recorder.fixture_module())}.hit(",
-        "#{inspect(CoverageSink)}.hit("
-      )
-
-    ExUnit.CaptureIO.capture_io(:stderr, fn -> Code.compile_string(observed) end)
-
-    on_exit(fn ->
-      :code.purge(module)
-      :code.delete(module)
-    end)
   end
 
   defp fn_clauses(source) do

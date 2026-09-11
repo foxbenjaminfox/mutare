@@ -5,6 +5,8 @@ defmodule Mutare.ReturnValueTest do
   selector, on by default.
   """
   use ExUnit.Case, async: false
+  import Mutare.Test.Metamutant
+  import Mutare.Test
 
   import ExUnit.CaptureLog, only: [with_log: 1]
 
@@ -49,15 +51,8 @@ defmodule Mutare.ReturnValueTest do
   end
 
   # Return-value sites for a one-line function body `def f(a, b), do: <tail>`.
-  defp return_sites(tail) do
-    {_meta, sites, _} =
-      Mutare.Transform.transform_string_with_sites(
-        "defmodule T do\n  def f(a, b), do: #{tail}\nend\n",
-        mutators: @only
-      )
-
-    Enum.filter(sites, &(&1.mutator == :return_value))
-  end
+  defp return_sites(tail),
+    do: family_sites("defmodule T do\n  def f(a, b), do: #{tail}\nend\n", @only, :return_value)
 
   defp mutated_codes(tail), do: tail |> return_sites() |> Enum.map(& &1.mutated_code)
 
@@ -324,7 +319,7 @@ defmodule Mutare.ReturnValueTest do
       # as in-place selectors in each clause's *original* (non-mutant) version inside
       # the lifted private group.
       assert MapSet.new(returns, & &1.mutated_code) == MapSet.new(["0", "1", "nil", ":mutare"])
-      assert meta =~ ~r/defp __mutare_g_1_g\d+\(/
+      assert meta =~ ~r/defp #{lifted_pattern(:g, 1)}\(/
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
@@ -492,14 +487,9 @@ defmodule Mutare.ReturnValueTest do
     # `{original_code => [mutated_code]}` for the return-value sites of a full
     # `def f(...) do ... end` body.
     defp branch_returns(body) do
-      {_meta, sites, _} =
-        Mutare.Transform.transform_string_with_sites("defmodule T do\n#{body}\nend\n",
-          mutators: @only
-        )
-
-      sites
-      |> Enum.filter(&(&1.mutator == :return_value))
-      |> Enum.group_by(& &1.original_code, & &1.mutated_code)
+      "defmodule T do\n#{body}\nend\n"
+      |> diffs_for(@only, :return_value)
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
     end
 
     test "each `case` clause tail gets the pair; the construct itself is not a tail" do
@@ -819,15 +809,9 @@ defmodule Mutare.ReturnValueTest do
     # `{original_code => [mutated_code]}` for the return-value sites of an
     # expression `def f(xs), do: <expr>` — `<expr>` carries the `fn`(s) under test.
     defp fn_returns(expr) do
-      {_meta, sites, _} =
-        Mutare.Transform.transform_string_with_sites(
-          "defmodule T do\n  def f(xs), do: #{expr}\nend\n",
-          mutators: @only
-        )
-
-      sites
-      |> Enum.filter(&(&1.mutator == :return_value))
-      |> Enum.group_by(& &1.original_code, & &1.mutated_code)
+      "defmodule T do\n  def f(xs), do: #{expr}\nend\n"
+      |> diffs_for(@only, :return_value)
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
     end
 
     test "a single-clause fn body tail gets the contrasting pair" do
