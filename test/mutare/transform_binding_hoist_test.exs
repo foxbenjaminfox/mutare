@@ -451,10 +451,11 @@ defmodule Mutare.TransformBindingHoistTest do
   describe "if/unless hoisting — decision gate and spine-walk edge cases" do
     alias Mutare.Selector
 
-    test "a binding condition is hoisted only when IfCondition is enabled" do
-      # `hoist_if?/2` gates the whole hoist on IfCondition being on (it owns the delivered
-      # decision). With IfCondition disabled the condition is left on the prune path —
-      # inline, no lifted statement, no decision selector.
+    test "a binding condition is hoisted only when a condition mutator is enabled" do
+      # `hoist_if?/2` gates the whole hoist on some `condition_replacements` implementer
+      # being on (the hoist exists only to deliver a condition offer). With none enabled the
+      # condition is left on the prune path — inline, no lifted statement, no decision
+      # selector.
       source = """
       defmodule HoistGate do
         def f(o) do
@@ -476,6 +477,73 @@ defmodule Mutare.TransformBindingHoistTest do
       assert meta =~ "if x = get(o)"
       refute meta =~ ":persistent_term.get(#{inspect(Selector.key())}"
       assert Enum.filter(sites, &(&1.mutator == :if_condition)) == []
+    end
+
+    test "a custom condition mutator alone gates the hoist and is offered the hoisted condition" do
+      # The gate is the hook, not `IfCondition`'s identity: a custom `condition_replacements/1`
+      # mutator with IfCondition off still hoists, and is asked with the *rewritten*
+      # (binding-free) condition — its replacement stands in for `x`, not for `x = get(o)` —
+      # while its Site diffs against the original condition like IfCondition's would.
+      source = """
+      defmodule HoistCustomGate do
+        def f(o) do
+          if x = get(o) do
+            x
+          else
+            0
+          end
+        end
+        def get(o), do: o
+      end
+      """
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Test.ConditionMutator]
+        )
+
+      assert meta =~ "x = get(o)\n"
+
+      assert Enum.map(sites, &{&1.mutator, &1.original_code, &1.mutated_code}) ==
+               [{:custom_condition, "x = get(o)", "true"}]
+
+      assert_compiles(meta)
+    end
+
+    test "a custom condition mutator and IfCondition both deliver on one hoisted condition" do
+      # Both offers ride the same rewritten root: IfCondition's synthesized pair (its hook
+      # would decline the `!=` root as `Conditional`-owned, an ownership void here since the
+      # pruned ancestor carries no `Conditional` candidate) plus the custom hook's answer.
+      source = """
+      defmodule HoistBothConditions do
+        def f(o) do
+          if (name = get(o)) != nil do
+            name
+          else
+            :none
+          end
+        end
+        def get(o), do: o
+      end
+      """
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition, Mutare.Test.ConditionMutator]
+        )
+
+      assert meta =~ "name = get(o)\n"
+
+      assert sites
+             |> Enum.map(&{&1.mutator, &1.original_code, &1.mutated_code})
+             |> Enum.sort() ==
+               [
+                 {:custom_condition, "(name = get(o)) != nil", "true"},
+                 {:if_condition, "(name = get(o)) != nil", "false"},
+                 {:if_condition, "(name = get(o)) != nil", "true"}
+               ]
+
+      assert_compiles(meta)
     end
 
     test "two refutable spine bindings are not hoisted (kept on the prune path)" do

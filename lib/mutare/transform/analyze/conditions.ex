@@ -158,14 +158,16 @@ defmodule Mutare.Transform.Analyze.Conditions do
   #     g(x)`, two bindings) have the binding(s) evaluated first, so they still hoist.
   #   * At most **one** refutable spine binding (they would all need a distinct temp;
   #     bare-variable bindings reuse their own name, so any number is fine).
-  #   * Gated on `IfCondition` being enabled (it owns the decision the hoist delivers).
+  #   * Gated on some `condition_replacements` implementer being enabled — `IfCondition` or a
+  #     custom condition mutator — since the hoist exists only to deliver a condition offer;
+  #     with none, the plain prune path is the same program with less rewriting.
   # The decision `Site` references the **original** condition (range and code), so the
   # report diff stays faithful (`(name = f()) != nil` → `true`), independent of the
   # rewrite emit actually delivers.
   def hoist_if?(analyzed_condition, mutators) do
     # A skipped condition is never hoisted: the rewrite would lift bindings out of an inert leaf.
     not Meta.skipped?(analyzed_condition) and
-      Spec.find(mutators, Mutare.Mutators.IfCondition) != nil and
+      condition_implementers(mutators) != [] and
       escaping_binding?(analyzed_condition) and
       not offspine_escaping_binding?(analyzed_condition) and
       not spine_reorders?(analyzed_condition) and
@@ -209,20 +211,40 @@ defmodule Mutare.Transform.Analyze.Conditions do
 
   def fold_hoist_into_condition(other), do: other
 
-  # Synthesize the `IfCondition` decision (`true`/`false`) on the rewritten condition
-  # root, ranged on the original condition. We build it directly rather than calling
-  # the `condition_replacements/1` hook, which declines a binding condition (and a
-  # boolean-operator one) — the very shapes this path exists for.
+  # Attach every enabled condition mutator's offer on the rewritten condition root, ranged
+  # on the original condition. This is the hoist path's twin of `attach_if_condition/3`:
+  # each `condition_replacements` implementer is asked with the **rewritten** (binding-free)
+  # condition, the shape its replacement will actually stand in for — the raw one still
+  # embeds the binding the hoist just lifted out.
+  #
+  # `IfCondition` alone is not asked but synthesized (`true`/`false`): its hook declines a
+  # boolean-operator root on *ownership* grounds (`Conditional` forces that node), but on
+  # this path the `Conditional` candidates on that root were pruned as binding ancestors —
+  # so the ownership premise is void, and the transform, which knows that, delivers the pair
+  # itself. Asking the hook would lose the decision on exactly the headline shape
+  # (`(name = f()) != nil`).
   defp attach_decision(rewritten_root, raw_condition, mutators) do
-    case Spec.find(mutators, Mutare.Mutators.IfCondition) do
-      nil ->
-        rewritten_root
+    candidates =
+      mutators
+      |> condition_implementers()
+      |> Enum.flat_map(fn
+        %Spec{module: Mutare.Mutators.IfCondition} = spec ->
+          [{spec, AST.literal(true)}, {spec, AST.literal(false)}]
 
-      spec ->
-        candidates = [{spec, AST.literal(true)}, {spec, AST.literal(false)}]
-        append_condition_candidates(rewritten_root, raw_condition, candidates)
+        spec ->
+          Enum.map(Dispatch.condition_replacements(spec, rewritten_root), &{spec, &1})
+      end)
+
+    case candidates do
+      [] -> rewritten_root
+      _ -> append_condition_candidates(rewritten_root, raw_condition, candidates)
     end
   end
+
+  # The enabled specs implementing the condition hook at either arity — the one discovery
+  # both the plain path (`attach_if_condition/3`) and the hoist path share.
+  defp condition_implementers(mutators),
+    do: Dispatch.implementing_any(mutators, :condition_replacements, [1, 2])
 
   # ── NOTE on the spine-walk helper cluster (spine_rewrite, spine_bindings, eval_steps,
   # offspine_escaping_binding?, escaping_binding?, prune_binding_ancestors) ──
@@ -230,7 +252,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # A dogfood run leaves a cluster of equivalent / niche survivors across these mirror walks,
   # deliberately left as *reported* survivors (the project's stance: surface a suspected-
   # equivalent rather than hide it). The observable hoist behaviours — recursing into call
-  # args / tuples / lists / short-circuit spines, the IfCondition gate, and the ≤1-refutable
+  # args / tuples / lists / short-circuit spines, the condition-mutator gate, and the ≤1-refutable
   # cap — are pinned by the `if/unless hoisting` tests in `transform_test.exs`. What remains:
   #
   #   * Membership-guard directions (`form in @branch_forms → false`, `op in @short_circuit_ops
@@ -501,7 +523,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
   defp attach_if_condition(analyzed_condition, raw_condition, mutators) do
     candidates =
       mutators
-      |> Dispatch.implementing_any(:condition_replacements, [1, 2])
+      |> condition_implementers()
       |> Enum.flat_map(fn spec ->
         Enum.map(Dispatch.condition_replacements(spec, raw_condition), &{spec, &1})
       end)
