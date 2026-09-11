@@ -73,7 +73,8 @@ defmodule Mutare.Options.Registry do
   # non-mutator modules exactly as the CLI/`.mutare.exs` path does. An already
   # resolved list passes through unchanged (resolution is idempotent).
   # `nil` is the internal "key omitted; let `Mutare.Transform` pick its default set"
-  # sentinel. `Options.new/1` rejects explicit non-list values before this validator.
+  # sentinel. Since this validator can't tell an omitted key from an explicit `mutators: nil`,
+  # `Options.new/1` rejects the explicit `nil` before calling it.
   # `resolve/1` raises a descriptive "unknown mutator" error on a bad entry; the
   # fallback keeps a clear accepted-shapes message for an outright wrong value.
   defp validate_mutators!(nil), do: nil

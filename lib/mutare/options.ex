@@ -131,7 +131,7 @@ defmodule Mutare.Options do
 
   def new(opts) when is_list(opts) do
     reject_unknown!(opts)
-    reject_invalid_mutators_shape!(opts)
+    reject_explicit_nil_mutators!(opts)
     build(opts)
   end
 
@@ -189,18 +189,14 @@ defmodule Mutare.Options do
     end
   end
 
-  # Reject an **explicit** non-list `:mutators` (`mutators: nil`, `mutators: :builtins`, …) here,
-  # before `build/1`. Load-bearing despite looking redundant with the registry's `:mutators`
-  # validator: `opt/2` reads via `Keyword.get(opts, :mutators, default)`, which can't distinguish an
-  # explicit `mutators: nil` from an omitted key (both collapse to the same `nil` default), so an
-  # explicit bogus value would otherwise resolve silently to the default instead of raising. The
-  # registry's own non-list catch-all only fires when re-validating an existing `%Options{}` struct
-  # (that path never reaches `new/1`'s keyword list). Don't delete as "dead code".
-  defp reject_invalid_mutators_shape!(opts) do
-    if Keyword.has_key?(opts, :mutators) and not is_list(Keyword.fetch!(opts, :mutators)) do
-      raise ArgumentError,
-            ":mutators must be omitted or set to a list of mutators, got: " <>
-              inspect(Keyword.fetch!(opts, :mutators))
+  # An explicit `mutators: nil` is an error; a caller asks for the default set by omitting the key.
+  # The registry's `:mutators` validator can't enforce that, because `nil` reaches it on every path
+  # that means "default set": an omitted key resolves to the `nil` default, and the struct clause of
+  # `new/1` passes a resolved default set as `nil`. Every other non-list value needs no check here —
+  # it reaches that validator's catch-all.
+  defp reject_explicit_nil_mutators!(opts) do
+    if Keyword.fetch(opts, :mutators) == {:ok, nil} do
+      raise ArgumentError, ":mutators must be omitted or set to a list of mutators, got: nil"
     end
   end
 end
