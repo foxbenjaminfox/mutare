@@ -71,6 +71,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in-place mirror moved to `Mutare.Sandbox.Mirror`, whose byte-aware, symlink-safe
   writer now also writes the ownership marker (it was written through a second,
   symlink-following writer).
+- **`Mutare.Report.Live`'s text rendering moved to `Mutare.Report.Live.Lines`.**
+  `status_block/2`, `detail_line/1`, `seed_line/1`, `poison_round_line/1`,
+  `macro_poison_line/1`, `leave_behind/1`, `verbose_leave/1`, `humanize_secs/1`,
+  `humanize_ms/1`, and `eta_secs/3` are pure and now live there; `Live` keeps the
+  process, the output modes, and the terminal writes. Its `phase_event` type now
+  lists every event `phase/2` accepts. The `{Module, :fun, :raw}` route the live
+  `⚠` line and `Mutare.Poison.Hint`'s snippets print is spelt once, in
+  `Hint.route_tuple/2`.
 
 ## [0.1.2] - 2026-09-07
 

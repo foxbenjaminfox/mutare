@@ -2,6 +2,7 @@ defmodule Mutare.Report.LiveTest do
   use ExUnit.Case, async: false
 
   alias Mutare.Report.Live
+  alias Mutare.Report.Live.Lines
   alias Mutare.{Result, Site}
 
   defp site(opts \\ []) do
@@ -22,39 +23,39 @@ defmodule Mutare.Report.LiveTest do
 
   describe "humanize_secs/1" do
     test "renders sub-minute as seconds" do
-      assert Live.humanize_secs(0) == "0s"
-      assert Live.humanize_secs(41) == "41s"
+      assert Lines.humanize_secs(0) == "0s"
+      assert Lines.humanize_secs(41) == "41s"
     end
 
     test "renders a minute or more as minutes + seconds" do
-      assert Live.humanize_secs(60) == "1m 0s"
-      assert Live.humanize_secs(75) == "1m 15s"
+      assert Lines.humanize_secs(60) == "1m 0s"
+      assert Lines.humanize_secs(75) == "1m 15s"
     end
   end
 
   describe "eta_secs/3" do
     test "extrapolates remaining from rate so far" do
       # 4 done in 41s ⇒ ~10.25s each ⇒ 6 remaining ≈ 62s.
-      assert Live.eta_secs(4, 6, 41) == 62
+      assert Lines.eta_secs(4, 6, 41) == 62
     end
 
     test "is nil before there is anything to extrapolate from" do
-      assert Live.eta_secs(0, 5, 10) == nil
-      assert Live.eta_secs(2, 8, 0) == nil
+      assert Lines.eta_secs(0, 5, 10) == nil
+      assert Lines.eta_secs(2, 8, 0) == nil
     end
   end
 
   describe "leave_behind/1" do
     test "survivors and problems earn a permanent line" do
-      assert {"SURVIVED", :red} = Live.leave_behind(:survived)
-      assert {"TIMEOUT", :yellow} = Live.leave_behind(:timeout)
-      assert {"ATOMS", :yellow} = Live.leave_behind(:atom_exhausted)
-      assert {"ERROR", :magenta} = Live.leave_behind(:harness_error)
+      assert {"SURVIVED", :red} = Lines.leave_behind(:survived)
+      assert {"TIMEOUT", :yellow} = Lines.leave_behind(:timeout)
+      assert {"ATOMS", :yellow} = Lines.leave_behind(:atom_exhausted)
+      assert {"ERROR", :magenta} = Lines.leave_behind(:harness_error)
     end
 
     test "ordinary outcomes only move the counter" do
       for status <- [:killed, :no_coverage, :ignored, :poisoned] do
-        assert Live.leave_behind(status) == nil
+        assert Lines.leave_behind(status) == nil
       end
     end
   end
@@ -62,12 +63,12 @@ defmodule Mutare.Report.LiveTest do
   describe "status_block/2" do
     test "a pre-mutant phase is one labelled line" do
       state = %{phase: :compiling, width: 80, spinner: 0}
-      assert Live.status_block(state, 0) == ["⠋ compiling metamutant (once)…"]
+      assert Lines.status_block(state, 0) == ["⠋ compiling metamutant (once)…"]
     end
 
     test "the scanning phase shows the bare label before any file is in" do
       state = %{phase: :scanning, scan: nil, width: 80, spinner: 0}
-      assert Live.status_block(state, 0) == ["⠋ scanning for mutants…"]
+      assert Lines.status_block(state, 0) == ["⠋ scanning for mutants…"]
     end
 
     test "the scanning phase shows per-file progress and a running mutant tally" do
@@ -78,11 +79,11 @@ defmodule Mutare.Report.LiveTest do
         spinner: 0
       }
 
-      assert Live.status_block(state, 0) == ["⠋ scanning for mutants — 3/12 file(s) · 47 found"]
+      assert Lines.status_block(state, 0) == ["⠋ scanning for mutants — 3/12 file(s) · 47 found"]
     end
 
     test "idle / finished shows nothing" do
-      assert Live.status_block(%{phase: :idle}, 0) == []
+      assert Lines.status_block(%{phase: :idle}, 0) == []
     end
 
     test "the running phase shows an activity line and a counter with an ETA" do
@@ -96,7 +97,7 @@ defmodule Mutare.Report.LiveTest do
         started_at: 0
       }
 
-      [activity, counter] = Live.status_block(state, 41_000)
+      [activity, counter] = Lines.status_block(state, 41_000)
 
       assert activity =~ "testing lib/cache.ex:22"
       assert activity =~ "relational  >= → >"
@@ -131,7 +132,7 @@ defmodule Mutare.Report.LiveTest do
         started_at: 0
       }
 
-      [activity, _counter] = Live.status_block(state, 1_000)
+      [activity, _counter] = Lines.status_block(state, 1_000)
 
       assert activity =~ "testing lib/rate_limits.ex:56"
       assert activity =~ "return_value  compute(x) → []"
@@ -148,7 +149,7 @@ defmodule Mutare.Report.LiveTest do
         started_at: 0
       }
 
-      [activity, counter] = Live.status_block(state, 5_000)
+      [activity, counter] = Lines.status_block(state, 5_000)
 
       assert activity =~ "testing mutants…"
       assert counter =~ "1 timeout"
@@ -208,19 +209,19 @@ defmodule Mutare.Report.LiveTest do
 
   describe "humanize_ms/1" do
     test "renders milliseconds as one-decimal seconds" do
-      assert Live.humanize_ms(0) == "0.0s"
-      assert Live.humanize_ms(400) == "0.4s"
-      assert Live.humanize_ms(3100) == "3.1s"
-      assert Live.humanize_ms(12_340) == "12.3s"
+      assert Lines.humanize_ms(0) == "0.0s"
+      assert Lines.humanize_ms(400) == "0.4s"
+      assert Lines.humanize_ms(3100) == "3.1s"
+      assert Lines.humanize_ms(12_340) == "12.3s"
     end
   end
 
   describe "verbose_leave/1" do
     test "returns a {label, colour} for every status (kills included)" do
-      assert {"KILLED", :green} = Live.verbose_leave(:killed)
-      assert {"SURVIVED", :red} = Live.verbose_leave(:survived)
-      assert {"NOCOV", _} = Live.verbose_leave(:no_coverage)
-      assert {"POISON", _} = Live.verbose_leave(:poisoned)
+      assert {"KILLED", :green} = Lines.verbose_leave(:killed)
+      assert {"SURVIVED", :red} = Lines.verbose_leave(:survived)
+      assert {"NOCOV", _} = Lines.verbose_leave(:no_coverage)
+      assert {"POISON", _} = Lines.verbose_leave(:poisoned)
     end
   end
 
@@ -258,16 +259,16 @@ defmodule Mutare.Report.LiveTest do
 
   describe "detail_line/1" do
     test "renders the per-phase ✓ notes" do
-      assert Live.detail_line({:compiled, 4200}) == "  ✓ compiled in 4.2s"
-      assert Live.detail_line({:baseline_done, 3100}) == "  ✓ baseline green in 3.1s"
+      assert Lines.detail_line({:compiled, 4200}) == "  ✓ compiled in 4.2s"
+      assert Lines.detail_line({:baseline_done, 3100}) == "  ✓ baseline green in 3.1s"
 
-      assert Live.detail_line(
+      assert Lines.detail_line(
                {:coverage_done, %{covered: 134, no_coverage: 8, run_all?: false, cap_ms: 9300}}
              ) == "  ✓ coverage: 134 covered · 8 no-coverage · cap 9.3s"
     end
 
     test "a run-all coverage outcome names the fallback instead of counts" do
-      assert Live.detail_line({:coverage_done, %{run_all?: true, cap_ms: 9300}}) ==
+      assert Lines.detail_line({:coverage_done, %{run_all?: true, cap_ms: 9300}}) ==
                "  ✓ coverage: run-all (no per-mutant selection) · cap 9.3s"
     end
 
@@ -276,7 +277,7 @@ defmodule Mutare.Report.LiveTest do
         {:inference_override_declined,
          %{file: "apps/late/mix.exs", reason: "it defines no module of its own to hook"}}
 
-      assert Live.detail_line(event) ==
+      assert Lines.detail_line(event) ==
                "  ↺ could not disable type-signature inference for apps/late/mix.exs " <>
                  "(it defines no module of its own to hook); the compile may be much slower"
     end
@@ -284,34 +285,34 @@ defmodule Mutare.Report.LiveTest do
 
   describe "seed_line/1" do
     test "a seeded app build names the reused vs recompiling beam counts" do
-      assert Live.seed_line(%{outcome: :seeded, reused: 12, recompiled: 1}) ==
+      assert Lines.seed_line(%{outcome: :seeded, reused: 12, recompiled: 1}) ==
                "  ✓ reused 12 app beams, recompiling 1 metamutant beam"
     end
 
     test "singular/plural agree with the counts" do
-      assert Live.seed_line(%{outcome: :seeded, reused: 1, recompiled: 2}) ==
+      assert Lines.seed_line(%{outcome: :seeded, reused: 1, recompiled: 2}) ==
                "  ✓ reused 1 app beam, recompiling 2 metamutant beams"
     end
 
     test "a partial seed names how many apps fell back (umbrella per-app miss)" do
-      assert Live.seed_line(%{outcome: :partial, reused: 12, recompiled: 1, fell_back: 1}) ==
+      assert Lines.seed_line(%{outcome: :partial, reused: 12, recompiled: 1, fell_back: 1}) ==
                "  ↺ reused 12 app beams (recompiling 1), but 1 app fell back to a cold compile"
     end
 
     test "a fallback names the otherwise-silent cold compile" do
-      assert Live.seed_line(%{outcome: :fallback, reason: "the seed raised: boom"}) ==
+      assert Lines.seed_line(%{outcome: :fallback, reason: "the seed raised: boom"}) ==
                "  ↺ app-build seed fell back to a cold compile (the seed raised: boom)"
     end
 
     test "a skipped seed renders no line (nil), so verbose stays quiet on the broad-run default" do
-      assert Live.seed_line(%{outcome: :skipped}) == nil
+      assert Lines.seed_line(%{outcome: :skipped}) == nil
     end
   end
 
   describe "poison_round_line/1" do
     test "names the dropped mutant count" do
       line =
-        Live.poison_round_line(%{
+        Lines.poison_round_line(%{
           dropped: [%{id: 3, file: "lib/a.ex", line: 2, mutator: :arithmetic}],
           escalated: []
         })
@@ -321,7 +322,7 @@ defmodule Mutare.Report.LiveTest do
 
     test "pluralises and names escalated block macros" do
       line =
-        Live.poison_round_line(%{
+        Lines.poison_round_line(%{
           dropped: [
             %{id: 3, file: "lib/a.ex", line: 2, mutator: :arithmetic},
             %{id: 4, file: "lib/a.ex", line: 3, mutator: :integer}
@@ -336,7 +337,7 @@ defmodule Mutare.Report.LiveTest do
 
     test "a round that only escalates still reads (zero individual drops)" do
       line =
-        Live.poison_round_line(%{
+        Lines.poison_round_line(%{
           dropped: [],
           escalated: [
             %{macro: :guarded, file: "lib/a.ex", line: 5, count: 6},
@@ -354,20 +355,20 @@ defmodule Mutare.Report.LiveTest do
     test "suggests :skip for a structural head and a # mutare:ignore pointer for a definition" do
       # `{Kernel, :in, :raw}` would be rejected by `Options.new/1`; the line must never suggest it.
       line =
-        Live.macro_poison_line(%{
+        Lines.macro_poison_line(%{
           macros: [%{module: "Kernel", macro: :in}, %{module: "Ecto.Query", macro: :from}]
         })
 
       assert line =~ "{Kernel, :in, :skip}"
       assert line =~ "{Ecto.Query, :from, :raw}"
 
-      only_def = Live.macro_poison_line(%{macros: [%{module: "Kernel", macro: :def}]})
+      only_def = Lines.macro_poison_line(%{macros: [%{module: "Kernel", macro: :def}]})
       refute only_def =~ "{Kernel, :def,"
       assert only_def =~ "mutare:ignore"
     end
 
     test "names one inline macro and its module-qualified skip route" do
-      line = Live.macro_poison_line(%{macros: [%{module: "Ecto.Query", macro: :from, count: 3}]})
+      line = Lines.macro_poison_line(%{macros: [%{module: "Ecto.Query", macro: :from, count: 3}]})
 
       assert line ==
                "  ⚠ compile-poison inside macro Ecto.Query.from — a mutation there won't " <>
@@ -377,7 +378,7 @@ defmodule Mutare.Report.LiveTest do
 
     test "pluralises and lists several macros with their routes" do
       line =
-        Live.macro_poison_line(%{
+        Lines.macro_poison_line(%{
           macros: [
             %{module: "MyDsl", macro: :query, count: 2},
             %{module: "Other", macro: :build, count: 1}

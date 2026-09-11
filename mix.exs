@@ -201,7 +201,8 @@ defmodule Mutare.MixProject do
           Mutare.Report.Json,
           Mutare.Report.Html,
           Mutare.Report.Sarif,
-          Mutare.Report.Live
+          Mutare.Report.Live,
+          Mutare.Report.Live.Lines
         ],
         Internal: ~r//
       ]

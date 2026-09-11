@@ -27,7 +27,7 @@ defmodule Mutare.Result.StatusTest do
 
     test "every status carries a verbose_label (--verbose leaves a line for all of them)" do
       # Unlike `leave_behind` (survivors/problems only), the verbose label is required
-      # on every descriptor — `Mutare.Report.Live.verbose_leave/1` is total via `fetch!`.
+      # on every descriptor — `Mutare.Report.Live.Lines.verbose_leave/1` is total via `fetch!`.
       for status <- status_type_atoms() do
         assert {label, colour} = Status.fetch!(status).verbose_label
         assert is_binary(label) and label != ""

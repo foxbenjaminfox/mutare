@@ -238,14 +238,37 @@ defmodule Mutare.Poison.Hint do
     Enum.map_join(macros, "\n", fn {module, fun} -> "  * #{module}.#{fun}" end)
   end
 
-  defp route_entry({module, fun}) do
+  @doc """
+  The copy-pasteable `call_routes:` entry that leaves `module.fun`'s arguments as written,
+  as source text: `{Module, :fun, :raw}` for a call, `{Module, :fun, :skip}` for a head
+  Mutare analyzes structurally (`Kernel.in/2` — the only route it accepts); `nil` for a head
+  no route can name (a definition or compiler syntax such as `Kernel.def/2`), which only a
+  `# mutare:ignore` around the offending code can silence. The one place the tuple is spelt,
+  shared by the abort hint, the recovery notes, and the live reporter's `⚠` line.
+
+      iex> Mutare.Poison.Hint.route_tuple("Ecto.Query", :from)
+      "{Ecto.Query, :from, :raw}"
+      iex> Mutare.Poison.Hint.route_tuple("Kernel", :in)
+      "{Kernel, :in, :skip}"
+      iex> Mutare.Poison.Hint.route_tuple("Kernel", :def)
+      nil
+  """
+  @spec route_tuple(String.t(), atom()) :: String.t() | nil
+  def route_tuple(module, fun) do
     case StructuralForms.hint_treatment_for(module, fun) do
+      nil -> nil
+      treatment -> "{#{module}, #{inspect(fun)}, #{inspect(treatment)}}"
+    end
+  end
+
+  defp route_entry({module, fun}) do
+    case route_tuple(module, fun) do
       nil ->
         "        # #{module}.#{fun} cannot be named by a route (a definition or compiler " <>
           "syntax); use `# mutare:ignore` around the offending code"
 
-      treatment ->
-        "        {#{module}, #{inspect(fun)}, #{inspect(treatment)}}"
+      tuple ->
+        "        " <> tuple
     end
   end
 

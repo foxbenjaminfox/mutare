@@ -915,7 +915,7 @@ forcing a cold compile — as a diagnostic A/B for the no-op surface or for a pa
 Surfaced under `--verbose` (`[done]`): `Seed.app_build/6` returns a `t:summary/0`
 (`:seeded` with reused/recompiled beam counts, `:partial`, a `:fallback` to a cold
 compile, or `:skipped`), which `Sandbox.prepare/3` hands back and `Runner.Compile` relays on
-the `:on_phase` hook as `{:seed_app_build, summary}`; `Report.Live.seed_line/1` renders a `✓`/`↺` line for the
+the `:on_phase` hook as `{:seed_app_build, summary}`; `Report.Live.Lines.seed_line/1` renders a `✓`/`↺` line for the
 first three (a `:skipped` seed — the broad-run default — stays silent even in verbose), so
 both the speed-up and the otherwise-silent fallback are visible.
 
