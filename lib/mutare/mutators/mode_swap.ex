@@ -37,61 +37,71 @@ defmodule Mutare.Mutators.ModeSwap do
   alias Mutare.AST
   alias Mutare.Mutators.Helpers
 
-  # Ordered magnitude ladders. A swap is to the adjacent finer/coarser member *within
-  # the same ladder*, so the replacement is always legal for that function (truncate
-  # rejects :minute; add/diff accept it) and the change is always observable.
-  @truncate_ladder [:microsecond, :millisecond, :second]
-  @calendar_ladder [:nanosecond, :microsecond, :millisecond, :second, :minute, :hour, :day]
-  @system_ladder [:nanosecond, :microsecond, :millisecond, :second]
-
-  # `shift`'s `Duration` units, by magnitude. `:microsecond` is deliberately absent — its
-  # amount is a `{count, precision}` tuple, so a swap to/from an integer-valued unit would
-  # only raise. `Time.shift` accepts no date component, so its ladder is the time-only tail;
-  # `Date.shift` accepts no time component, so its ladder is the complementary date-only tail
-  # (a swap can never reach `:hour`, which `Date.shift` would reject).
-  @duration_ladder [:second, :minute, :hour, :day, :week, :month, :year]
-  @duration_time_ladder [:second, :minute, :hour]
-  @duration_date_ladder [:day, :week, :month, :year]
-
-  # Unordered mode sets: one curated, behaviourally-distinct sibling per member.
-  # Casing: only the exotic locale modes are swapped — `:greek`/`:turkic` → `:default`.
-  # `:default` ↔ `:ascii` is deliberately absent: that swap rarely changes behaviour
-  # (it only diverges on non-ASCII input the test must already exercise), so it tended
-  # to survive as a low-signal equivalent rather than expose a real gap.
-  @case_modes %{greek: [:default], turkic: [:default]}
-  @norm_forms %{nfc: [:nfd], nfd: [:nfc], nfkc: [:nfkd], nfkd: [:nfkc]}
-  # Sort direction: the `:asc`/`:desc` shorthand accepted by `sort`/`sort_by`/`keysort`.
-  @order_modes %{asc: [:desc], desc: [:asc]}
-  # ISO 8601 rendering format (a lone positional atom): the separator-laden `:extended`
-  # vs the compact `:basic` — a string-shape change any `to_iso8601` assertion catches.
-  @iso_format %{extended: [:basic], basic: [:extended]}
-  # Keyword-option value sets (the atom is the *value* of a named option key). Base16/Base32
-  # `case:` toggles the rendering casing / accepted input; the decoders' `:mixed` is
-  # deliberately absent (it accepts both cases — a swap from it only narrows on already-tested
-  # input, the `:default` ↔ `:ascii` trap). Regex's `return:` flips index tuples vs substrings.
-  @base_case %{upper: [:lower], lower: [:upper]}
-  @regex_return %{index: [:binary], binary: [:index]}
-  # `Regex.split`'s `on:` selects which captures are split points. Swap across the only
-  # axis observable on any matching input — whether the whole match splits: the
-  # whole-match modes `:first`/`:all` → `:none`, and the rest → `:first` (the default).
-  @regex_on %{
-    first: [:none],
-    all: [:none],
-    none: [:first],
-    all_but_first: [:first],
-    all_names: [:first]
+  # The swap sets, one per group key a `@rule_groups` entry routes to — the table `swaps/2` reads.
+  # Two shapes:
+  #
+  #   * `{:ladder, members}` — an ordered magnitude ladder. A swap is to the adjacent
+  #     finer/coarser member *within the same ladder*, so the replacement is always legal for
+  #     that function (truncate rejects `:minute`; add/diff accept it) and the change is always
+  #     observable. A third element, `%{alias => [swap]}`, maps an alias atom that names another
+  #     member (`System`'s `:native`, `Date`'s `:default` ≡ `:monday`) to a concrete neighbour
+  #     rather than to its own meaning (which would be an equivalent no-op).
+  #   * `{:set, %{member => [sibling]}}` — an unordered mode set: one curated,
+  #     behaviourally-distinct sibling per member.
+  #
+  # `@rules` below checks, at compile time, that every routed group has an entry here.
+  @swap_sets %{
+    truncate: {:ladder, [:microsecond, :millisecond, :second]},
+    calendar: {:ladder, [:nanosecond, :microsecond, :millisecond, :second, :minute, :hour, :day]},
+    system: {:ladder, [:nanosecond, :microsecond, :millisecond, :second], %{native: [:second]}},
+    # `shift`'s `Duration` units, by magnitude. `:microsecond` is deliberately absent — its
+    # amount is a `{count, precision}` tuple, so a swap to/from an integer-valued unit would
+    # only raise. `Time.shift` accepts no date component, so its ladder is the time-only tail;
+    # `Date.shift` accepts no time component, so its ladder is the complementary date-only tail
+    # (a swap can never reach `:hour`, which `Date.shift` would reject).
+    duration: {:ladder, [:second, :minute, :hour, :day, :week, :month, :year]},
+    duration_time: {:ladder, [:second, :minute, :hour]},
+    duration_date: {:ladder, [:day, :week, :month, :year]},
+    # Casing: only the exotic locale modes are swapped — `:greek`/`:turkic` → `:default`.
+    # `:default` ↔ `:ascii` is deliberately absent: that swap rarely changes behaviour
+    # (it only diverges on non-ASCII input the test must already exercise), so it tended
+    # to survive as a low-signal equivalent rather than expose a real gap.
+    case_mode: {:set, %{greek: [:default], turkic: [:default]}},
+    norm_form: {:set, %{nfc: [:nfd], nfd: [:nfc], nfkc: [:nfkd], nfkd: [:nfkc]}},
+    # Sort direction: the `:asc`/`:desc` shorthand accepted by `sort`/`sort_by`/`keysort`.
+    order: {:set, %{asc: [:desc], desc: [:asc]}},
+    # ISO 8601 rendering format (a lone positional atom): the separator-laden `:extended`
+    # vs the compact `:basic` — a string-shape change any `to_iso8601` assertion catches.
+    iso_format: {:set, %{extended: [:basic], basic: [:extended]}},
+    # Keyword-option value sets (the atom is the *value* of a named option key). Base16/Base32
+    # `case:` toggles the rendering casing / accepted input; the decoders' `:mixed` is
+    # deliberately absent (it accepts both cases — a swap from it only narrows on already-tested
+    # input, the `:default` ↔ `:ascii` trap). Regex's `return:` flips index tuples vs substrings.
+    base_case: {:set, %{upper: [:lower], lower: [:upper]}},
+    regex_return: {:set, %{index: [:binary], binary: [:index]}},
+    # `Regex.split`'s `on:` selects which captures are split points. Swap across the only
+    # axis observable on any matching input — whether the whole match splits: the
+    # whole-match modes `:first`/`:all` → `:none`, and the rest → `:first` (the default).
+    regex_on:
+      {:set,
+       %{
+         first: [:none],
+         all: [:none],
+         none: [:first],
+         all_but_first: [:first],
+         all_names: [:first]
+       }},
+    # Week-start day (`Date.day_of_week`/`beginning_of_week`/`end_of_week`'s `starting_on`): a
+    # swap moves the week's start to an adjacent day — a result any assertion on the computed
+    # boundary/index catches. `:default` is an alias for `:monday`, hence the `:tuesday` alias.
+    weekday:
+      {:ladder, [:monday, :tuesday, :wednesday, :thursday, :friday, :saturday, :sunday],
+       %{default: [:tuesday]}},
+    # URL query encoding (`URI.encode_query`/`decode_query`'s trailing `encoding`): the
+    # space-as-`+` `:www_form` vs the percent-encoded `:rfc3986`, a query-string shape change
+    # (`"a+b"` vs `"a%20b"`) any assertion on the encoded/decoded string catches.
+    uri_encoding: {:set, %{www_form: [:rfc3986], rfc3986: [:www_form]}}
   }
-
-  # Week-start day (`Date.day_of_week`/`beginning_of_week`/`end_of_week`'s `starting_on`): an
-  # ordered ladder of weekdays, so a swap moves the week's start to an adjacent day — a result
-  # any assertion on the computed boundary/index catches. `:default` is an alias for `:monday`,
-  # so — like `System`'s `:native` — it maps to a concrete neighbour (`:tuesday`) rather than
-  # to its own meaning (which would be an equivalent no-op).
-  @weekday_ladder [:monday, :tuesday, :wednesday, :thursday, :friday, :saturday, :sunday]
-  # URL query encoding (`URI.encode_query`/`decode_query`'s trailing `encoding`): the
-  # space-as-`+` `:www_form` vs the percent-encoded `:rfc3986`, a query-string shape change
-  # (`"a+b"` vs `"a%20b"`) any assertion on the encoded/decoded string catches.
-  @uri_encoding %{www_form: [:rfc3986], rfc3986: [:www_form]}
 
   # The Base16/Base32 family — all carry the `case:` option in their trailing options list.
   @base_funs [
@@ -186,84 +196,16 @@ defmodule Mutare.Mutators.ModeSwap do
   # `{mode_positions, group}`, derived by flattening each group's signature list.
   @rules for {spec, sigs} <- @rule_groups, sig <- sigs, into: %{}, do: {sig, spec}
 
+  # Every swap-set key a rule group routes to — a plain group atom, or the value-set atoms of a
+  # `{:kw, [key: set]}` group — must be in `@swap_sets`, checked here so "added a `@rule_groups`
+  # entry, forgot its swap set" fails the build (a `KeyError` naming the group) rather than
+  # raising the first time a mutant exercises it.
+  for {{_positions, group}, _sigs} <- @rule_groups,
+      key <- if(match?({:kw, _}, group), do: Keyword.values(elem(group, 1)), else: [group]),
+      do: Map.fetch!(@swap_sets, key)
+
   @impl Mutare.Mutator
   def name, do: :mode_swap
-
-  # A probe atom that belongs to no ladder or mode set: `swaps/2` returns `[]` for it on every
-  # *covered* group, but the raising catch-all fires for an uncovered one — the discriminator
-  # `uncovered_swap_groups/0` relies on.
-  @drift_probe :__mutare_drift_probe__
-
-  @doc false
-  # Drift guard for the `@rule_groups` ↔ `swaps/2` pairing, which has no *structural* compile-time
-  # guarantee: the swap-set keys any rule group routes to `swaps/2` that have *no* matching clause
-  # (so they would hit the raising catch-all when a real mutant exercises them). Empty in a healthy
-  # module — `__assert_swap_coverage__/2` (an `@after_compile` hook) makes a non-empty result a
-  # **compile** error, turning "added a `@rule_groups` entry, forgot its `swaps/2` clause" from a
-  # latent runtime `ArgumentError` into a failed build (the `ModeSwap` suite asserts it too).
-  @spec uncovered_swap_groups() :: [atom()]
-  def uncovered_swap_groups, do: Enum.reject(swap_group_keys(), &swaps_defined?/1)
-
-  @after_compile {__MODULE__, :__assert_swap_coverage__}
-
-  @doc false
-  # Fail the build on drift, checked at compile time rather than only under the test suite. Two ways
-  # the `@rule_groups`/`swaps/2` contract can break: a routed group with no clause (the common slip),
-  # and — subtler — a `swaps/2` catch-all softened so it no longer raises, which would silently
-  # defeat `swaps_defined?/1`'s probe. Both are caught here.
-  def __assert_swap_coverage__(_env, _bytecode) do
-    unless catch_all_raises?() do
-      raise "ModeSwap drift guard defunct: the swaps/2 catch-all no longer raises for an " <>
-              "undefined group, so swaps_defined?/1 can no longer detect a missing clause."
-    end
-
-    case uncovered_swap_groups() do
-      [] ->
-        :ok
-
-      groups ->
-        raise "ModeSwap: @rule_groups route to swap group(s) with no swaps/2 clause: " <>
-                "#{inspect(groups)} — add the clause(s) or fix the table."
-    end
-  end
-
-  # The swap-set keys every `@rule_groups` entry routes to `swaps/2`: a plain group atom, or the
-  # value-set atoms of a `{:kw, [key: set]}` group (whose `keyword_value_swaps/2` calls
-  # `swaps(set, value)`). Derived from `@rule_groups` so it can't drift from the table.
-  defp swap_group_keys do
-    @rule_groups
-    |> Enum.flat_map(fn
-      {{_positions, {:kw, specs}}, _sigs} -> Keyword.values(specs)
-      {{_positions, group}, _sigs} -> [group]
-    end)
-    |> Enum.uniq()
-  end
-
-  # Whether `group` has a real `swaps/2` clause: a covered group returns `[]` for the probe atom,
-  # an uncovered one raises from the catch-all.
-  defp swaps_defined?(group) do
-    swaps(group, @drift_probe)
-    true
-  rescue
-    ArgumentError -> false
-  end
-
-  # Whether the `swaps/2` catch-all still raises for a group with no clause — the property
-  # `swaps_defined?/1` depends on. A healthy module raises here; a catch-all softened to return
-  # `[]` would not, silently defeating the guard, which `__assert_swap_coverage__/2` rejects.
-  #
-  # The unknown group is built at runtime rather than written as a literal: Elixir's type
-  # inference (from 1.21) reads `swaps/2`'s domain off its clause heads and drops the
-  # catch-all, which always raises, so a literal no clause matches is flagged as a call that
-  # can never succeed — a warning, and a failed compile under `--warnings-as-errors`. An atom
-  # made from a string types as `atom()`, which overlaps the domain, and the probe still lands
-  # in the catch-all exactly as before.
-  defp catch_all_raises? do
-    swaps(:erlang.binary_to_atom("__mutare_undefined_group__", :utf8), @drift_probe)
-    false
-  rescue
-    ArgumentError -> true
-  end
 
   @impl Mutare.Mutator
   def mutate(node, %{pipe_mode: pipe_mode}) do
@@ -412,34 +354,17 @@ defmodule Mutare.Mutators.ModeSwap do
   # `:second =>`), and fresh meta so it carries no stale token (the clean-meta rule).
   defp duration_key(unit), do: {:__block__, [format: :keyword], [unit]}
 
-  # The legal sibling atoms for a swap. Ladders return the adjacent neighbour(s);
-  # the System-only `:native` maps to a concrete unit; mode sets are a lookup.
-  defp swaps(:truncate, atom), do: neighbours(@truncate_ladder, atom)
-  defp swaps(:calendar, atom), do: neighbours(@calendar_ladder, atom)
-  defp swaps(:system, :native), do: [:second]
-  defp swaps(:system, atom), do: neighbours(@system_ladder, atom)
-  defp swaps(:duration, unit), do: neighbours(@duration_ladder, unit)
-  defp swaps(:duration_time, unit), do: neighbours(@duration_time_ladder, unit)
-  defp swaps(:duration_date, unit), do: neighbours(@duration_date_ladder, unit)
-  defp swaps(:case_mode, atom), do: Map.get(@case_modes, atom, [])
-  defp swaps(:norm_form, atom), do: Map.get(@norm_forms, atom, [])
-  defp swaps(:order, atom), do: Map.get(@order_modes, atom, [])
-  defp swaps(:iso_format, atom), do: Map.get(@iso_format, atom, [])
-  defp swaps(:base_case, atom), do: Map.get(@base_case, atom, [])
-  defp swaps(:regex_return, atom), do: Map.get(@regex_return, atom, [])
-  defp swaps(:regex_on, atom), do: Map.get(@regex_on, atom, [])
-  # `:default` (≡ `:monday`) maps to a concrete neighbour, mirroring `System`'s `:native`.
-  defp swaps(:weekday, :default), do: [:tuesday]
-  defp swaps(:weekday, atom), do: neighbours(@weekday_ladder, atom)
-  defp swaps(:uri_encoding, atom), do: Map.get(@uri_encoding, atom, [])
+  # The legal sibling atoms for a swap, read from `@swap_sets`: a ladder returns the adjacent
+  # neighbour(s) (or an alias's mapped swap); a mode set is a lookup. Every group a rule routes
+  # to is in the table — checked at compile time next to `@rules` — so `fetch!` can't miss.
+  defp swaps(group, atom), do: swaps_in(Map.fetch!(@swap_sets, group), atom)
 
-  # A `@rules` group with no swap-set clause above is a programming error — a new rule
-  # added without its `swaps/2` entry. Fail loudly at analysis time rather than with an
-  # opaque FunctionClauseError. **Load-bearing**: `swaps_defined?/1` / `catch_all_raises?/0`
-  # rely on this clause raising `ArgumentError`; softening it to return `[]` defeats the drift
-  # guard, which `__assert_swap_coverage__/2` catches at compile time.
-  defp swaps(group, _atom),
-    do: raise(ArgumentError, "ModeSwap: no swap-set defined for group #{inspect(group)}")
+  defp swaps_in({:ladder, ladder}, atom), do: neighbours(ladder, atom)
+
+  defp swaps_in({:ladder, ladder, aliases}, atom),
+    do: Map.get_lazy(aliases, atom, fn -> neighbours(ladder, atom) end)
+
+  defp swaps_in({:set, set}, atom), do: Map.get(set, atom, [])
 
   # The members of `ladder` immediately finer and coarser than `atom` (each, if it
   # exists). `Enum.at` with a guarded non-negative index — a bare `i - 1` would wrap
