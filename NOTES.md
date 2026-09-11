@@ -6036,9 +6036,12 @@ The non-obvious parts:
   - **Refutable patterns keep `MatchError`.** `if {:ok, v} = f() do` lifts as `mutare_cond = f();
     {:ok, v} = mutare_cond; if … mutare_cond …` — the match value (always `f()`, *not* the
     pattern's bindings) goes to a temp, and the pattern is re-matched against it (so a non-match
-    still raises the same `MatchError`). The temp can't be named in the id-/name-free analyze pass
-    (the salted `cond_var` lives in `Ctx`), so analyze leaves a `Names.hoist_placeholder/0` (a var
-    with an impossible hygiene *context*, uncapturable) that emit substitutes once at the top.
+    still raises the same `MatchError`). The temp is the salted `cond_var`, carried into the
+    analyze pass on `Analyze.Env` (with the enriched mutator list). Originally analyze was
+    "name-free" and left a `Names.hoist_placeholder/0` (a var with an impossible hygiene
+    *context*) that emit substituted with a whole-subtree prewalk per `emit/2` — but the names
+    are computed before annotation, so nothing stopped threading them; see "Emitters carry their
+    state instead of recovering it".
   - **Only the spine; at most one refutable.** Hoist only when *every* escaping binding is on the
     unconditional spine — `spine_rewrite/1` recurses the left of a short-circuit and stops at
     branch (`case`/`cond`/`if`) and binding-isolating forms; `offspine_escaping_binding?/1` vetoes
@@ -10267,3 +10270,47 @@ decision* at each seam and the one place a public contract was deliberately left
     `%Scope{active_bound: true, module_depth: 0}` pattern that four emit modules repeated is
     `Scope.active_var_bound?/1` (`ClauseGuardEmit`, written in parallel, had a fifth copy; it
     reads the helper too).
+
+### Emitters carry their state instead of recovering it `[done]`
+
+Five places read something back out of their own output that the producer had known a moment
+earlier. Each was locally reasonable and each worked, but the shape is a trap: the reader
+encodes an assumption about what the output looks like (a subject shape, a prepend order, a
+variable name's spelling), and that assumption drifts silently from the writer. The common fix
+is the boring one — a flag on the scope, or one more return value, threaded from the place that
+knows to the place that asks.
+
+  - **Block-macro poison tags** were retrofitted onto "the sites above the length I held before
+    the emit" — correct only because `ClaimState` prepends. The tag now rides `Scope.block_macro`
+    for the body's emit and `ClaimState.claim/6` stamps each site as it is claimed.
+  - **`PipeEmit.hoist/2`** recognised a selector it had built as a pipe's RHS by reconstructing
+    its shape (block-wrapped `case` + a subject in either read form). `Render.selector_case/2`
+    now marks every selector it builds (`Meta.put_selector/1`, a `MetaKeys` bookkeeping key
+    stripped before render) and the hoist reads the marker — the same handoff candidates use.
+  - **`references_var?/2`** walked every emitted `:do` block, and every lifted group's clauses,
+    hunting for the dispatch variable's name to decide whether a prologue or a dispatcher was
+    needed. `SelectorEmit.subject/1` now returns the scope with `active_referenced` set whenever
+    it emits the bound read; the per-clause deliveries that read the binding directly (fn/receive
+    gates, rescue factoring) call `reference_active/1`. The two readers reset the flag before
+    their emit and read it after — no scan, and no reliance on the name being unique.
+  - **`Manifest.active_var/1`** reconstructed the per-file, possibly salted dispatch name from the
+    rendered metamutant: ~95 lines of heuristics (a coverage record's `<var> == 0` read, then a
+    binding or tupled pattern filtered to the salted-name family, else the canonical name) with a
+    documented failure mode when a target bound the key itself. The transform now returns the
+    name it chose (`Result.dispatch_var`; `transform_string_with_sites/2` returns a map), `Schema`
+    records it beside `start_ids`, and `Poison` threads it to `Manifest.from_source/2`. The
+    heuristics and `Names.salted_name?/2` are gone.
+  - **The condition-hoist placeholder** existed because "analyze is name-free" — yet
+    `Names.generated_names/1` runs before annotation. The analyze descent now takes an
+    `Analyze.Env{mutators, cond_var}` in place of the bare spec list (the plan side and the
+    dispatch-only leaves still take the list), `Conditions.hoist_one/3` spells the temp directly,
+    and the whole-subtree `Macro.prewalk` at the top of every `emit/2` is deleted. Collect mode
+    passes no `cond_var`, so it can hoist only bare-variable bindings — which it never needs to,
+    since it filters `IfCondition` out.
+
+Every corpus metamutant (all 201 `lib/**/*.ex` files at the parent commit) renders byte-identical
+before and after; the only behavioural change is the removed failure mode in the manifest.
+The `analysis_mutators` → `analysis_env` rename and the `mutators` → `env` parameter rename
+across the analyze tree are mechanical; a list-consuming call (`Spec.find`, `Dispatch.*`,
+`Attach.offer`, `Tag.*`, `PatternStructure.mutators`, `Captures.offer`, `Returns.*`) takes
+`env.mutators`, everything that re-enters the descent takes `env`.

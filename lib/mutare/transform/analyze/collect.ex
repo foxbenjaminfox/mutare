@@ -31,8 +31,10 @@ defmodule Mutare.Transform.Analyze.Collect do
   #     kinds (`CaseClause`/`FnClause`/`ReceiveClause`/`CasePattern`/`MatchPattern`/`MacroPattern`/`RescueDrop`) and the
   #     structural-only families that produce them are dropped. Spec filtering to
   #     `mutate/1`/`mutate/2` exporters removes the structural-only families up front (which also
-  #     keeps the `if`-condition hoist inert — it is gated on `Mutare.Mutators.IfCondition` being
-  #     present — so no hoist placeholder ever reaches a rebuild).
+  #     keeps the `if`-condition hoist inert — it is gated on a `condition_replacements`
+  #     implementer being enabled, and the structural callbacks are masked here — so no hoist
+  #     ever restructures a rebuild; the env carries no `cond_var` either, so a refutable hoist is
+  #     impossible on this path regardless).
   #   * **Hosted delivery is lowered to rebuilds, never woven.** A selector host participates
   #     fully: its ordinary `mutate/1`/`mutate/2` runs like any other node-level producer, and a
   #     nested `{:hosted, …}` stamp inside the subtree attaches the host's `Candidate.Hosted`
@@ -60,6 +62,7 @@ defmodule Mutare.Transform.Analyze.Collect do
   alias Mutare.Mutator.{Dispatch, Mutation, Spec}
   alias Mutare.Transform.{Candidate, Meta, Overlap}
   alias Mutare.Transform.Analyze
+  alias Mutare.Transform.Analyze.Env
   alias Mutare.Transform.Candidate.Delivery
 
   @structural_callbacks Mutare.Mutator.Structural.behaviour_info(:callbacks)
@@ -74,7 +77,7 @@ defmodule Mutare.Transform.Analyze.Collect do
         []
 
       specs ->
-        annotated = subtree |> Analyze.annotate(specs) |> Overlap.resolve()
+        annotated = subtree |> Analyze.annotate(%Env{mutators: specs}) |> Overlap.resolve()
         {stripped, collected} = walk(annotated, [], [])
 
         for {rev_path, cand} <- collected do

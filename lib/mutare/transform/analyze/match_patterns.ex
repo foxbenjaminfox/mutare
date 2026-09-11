@@ -28,24 +28,24 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # `=`'s, so the same tuple-re-export delivery applies. Every other statement analyzes as an
   # ordinary runtime expression. (A `for` qualifier uses `analyze_match_statement/2` instead:
   # a bare macro call there is a *filter*, not value-discarded — only the `=` shape is safe.)
-  def analyze_statement({:=, _meta, _operands} = match, mutators),
-    do: analyze_match_statement(match, mutators)
+  def analyze_statement({:=, _meta, _operands} = match, env),
+    do: analyze_match_statement(match, env)
 
-  def analyze_statement(node, mutators) do
+  def analyze_statement(node, env) do
     # A `:skip`-routed statement (`[x, y] |> destructure(v)` under `{Kernel, :|>, 2, :skip}`) is an
     # inert leaf: the dispatcher leaves it untouched, and the `:binding_pattern` route stamped on
     # its RHS *stage* must not be discovered past that boundary either.
     if Meta.skipped?(node) do
-      Analyze.annotate(node, mutators)
+      Analyze.annotate(node, env)
     else
       case binding_pattern_macro(node) do
         nil ->
-          Analyze.annotate(node, mutators)
+          Analyze.annotate(node, env)
 
         {raw_pattern, rebuild_mutant} ->
           node
-          |> Analyze.annotate(mutators)
-          |> attach_macro_pattern_candidates(raw_pattern, rebuild_mutant, mutators)
+          |> Analyze.annotate(env)
+          |> attach_macro_pattern_candidates(raw_pattern, rebuild_mutant, env)
       end
     end
   end
@@ -56,12 +56,12 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # analyzes as ordinary runtime. A `for` qualifier deliberately stops here — a bare macro
   # call as a qualifier is a *filter* (its truthiness selects iterations), so rewriting it to
   # a binding would silently drop the filter; only a `=` (already a binding qualifier) is safe.
-  def analyze_match_statement({:=, _meta, [raw_lhs, raw_rhs]} = match, mutators) do
-    analyzed = Analyze.annotate(match, mutators)
-    attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, mutators)
+  def analyze_match_statement({:=, _meta, [raw_lhs, raw_rhs]} = match, env) do
+    analyzed = Analyze.annotate(match, env)
+    attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, env)
   end
 
-  def analyze_match_statement(other, mutators), do: Analyze.annotate(other, mutators)
+  def analyze_match_statement(other, env), do: Analyze.annotate(other, env)
 
   # Offer the `=`'s LHS to the structural pattern families and, if any fire, attach a
   # `Candidate.MatchPattern` per mutation to the analyzed match node — emission rewrites
@@ -72,8 +72,10 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # whole-call mutation off the node — because the `=` node is **never offered** to mutators
   # (see the `analyze({:=, …})` clause), so the analyzed node carries no prior in-place
   # candidates to combine with. If that ever changes, this needs the macro path's re-home.
-  defp attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, mutators) do
-    candidates = match_pattern_candidates(raw_lhs, raw_rhs, PatternStructure.mutators(mutators))
+  defp attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, env) do
+    candidates =
+      match_pattern_candidates(raw_lhs, raw_rhs, PatternStructure.mutators(env.mutators))
+
     Attach.put_candidates_if_any(analyzed, candidates)
   end
 
@@ -197,14 +199,14 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # whole-call `Candidate.InPlace` would survive as an ordinary hoisted-pipe selector and
   # poison the build. When the pattern binds nothing (or isn't rangeable) there is no escape to
   # re-export, so an in-place selector is already safe and `analyzed` is left untouched.
-  defp attach_macro_pattern_candidates(analyzed, raw_pattern, rebuild_mutant, mutators) do
+  defp attach_macro_pattern_candidates(analyzed, raw_pattern, rebuild_mutant, env) do
     case pattern_export_context(raw_pattern) do
       nil ->
         analyzed
 
       {pattern, range, export, used} ->
         pattern_candidates =
-          macro_pattern_candidates(pattern, range, export, used, rebuild_mutant, mutators)
+          macro_pattern_candidates(pattern, range, export, used, rebuild_mutant, env)
 
         {analyzed, call_candidates} = rehome_call_mutations(analyzed, export)
 
@@ -286,9 +288,9 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # given its shared `export`/`range`/`used` (from `pattern_export_context/1`). Empty when no
   # structural family is enabled or the pattern admits none — the whole-call re-homing
   # (`rehome_call_mutations/2`) is then the only source of `MacroPattern` candidates.
-  defp macro_pattern_candidates(pattern, range, export, used, rebuild_mutant, mutators) do
+  defp macro_pattern_candidates(pattern, range, export, used, rebuild_mutant, env) do
     pattern
-    |> PatternStructure.node_mutations(used, PatternStructure.mutators(mutators))
+    |> PatternStructure.node_mutations(used, PatternStructure.mutators(env.mutators))
     |> Enum.map(fn {mutator, mutated} ->
       %Candidate.MacroPattern{
         mutator: mutator,

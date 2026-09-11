@@ -503,7 +503,7 @@ defmodule Mutare.Transform do
   defp build_ctx(config, opts) do
     %Ctx{
       config: config,
-      scope: %Scope{analysis_mutators: enrich_mutators(config.mutators, MapSet.new())},
+      scope: %Scope{analysis_env: analysis_env(config, MapSet.new())},
       claim: %ClaimState{
         sink: Keyword.get(opts, :sink, :render),
         selection_lines: Keyword.get(opts, :selection_lines),
@@ -641,7 +641,7 @@ defmodule Mutare.Transform do
   # depth/binding changes stay as the body left them.
   defp transform_module_body(do_keyword, module, meta, ctx) do
     outer = ctx.scope.behaviours
-    outer_mutators = ctx.scope.analysis_mutators
+    outer_env = ctx.scope.analysis_env
     outer_module = ctx.scope.module
 
     {do_keyword, ctx} =
@@ -653,7 +653,7 @@ defmodule Mutare.Transform do
     restored =
       Ctx.update_scope(
         ctx,
-        &%{&1 | behaviours: outer, analysis_mutators: outer_mutators, module: outer_module}
+        &%{&1 | behaviours: outer, analysis_env: outer_env, module: outer_module}
       )
 
     {do_keyword, restored}
@@ -676,7 +676,9 @@ defmodule Mutare.Transform do
   # group, an in-place group, or another statement), id-free; emission does the
   # id-threading.
   defp transform_statements(statements, ctx) do
-    plan = ModulePlan.build(statements, ctx.scope.analysis_mutators, ctx.config, ctx.scope.module)
+    plan =
+      ModulePlan.build(statements, ctx.scope.analysis_env.mutators, ctx.config, ctx.scope.module)
+
     emit_module_plan(plan, record_skip_matches(ctx, plan.skip_lifting_matches))
   end
 
@@ -692,28 +694,31 @@ defmodule Mutare.Transform do
     end
   end
 
-  # Enter a module scope: bind its module/name + `@behaviour` set and refresh the cached, behaviour-
-  # enriched mutator list (`ctx.scope.analysis_mutators`) the analyze/plan call sites read.
-  # `behaviours` changes only here (and is restored on the way out), so the enrichment —
-  # one fold over ~all mutators — happens once per module scope rather than once per
-  # clause/statement.
+  # Enter a module scope: bind its module/name + `@behaviour` set and refresh the cached
+  # analyze env (`ctx.scope.analysis_env`) the analyze/plan call sites read. `behaviours`
+  # changes only here (and is restored on the way out), so the enrichment — one fold over
+  # ~all mutators — happens once per module scope rather than once per clause/statement.
   defp put_module_behaviours(ctx, module, behaviours) do
-    enriched = enrich_mutators(ctx.config.mutators, behaviours)
+    env = analysis_env(ctx.config, behaviours)
 
     Ctx.update_scope(
       ctx,
-      &%{&1 | module: module, behaviours: behaviours, analysis_mutators: enriched}
+      &%{&1 | module: module, behaviours: behaviours, analysis_env: env}
     )
   end
 
-  # Fold a `@behaviour` set onto each spec, so it carries the behaviours to every leaf
-  # where a mutator runs (`Mutator.Dispatch.mutations/3`, the structural callbacks) and a
-  # behaviour-aware mutator sees `context.behaviours` without any new threading. The base
-  # `ctx.config.mutators` stays untouched (the empty-behaviours config); this enrichment is the
-  # one place per-module context meets the spec list. Outside any module `behaviours` is
-  # empty, so the specs pass through carrying the empty set.
-  defp enrich_mutators(mutators, behaviours) do
-    Enum.map(mutators, &%{&1 | behaviours: behaviours})
+  # The analyze pass's environment for one module scope (`Mutare.Transform.Analyze.Env`): the
+  # specs with the `@behaviour` set folded onto each — so it carries the behaviours to every
+  # leaf where a mutator runs (`Mutator.Dispatch.mutations/3`, the structural callbacks) and a
+  # behaviour-aware mutator sees `context.behaviours` — plus the file's condition-hoist temp.
+  # The base `config.mutators` stays untouched (the empty-behaviours config); this is the one
+  # place per-module context meets the spec list. Outside any module `behaviours` is empty, so
+  # the specs pass through carrying the empty set.
+  defp analysis_env(%Config{} = config, behaviours) do
+    %Analyze.Env{
+      mutators: Enum.map(config.mutators, &%{&1 | behaviours: behaviours}),
+      cond_var: config.cond_var
+    }
   end
 
   # === emission: walk the plan, thread ids, render ===========================
@@ -764,7 +769,7 @@ defmodule Mutare.Transform do
     bound0 = ctx.scope.active_bound
 
     {emitted, ctx} =
-      emit_annotated_clause(Analyze.annotate(clause, ctx.scope.analysis_mutators), ctx, delivery)
+      emit_annotated_clause(Analyze.annotate(clause, ctx.scope.analysis_env), ctx, delivery)
 
     {emitted, Ctx.update_scope(ctx, &%{&1 | active_bound: bound0})}
   end
@@ -877,7 +882,7 @@ defmodule Mutare.Transform do
          not Analyze.module_scaffold_statement?(node) do
       emit_block_macro(node, ctx)
     else
-      node |> Analyze.scaffold(ctx.scope.analysis_mutators) |> emit(ctx)
+      node |> Analyze.scaffold(ctx.scope.analysis_env) |> emit(ctx)
     end
   end
 
@@ -900,7 +905,7 @@ defmodule Mutare.Transform do
 
     {emitted, ctx} =
       node
-      |> Analyze.analyze_module_macro_block(ctx.scope.analysis_mutators)
+      |> Analyze.analyze_module_macro_block(ctx.scope.analysis_env)
       |> emit(Ctx.update_scope(ctx, &%{&1 | block_macro: tag}))
 
     {emitted, Ctx.update_scope(ctx, &%{&1 | block_macro: outer})}
@@ -974,7 +979,7 @@ defmodule Mutare.Transform do
   # nodes with their candidates, then emit selectors as ids are assigned.
   defp in_place(node, ctx) do
     node
-    |> Analyze.annotate(ctx.scope.analysis_mutators)
+    |> Analyze.annotate(ctx.scope.analysis_env)
     |> emit(ctx)
   end
 
@@ -997,12 +1002,6 @@ defmodule Mutare.Transform do
   # an outer selector holds the already-wrapped children, keeping nested sites
   # reachable when the outer mutant is inactive.
   defp emit(node, ctx) do
-    # Substitute the salted `cond_var` for the placeholder a refutable `if`/`unless`
-    # condition-hoist left behind (`Mutare.Transform.Analyze` builds the hoist in the
-    # id-free analyze pass, which has no per-file names). A no-op when nothing was
-    # hoisted refutably; runs before everything else so the rest of emit sees a real var.
-    node = Names.substitute_hoist_placeholder(node, ctx.config.cond_var)
-
     # Drop redundant leaf candidates a call-rewriting mutator already covers (ModeSwap's
     # mode atom / `shift` key vs AtomLiteral), *before* id assignment — so they leave no id
     # or site and ids stay contiguous (like `gate_candidates/1`). A no-op when nothing is

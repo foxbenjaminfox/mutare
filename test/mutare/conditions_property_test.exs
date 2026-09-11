@@ -17,7 +17,7 @@ defmodule Mutare.ConditionsPropertyTest do
 
   alias Mutare.Test.ConditionGen, as: Gen
   alias Mutare.Transform.Analyze.Conditions
-  alias Mutare.Transform.{Meta, Names}
+  alias Mutare.Transform.Meta
 
   @numtests 300
   @max_size 16
@@ -53,7 +53,7 @@ defmodule Mutare.ConditionsPropertyTest do
     numtests: @numtests,
     max_size: @max_size do
     forall c <- Gen.condition() do
-      {rewritten, hoists} = Conditions.spine_rewrite(c)
+      {rewritten, hoists} = Conditions.spine_rewrite(c, :mutare_cond)
 
       Conditions.spine_bindings(rewritten) == [] and
         length(hoists) == length(spine(c)) + Enum.count(spine(c), &refutable?/1) and
@@ -74,13 +74,8 @@ defmodule Mutare.ConditionsPropertyTest do
           Conditions.refutable_spine_count(c) <= 1
 
       implies hoistable? do
-        {rewritten, hoists} = Conditions.spine_rewrite(c)
-
-        hoisted =
-          Names.substitute_hoist_placeholder(
-            {:__block__, [], hoists ++ [rewritten]},
-            :mutare_cond
-          )
+        {rewritten, hoists} = Conditions.spine_rewrite(c, :mutare_cond)
+        hoisted = {:__block__, [], hoists ++ [rewritten]}
 
         {value, bindings, effects} = run(c)
         {value2, bindings2, effects2} = run(hoisted)

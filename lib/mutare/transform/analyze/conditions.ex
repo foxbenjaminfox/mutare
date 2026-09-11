@@ -18,8 +18,9 @@ defmodule Mutare.Transform.Analyze.Conditions do
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Spec
-  alias Mutare.Transform.{Candidate, Meta, Names}
+  alias Mutare.Transform.{Candidate, Meta}
   alias Mutare.Transform.Analyze
+  alias Mutare.Transform.Analyze.Env
   alias Mutare.Transform.Analyze.Attach
 
   # Analyze a `cond` clause *condition*: the generic runtime walk, plus the IfCondition
@@ -43,9 +44,9 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # clause's binding can't be hoisted out without changing when it runs. `if`/`unless`
   # *can* hoist (a single unconditional condition); that richer path lives in the
   # if/unless clause above (`hoist_if?/2` + `hoist_if/6`).
-  def analyze_condition(condition, mutators) do
-    analyzed = Analyze.annotate(condition, mutators)
-    finish_condition(analyzed, condition, mutators)
+  def analyze_condition(condition, env) do
+    analyzed = Analyze.annotate(condition, env)
+    finish_condition(analyzed, condition, env)
   end
 
   # The short-circuit operators whose right operand is evaluated *conditionally* (so a
@@ -71,13 +72,13 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # condition node*, structural or not, and the node-offered twin (`Conditional`'s `true`/`false`
   # on a skipped `x > 0`) is already withheld by the dispatcher — the two families must agree.
   # (The function-level return contract is the deliberate exception, NOTES "Call routing".)
-  def finish_condition(analyzed, raw_condition, mutators) do
+  def finish_condition(analyzed, raw_condition, env) do
     if Meta.skipped?(raw_condition) do
       analyzed
     else
       case prune_binding_ancestors(analyzed) do
         {pruned, true} -> pruned
-        {_pruned, false} -> attach_if_condition(analyzed, raw_condition, mutators)
+        {_pruned, false} -> attach_if_condition(analyzed, raw_condition, env)
       end
     end
   end
@@ -91,31 +92,31 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # the construct's liveness: `:runtime` for an ordinary `cond`; `:scaffold` for a module-level
   # `cond` wrapping a metaprogrammed `def`, whose conditions run once at compile time with
   # mutant 0 (so a selector there could never activate) and stay inert.
-  def cond_blocks(blocks, context, mutators) do
-    Enum.map(blocks, &cond_block(&1, context, mutators))
+  def cond_blocks(blocks, context, env) do
+    Enum.map(blocks, &cond_block(&1, context, env))
   end
 
   # One `cond` do-block: a `{key, clauses}` pair whose key is the `:do` label (kept raw, never
   # mutated). Anything unexpected falls back to a plain descent in `context`.
-  defp cond_block({key, clauses}, context, mutators) when is_list(clauses),
-    do: {key, Enum.map(clauses, &cond_clause(&1, context, mutators))}
+  defp cond_block({key, clauses}, context, env) when is_list(clauses),
+    do: {key, Enum.map(clauses, &cond_clause(&1, context, env))}
 
-  defp cond_block(other, context, mutators),
-    do: Analyze.descend(other, context, mutators)
+  defp cond_block(other, context, env),
+    do: Analyze.descend(other, context, env)
 
-  defp cond_clause({:->, meta, [conds, body]}, context, mutators) when is_list(conds) do
+  defp cond_clause({:->, meta, [conds, body]}, context, env) when is_list(conds) do
     analyzed_conds =
       Enum.map(conds, fn cond_node ->
         if context == :runtime,
-          do: analyze_condition(cond_node, mutators),
-          else: Analyze.descend(cond_node, context, mutators)
+          do: analyze_condition(cond_node, env),
+          else: Analyze.descend(cond_node, context, env)
       end)
 
-    {:->, meta, [analyzed_conds, Analyze.descend(body, context, mutators)]}
+    {:->, meta, [analyzed_conds, Analyze.descend(body, context, env)]}
   end
 
-  defp cond_clause(other, context, mutators),
-    do: Analyze.descend(other, context, mutators)
+  defp cond_clause(other, context, env),
+    do: Analyze.descend(other, context, env)
 
   # === if/unless condition hoisting ==========================================
   #
@@ -138,8 +139,8 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # `fold_hoist_into_condition/1`).
   # A **refutable** pattern (`if {:ok, v} = f() do`) keeps its `MatchError` semantics
   # by binding the match value to a temp first: `mutare_cond = f(); {:ok, v} =
-  # mutare_cond; if … mutare_cond … do`. The temp is a placeholder until emit
-  # substitutes the salted `cond_var` (analyze is id-/name-free).
+  # mutare_cond; if … mutare_cond … do`. The temp is the file's salted `cond_var`, carried
+  # in on the env (`Mutare.Transform.Analyze.Env`).
   #
   # Scope (each a soundness or fidelity guard, the rest staying on the prune path):
   #   * The decision is delivered; everything else on a *binding-ancestor* node (an
@@ -156,31 +157,36 @@ defmodule Mutare.Transform.Analyze.Conditions do
   #     original program). Vetoed when an impure expression precedes a spine binding in
   #     evaluation order — the common shapes (`if x = e`, `(x = e) != nil`, `(x = e) and
   #     g(x)`, two bindings) have the binding(s) evaluated first, so they still hoist.
-  #   * At most **one** refutable spine binding (they would all need a distinct temp;
-  #     bare-variable bindings reuse their own name, so any number is fine).
+  #   * At most **one** refutable spine binding (they would all need a distinct temp, and
+  #     the env carries one — `env.cond_var`; with none, in collect mode, zero), while
+  #     bare-variable bindings reuse their own name, so any number is fine.
   #   * Gated on some `condition_replacements` implementer being enabled — `IfCondition` or a
   #     custom condition mutator — since the hoist exists only to deliver a condition offer;
   #     with none, the plain prune path is the same program with less rewriting.
   # The decision `Site` references the **original** condition (range and code), so the
   # report diff stays faithful (`(name = f()) != nil` → `true`), independent of the
   # rewrite emit actually delivers.
-  def hoist_if?(analyzed_condition, mutators) do
+  def hoist_if?(analyzed_condition, env) do
     # A skipped condition is never hoisted: the rewrite would lift bindings out of an inert leaf.
     not Meta.skipped?(analyzed_condition) and
-      condition_implementers(mutators) != [] and
+      condition_implementers(env) != [] and
       escaping_binding?(analyzed_condition) and
       not offspine_escaping_binding?(analyzed_condition) and
       not spine_reorders?(analyzed_condition) and
-      refutable_spine_count(analyzed_condition) <= 1
+      refutable_spine_count(analyzed_condition) <= refutable_cap(env)
   end
+
+  # How many refutable spine bindings the hoist can name: one with a temp, none without.
+  defp refutable_cap(%Env{cond_var: nil}), do: 0
+  defp refutable_cap(%Env{}), do: 1
 
   # Build the hoisted `__block__`: lift every spine binding into a preceding statement,
   # rewrite the condition to read the lifted value, and attach the decision pair to the
   # rewritten root (with `original`/`range` from the *raw* condition, for the report).
-  def hoist_if(form, meta, raw_condition, analyzed_condition, analyzed_body, mutators) do
+  def hoist_if(form, meta, raw_condition, analyzed_condition, analyzed_body, env) do
     {pruned, _has} = prune_binding_ancestors(analyzed_condition)
-    {rewritten, hoists} = spine_rewrite(pruned)
-    rewritten = attach_decision(rewritten, raw_condition, mutators)
+    {rewritten, hoists} = spine_rewrite(pruned, env.cond_var)
+    rewritten = attach_decision(rewritten, raw_condition, env)
     if_node = {form, meta, [rewritten, analyzed_body]}
     {:__block__, [], hoists ++ [if_node]}
   end
@@ -223,9 +229,9 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # so the ownership premise is void, and the transform, which knows that, delivers the pair
   # itself. Asking the hook would lose the decision on exactly the headline shape
   # (`(name = f()) != nil`).
-  defp attach_decision(rewritten_root, raw_condition, mutators) do
+  defp attach_decision(rewritten_root, raw_condition, env) do
     candidates =
-      mutators
+      env
       |> condition_implementers()
       |> Enum.flat_map(fn
         %Spec{module: Mutare.Mutators.IfCondition} = spec ->
@@ -243,8 +249,8 @@ defmodule Mutare.Transform.Analyze.Conditions do
 
   # The enabled specs implementing the condition hook at either arity — the one discovery
   # both the plain path (`attach_if_condition/3`) and the hoist path share.
-  defp condition_implementers(mutators),
-    do: Dispatch.implementing_any(mutators, :condition_replacements, [1, 2])
+  defp condition_implementers(env),
+    do: Dispatch.implementing_any(env.mutators, :condition_replacements, [1, 2])
 
   # The cluster below is `@doc false` public: `conditions_property_test.exs` pins each walk
   # against a reference model and the hoist rewrite against evaluation (value, bindings, effect
@@ -295,47 +301,47 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # right operands, nested branches, and binding-isolating forms — `hoist_if?/2` has
   # already verified no escaping binding hides there.
   @doc false
-  def spine_rewrite({op, meta, [left, right]}) when op in @short_circuit_ops do
-    {left2, hoists} = spine_rewrite(left)
+  def spine_rewrite({op, meta, [left, right]}, cond_var) when op in @short_circuit_ops do
+    {left2, hoists} = spine_rewrite(left, cond_var)
     {{op, meta, [left2, right]}, hoists}
   end
 
-  def spine_rewrite({form, _meta, _args} = node)
+  def spine_rewrite({form, _meta, _args} = node, _cond_var)
       when form in @branch_forms or form in @binding_isolating_forms,
       do: {node, []}
 
-  def spine_rewrite({:=, _meta, [lhs, rhs]}), do: hoist_one(lhs, rhs)
+  def spine_rewrite({:=, _meta, [lhs, rhs]}, cond_var), do: hoist_one(lhs, rhs, cond_var)
 
   # mutare:ignore[guard_drop] equivalent — a non-leaf AST node always carries a list of args, so the `is_list/1` guard never excludes a real node.
-  def spine_rewrite({form, meta, args}) when is_list(args) do
-    {args2, hoists} = spine_rewrite_each(args)
+  def spine_rewrite({form, meta, args}, cond_var) when is_list(args) do
+    {args2, hoists} = spine_rewrite_each(args, cond_var)
     {{form, meta, args2}, hoists}
   end
 
-  def spine_rewrite({left, right}) do
-    {left2, lh} = spine_rewrite(left)
-    {right2, rh} = spine_rewrite(right)
+  def spine_rewrite({left, right}, cond_var) do
+    {left2, lh} = spine_rewrite(left, cond_var)
+    {right2, rh} = spine_rewrite(right, cond_var)
     {{left2, right2}, lh ++ rh}
   end
 
-  def spine_rewrite(list) when is_list(list), do: spine_rewrite_each(list)
+  def spine_rewrite(list, cond_var) when is_list(list), do: spine_rewrite_each(list, cond_var)
 
-  def spine_rewrite(other), do: {other, []}
+  def spine_rewrite(other, _cond_var), do: {other, []}
 
-  defp spine_rewrite_each(list) do
-    {nodes, hoists} = list |> Enum.map(&spine_rewrite/1) |> Enum.unzip()
+  defp spine_rewrite_each(list, cond_var) do
+    {nodes, hoists} = list |> Enum.map(&spine_rewrite(&1, cond_var)) |> Enum.unzip()
     {nodes, List.flatten(hoists)}
   end
 
   # One spine binding → `{read_node, [hoist_statement(s)]}`. The read node and the
   # hoist's RHS keep the *analyzed* EXPR, so its mutations are delivered in the lifted
   # statement.
-  defp hoist_one(lhs, rhs) do
+  defp hoist_one(lhs, rhs, cond_var) do
     if bare_var?(lhs) do
       {clean_var(lhs), [{:=, [], [lhs, rhs]}]}
     else
-      placeholder = Names.hoist_placeholder()
-      {placeholder, [{:=, [], [placeholder, rhs]}, {:=, [], [lhs, placeholder]}]}
+      temp = {cond_var, [], nil}
+      {temp, [{:=, [], [temp, rhs]}, {:=, [], [lhs, temp]}]}
     end
   end
 
@@ -532,9 +538,9 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # appended to the *analyzed* condition node — after any operator candidate already
   # there, so one selector hosts both — with `original`/`range` taken from the *raw*
   # condition for a clean diff.
-  defp attach_if_condition(analyzed_condition, raw_condition, mutators) do
+  defp attach_if_condition(analyzed_condition, raw_condition, env) do
     candidates =
-      mutators
+      env
       |> condition_implementers()
       |> Enum.flat_map(fn spec ->
         Enum.map(Dispatch.condition_replacements(spec, raw_condition), &{spec, &1})

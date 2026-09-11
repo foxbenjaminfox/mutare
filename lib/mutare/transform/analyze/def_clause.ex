@@ -22,11 +22,11 @@ defmodule Mutare.Transform.Analyze.DefClause do
   # build) and only its body in `:runtime`. (`cond`, whose clause left *is*
   # runtime, is handled generically; here the routing is unambiguous because these
   # blocks always pattern-match.)
-  def analyze_do_blocks(body_kw, mutators) do
+  def analyze_do_blocks(body_kw, env) do
     Enum.map(body_kw, fn {key, value} ->
       if Syntax.clause_block_key?(key) and is_list(value),
-        do: {key, Enum.map(value, &analyze_try_clause(&1, mutators))},
-        else: {key, Analyze.annotate(value, mutators)}
+        do: {key, Enum.map(value, &analyze_try_clause(&1, env))},
+        else: {key, Analyze.annotate(value, env)}
     end)
   end
 
@@ -46,7 +46,7 @@ defmodule Mutare.Transform.Analyze.DefClause do
   # (`RescueType` off, or a single-type single-clause rescue) ⇒ the body keyword is untouched, so
   # the shorthand's existing return/operator mutations are unaffected. Works under lifting for
   # free: the relocated original clause's body becomes `[do: <selector>]` like any in-place body.
-  def host_def_rescue(annotated_kw, raw_body_kw, mutators) do
+  def host_def_rescue(annotated_kw, raw_body_kw, env) do
     # `do:`/`end:` block markers force Sourceror to render the synthesized `try` in block form
     # (`try do … rescue … end`); a `[]`-meta `try` over the source's `{:__block__, …, [:do]}`
     # block keys would otherwise render the invalid inline keyword form (`try do: …, rescue: …`).
@@ -54,7 +54,7 @@ defmodule Mutare.Transform.Analyze.DefClause do
     # to the candidates' rebuilt mutant tries via `rescue_type_candidates/3`.
     try_meta = [do: [], end: []]
 
-    case ClausePatterns.rescue_type_candidates(raw_body_kw, try_meta, mutators) do
+    case ClausePatterns.rescue_type_candidates(raw_body_kw, try_meta, env) do
       [] -> annotated_kw
       candidates -> [do: Attach.put_candidates({:try, try_meta, [annotated_kw]}, candidates)]
     end
@@ -63,11 +63,11 @@ defmodule Mutare.Transform.Analyze.DefClause do
   # One `rescue`/`catch`/`else` clause: its patterns are matches (`:pattern`), its
   # body is runtime. A `when` guard among the patterns is returned whole by the
   # `:when` clause of `analyze/3` (guard mutation in a try clause isn't supported).
-  defp analyze_try_clause({:->, meta, [patterns, body]}, mutators)
+  defp analyze_try_clause({:->, meta, [patterns, body]}, env)
        when is_list(patterns) do
-    patterns = Enum.map(patterns, &Analyze.pattern(&1, mutators))
-    {:->, meta, [patterns, Analyze.annotate(body, mutators)]}
+    patterns = Enum.map(patterns, &Analyze.pattern(&1, env))
+    {:->, meta, [patterns, Analyze.annotate(body, env)]}
   end
 
-  defp analyze_try_clause(other, mutators), do: Analyze.annotate(other, mutators)
+  defp analyze_try_clause(other, env), do: Analyze.annotate(other, env)
 end

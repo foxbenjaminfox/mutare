@@ -23,13 +23,14 @@ defmodule Mutare.Transform.Scope do
   #     `@behaviour Foo` plus `use`-injected behaviours, gathered by `Mutare.Transform.Behaviours`
   #     and stamped on each `defmodule` node's meta). `Mutare.Transform` save/restores it per
   #     `defmodule` (behaviours don't inherit into nested modules) and folds it onto each spec
-  #     (cached in `analysis_mutators`) so it reaches a behaviour-aware mutator's `mutate/2` /
+  #     (cached in `analysis_env`) so it reaches a behaviour-aware mutator's `mutate/2` /
   #     structural callbacks via the context map's `:behaviours` key. Empty outside any module.
-  #   * `analysis_mutators` — `Config.mutators` folded with the current module's `behaviours`,
-  #     the value the analyze/plan call sites read. Since `behaviours` changes only at a
-  #     `defmodule` boundary, `Mutare.Transform` caches the enriched list here once per module
-  #     scope (recomputed on entry, restored on exit) rather than recomputing it per
-  #     clause/statement. `[]` is a safe default; the sole constructor primes it.
+  #   * `analysis_env` — the `Mutare.Transform.Analyze.Env` the analyze call sites take:
+  #     `Config.mutators` folded with the current module's `behaviours` (the plan side reads
+  #     its `mutators`), plus the file's condition-hoist temp. Since `behaviours` changes only
+  #     at a `defmodule` boundary, `Mutare.Transform` caches it here once per module scope
+  #     (recomputed on entry, restored on exit) rather than recomputing it per clause/statement.
+  #     The empty default is safe; the sole constructor primes it.
   #   * `module` — the module currently being transformed, for user options keyed
   #     by fully-qualified `{Module, function, arity}`. `nil` at file top level;
   #     `Mutare.Lifting.unresolved/0` inside a module whose `defmodule` head was dynamic
@@ -56,7 +57,7 @@ defmodule Mutare.Transform.Scope do
           active_bound: boolean(),
           module_depth: non_neg_integer(),
           behaviours: MapSet.t(module()),
-          analysis_mutators: [Mutare.Mutator.Spec.t()],
+          analysis_env: Mutare.Transform.Analyze.Env.t(),
           module: Mutare.Lifting.enclosing(),
           block_macro: {atom(), non_neg_integer()} | nil,
           active_referenced: boolean()
@@ -65,7 +66,7 @@ defmodule Mutare.Transform.Scope do
   defstruct active_bound: false,
             module_depth: 0,
             behaviours: MapSet.new(),
-            analysis_mutators: [],
+            analysis_env: %Mutare.Transform.Analyze.Env{},
             module: nil,
             block_macro: nil,
             active_referenced: false

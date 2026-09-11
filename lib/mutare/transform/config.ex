@@ -90,9 +90,8 @@ defmodule Mutare.Transform.Config do
             # isn't captured by the closure param.
             piped_var: :mutare_piped,
             # The temp a refutable `if`/`unless` condition-hoist binds the match value to
-            # (`Mutare.Transform.Analyze`'s condition hoisting). `:mutare_cond` canonically;
-            # salted per file like `active_var`. Emit substitutes it for the placeholder the
-            # (id-free) analyze pass leaves behind.
+            # (`Mutare.Transform.Analyze.Conditions`). `:mutare_cond` canonically; salted per
+            # file like `active_var`. Reaches the analyze pass on `Mutare.Transform.Analyze.Env`.
             cond_var: :mutare_cond,
             # The tupled-case scrutinee held across its single hosted-id coverage record.
             # Salted away from source variables by `Names`, like the other generated temps.

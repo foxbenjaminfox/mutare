@@ -121,23 +121,23 @@ defmodule Mutare.Transform.Analyze do
   #
   # Ids are *not* assigned here; emission does that bottom-up to keep post-order
   # id ordering.
-  def annotate(node, mutators), do: analyze(node, :runtime, mutators)
+  def annotate(node, env), do: analyze(node, :runtime, env)
 
   # The `:scaffold` entry: a module-level non-clause statement, descended but
   # never mutated in place (see the doc above and `Mutare.Transform`).
-  def scaffold(node, mutators), do: analyze(node, :scaffold, mutators)
+  def scaffold(node, env), do: analyze(node, :scaffold, env)
 
   # The `:pattern` entry: a match position — descended (so default-arg values and `size()`
   # args are still reached) but never mutated *in place*. Part of the sub-walk API
   # `Mutare.Transform.Analyze.Routed` drives the `:pattern`/`:binding_pattern` argument routing
   # through (the in-module counterpart to `annotate/2`).
-  def pattern(node, mutators), do: analyze(node, :pattern, mutators)
+  def pattern(node, env), do: analyze(node, :pattern, env)
 
   # The general context-carrying descent — `annotate`/`scaffold`/`pattern` are this specialized
   # to a fixed context. Public so a split-out analyze helper (e.g. `Analyze.Conditions`, which
   # owns `cond`/`if` routing) can fall back to the full descent in whatever liveness context it
   # was handed, instead of re-deriving the dispatch.
-  def descend(node, context, mutators), do: analyze(node, context, mutators)
+  def descend(node, context, env), do: analyze(node, context, env)
 
   # The one entry every form clause below is reached through — the public wrappers above and
   # every recursive descent alike — so the call-level `:skip` is honoured **before** any
@@ -151,22 +151,22 @@ defmodule Mutare.Transform.Analyze do
   # rejected or excluded upstream, `Mutare.Transform.StructuralForms`. `Mutare.Transform.Tag`
   # does the same at the head of its guard and pattern walks; `Analyze.Returns` treats a skipped
   # tail as one leaf.
-  defp analyze(node, context, mutators) do
-    if Meta.skipped?(node), do: node, else: analyze_form(node, context, mutators)
+  defp analyze(node, context, env) do
+    if Meta.skipped?(node), do: node, else: analyze_form(node, context, env)
   end
 
   # `when` guard (position-independent: also covers case/fn clause guards): the
   # lift path owns guard mutation, so the in-place walk never touches one.
-  defp analyze_form({:when, _meta, [_call | guards]} = node, _context, _mutators)
+  defp analyze_form({:when, _meta, [_call | guards]} = node, _context, _env)
        when guards != [],
        do: node
 
   # module attribute `@x <value>`: compile-time, pruned whole. A bare `@x` read
   # has an atom context (not a single-value list) and falls through to runtime.
-  defp analyze_form({:@, _meta, [{_name, _am, [_value]}]} = node, _context, _mutators), do: node
+  defp analyze_form({:@, _meta, [{_name, _am, [_value]}]} = node, _context, _env), do: node
 
   # `defmacro`/`defmacrop`: compile-time / macro-generated, pruned whole.
-  defp analyze_form({vis, _meta, _args} = node, _context, _mutators)
+  defp analyze_form({vis, _meta, _args} = node, _context, _env)
        when vis in [:defmacro, :defmacrop],
        do: node
 
@@ -176,7 +176,7 @@ defmodule Mutare.Transform.Analyze do
   # options are handed to a macro at expansion — so a runtime selector there is at
   # best inert and at worst illegal (it makes the single build fail). Pruned whole;
   # the directive rides through untouched and in position.
-  defp analyze_form({form, _meta, args} = node, _context, _mutators)
+  defp analyze_form({form, _meta, args} = node, _context, _env)
        when form in [:import, :alias, :require, :use] and is_list(args),
        do: node
 
@@ -185,7 +185,7 @@ defmodule Mutare.Transform.Analyze do
   # `to:` module. A selector spliced into the protocol name / delegation target would
   # not compile (it expects a literal module), so prune whole. (Relevant once an alias
   # mutator can match the module references they carry.)
-  defp analyze_form({form, _meta, _args} = node, _context, _mutators)
+  defp analyze_form({form, _meta, _args} = node, _context, _env)
        when form in [:defprotocol, :defdelegate],
        do: node
 
@@ -199,8 +199,8 @@ defmodule Mutare.Transform.Analyze do
   # (a DSL macro over `Kernel.defimpl`). A genuine `Kernel.defimpl` standing as a module-body
   # statement never does — `Mutare.Transform` plans it as a module body (so its guards/head
   # literals/clause structure lift), keyed on the impl-module stamp `Resolve` leaves on it.
-  defp analyze_form({:defimpl, meta, args}, _context, mutators) when is_list(args) do
-    {:defimpl, meta, Enum.map(args, &analyze_defimpl_arg(&1, mutators))}
+  defp analyze_form({:defimpl, meta, args}, _context, env) when is_list(args) do
+    {:defimpl, meta, Enum.map(args, &analyze_defimpl_arg(&1, env))}
   end
 
   # `quote`: its body is compile-time AST *construction*, not runtime code. The
@@ -217,14 +217,14 @@ defmodule Mutare.Transform.Analyze do
   # an inner quote only escapes that inner quote and remains data to the outer one;
   # `quote unquote: false` and implicit `bind_quoted` unquote disabling both
   # leave the quote raw; `unquote: true` explicitly re-enables escaping.
-  defp analyze_form({:quote, meta, args} = node, :runtime, mutators)
+  defp analyze_form({:quote, meta, args} = node, :runtime, env)
        when is_list(args) do
     if QuoteEscape.quote_unquote_enabled?(args),
-      do: {:quote, meta, QuoteEscape.analyze_quote_args(args, 1, mutators)},
+      do: {:quote, meta, QuoteEscape.analyze_quote_args(args, 1, env)},
       else: node
   end
 
-  defp analyze_form({:quote, _meta, args} = node, _context, _mutators)
+  defp analyze_form({:quote, _meta, args} = node, _context, _env)
        when is_list(args),
        do: node
 
@@ -242,13 +242,13 @@ defmodule Mutare.Transform.Analyze do
   # it would only mint inert no-coverage mutants. Leave the capture raw (the `/` is an arity
   # separator, `:capture_arity`, so there is nothing to descend into); a real `def` body reached
   # from the scaffold flips back to `:runtime` and its captures mutate normally.
-  defp analyze_form({:&, _meta, [{:/, _smeta, [left, right]}]} = node, context, mutators) do
+  defp analyze_form({:&, _meta, [{:/, _smeta, [left, right]}]} = node, context, env) do
     cond do
       not Captures.capture_ref?(left, right) ->
-        recurse(node, context, mutators)
+        recurse(node, context, env)
 
       context == :runtime ->
-        Captures.offer(node, left, right, mutators)
+        Captures.offer(node, left, right, env.mutators)
 
       true ->
         node
@@ -263,8 +263,8 @@ defmodule Mutare.Transform.Analyze do
   # block the descent manufactures is the if/unless condition hoist, so it is re-delivered
   # with the hoists folded into the condition (`Conditions.fold_hoist_into_condition/1`) — a
   # legal, semantically identical position — before the capture is rebuilt.
-  defp analyze_form({:&, _meta, [_body]} = node, :runtime, mutators) do
-    case do_analyze_call_node(node, mutators, %{pipe_mode: :unpiped}) do
+  defp analyze_form({:&, _meta, [_body]} = node, :runtime, env) do
+    case do_analyze_call_node(node, env, %{pipe_mode: :unpiped}) do
       {:&, amp_meta, [child]} ->
         {:&, amp_meta, [Conditions.fold_hoist_into_condition(child)]}
 
@@ -281,13 +281,13 @@ defmodule Mutare.Transform.Analyze do
   # clauses narrowed/dropped (`host_def_rescue/3`). The body is first
   # `Syntax.normalize_clause_blocks/1`-ed so an **inline keyword** rescue/catch/else
   # (`def f, do: …, rescue: (p -> b)`) reads like its block-form twin.
-  defp analyze_form({vis, meta, [head, body_kw]}, _context, mutators)
+  defp analyze_form({vis, meta, [head, body_kw]}, _context, env)
        when vis in [:def, :defp] and is_list(body_kw) do
-    head = analyze(head, :pattern, mutators)
+    head = analyze(head, :pattern, env)
     body_kw = Syntax.normalize_clause_blocks(body_kw)
-    analyzed_kw = DefClause.analyze_do_blocks(body_kw, mutators)
-    annotated_kw = Returns.annotate_returns(analyzed_kw, body_kw, mutators)
-    {vis, meta, [head, DefClause.host_def_rescue(annotated_kw, body_kw, mutators)]}
+    analyzed_kw = DefClause.analyze_do_blocks(body_kw, env)
+    annotated_kw = Returns.annotate_returns(analyzed_kw, body_kw, env.mutators)
+    {vis, meta, [head, DefClause.host_def_rescue(annotated_kw, body_kw, env)]}
   end
 
   # bitstring: each segment's value keeps the surrounding context; the spec side
@@ -302,18 +302,18 @@ defmodule Mutare.Transform.Analyze do
   # segment that gets a selector keeps its `binary` type (see there). An
   # **interpolated string** / heredoc (`delimiter`-marked `<<>>`) is *not* a
   # construction — its parts are string content, descended as ordinary segments.
-  defp analyze_form({:<<>>, meta, segments} = node, :runtime, mutators) do
+  defp analyze_form({:<<>>, meta, segments} = node, :runtime, env) do
     seg_fun =
       if Keyword.has_key?(meta, :delimiter),
-        do: &analyze_segment(&1, :runtime, mutators),
-        else: &analyze_construction_segment(&1, mutators)
+        do: &analyze_segment(&1, :runtime, env),
+        else: &analyze_construction_segment(&1, env)
 
     analyzed = {:<<>>, meta, Enum.map(segments, seg_fun)}
-    Attach.offer(analyzed, node, mutators)
+    Attach.offer(analyzed, node, env.mutators)
   end
 
-  defp analyze_form({:<<>>, meta, segments}, context, mutators) do
-    {:<<>>, meta, Enum.map(segments, &analyze_segment(&1, context, mutators))}
+  defp analyze_form({:<<>>, meta, segments}, context, env) do
+    {:<<>>, meta, Enum.map(segments, &analyze_segment(&1, context, env))}
   end
 
   # `%Struct{…}`: the inner `%{…}` is the struct's *field map*, not a standalone
@@ -324,9 +324,9 @@ defmodule Mutare.Transform.Analyze do
   # *key* raw: a struct field name is compile-time-checked, so mutating it to another
   # atom names a field the struct doesn't define (a compile error, both for the
   # literal `%S{a: 1}` and the update `%S{m | a: 1}` forms). The alias rides untouched.
-  defp analyze_form({:%, meta, [aliases, {:%{}, mmeta, pairs}]}, context, mutators)
+  defp analyze_form({:%, meta, [aliases, {:%{}, mmeta, pairs}]}, context, env)
        when is_list(pairs) do
-    pairs = Enum.map(pairs, &analyze_struct_field(&1, context, mutators))
+    pairs = Enum.map(pairs, &analyze_struct_field(&1, context, env))
     {:%, meta, [aliases, {:%{}, mmeta, pairs}]}
   end
 
@@ -339,11 +339,11 @@ defmodule Mutare.Transform.Analyze do
   # `Candidate.MatchPattern`). Non-`=` statements analyze exactly as before. A single- or
   # empty-statement block has no non-final statement, so it falls through to the generic
   # recurse below (its lone statement is the value, analyzed normally).
-  defp analyze_form({:__block__, meta, stmts}, :runtime, mutators)
+  defp analyze_form({:__block__, meta, stmts}, :runtime, env)
        when is_list(stmts) and length(stmts) >= 2 do
     {init, [last]} = Enum.split(stmts, -1)
-    init = Enum.map(init, &MatchPatterns.analyze_statement(&1, mutators))
-    {:__block__, meta, init ++ [analyze(last, :runtime, mutators)]}
+    init = Enum.map(init, &MatchPatterns.analyze_statement(&1, env))
+    {:__block__, meta, init ++ [analyze(last, :runtime, env)]}
   end
 
   # match `=`: the left side is a pattern, the right keeps the context. The `=` node itself is
@@ -356,15 +356,15 @@ defmodule Mutare.Transform.Analyze do
   # `rehome_call_mutations/2`: re-home the whole-`=` mutation into the tuple-export selector
   # (give `Candidate.MatchPattern` a `mutant_expr`-style field, as `MacroPattern` has). The
   # invariant is guarded by `match_pattern_test.exs` ("a bare `=` node is never offered…").
-  defp analyze_form({:=, meta, [lhs, rhs]}, context, mutators) do
-    {:=, meta, [analyze(lhs, :pattern, mutators), analyze(rhs, context, mutators)]}
+  defp analyze_form({:=, meta, [lhs, rhs]}, context, env) do
+    {:=, meta, [analyze(lhs, :pattern, env), analyze(rhs, context, env)]}
   end
 
   # `<-` generator/with-clause: the left is a pattern (matched against each value
   # in `for x <- …`, or the right's result in `with {:ok, x} <- …`), the right keeps
   # the context. Mirrors `=` — without it a literal in the LHS would be mutated.
-  defp analyze_form({:<-, meta, [lhs, rhs]}, context, mutators) do
-    {:<-, meta, [analyze(lhs, :pattern, mutators), analyze(rhs, context, mutators)]}
+  defp analyze_form({:<-, meta, [lhs, rhs]}, context, env) do
+    {:<-, meta, [analyze(lhs, :pattern, env), analyze(rhs, context, env)]}
   end
 
   # (`match?`/`destructure` and any other pattern-context macro are no longer a
@@ -382,9 +382,9 @@ defmodule Mutare.Transform.Analyze do
   # so the keyword form (`cond(do: (c -> b))`) reads like its block-form twin —
   # otherwise the wrapped clause list falls past `cond_block`'s list guard into the
   # generic descent, which pattern-routes the conditions and leaves them unmutated.
-  defp analyze_form({:cond, meta, [blocks]}, context, mutators) when is_list(blocks) do
+  defp analyze_form({:cond, meta, [blocks]}, context, env) when is_list(blocks) do
     blocks = Syntax.normalize_clause_blocks(blocks)
-    {:cond, meta, [Conditions.cond_blocks(blocks, body_context(context), mutators)]}
+    {:cond, meta, [Conditions.cond_blocks(blocks, body_context(context), env)]}
   end
 
   # `if`/`unless`: the condition is an ordinary runtime expression *and* the one
@@ -408,17 +408,17 @@ defmodule Mutare.Transform.Analyze do
   # condition carry the decision mutant (`hoist_if/6`). Only `:runtime` — a module-level
   # (`:scaffold`) `if` runs once at compile time, so its condition is inert and falls
   # through to the non-mutating catch-all.
-  defp analyze_form({form, meta, [condition, body_kw]} = node, :runtime, mutators)
+  defp analyze_form({form, meta, [condition, body_kw]} = node, :runtime, env)
        when form in [:if, :unless] and is_list(body_kw) do
-    analyzed_body = analyze(body_kw, :runtime, mutators)
-    analyzed_condition = analyze(condition, :runtime, mutators)
+    analyzed_body = analyze(body_kw, :runtime, env)
+    analyzed_condition = analyze(condition, :runtime, env)
 
-    if Conditions.hoist_if?(analyzed_condition, mutators) do
-      Conditions.hoist_if(form, meta, condition, analyzed_condition, analyzed_body, mutators)
+    if Conditions.hoist_if?(analyzed_condition, env) do
+      Conditions.hoist_if(form, meta, condition, analyzed_condition, analyzed_body, env)
     else
-      analyzed_condition = Conditions.finish_condition(analyzed_condition, condition, mutators)
+      analyzed_condition = Conditions.finish_condition(analyzed_condition, condition, env)
       rebuilt = {form, meta, [analyzed_condition, analyzed_body]}
-      Attach.offer(rebuilt, node, mutators)
+      Attach.offer(rebuilt, node, env.mutators)
     end
   end
 
@@ -442,15 +442,15 @@ defmodule Mutare.Transform.Analyze do
          {:case, meta,
           [subject, [{do_key, {:__block__, _bmeta, [[{:->, _, _} | _] = clauses]}}]]},
          :runtime,
-         mutators
+         env
        ),
-       do: analyze({:case, meta, [subject, [{do_key, clauses}]]}, :runtime, mutators)
+       do: analyze({:case, meta, [subject, [{do_key, clauses}]]}, :runtime, env)
 
-  defp analyze_form({:case, _meta, [_subject, [{_do_key, clauses}]]} = node, :runtime, mutators)
+  defp analyze_form({:case, _meta, [_subject, [{_do_key, clauses}]]} = node, :runtime, env)
        when is_list(clauses) do
-    analyzed = recurse(node, :runtime, mutators)
+    analyzed = recurse(node, :runtime, env)
 
-    case ClausePatterns.case_clause_candidates(clauses, mutators) do
+    case ClausePatterns.case_clause_candidates(clauses, env) do
       [] -> analyzed
       candidates -> ClausePatterns.put_case_candidates(analyzed, candidates)
     end
@@ -459,14 +459,14 @@ defmodule Mutare.Transform.Analyze do
   # `receive` retains its native mailbox scan and after block; ReceiveClause candidates
   # interleave guarded variants before each original message clause during emission.
   # Normalize keyword blocks for traversal while preserving the whole-node custom offer.
-  defp analyze_form({:receive, meta, [blocks]} = node, :runtime, mutators) when is_list(blocks) do
+  defp analyze_form({:receive, meta, [blocks]} = node, :runtime, env) when is_list(blocks) do
     normalized_blocks = Syntax.normalize_clause_blocks(blocks)
     normalized_node = {:receive, meta, [normalized_blocks]}
 
     ClausePatterns.attach_receive_candidates(
       normalized_node,
       node,
-      mutators
+      env
     )
   end
 
@@ -478,9 +478,9 @@ defmodule Mutare.Transform.Analyze do
   # `fn` node's own meta — different nodes, so they nest cleanly at emit.
   # FnClause candidates store one raw mutant clause each; FnClauseEmit preserves arity,
   # captures the selector and records all head/guard ids at creation, before any invocation.
-  defp analyze_form({:fn, _meta, clauses} = node, :runtime, mutators) when is_list(clauses) do
-    attached = ClausePatterns.attach_fn_candidates(node, mutators)
-    Returns.annotate_fn_returns(attached, node, mutators)
+  defp analyze_form({:fn, _meta, clauses} = node, :runtime, env) when is_list(clauses) do
+    attached = ClausePatterns.attach_fn_candidates(node, env)
+    Returns.annotate_fn_returns(attached, node, env.mutators)
   end
 
   # `try`: a runtime expression whose `rescue` clauses are special — they match on
@@ -499,19 +499,19 @@ defmodule Mutare.Transform.Analyze do
   # (`try(do: …, rescue: (p -> b))`) reads like its block-form twin — otherwise
   # `rescue_type_candidates/3`'s list guard misses the wrapped clause list and the
   # narrowing/clause-drop mutants are silently skipped.
-  defp analyze_form({:try, meta, [blocks]} = node, :runtime, mutators) when is_list(blocks) do
+  defp analyze_form({:try, meta, [blocks]} = node, :runtime, env) when is_list(blocks) do
     normalized_blocks = Syntax.normalize_clause_blocks(blocks)
-    analyzed = recurse({:try, meta, [normalized_blocks]}, :runtime, mutators)
+    analyzed = recurse({:try, meta, [normalized_blocks]}, :runtime, env)
 
     # `catch`/`else` clause guards get their guard-only mutants (`ClauseGuardEmit`) —
     # `rescue` clauses carry no guard.
     candidates =
-      Attach.build_candidates(node, Dispatch.mutations(node, mutators)) ++
-        ClausePatterns.rescue_type_candidates(normalized_blocks, meta, mutators) ++
+      Attach.build_candidates(node, Dispatch.mutations(node, env.mutators)) ++
+        ClausePatterns.rescue_type_candidates(normalized_blocks, meta, env) ++
         ClausePatterns.guard_only_candidates(
           ClausePatterns.located_block(normalized_blocks, :catch) ++
             ClausePatterns.located_block(normalized_blocks, :else),
-          mutators
+          env
         )
 
     Attach.put_candidates_if_any(analyzed, candidates)
@@ -525,18 +525,18 @@ defmodule Mutare.Transform.Analyze do
   # module level (so the arm's own code is left compile-time-inert). `cond` is
   # excepted above; a `when` guard among the patterns is returned whole by the
   # `:when` clause, so guards stay untouched.
-  defp analyze_form({:->, meta, [patterns, body]}, context, mutators) when is_list(patterns) do
+  defp analyze_form({:->, meta, [patterns, body]}, context, env) when is_list(patterns) do
     {:->, meta,
      [
-       Enum.map(patterns, &analyze(&1, :pattern, mutators)),
-       analyze(body, body_context(context), mutators)
+       Enum.map(patterns, &analyze(&1, :pattern, env)),
+       analyze(body, body_context(context), env)
      ]}
   end
 
   # default argument inside a pattern (`x \\ expr`): the variable is a pattern,
   # but the default runs at call time → runtime (don't regress its mutation).
-  defp analyze_form({:\\, meta, [var, default]}, :pattern, mutators) do
-    {:\\, meta, [analyze(var, :pattern, mutators), analyze(default, :runtime, mutators)]}
+  defp analyze_form({:\\, meta, [var, default]}, :pattern, env) do
+    {:\\, meta, [analyze(var, :pattern, env), analyze(default, :runtime, env)]}
   end
 
   # `|>` pipe: the right side is a call whose *effective* first argument is the piped
@@ -552,11 +552,11 @@ defmodule Mutare.Transform.Analyze do
   # its LHS into match?'s **pattern** position, and a `:raw` macro may accept a LHS that
   # is neither a valid expression nor a valid pattern. Treating it as runtime would splice
   # a selector `case` into pattern/opaque position and poison the build.
-  defp analyze_form({:|>, meta, [lhs, rhs]}, :runtime, mutators) do
+  defp analyze_form({:|>, meta, [lhs, rhs]}, :runtime, env) do
     {:|>, meta,
      [
-       Routed.analyze_piped_value(lhs, rhs, mutators),
-       analyze_pipe_stage(rhs, mutators)
+       Routed.analyze_piped_value(lhs, rhs, env),
+       analyze_pipe_stage(rhs, env)
      ]}
   end
 
@@ -571,18 +571,18 @@ defmodule Mutare.Transform.Analyze do
   #
   # A guarded generator (`x when x > 0 <- xs`) and a guarded `reduce:` `do` clause get their
   # guard-only mutants (`ClauseGuardEmit`); the patterns themselves stay `:pattern`.
-  defp analyze_form({:for, _meta, args} = node, :runtime, mutators) when is_list(args) do
-    {:for, meta, args} = Attach.offer(node, node, mutators)
+  defp analyze_form({:for, _meta, args} = node, :runtime, env) when is_list(args) do
+    {:for, meta, args} = Attach.offer(node, node, env.mutators)
     {qualifiers, trailing} = Enum.split(args, -1)
 
     guards =
       ClausePatterns.guard_only_candidates(
         ClausePatterns.located_clauses(qualifiers) ++
           Enum.flat_map(trailing, &ClausePatterns.located_block(&1, :do)),
-        mutators
+        env
       )
 
-    {:for, meta, Enum.map(args, &analyze_for_arg(&1, mutators))}
+    {:for, meta, Enum.map(args, &analyze_for_arg(&1, env))}
     |> Meta.append_candidates(:in_place, guards)
   end
 
@@ -597,13 +597,13 @@ defmodule Mutare.Transform.Analyze do
   # the generic `->` clause). A `<-` non-match routes to `else`, but a `=` non-match raises `MatchError`
   # (which `else` never catches) — preserved by the rewrite's trailing raise clause. (A
   # malformed `with` with no keyword tail falls back to the generic runtime descent.)
-  defp analyze_form({:with, meta, args} = node, :runtime, mutators)
+  defp analyze_form({:with, meta, args} = node, :runtime, env)
        when is_list(args) and args != [] do
     if is_list(List.last(args)) do
       {raw_clauses, [body_kw]} = Enum.split(args, -1)
-      clauses = Enum.map(raw_clauses, &MatchPatterns.analyze_statement(&1, mutators))
+      clauses = Enum.map(raw_clauses, &MatchPatterns.analyze_statement(&1, env))
       body_kw = Syntax.normalize_clause_blocks(body_kw)
-      rebuilt = {:with, meta, clauses ++ [analyze(body_kw, :runtime, mutators)]}
+      rebuilt = {:with, meta, clauses ++ [analyze(body_kw, :runtime, env)]}
 
       # Guard-only mutants of the `<-` clauses and the `else` clauses (`ClauseGuardEmit`);
       # their patterns stay `:pattern`.
@@ -611,12 +611,12 @@ defmodule Mutare.Transform.Analyze do
         ClausePatterns.guard_only_candidates(
           ClausePatterns.located_clauses(raw_clauses) ++
             ClausePatterns.located_block(body_kw, :else),
-          mutators
+          env
         )
 
-      rebuilt |> Attach.offer(node, mutators) |> Meta.append_candidates(:in_place, guards)
+      rebuilt |> Attach.offer(node, env.mutators) |> Meta.append_candidates(:in_place, guards)
     else
-      node |> Attach.offer(node, mutators) |> recurse_runtime(mutators)
+      node |> Attach.offer(node, env.mutators) |> recurse_runtime(env)
     end
   end
 
@@ -638,15 +638,15 @@ defmodule Mutare.Transform.Analyze do
   defp analyze_form(
          {neg, meta, [{neg, inner_meta, [operand]} = raw_inner]} = node,
          :runtime,
-         mutators
+         env
        )
        when is_negation_op(neg) do
     # A skipped inner node is a leaf with no mutants to be redundant with: the generic path.
     if Meta.skipped?(raw_inner) do
-      do_analyze_call_node(node, mutators, %{pipe_mode: :unpiped})
+      do_analyze_call_node(node, env, %{pipe_mode: :unpiped})
     else
-      inner = {neg, inner_meta, [analyze(operand, :runtime, mutators)]}
-      Attach.offer({neg, meta, [inner]}, node, mutators)
+      inner = {neg, inner_meta, [analyze(operand, :runtime, env)]}
+      Attach.offer({neg, meta, [inner]}, node, env.mutators)
     end
   end
 
@@ -660,16 +660,16 @@ defmodule Mutare.Transform.Analyze do
   defp analyze_form(
          {neg, meta, [{:in, in_meta, [left, right]} = raw_inner]} = node,
          :runtime,
-         mutators
+         env
        )
        when is_negation_op(neg) do
     if Meta.skipped?(raw_inner) do
-      do_analyze_call_node(node, mutators, %{pipe_mode: :unpiped})
+      do_analyze_call_node(node, env, %{pipe_mode: :unpiped})
     else
       inner =
-        {:in, in_meta, [analyze(left, :runtime, mutators), analyze(right, :runtime, mutators)]}
+        {:in, in_meta, [analyze(left, :runtime, env), analyze(right, :runtime, env)]}
 
-      Attach.offer({neg, meta, [inner]}, node, mutators)
+      Attach.offer({neg, meta, [inner]}, node, env.mutators)
     end
   end
 
@@ -688,22 +688,22 @@ defmodule Mutare.Transform.Analyze do
   # `Mutare.Mutators.StrictEquality`) is **not** the polarity complement, so `not (a == b)`
   # ≢ `a === b` survives negation as a genuinely new mutant and is kept. The operands still
   # descend either way.
-  defp analyze_form({neg, meta, [{op, op_meta, [left, right]}]} = node, :runtime, mutators)
+  defp analyze_form({neg, meta, [{op, op_meta, [left, right]}]} = node, :runtime, env)
        when is_negation_op(neg) and is_equality_op(op) do
     inner_raw = {op, op_meta, [left, right]}
 
     if Meta.skipped?(inner_raw) do
-      do_analyze_call_node(node, mutators, %{pipe_mode: :unpiped})
+      do_analyze_call_node(node, env, %{pipe_mode: :unpiped})
     else
       # The inner node takes the ordinary call path — offered, its operands by their stamped
       # positions when it carries a route (`{Kernel, :==, 2, :interior}` holds under `not` as it
       # does bare); this clause adds only the negation-redundancy drop on top.
       inner =
         inner_raw
-        |> do_analyze_call_node(mutators, %{pipe_mode: :unpiped})
+        |> do_analyze_call_node(env, %{pipe_mode: :unpiped})
         |> drop_negation_redundant_candidates(op)
 
-      Attach.offer({neg, meta, [inner]}, node, mutators)
+      Attach.offer({neg, meta, [inner]}, node, env.mutators)
     end
   end
 
@@ -720,9 +720,9 @@ defmodule Mutare.Transform.Analyze do
   # *other* constant survives (`(L and R) → true` still evaluates R — distinct), as do Logical's
   # `and`↔`or` and both operands. `&&`/`||` are body-only (guard-illegal), so the guard twin in
   # `Mutare.Transform.Tag` handles only `and`/`or`. See NOTES "Equivalent-sibling suppression".
-  defp analyze_form({op, _meta, [left, _right]} = node, :runtime, mutators)
+  defp analyze_form({op, _meta, [left, _right]} = node, :runtime, env)
        when is_body_connective(op) do
-    analyzed = node |> Attach.offer(node, mutators) |> recurse_runtime(mutators)
+    analyzed = node |> Attach.offer(node, env.mutators) |> recurse_runtime(env)
 
     # (A skipped left operand has no `L → false`/`L → true` of its own to defer to.)
     if Suppression.boolean_op_node?(left) and not Meta.skipped?(left),
@@ -745,14 +745,14 @@ defmodule Mutare.Transform.Analyze do
          {{:., _, [:erlang, :binary_to_atom]} = dot, meta, [{:<<>>, bmeta, segments}, encoding]} =
            node,
          :runtime,
-         mutators
+         env
        )
        when is_list(segments) do
     if Keyword.has_key?(meta, :delimiter) do
-      content = {:<<>>, bmeta, Enum.map(segments, &analyze_segment(&1, :runtime, mutators))}
-      Attach.offer({dot, meta, [content, encoding]}, node, mutators)
+      content = {:<<>>, bmeta, Enum.map(segments, &analyze_segment(&1, :runtime, env))}
+      Attach.offer({dot, meta, [content, encoding]}, node, env.mutators)
     else
-      do_analyze_call_node(node, mutators, %{pipe_mode: :unpiped})
+      do_analyze_call_node(node, env, %{pipe_mode: :unpiped})
     end
   end
 
@@ -767,15 +767,15 @@ defmodule Mutare.Transform.Analyze do
   # clauses `Syntax.normalize_clause_blocks/1` the wrapper away first.) Descend clause-wise —
   # the `->` clause keeps each LHS a `:pattern`, the safe default for an unknown host — and
   # never offer the wrapper.
-  defp analyze_form({:__block__, meta, [[{:->, _, _} | _] = clauses]}, :runtime, mutators),
-    do: {:__block__, meta, [Enum.map(clauses, &analyze(&1, :runtime, mutators))]}
+  defp analyze_form({:__block__, meta, [[{:->, _, _} | _] = clauses]}, :runtime, env),
+    do: {:__block__, meta, [Enum.map(clauses, &analyze(&1, :runtime, env))]}
 
   # A generic runtime node: offer it and descend, or route a known-macro call's arguments
   # by treatment — see `do_analyze_call_node/3`. (A sigil is offered whole then descended
   # *surgically* via `descend_sigil/2`, so an interpolated `~r/a#{b}c/` still mutates `b`
   # while its content `<<>>` wrapper is never offered; that gate lives in the helper.)
-  defp analyze_form({_form, _meta, _args} = node, :runtime, mutators),
-    do: do_analyze_call_node(node, mutators, %{pipe_mode: :unpiped})
+  defp analyze_form({_form, _meta, _args} = node, :runtime, env),
+    do: do_analyze_call_node(node, env, %{pipe_mode: :unpiped})
 
   # A keyword/map/block pair (`key: value`, `%{a: …}`, a `do:`/`else:`/`rescue:`/
   # `catch:`/`after:` block). Only a **block key** is a pure structural label that
@@ -791,16 +791,16 @@ defmodule Mutare.Transform.Analyze do
   # their own clauses, before reaching here. (A value holding a keyword-form clause tail —
   # `with …, else: (_ -> fallback)` — descends into the stab-clause-block clause above,
   # which keeps the wrapper raw; no special casing is needed here.)
-  defp analyze_form({key, value} = pair, context, mutators) do
+  defp analyze_form({key, value} = pair, context, env) do
     if Syntax.block_key?(key),
-      do: {key, analyze(value, context, mutators)},
-      else: recurse(pair, context, mutators)
+      do: {key, analyze(value, context, env)},
+      else: recurse(pair, context, env)
   end
 
   # anything else — a node in a non-runtime context, or a container/leaf:
   # descend without mutating so boundary forms (`\\`, `<<>>`) still fire on
   # children, but attach no candidate here.
-  defp analyze_form(node, context, mutators), do: recurse(node, context, mutators)
+  defp analyze_form(node, context, env), do: recurse(node, context, env)
 
   # Drop from the **top node** the Conditional candidate forcing it to `bool` — the redundant
   # short-circuit constant. Per mutation (the sibling constant and Logical's swap stay) and
@@ -847,10 +847,10 @@ defmodule Mutare.Transform.Analyze do
   # A piped **known-macro** stage (`q |> where([p], p.x == 1)`, the query-builder shape)
   # routes its arguments by treatment too — `Resolve` already stamped the *visible*-position
   # routing (the piped value dropped), so a `:raw` DSL body is left raw instead of mutated.
-  defp analyze_pipe_stage({_form, _meta, args} = node, mutators) when is_list(args),
-    do: do_analyze_call_node(node, mutators, %{pipe_mode: :piped})
+  defp analyze_pipe_stage({_form, _meta, args} = node, env) when is_list(args),
+    do: do_analyze_call_node(node, env, %{pipe_mode: :piped})
 
-  defp analyze_pipe_stage(other, mutators), do: analyze(other, :runtime, mutators)
+  defp analyze_pipe_stage(other, env), do: analyze(other, :runtime, env)
 
   # The shared call-node dispatch behind the generic runtime `analyze/3` clause and
   # `analyze_pipe_stage/2`: a call stamped a **known macro** (`meta[:mutare_route]`, set by
@@ -861,7 +861,7 @@ defmodule Mutare.Transform.Analyze do
   # `|>` RHS, so an arity-changing mutator sees the effective arity) — which also gates the
   # sigil-content path: a `|>` RHS (`:piped`) is never sigil syntax, so only the generic-runtime
   # (`:unpiped`) path descends sigil content.
-  defp do_analyze_call_node({form, meta, _args} = node, mutators, context) do
+  defp do_analyze_call_node({form, meta, _args} = node, env, context) do
     case Meta.routing(meta) do
       # The call-level `:skip`: an **inert leaf** — no whole-node offer, nothing inside the
       # parentheses descended. (A piped receiver is the `|>`'s other operand, analyzed by the
@@ -874,7 +874,7 @@ defmodule Mutare.Transform.Analyze do
         node
 
       nil ->
-        node = Attach.offer(node, node, mutators, context)
+        node = Attach.offer(node, node, env.mutators, context)
 
         # `sigil?(form)` (the `sigil_<x>` head) is necessary but **not sufficient**: a call to a
         # *function* named `sigil_s`/`sigil_r`/… (a local sigil shadowing `Kernel`'s) parses to the
@@ -885,11 +885,11 @@ defmodule Mutare.Transform.Analyze do
         # `:delimiter` meta, so gate on it; a non-sigil call falls through to `recurse_runtime`,
         # which analyses its args — including a real bitstring arg — correctly.
         if context.pipe_mode == :unpiped and sigil?(form) and Keyword.has_key?(meta, :delimiter),
-          do: descend_sigil(node, mutators),
-          else: node |> recurse_runtime(mutators) |> descend_receiver(mutators)
+          do: descend_sigil(node, env),
+          else: node |> recurse_runtime(env) |> descend_receiver(env)
 
       routing ->
-        Routed.analyze_routed_call(node, routing, mutators, context)
+        Routed.analyze_routed_call(node, routing, env, context)
     end
   end
 
@@ -901,10 +901,10 @@ defmodule Mutare.Transform.Analyze do
   # any other value, or the call families silently never fire on it. Split on exactly that: analyze a
   # non-module receiver as `:runtime`, leave a module reference (and the `fun` name atom) raw. Mirrors
   # the `Mutare.Transform.Resolve` clause-#4 split that stamps the same receiver.
-  defp descend_receiver({{:., dm, [recv, fun]}, meta, args}, mutators) do
+  defp descend_receiver({{:., dm, [recv, fun]}, meta, args}, env) do
     if module_reference?(recv),
       do: {{:., dm, [recv, fun]}, meta, args},
-      else: {{:., dm, [analyze(recv, :runtime, mutators), fun]}, meta, args}
+      else: {{:., dm, [analyze(recv, :runtime, env), fun]}, meta, args}
   end
 
   # An **anonymous call** `callee.(args)` — `f.(x)`, `m.field.(x)`, and the immediately-invoked
@@ -912,10 +912,10 @@ defmodule Mutare.Transform.Analyze do
   # reference, always a runtime value, so it is analyzed like any non-module receiver. Without this an
   # inline `fn` was invisible to every family (its guards, patterns *and* bodies) while the same `fn`
   # bound to a variable first mutated fully — the analysis happening at the binding site, not the call.
-  defp descend_receiver({{:., dm, [callee]}, meta, args}, mutators),
-    do: {{:., dm, [analyze(callee, :runtime, mutators)]}, meta, args}
+  defp descend_receiver({{:., dm, [callee]}, meta, args}, env),
+    do: {{:., dm, [analyze(callee, :runtime, env)]}, meta, args}
 
-  defp descend_receiver(node, _mutators), do: node
+  defp descend_receiver(node, _env), do: node
 
   # Whether a dot-call receiver is a **module reference** (opaque — the module side of a remote call)
   # rather than a runtime expression: an Elixir alias path (`Enum`, kept opaque even when dynamic so a
@@ -948,15 +948,15 @@ defmodule Mutare.Transform.Analyze do
   # clauses the `for` special form demands stay literal ("the do block must be written
   # using acc -> expr clauses"). It needs no handling here: the stab-clause-block clause
   # of the main descent descends it clause-wise with the wrapper left raw.)
-  defp analyze_for_arg(opts, mutators) when is_list(opts) do
+  defp analyze_for_arg(opts, env) when is_list(opts) do
     Enum.map(opts, fn
       {key, value} ->
         if AST.key_atom(key) == :uniq,
           do: {key, value},
-          else: {key, analyze(value, :runtime, mutators)}
+          else: {key, analyze(value, :runtime, env)}
 
       other ->
-        analyze(other, :runtime, mutators)
+        analyze(other, :runtime, env)
     end)
   end
 
@@ -966,15 +966,15 @@ defmodule Mutare.Transform.Analyze do
   # generator for `<<>>`, and the selector `case` spliced into generator position poisons the
   # build (`misplaced operator ::/2`). So: leading segments as `:pattern`, the `<-` through the
   # ordinary generator clause (its LHS a pattern, its RHS runtime), the wrapper never offered.
-  defp analyze_for_arg({:<<>>, meta, segments}, mutators) when is_list(segments) do
+  defp analyze_for_arg({:<<>>, meta, segments}, env) when is_list(segments) do
     case List.pop_at(segments, -1) do
       {{:<-, _gmeta, [_lhs, _rhs]} = generator, leading} ->
         {:<<>>, meta,
-         Enum.map(leading, &analyze(&1, :pattern, mutators)) ++
-           [analyze(generator, :runtime, mutators)]}
+         Enum.map(leading, &analyze(&1, :pattern, env)) ++
+           [analyze(generator, :runtime, env)]}
 
       _ ->
-        MatchPatterns.analyze_match_statement({:<<>>, meta, segments}, mutators)
+        MatchPatterns.analyze_match_statement({:<<>>, meta, segments}, env)
     end
   end
 
@@ -983,74 +983,74 @@ defmodule Mutare.Transform.Analyze do
   # `=` qualifier discards its value, so the tuple-export rewrite is sound) and leaves
   # generators/filters as ordinary runtime. (Unlike a block statement / `with` clause, a
   # *bare macro call* qualifier is a filter, not value-discarded, so it stays unrewritten.)
-  defp analyze_for_arg(arg, mutators),
-    do: MatchPatterns.analyze_match_statement(arg, mutators)
+  defp analyze_for_arg(arg, env),
+    do: MatchPatterns.analyze_match_statement(arg, env)
 
   # One entry of a struct's field map: keep the key (a compile-time field name) raw and
   # descend only the value. A struct update (`%S{base | a: 1}`) carries a `:|` node
   # whose right side is the field list — descend the base normally, recurse the fields.
-  defp analyze_struct_field({:|, meta, [base, fields]}, context, mutators) when is_list(fields) do
-    base = analyze(base, context, mutators)
-    fields = Enum.map(fields, &analyze_struct_field(&1, context, mutators))
+  defp analyze_struct_field({:|, meta, [base, fields]}, context, env) when is_list(fields) do
+    base = analyze(base, context, env)
+    fields = Enum.map(fields, &analyze_struct_field(&1, context, env))
     {:|, meta, [base, fields]}
   end
 
-  defp analyze_struct_field({key, value}, context, mutators),
-    do: {key, analyze(value, context, mutators)}
+  defp analyze_struct_field({key, value}, context, env),
+    do: {key, analyze(value, context, env)}
 
-  defp analyze_struct_field(other, context, mutators),
-    do: analyze(other, context, mutators)
+  defp analyze_struct_field(other, context, env),
+    do: analyze(other, context, env)
 
   # Recurse a runtime call's arguments as ordinary runtime data, then tag its call-option
   # keys. A call-rewriting mutator (ModeSwap) and a leaf mutator (AtomLiteral) may both fire
   # on the same atom/key, but the redundant leaf mutant is dropped *after* analysis by the
   # diff-derived `Mutare.Transform.Overlap` pass (it sees the call rewrite already covers that
   # node) — so the analyzer no longer needs to know which positions are "owned".
-  defp recurse_runtime({_form, _meta, args} = node, mutators) when is_list(args) do
-    node |> recurse(:runtime, mutators) |> CallOptions.mark()
+  defp recurse_runtime({_form, _meta, args} = node, env) when is_list(args) do
+    node |> recurse(:runtime, env) |> CallOptions.mark()
   end
 
-  defp recurse_runtime(node, mutators), do: recurse(node, :runtime, mutators)
+  defp recurse_runtime(node, env), do: recurse(node, :runtime, env)
 
   # Generic structural descent over every Sourceror node shape, re-analyzing the
   # children in the same context. Public as part of the small sub-walk API the
   # split-out clause-pattern builder (`Mutare.Transform.Analyze.ClausePatterns`)
   # uses to analyze a `receive`/`fn` node normally before attaching its candidates.
-  def recurse({form, meta, args}, context, mutators) when is_list(args),
-    do: {form, meta, Enum.map(args, &analyze(&1, context, mutators))}
+  def recurse({form, meta, args}, context, env) when is_list(args),
+    do: {form, meta, Enum.map(args, &analyze(&1, context, env))}
 
-  def recurse({form, meta, arg}, _context, _mutators), do: {form, meta, arg}
+  def recurse({form, meta, arg}, _context, _env), do: {form, meta, arg}
 
-  def recurse({left, right}, context, mutators),
-    do: {analyze(left, context, mutators), analyze(right, context, mutators)}
+  def recurse({left, right}, context, env),
+    do: {analyze(left, context, env), analyze(right, context, env)}
 
-  def recurse(list, context, mutators) when is_list(list),
-    do: Enum.map(list, &analyze(&1, context, mutators))
+  def recurse(list, context, env) when is_list(list),
+    do: Enum.map(list, &analyze(&1, context, env))
 
-  def recurse(other, _context, _mutators), do: other
+  def recurse(other, _context, _env), do: other
 
   # One argument of a `defimpl`: a keyword list holding the `do:` block (its body is
   # runtime — analyze it) alongside compile-time entries like `for:` (pass raw). The
   # leading protocol-alias argument is not a list, so it passes through untouched.
-  defp analyze_defimpl_arg(kw, mutators) when is_list(kw) do
+  defp analyze_defimpl_arg(kw, env) when is_list(kw) do
     Enum.map(kw, fn
       {key, value} = pair ->
-        if Syntax.do_key?(key), do: {key, analyze(value, :runtime, mutators)}, else: pair
+        if Syntax.do_key?(key), do: {key, analyze(value, :runtime, env)}, else: pair
 
       other ->
         other
     end)
   end
 
-  defp analyze_defimpl_arg(other, _mutators), do: other
+  defp analyze_defimpl_arg(other, _env), do: other
 
   # A bitstring segment `<<value::spec>>`: the value keeps the surrounding
   # context; the spec side is excluded except for `size(expr)` args.
-  defp analyze_segment({:"::", meta, [value, spec]}, context, mutators) do
-    {:"::", meta, [analyze(value, context, mutators), analyze_spec(spec, context, mutators)]}
+  defp analyze_segment({:"::", meta, [value, spec]}, context, env) do
+    {:"::", meta, [analyze(value, context, env), analyze_spec(spec, context, env)]}
   end
 
-  defp analyze_segment(segment, context, mutators), do: analyze(segment, context, mutators)
+  defp analyze_segment(segment, context, env), do: analyze(segment, context, env)
 
   # A segment of a runtime bitstring *construction*. A binary-valued literal — a string,
   # an interpolated string, or a `~s`/`~S` sigil — written *untyped* defaults to a `binary`
@@ -1062,11 +1062,11 @@ defmodule Mutare.Transform.Analyze do
   # bare value (it patches the original source, not the metamutant). An already-typed
   # (`::utf8`/`::binary`/…) segment, or a non-binary one (an integer/char/`size(expr)`), is
   # analyzed unchanged.
-  defp analyze_construction_segment({:"::", _meta, _args} = typed, mutators),
-    do: analyze_segment(typed, :runtime, mutators)
+  defp analyze_construction_segment({:"::", _meta, _args} = typed, env),
+    do: analyze_segment(typed, :runtime, env)
 
-  defp analyze_construction_segment(segment, mutators) do
-    analyzed = analyze_segment(segment, :runtime, mutators)
+  defp analyze_construction_segment(segment, env) do
+    analyzed = analyze_segment(segment, :runtime, env)
 
     if binary_valued_literal?(segment),
       do: {:"::", [], [analyzed, {:binary, [], nil}]},
@@ -1096,14 +1096,13 @@ defmodule Mutare.Transform.Analyze do
   # and `unit(...)` stay raw — a swapped `-` is an illegal specifier and a `case`
   # is illegal in a spec. `size(expr)` is the one runtime sub-position: its arg is
   # recursed in the segment's context (mutated in a body, pruned in a pattern).
-  defp analyze_spec({:-, meta, [left, right]}, context, mutators),
-    do:
-      {:-, meta, [analyze_spec(left, context, mutators), analyze_spec(right, context, mutators)]}
+  defp analyze_spec({:-, meta, [left, right]}, context, env),
+    do: {:-, meta, [analyze_spec(left, context, env), analyze_spec(right, context, env)]}
 
-  defp analyze_spec({:size, meta, [arg]}, context, mutators),
-    do: {:size, meta, [analyze(arg, context, mutators)]}
+  defp analyze_spec({:size, meta, [arg]}, context, env),
+    do: {:size, meta, [analyze(arg, context, env)]}
 
-  defp analyze_spec(other, _context, _mutators), do: other
+  defp analyze_spec(other, _context, _env), do: other
 
   # Is this node form a sigil (`~r`, `~D`, `~w`, a custom `~X`)? Sigils parse as
   # `{:sigil_<name>, _, [<<>>, modifiers]}`; the analyzer offers the whole node to
@@ -1124,12 +1123,12 @@ defmodule Mutare.Transform.Analyze do
   # splicing a selector into it would be illegal. The modifier list is left raw; the
   # sigil node itself was already offered to the sigil mutators by the caller. A
   # bare-binary segment (`~r/foo/`'s `"foo"`) is descended too but offers nothing.
-  defp descend_sigil({sigil, meta, [{:<<>>, bmeta, segments}, modifiers]}, mutators) do
-    content = {:<<>>, bmeta, Enum.map(segments, &analyze_segment(&1, :runtime, mutators))}
+  defp descend_sigil({sigil, meta, [{:<<>>, bmeta, segments}, modifiers]}, env) do
+    content = {:<<>>, bmeta, Enum.map(segments, &analyze_segment(&1, :runtime, env))}
     {sigil, meta, [content, modifiers]}
   end
 
-  defp descend_sigil(node, _mutators), do: node
+  defp descend_sigil(node, _env), do: node
 
   def module_scaffold_statement?({form, _meta, _args}) when form in @module_scaffold_forms,
     do: true
@@ -1166,7 +1165,7 @@ defmodule Mutare.Transform.Analyze do
   # withhold (a module-level container is never offered), `:pattern` has no module-level use.
   # `Resolve` stamps `meta[:mutare_route]` for bare-imported and qualified forms alike, so both
   # route.
-  def analyze_module_macro_block({form, meta, args} = node, mutators) do
+  def analyze_module_macro_block({form, meta, args} = node, env) do
     case Meta.routing(meta) do
       # The call-level `:skip`: the whole block macro is an inert leaf.
       :skip ->
@@ -1182,8 +1181,8 @@ defmodule Mutare.Transform.Analyze do
             route_module_arg(
               arg,
               module_position(routing, i),
-              &analyze(&1, :scaffold, mutators),
-              fn _key, value -> analyze(value, :scaffold, mutators) end
+              &analyze(&1, :scaffold, env),
+              fn _key, value -> analyze(value, :scaffold, env) end
             )
           end)
 
@@ -1191,8 +1190,8 @@ defmodule Mutare.Transform.Analyze do
           route_module_arg(
             last,
             module_position(routing, length(args) - 1),
-            &analyze_module_macro_block_arg(&1, mutators),
-            &analyze_module_pair_value(&1, &2, mutators)
+            &analyze_module_macro_block_arg(&1, env),
+            &analyze_module_pair_value(&1, &2, env)
           )
 
         {form, meta, init ++ [last]}
@@ -1258,15 +1257,15 @@ defmodule Mutare.Transform.Analyze do
   # The module-level default for one keyword pair's value: a block key's body is analyzed as
   # `:runtime` (an unknown DSL may unquote it into generated functions), an option value as
   # `:scaffold`.
-  defp analyze_module_pair_value(key, value, mutators) do
+  defp analyze_module_pair_value(key, value, env) do
     context = if Syntax.block_key?(key), do: :runtime, else: :scaffold
-    analyze(value, context, mutators)
+    analyze(value, context, env)
   end
 
-  defp analyze_module_macro_block_arg(kw, mutators) when is_list(kw) do
+  defp analyze_module_macro_block_arg(kw, env) when is_list(kw) do
     Enum.map(kw, fn
-      {key, value} -> {key, analyze_module_pair_value(key, value, mutators)}
-      other -> analyze(other, :scaffold, mutators)
+      {key, value} -> {key, analyze_module_pair_value(key, value, env)}
+      other -> analyze(other, :scaffold, env)
     end)
   end
 

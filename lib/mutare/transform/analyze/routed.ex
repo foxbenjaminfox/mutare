@@ -46,18 +46,18 @@ defmodule Mutare.Transform.Analyze.Routed do
   # nested `:hosted` stamp's `host/2` through this same attachment but *lowers* each target
   # mutant to a whole-call rebuild (`splice(wrap(mutant))` — the woven selector degenerated to
   # its selected branch), so hosted semantics participate while no selector ever nests.
-  def analyze_routed_call(node, routing, mutators, context \\ %{pipe_mode: :unpiped})
+  def analyze_routed_call(node, routing, env, context \\ %{pipe_mode: :unpiped})
 
   # The call-level `:skip` (an inert leaf) is normally intercepted by the dispatch before it reaches
   # here (`Mutare.Transform.Analyze.do_analyze_call_node/3`); this clause keeps the contract total
   # for any other caller — no offer, no descent, no hosts.
-  def analyze_routed_call(node, :skip, _mutators, _context), do: node
+  def analyze_routed_call(node, :skip, _env, _context), do: node
 
-  def analyze_routed_call(node, routing, mutators, context) do
-    context = Map.put(context, :mutators, mutators)
-    {form, meta, args} = Attach.offer(node, node, mutators, context)
-    routed = CallOptions.mark({form, meta, route_macro_args(args, routing, mutators)})
-    attach_hosted_candidates(routed, node, routing, mutators, context)
+  def analyze_routed_call(node, routing, env, context) do
+    context = Map.put(context, :mutators, env.mutators)
+    {form, meta, args} = Attach.offer(node, node, env.mutators, context)
+    routed = CallOptions.mark({form, meta, route_macro_args(args, routing, env)})
+    attach_hosted_candidates(routed, node, routing, env, context)
   end
 
   # When routing marks any argument `{:hosted, hosts}` (see `Mutare.Transform.Resolve`),
@@ -80,9 +80,9 @@ defmodule Mutare.Transform.Analyze.Routed do
   # `analyze_routed_call/4`) — so `host/2` can sub-contract Elixir islands inside its fragment
   # (a pin interior) back to core's families via `Mutare.Analyze.expression_mutations/3`, under
   # the user's actual configuration (`:as` names and opts included).
-  defp attach_hosted_candidates(routed, raw_node, routing, mutators, context) do
+  defp attach_hosted_candidates(routed, raw_node, routing, env, context) do
     with [_ | _] = hosts <- hosted_hosts(routing),
-         specs = Enum.filter(mutators, &(&1.module in hosts)),
+         specs = Enum.filter(env.mutators, &(&1.module in hosts)),
          [_ | _] = candidates <- Enum.flat_map(specs, &host_candidates(&1, raw_node, context)) do
       put_hosted_candidates(routed, candidates)
     else
@@ -128,11 +128,11 @@ defmodule Mutare.Transform.Analyze.Routed do
 
   # Route each argument by its treatment. A position past the routing list defaults to
   # `:expression`.
-  defp route_macro_args(args, routing, mutators) do
+  defp route_macro_args(args, routing, env) do
     args
     |> Enum.with_index()
     |> Enum.map(fn {arg, i} ->
-      route_macro_arg(arg, Enum.at(routing, i, :expression), mutators)
+      route_macro_arg(arg, Enum.at(routing, i, :expression), env)
     end)
   end
 
@@ -150,7 +150,7 @@ defmodule Mutare.Transform.Analyze.Routed do
   # `:pattern` here; its *extra* structural-mutant offering is delivered separately (the macro
   # call sits in a value-discarded position — see `binding_pattern_macro/1` /
   # `attach_macro_pattern_candidates/4`).
-  defp route_macro_arg(arg, :raw, _mutators), do: arg
+  defp route_macro_arg(arg, :raw, _env), do: arg
 
   # `:interior`: analyze the argument as ordinary runtime, then drop the in-place candidates that
   # landed on the argument node *itself* — the mirror image of `:interpolated`'s
@@ -165,20 +165,20 @@ defmodule Mutare.Transform.Analyze.Routed do
   # mutations are distinct again (`not (a == b)` withheld leaves `a == b`, which is neither the
   # original nor the outer's strip). The root still goes through `Analyze.annotate/2` first, so it
   # keeps every other stamp analysis puts on it; only its own candidates go.
-  defp route_macro_arg({neg, _meta, [inner]} = arg, :interior, mutators)
+  defp route_macro_arg({neg, _meta, [inner]} = arg, :interior, env)
        when is_negation_op(neg) do
     if suppressed_operand?(neg, inner) do
-      case strip_interior(arg, mutators) do
-        {^neg, meta, [_withheld]} -> {neg, meta, [Analyze.annotate(inner, mutators)]}
+      case strip_interior(arg, env) do
+        {^neg, meta, [_withheld]} -> {neg, meta, [Analyze.annotate(inner, env)]}
         other -> other
       end
     else
-      strip_interior(arg, mutators)
+      strip_interior(arg, env)
     end
   end
 
-  defp route_macro_arg(arg, :interior, mutators),
-    do: strip_interior(arg, mutators)
+  defp route_macro_arg(arg, :interior, env),
+    do: strip_interior(arg, env)
 
   # A keyed refinement `{:keyed, leading, pairs}` over a literal keyword list (the trailing sugar
   # or an explicit `[k: v]`): every pair is routed **once**, by its final position — a named key's
@@ -192,7 +192,7 @@ defmodule Mutare.Transform.Analyze.Routed do
   # argument (a variable, a `Keyword.merge/2` call, a map) has no keys to refine and takes the
   # leading treatment alone — exactly the "if it is a literal keyword list with a literal key"
   # contract. (`Mutare.Transform.Tag.tag_routed_arg/4` is the guard-path twin.)
-  defp route_macro_arg(arg, {:keyed, leading, pairs}, mutators) do
+  defp route_macro_arg(arg, {:keyed, leading, pairs}, env) do
     case CallOptions.keyword_pairs(arg) do
       {:ok, kw_pairs, rewrap} ->
         inner = descendant_treatment(leading)
@@ -205,26 +205,26 @@ defmodule Mutare.Transform.Analyze.Routed do
                 nil -> inner
               end
 
-            {route_key(key, inner, mutators), route_macro_arg(value, position, mutators)}
+            {route_key(key, inner, env), route_macro_arg(value, position, env)}
           end)
 
-        offer_container(rewrap.(routed), arg, leading, mutators)
+        offer_container(rewrap.(routed), arg, leading, env)
 
       :error ->
-        route_macro_arg(arg, leading, mutators)
+        route_macro_arg(arg, leading, env)
     end
   end
 
   # A `:hosted` position (stamped `{:hosted, host}` by `Mutare.Transform.Resolve`) is left
   # **raw** like `:raw` — core mutates nothing in place here (a bare selector would poison
   # the DSL); the hosting mutator weaves its own selector via `attach_hosted_candidates/5`.
-  defp route_macro_arg(arg, {:hosted, _hosts}, _mutators), do: arg
+  defp route_macro_arg(arg, {:hosted, _hosts}, _env), do: arg
 
   # A *bare* `:hosted` should never reach routing — `Resolve.RouteStamp` rewrites hosted treatments
   # to `{:hosted, host}` recursively. Leave it raw anyway, never the runtime catch-all below:
   # splicing a bare selector into an unknown macro position is the one outcome the "never poison"
   # stance forbids, so a future path that slipped a bare `:hosted` through degrades safely.
-  defp route_macro_arg(arg, :hosted, _mutators), do: arg
+  defp route_macro_arg(arg, :hosted, _env), do: arg
 
   # **Per-keyword-pair** routing for a keyword-list argument (classifier-only — produced by a
   # recursive keyword routing from either a static route or
@@ -242,9 +242,9 @@ defmodule Mutare.Transform.Analyze.Routed do
   # `:routing` classifier caused that fallback, `Mutare.Transform.Resolve.RouteStamp` already
   # printed an advisory warning at stamp time (a static route stays silent — its non-keyword
   # call sites are legitimate alternate macro forms).
-  defp route_macro_arg(arg, {:keyword, value_treatments}, mutators)
+  defp route_macro_arg(arg, {:keyword, value_treatments}, env)
        when is_list(value_treatments),
-       do: route_keyword(arg, value_treatments, mutators)
+       do: route_keyword(arg, value_treatments, env)
 
   # An already-`^`-pinned value under `:interpolated` is descended, not re-pinned: past
   # the user's own `^` the code is plain Elixir evaluated at build time, where a bare selector
@@ -254,8 +254,8 @@ defmodule Mutare.Transform.Analyze.Routed do
   # (`where(q, total: ^(a + b))`) whose value is already interpolated — a shape where the route's
   # assertion isn't even violated. The scalar-only rejection below is reserved for *bare*
   # compounds, where it is.
-  defp route_macro_arg({:^, meta, [inner]}, :interpolated, mutators),
-    do: {:^, meta, [Analyze.annotate(inner, mutators)]}
+  defp route_macro_arg({:^, meta, [inner]}, :interpolated, env),
+    do: {:^, meta, [Analyze.annotate(inner, env)]}
 
   # A bare scalar value that must be mutated **`^`-pinned**: it sits in a compile-time DSL position
   # that accepts an interpolated value but not a bare selector `case` — an Ecto keyword-shorthand
@@ -268,25 +268,25 @@ defmodule Mutare.Transform.Analyze.Routed do
   # those inner selectors un-pinned and poison the DSL. `reject_compound_value!/2` fails loud on
   # that (the classifier analogue of the documented scalar-only contract) rather than silently
   # degrading the inner mutants to `:poisoned`.
-  defp route_macro_arg(arg, :interpolated, mutators) do
-    analyzed = Analyze.annotate(arg, mutators)
+  defp route_macro_arg(arg, :interpolated, env) do
+    analyzed = Analyze.annotate(arg, env)
     reject_compound_value!(arg, analyzed)
     pin_inplace_candidates(analyzed)
   end
 
-  defp route_macro_arg(arg, treatment, mutators)
+  defp route_macro_arg(arg, treatment, env)
        when treatment in [:pattern, :binding_pattern],
-       do: Analyze.pattern(arg, mutators)
+       do: Analyze.pattern(arg, env)
 
-  defp route_macro_arg(arg, _expression, mutators), do: Analyze.annotate(arg, mutators)
+  defp route_macro_arg(arg, _expression, env), do: Analyze.annotate(arg, env)
 
   # A keyword key under a keyed refinement, treated as the generic pair clause treats it
   # (`Mutare.Transform.Analyze`): a **block key** (`do:`/`else:`/`rescue:`/`catch:`/`after:`) is a
   # structural label and stays raw — a selector in its place is malformed, and a macro matching
   # `wrap(do: body)` would not even expand — while a data key is a runtime value and follows the
   # leading treatment's reading.
-  defp route_key(key, inner, mutators) do
-    if Syntax.block_key?(key), do: key, else: route_macro_arg(key, inner, mutators)
+  defp route_key(key, inner, env) do
+    if Syntax.block_key?(key), do: key, else: route_macro_arg(key, inner, env)
   end
 
   # What a leading treatment means one level down a keyed refinement: `:interior` withholds only
@@ -304,10 +304,10 @@ defmodule Mutare.Transform.Analyze.Routed do
   # `:interior` by definition, `:raw`/`:hosted` because the list is DSL data, `:pattern` because a
   # pattern is never offered in place, `:interpolated` because pinning a container is the compound
   # case `reject_compound_value!/2` forbids.
-  defp offer_container({:__block__, _meta, _args} = routed, raw, :expression, mutators),
-    do: Attach.offer(routed, raw, mutators)
+  defp offer_container({:__block__, _meta, _args} = routed, raw, :expression, env),
+    do: Attach.offer(routed, raw, env.mutators)
 
-  defp offer_container(routed, _raw, _leading, _mutators), do: routed
+  defp offer_container(routed, _raw, _leading, _env), do: routed
 
   # Flag the in-place candidates on a node's own metadata `pin?: true` (the `:interpolated`
   # treatment), so emission `^`-pins their selector. Only the node's *own* candidates — a scalar
@@ -364,27 +364,27 @@ defmodule Mutare.Transform.Analyze.Routed do
   # routed, re-wrapped so the rendering metadata is preserved. A non-keyword-shaped value is left
   # raw (nothing to route). The treatment list is **strict**: exactly one treatment per pair, or
   # `validate_keyword_treatments!/2` raises.
-  defp route_keyword({:__block__, meta, [list]}, value_treatments, mutators)
+  defp route_keyword({:__block__, meta, [list]}, value_treatments, env)
        when is_list(list),
-       do: {:__block__, meta, [route_keyword(list, value_treatments, mutators)]}
+       do: {:__block__, meta, [route_keyword(list, value_treatments, env)]}
 
-  defp route_keyword(list, value_treatments, mutators) when is_list(list) do
+  defp route_keyword(list, value_treatments, env) when is_list(list) do
     if CallOptions.keyword_list_shaped?(list) do
       validate_keyword_treatments!(list, value_treatments)
 
       Enum.zip_with(list, value_treatments, fn {key, value}, treatment ->
-        {key, route_macro_arg(value, treatment, mutators)}
+        {key, route_macro_arg(value, treatment, env)}
       end)
     else
       list
     end
   end
 
-  defp route_keyword(arg, _value_treatments, _mutators), do: arg
+  defp route_keyword(arg, _value_treatments, _env), do: arg
 
   # The plain `:interior` move: analyze, then withhold the node's own candidates.
-  defp strip_interior(arg, mutators),
-    do: arg |> Analyze.annotate(mutators) |> strip_own_inplace_candidates()
+  defp strip_interior(arg, env),
+    do: arg |> Analyze.annotate(env) |> strip_own_inplace_candidates()
 
   # The operands `Mutare.Transform.Analyze` leaves un-offered beneath a negation: shape 1 (the
   # same negation operator again), shape 2 (`in`), shape 3 (an equality operator). An *ordering*
@@ -429,13 +429,13 @@ defmodule Mutare.Transform.Analyze.Routed do
   # the same `route_macro_arg/3` as the visible args keeps the piped position in lockstep with
   # a written first argument: a `1 |> match?(1)` LHS routes as `:pattern`, a `:raw` macro's LHS
   # is left raw, and any other LHS stays ordinary runtime.
-  def analyze_piped_value(lhs, {_form, rhs_meta, _args}, mutators)
+  def analyze_piped_value(lhs, {_form, rhs_meta, _args}, env)
       when is_list(rhs_meta) do
     case Meta.piped_routing(rhs_meta) do
-      nil -> Analyze.annotate(lhs, mutators)
-      treatment -> route_macro_arg(lhs, treatment, mutators)
+      nil -> Analyze.annotate(lhs, env)
+      treatment -> route_macro_arg(lhs, treatment, env)
     end
   end
 
-  def analyze_piped_value(lhs, _rhs, mutators), do: Analyze.annotate(lhs, mutators)
+  def analyze_piped_value(lhs, _rhs, env), do: Analyze.annotate(lhs, env)
 end
