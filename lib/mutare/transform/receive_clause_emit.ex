@@ -8,8 +8,10 @@ defmodule Mutare.Transform.ReceiveClauseEmit do
   # The already-bound selector stays fixed throughout the wait. Record all live head/
   # guard ids once on entry, before evaluating the timeout, even if the receive times
   # out or its timeout expression raises. Body/after coverage stays in the reached body.
-  # Mutant clauses carry raw bodies; originals and the after block retain their emitted
-  # bodies, whose other ids cannot activate while a head mutant is selected.
+  # Mutant clauses carry raw bodies. Originals and the after block retain their emitted
+  # bodies, whose other ids cannot activate while a head mutant is selected — but while
+  # one *is* selected, the original a message falls through to and the after block run
+  # their raw bodies (`ClauseVariants`), as whole-receive delivery did.
   #
   # With no existing selector binding, retain whole-receive selection. Introducing a
   # binding in those scopes would change the environment visible to raw-body macros.
@@ -57,9 +59,17 @@ defmodule Mutare.Transform.ReceiveClauseEmit do
         [] ->
           node
 
-        _ ->
-          rewritten = map_message_clauses(node, &ClauseVariants.interleave(&1, heads, var))
+        [{_, %Candidate.ReceiveClause{raw_receive: {:receive, _, [raw_blocks]}}} | _] ->
           ids = Enum.map(heads, &elem(&1, 0))
+
+          rewritten =
+            map_blocks(node, fn
+              :do, clauses ->
+                ClauseVariants.interleave(clauses, block(raw_blocks, :do), heads, var)
+
+              :after, clauses ->
+                ClauseVariants.share_bodies(clauses, block(raw_blocks, :after), ids, var)
+            end)
 
           {:__block__, [],
            [Recorder.record_ast(ids, var, ctx.config.runtime_namespace), rewritten]}
@@ -89,12 +99,22 @@ defmodule Mutare.Transform.ReceiveClauseEmit do
 
   # The analyzer normalized keyword-form clause lists before emission. Only `do` is
   # rewritten; the timeout expression and after body remain at their original position.
-  defp map_message_clauses({:receive, meta, [blocks]}, fun) do
-    blocks =
-      Enum.map(blocks, fn {key, value} ->
-        if AST.key_atom(key) == :do, do: {key, fun.(value)}, else: {key, value}
-      end)
+  defp map_message_clauses(node, fun) do
+    map_blocks(node, fn
+      :do, clauses -> fun.(clauses)
+      _key, value -> value
+    end)
+  end
 
+  # Rewrite each block's clause list by its key atom, keeping block order and position.
+  defp map_blocks({:receive, meta, [blocks]}, fun) do
+    blocks = Enum.map(blocks, fn {key, value} -> {key, fun.(AST.key_atom(key), value)} end)
     {:receive, meta, [blocks]}
+  end
+
+  defp block(blocks, name) do
+    Enum.find_value(blocks, [], fn {key, value} ->
+      if AST.key_atom(key) == name, do: value
+    end)
   end
 end

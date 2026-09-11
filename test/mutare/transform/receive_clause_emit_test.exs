@@ -25,6 +25,13 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
     def mutate(_), do: :skip
   end
 
+  defmodule StageSwap do
+    @behaviour Mutare.Mutator
+    def name, do: :stage_swap
+    def mutate({:stage, _, []}), do: [quote(do: List.wrap())]
+    def mutate(_), do: :skip
+  end
+
   setup do
     previous = :persistent_term.get(Recorder.track_key(), false)
     Selector.put(Selector.baseline())
@@ -386,6 +393,51 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
       if Keyword.has_key?(inside, :x), do: assert(inside[:x] == :payload)
       assert Enum.sort(Keyword.keys(outer_vars)) == [:mutare_active, :mutare_active_0, :result]
       assert Enum.sort(Keyword.keys(outside)) == [:mutare_active, :mutare_active_0, :result]
+    end
+  end
+
+  test "head mutants run raw fallthrough and after bodies; the baseline keeps the instrumented ones" do
+    {module, sites, metamutant} =
+      compile_fixture(
+        :RawFallthrough,
+        """
+        defmacro stage(value) do
+          vars = Macro.escape(Macro.Env.vars(__CALLER__))
+          quote do: {unquote(value), unquote(vars)}
+        end
+        def take(x) do
+          receive do
+            1 -> :one
+            _ -> x |> stage()
+          after
+            0 -> x |> stage()
+          end
+        end
+        """,
+        [StageSwap, Mutare.Mutators.IntegerLiteral]
+      )
+
+    heads = Enum.filter(sites, &(&1.mutator == :integer))
+    assert length(heads) == 2
+    # `:one` is shared as-is; the instrumented fallthrough and after bodies each select.
+    assert [{clauses, [_after_clause]}] = receives(metamutant)
+    assert length(clauses) == 2 + length(heads)
+    assert length(String.split(metamutant, "case mutare_active do")) == 5
+
+    instrumented = {3, [mutare_active: nil, mutare_piped: nil, x: nil]}
+    raw = {3, [mutare_active: nil, x: nil]}
+    take = fn messages -> run_mailbox(fn -> apply(module, :take, [3]) end, messages) end
+    assert take.([1]) == {{:ok, :one}, []}
+    assert take.([9]) == {{:ok, instrumented}, []}
+    assert take.([]) == {{:ok, instrumented}, []}
+
+    for site <- heads do
+      Selector.put(site.id)
+      assert take.([1]) == {{:ok, raw}, []}
+      assert take.([9]) == {{:ok, raw}, []}
+      assert take.([]) == {{:ok, raw}, []}
+      {mutated, _} = Code.eval_string(site.mutated_code)
+      assert take.([mutated]) == {{:ok, :one}, []}
     end
   end
 

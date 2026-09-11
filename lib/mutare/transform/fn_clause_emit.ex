@@ -5,7 +5,9 @@ defmodule Mutare.Transform.FnClauseEmit do
   # Both guards read the enclosing function's already-bound selector, captured by the
   # closure without changing its arity. Original clauses exclude only their own live ids,
   # so a non-matching mutant falls through in source order. Mutant bodies are raw;
-  # original bodies retain their emitted selectors and invocation-time body coverage.
+  # original bodies retain their emitted selectors and invocation-time body coverage,
+  # except while a head mutant is active, when the fallen-through original runs its raw
+  # body (`ClauseVariants`), as whole-fn delivery did.
   #
   # Head/guard coverage remains at creation, once for the complete live id set. No new
   # binding or function boundary is introduced: binding/0 and macros inspecting the caller
@@ -59,8 +61,8 @@ defmodule Mutare.Transform.FnClauseEmit do
         [] ->
           node
 
-        _ ->
-          rewritten = ClauseVariants.interleave(clauses, heads, var)
+        [{_, %Candidate.FnClause{raw_fn: {:fn, _, raw_clauses}}} | _] ->
+          rewritten = ClauseVariants.interleave(clauses, raw_clauses, heads, var)
           ids = Enum.map(heads, &elem(&1, 0))
 
           {:__block__, [],

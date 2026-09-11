@@ -9814,8 +9814,10 @@ and 26,866 bytes. This is the old C×M multiplication in another delivery path.
 index. `FnClauseEmit` emits one `fn`, interleaving each clause's guarded variants immediately
 before the original they replace. Originals exclude only their own live mutant IDs; a mutant
 that fails its pattern or guard falls through in source order. Mutant bodies stay raw, while
-original bodies retain their body/return selectors. Arity, pins, captured source variables,
-alternative `when` guards, and `FunctionClauseError` behavior are preserved.
+original bodies retain their body/return selectors — except under a head mutant, where an
+original a call falls through to runs its raw body (the rule below, under receives). Arity,
+pins, captured source variables, alternative `when` guards, and `FunctionClauseError`
+behavior are preserved.
 
 The closure captures the already-bound active selector, and one creation-time record covers
 the complete live head/guard ID set. A closure merely constructed is still covered; body
@@ -9897,6 +9899,22 @@ retain their emitted selectors, which cannot activate another ID during a head m
 run. No binding or function boundary is introduced around the receive. As with `fn`, scopes
 without an existing selector binding retain whole-construct delivery so raw mutant macros
 see their previous bindings; rescue and nested-module fallbacks have regression tests.
+
+**Fallthrough and after bodies run raw under a head mutant.** "Cannot activate another ID"
+was not the whole story: an emitted body can differ from the source even with every other
+mutant inactive. A custom mutation on a pipe stage makes `PipeEmit` hoist that stage into a
+`fn mutare_piped ->` closure, and a macro in the stage reading `Macro.Env.vars(__CALLER__)`
+then sees `mutare_piped`. Whole-construct delivery ran the raw fallback there, so activating
+a head mutant in a `fn` whose `_ -> x |> stage()` fallback held such a stage — or a receive
+whose fallthrough clause or `after` body did — changed the mutant's observable result on
+the per-clause path. `ClauseVariants` now applies the raw/instrumented split of "Rescue
+factoring experiments" to every original clause body and each `after` body: where the raw
+and emitted ASTs differ, the body selects on the already-bound active variable — emitted
+for everything but the live head IDs, raw for them — with wildcard patterns, so neither
+copy gains a binding; equal bodies are shared directly. The cost is the same bound the
+rescue split has: at most two copies of a body that carries an instrumented stage, and one
+of any other. Regressions in both emit test files pin the raw vars under every head mutant
+and the instrumented vars at baseline.
 
 Keyword-form receives retain the raw whole-node offer for custom mutators, while discovery
 and fallback emission use the normalized clause list. Clause candidates remain in the same

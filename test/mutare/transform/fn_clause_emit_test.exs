@@ -25,6 +25,13 @@ defmodule Mutare.Transform.FnClauseEmitTest do
     def mutate(_), do: :skip
   end
 
+  defmodule StageSwap do
+    @behaviour Mutare.Mutator
+    def name, do: :stage_swap
+    def mutate({:stage, _, []}), do: [quote(do: List.wrap())]
+    def mutate(_), do: :skip
+  end
+
   setup do
     previous = :persistent_term.get(Recorder.track_key(), false)
     Selector.put(Selector.baseline())
@@ -202,6 +209,46 @@ defmodule Mutare.Transform.FnClauseEmitTest do
             :ok
         end
       end
+    end
+  end
+
+  test "head mutants run raw fallthrough bodies; the baseline keeps the instrumented ones" do
+    {module, sites, metamutant} =
+      compile_fixture(
+        :RawFallthrough,
+        """
+        defmacro stage(value) do
+          vars = Macro.escape(Macro.Env.vars(__CALLER__))
+          quote do: {unquote(value), unquote(vars)}
+        end
+        def make(x), do: fn
+          1 -> :one
+          _ -> x |> stage()
+        end
+        """,
+        [StageSwap, Mutare.Mutators.IntegerLiteral]
+      )
+
+    heads = Enum.filter(sites, &(&1.mutator == :integer))
+    assert length(heads) == 2
+    # The untouched `:one` body is shared as-is; only the instrumented fallthrough selects
+    # (the second fn is the hoisted pipe-stage closure).
+    assert [clauses, [_piped]] = fn_clauses(metamutant)
+    assert length(clauses) == 2 + length(heads)
+    assert length(String.split(metamutant, "case mutare_active do")) == 3
+
+    instrumented = {3, [mutare_active: nil, mutare_piped: nil, x: nil]}
+    assert apply(module, :make, [3]).(9) == instrumented
+    Selector.put(Enum.find(sites, &(&1.mutator == :stage_swap)).id)
+    assert apply(module, :make, [3]).(9) == [3]
+
+    for site <- heads do
+      Selector.put(site.id)
+      fun = apply(module, :make, [3])
+      assert fun.(1) == {3, [mutare_active: nil, x: nil]}
+      assert fun.(9) == {3, [mutare_active: nil, x: nil]}
+      {mutated, _} = Code.eval_string(site.mutated_code)
+      assert fun.(mutated) == :one
     end
   end
 
