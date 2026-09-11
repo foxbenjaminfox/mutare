@@ -288,9 +288,11 @@ defmodule Mutare.MutatorsTest do
         end)
         |> Exception.message()
 
-      assert message =~ "unknown mutator family :arithmitic"
-      assert message =~ ":except"
-      assert message =~ "arithmetic"
+      # The one `except:` parser (`Mutare.Mutator.Families.except!/4`) — the same message shape a
+      # plugin's `families: {:all, except: […]}` gets.
+      assert message =~ "unknown built-in families in :except: [:arithmitic]"
+      assert message =~ "valid families are"
+      assert message =~ ":arithmetic"
     end
 
     test "resolve/1 raises on an unknown :builtins option (e.g. a misspelled :except)" do
@@ -309,6 +311,55 @@ defmodule Mutare.MutatorsTest do
       assert_raise ArgumentError, ~r/:builtins options must be a keyword list/, fn ->
         Mutators.resolve([{:builtins, [:arithmetic]}])
       end
+    end
+  end
+
+  describe "family ownership splits (no two families emit the same mutant)" do
+    # The splits are documented per owning family (OperandSwap excludes the ordering operators
+    # Relational reflects; StrictEquality relaxes while Relational flips polarity; Arithmetic owns
+    # `div`/`rem` and Numeric the other bare-Kernel pairs; `true`/`false`/`nil` belong to
+    # Literal/Conditional, not AtomLiteral) but nothing structural enforces them: two families
+    # emitting an identical mutant at one position would simply both appear. This exercises every
+    # documented contact point under the *whole* default set and pins that no position's rendered
+    # mutant is claimed by more than one family. (The transform surfaces such duplicates — a
+    # mutator that re-emits Relational's `a < b` for `a > b` shows up twice here — so this can fail.)
+    @contact_points """
+    defmodule Splits do
+      def ordering(a, b), do: {a > b, a >= b, a < b, a <= b}
+      def equality(a, b), do: {a == b, a != b, a === b, a !== b}
+      def membership(x, xs), do: {x in xs, x not in [1, 2]}
+      def arithmetic(a, b), do: {a + b, a - b, a * b, a / b, a ** b, -a, div(a, b), rem(a, b)}
+      def numeric(a, b, x), do: {min(a, b), max(a, b), round(x), trunc(x), ceil(x), floor(x)}
+      def qualified(a, b, x), do: {Kernel.min(a, b), Kernel.div(a, b), Float.ceil(x), Float.floor(x)}
+      def piped(a, b), do: {a |> Kernel.-(b), a |> div(b), a |> min(b), a |> Kernel.<(b)}
+      def sequences(a, b), do: {a <> b, a ++ b, a -- b}
+      def boolean(p, q), do: {p and q, p or q, p && q, p || q, not p, !p}
+      def literals, do: {true, false, nil, :ok, :error, :pending, 0, 1, 2, -1, 1.0, "", "s", [], [1], %{}, {}}
+      def branches(p, x) do
+        if p, do: x, else: nil
+      end
+    end
+    """
+
+    test "every rendered mutant at a position belongs to exactly one family" do
+      {_metamutant, sites, _next} =
+        Mutare.Transform.transform_string_with_sites(@contact_points, warnings: false)
+
+      # Sanity: the fixture actually exercised the families the splits are between.
+      exercised = MapSet.new(sites, & &1.mutator)
+
+      for family <- ~w(operand_swap relational strict_equality arithmetic numeric atom logical)a do
+        assert family in exercised, "fixture produced no #{family} mutant"
+      end
+
+      shared =
+        sites
+        |> Enum.group_by(&{&1.line, &1.column, &1.mutated_code}, & &1.mutator)
+        |> Enum.filter(fn {_position, families} -> length(Enum.uniq(families)) > 1 end)
+        |> Enum.sort()
+
+      assert shared == [],
+             "the same mutant is emitted by more than one family: #{inspect(shared, pretty: true)}"
     end
   end
 end

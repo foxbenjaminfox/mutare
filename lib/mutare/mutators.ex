@@ -267,38 +267,12 @@ defmodule Mutare.Mutators do
   defp expand_group({token, opts}) when token in @group_tokens, do: builtins_except(opts)
   defp expand_group(entry), do: [entry]
 
-  # Every built-in family minus an `:except` list of family atoms. Validates that
-  # the only option is `:except` and that each excluded name is a real family, so a
-  # typo (`{:builtins, exclude: ...}` / `except: [:arithmitic]`) fails loudly rather
-  # than silently keeping the family it meant to drop.
+  # Every built-in family minus an `:except` list of family atoms — the same `except:` grammar
+  # (and the same failure shapes) a plugin's `families:` option gets from
+  # `Mutare.Mutator.Families`, parsed by the one function so the two can't diverge.
   defp builtins_except(opts) do
-    unless Keyword.keyword?(opts) do
-      raise ArgumentError,
-            ":builtins options must be a keyword list with an :except family list, got: " <>
-              inspect(opts)
-    end
-
-    case Keyword.keys(opts) -- [:except] do
-      [] -> :ok
-      bad -> raise ArgumentError, unknown_builtins_option_message(bad)
-    end
-
-    except = opts |> Keyword.get(:except, []) |> List.wrap()
-    Enum.each(except, &validate_family!/1)
-    families() -- except
-  end
-
-  defp validate_family!(name) do
-    unless is_atom(name) and Keyword.has_key?(registry(), name) do
-      raise ArgumentError,
-            "unknown mutator family #{inspect(name)} in :builtins :except — " <>
-              "expected one of: #{known_families()}"
-    end
-  end
-
-  defp unknown_builtins_option_message(keys) do
-    "unknown :builtins option#{if length(keys) > 1, do: "s"} " <>
-      "#{Enum.map_join(keys, ", ", &inspect/1)}: the only supported option is :except"
+    catalog = %{plugin: "built-in", all: families(), default: families()}
+    Mutare.Mutator.Families.except!(families(), opts, catalog, ":builtins")
   end
 
   defp resolve!(%Spec{} = spec), do: spec

@@ -142,11 +142,12 @@ defmodule Mutare.Mutator.Families do
   def parse!(:default, catalog), do: MapSet.new(catalog.default)
 
   # `{:all | :default, except: [families]}` — the named base set minus a validated `:except`
-  # list, the same grammar as core's `{:builtins, except: […]}`.
-  def parse!({:all, opts}, catalog), do: catalog.all |> except!(opts, catalog) |> MapSet.new()
+  # list.
+  def parse!({:all, opts}, catalog),
+    do: catalog.all |> except!(opts, catalog, except_token(catalog)) |> MapSet.new()
 
   def parse!({:default, opts}, catalog),
-    do: catalog.default |> except!(opts, catalog) |> MapSet.new()
+    do: catalog.default |> except!(opts, catalog, except_token(catalog)) |> MapSet.new()
 
   def parse!(families, catalog) when is_list(families) do
     validate_families!(families, catalog, "families")
@@ -159,6 +160,8 @@ defmodule Mutare.Mutator.Families do
             "{:all | :default, except: [...]}, got: #{inspect(other)}"
   end
 
+  defp except_token(catalog), do: "#{catalog.plugin} families {:all | :default, ...}"
+
   @doc """
   Whether `family` is enabled — the runtime behind the generated `family_enabled?/2`.
   A `MapSet` is an already-parsed selection; a keyword list is raw options, whose
@@ -170,15 +173,21 @@ defmodule Mutare.Mutator.Families do
   def enabled?(opts, family, catalog) when is_list(opts),
     do: opts |> Keyword.get(:families, :default) |> parse!(catalog) |> MapSet.member?(family)
 
-  # The base family list minus a validated `:except` list. The only accepted key is `:except`,
-  # and each named family must be real, so a typo (`{:default, exept: …}` /
-  # `except: [:integr_literal]`) fails loudly rather than silently keeping a family it meant
-  # to drop.
-  defp except!(base, opts, catalog) do
+  @doc """
+  `base` minus a validated `except:` list — the one parser behind `{:builtins, except: […]}`
+  and `{:all | :default, except: […]}`, so the grammar and its failure shapes are owned once.
+
+  `opts` must be a keyword list whose only key is `:except`, naming families in `catalog.all`,
+  so a typo (`{:builtins, exept: …}` / `except: [:integr_literal]`) fails loudly rather than
+  silently keeping a family it meant to drop. `token` names the form in the error messages
+  (`":builtins"`, `"MyPlugin families {:all | :default, ...}"`).
+  """
+  @spec except!([atom()], term(), catalog(), String.t()) :: [atom()]
+  def except!(base, opts, catalog, token) when is_list(base) and is_binary(token) do
     unless Keyword.keyword?(opts) do
       raise ArgumentError,
-            "#{catalog.plugin} families {:all | :default, ...} options must be a keyword " <>
-              "list with an :except family list, got: #{inspect(opts)}"
+            "#{token} options must be a keyword list with an :except family list, got: " <>
+              inspect(opts)
     end
 
     case Keyword.keys(opts) -- [:except] do
@@ -187,8 +196,8 @@ defmodule Mutare.Mutator.Families do
 
       bad ->
         raise ArgumentError,
-              "unknown #{catalog.plugin} families option: #{inspect(bad)} — the only option " <>
-                "is :except"
+              "unknown #{token} option#{if length(bad) > 1, do: "s"} " <>
+                "#{Enum.map_join(bad, ", ", &inspect/1)} — the only option is :except"
     end
 
     except = opts |> Keyword.get(:except, []) |> List.wrap()
