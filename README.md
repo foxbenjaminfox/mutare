@@ -1,5 +1,10 @@
 # Mutare
 
+[![Hex.pm](https://img.shields.io/hexpm/v/mutare.svg)](https://hex.pm/packages/mutare)
+[![Hexdocs](https://img.shields.io/badge/hexdocs-docs-blue.svg)](https://hexdocs.pm/mutare)
+[![CI](https://github.com/foxbenjaminfox/mutare/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/foxbenjaminfox/mutare/actions/workflows/ci.yml)
+[![License](https://img.shields.io/hexpm/l/mutare.svg)](https://github.com/foxbenjaminfox/mutare/blob/master/LICENSE)
+
 Mutare is a mutation testing system for Elixir, that mutates the source you actually write, and compiles once.
 
 Mutation testing measures whether your test suite actually constrains the behavior of your code: it deliberately breaks your source code one small change at a time, and each time your tests nevertheless still pass it has located a gap in your test suite.
