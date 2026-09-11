@@ -26,7 +26,6 @@ defmodule Mutare.Transform.Tag do
 
   alias Mutare.{AST, Mutator}
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Mutators.StringLiteral
   alias Mutare.Transform.{Meta, NodeRange, Suppression}
   alias Mutare.Transform.Analyze.{CallOptions, Syntax}
 
@@ -644,28 +643,29 @@ defmodule Mutare.Transform.Tag do
 
   # In an ordinary exact pattern, `"foo" -> ""` and `"foo" -> "mutare"` both
   # retarget the same scalar match and are usually killed by the same execution of
-  # the original pattern. Keep the sentinel as the canonical replacement because
-  # it is least likely to collide with a real sibling key/clause. Map-key legality
-  # runs before this helper, so if the sentinel collides, the empty replacement is
-  # retained as a deterministic fallback. A source equal to either replacement
+  # the original pattern. Keep the non-empty retarget as the canonical replacement
+  # because it is least likely to collide with a real sibling key/clause. Map-key
+  # legality runs before this helper, so if the sentinel collides, the empty replacement
+  # is retained as a deterministic fallback. A source equal to either replacement
   # already produces only the other one and therefore passes through unchanged.
+  #
+  # Decided by the replacement's *value*, per producing spec — a spec that offers both an
+  # empty and a non-empty string here loses the empty one — not by any family's variant
+  # labels: the policy is positional, so it must not encode one family's label vocabulary
+  # (a renamed label would silently switch the collapse off). `Mutare.Mutators.StringLiteral`
+  # is the built-in it applies to; a custom family offering the same pair is treated alike.
   defp collapse_exact_string_mutations(mutations, :binary_composition), do: mutations
 
   defp collapse_exact_string_mutations(mutations, :exact) do
-    sentinel_specs =
-      for %Dispatch.Result{
-            spec: %Mutator.Spec{module: StringLiteral} = spec,
-            variant: "sentinel"
-          } <- mutations,
+    retargeting_specs =
+      for %Dispatch.Result{spec: spec, node: {:__block__, _meta, [value]}} <- mutations,
+          is_binary(value) and value != "",
           into: MapSet.new(),
           do: spec
 
     Enum.reject(mutations, fn
-      %Dispatch.Result{
-        spec: %Mutator.Spec{module: StringLiteral} = spec,
-        variant: "empty"
-      } ->
-        MapSet.member?(sentinel_specs, spec)
+      %Dispatch.Result{spec: spec, node: {:__block__, _meta, [""]}} ->
+        MapSet.member?(retargeting_specs, spec)
 
       _other ->
         false
