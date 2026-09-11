@@ -9,6 +9,7 @@ defmodule Mutare.Mutator.Dispatch do
   # module stays a focused author-facing contract.
 
   alias Mutare.Mutator.{Mutation, Spec}
+  alias Mutare.Reflection
 
   defmodule Result do
     @moduledoc false
@@ -217,14 +218,27 @@ defmodule Mutare.Mutator.Dispatch do
 
   defp callback_enabled?(_spec, _fun, _arity), do: true
 
-  # Whether `module` (loaded on demand) exports `fun`/`arity` — the single home for the
-  # "ensure the module is loaded, then check the export" probe the structural-hook discovery
-  # (`implementing*/3`, `host_targets/3`) and the mutator-resolution check (`implemented_by?/1`)
-  # share. `Code.ensure_loaded?` is idempotent and cheap once loaded, so calling it per arity is
-  # fine.
-  defp exports?(module, fun, arity) do
-    Code.ensure_loaded?(module) and function_exported?(module, fun, arity)
-  end
+  # The capability probe (load on demand, then check the export) lives in `Mutare.Reflection`;
+  # this is its local name.
+  defp exports?(module, fun, arity), do: Reflection.exports?(module, fun, arity)
+
+  @doc """
+  Whether `module` is a **selector host** — it implements `Mutare.Mutator.MacroHost`, exporting
+  *both* `host/2` and `hosted_macros/0`. The one decision behind every "is this a host" question:
+  `implemented_by?/1` (a host needs no `mutate`), `hosts/1` (collect mode's producers), and the
+  call-routing registry's host subscriptions. A module exporting only one of the pair is not a
+  host here; the registry is what reports that half-implementation as a contract error.
+  """
+  @spec host?(term()) :: boolean()
+  def host?(module), do: exports?(module, :host, 2) and exports?(module, :hosted_macros, 0)
+
+  @doc """
+  The specs in `specs` whose module is a selector host (`host?/1`) with `host/2` enabled — the
+  host-side twin of `implementing/3`.
+  """
+  @spec hosts([Spec.t()]) :: [Spec.t()]
+  def hosts(specs),
+    do: Enum.filter(specs, &(callback_enabled?(&1, :host, 2) and host?(&1.module)))
 
   @doc """
   Run `spec`'s return-tail hook over `tail`, preferring the context-aware
@@ -499,7 +513,7 @@ defmodule Mutare.Mutator.Dispatch do
   def implemented_by?(module) when is_atom(module) do
     exports?(module, :name, 0) and
       (Enum.any?(@producing_callbacks, fn {fun, arity} -> exports?(module, fun, arity) end) or
-         (exports?(module, :host, 2) and exports?(module, :hosted_macros, 0)))
+         host?(module))
   end
 
   # Total over any term: a non-atom (e.g. a string in `.mutare.exs`) is simply

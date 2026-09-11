@@ -28,9 +28,9 @@ defmodule Mutare.Extension do
   """
   @spec extension?(term()) :: boolean()
   def extension?(module) when is_atom(module) do
-    Code.ensure_loaded?(module) and not mutator?(module) and
+    not mutator?(module) and
       Enum.any?(@capability_callbacks, fn {fun, arity} ->
-        function_exported?(module, fun, arity)
+        Mutare.Reflection.exports?(module, fun, arity)
       end)
   end
 

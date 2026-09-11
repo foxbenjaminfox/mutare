@@ -9,7 +9,7 @@ defmodule Mutare.UseExpansion.Dispatch do
     extensions
     |> Enum.map(&Spec.new/1)
     |> Enum.filter(fn %Spec{module: module} ->
-      Code.ensure_loaded?(module) and function_exported?(module, :expand_use, 3)
+      Mutare.Reflection.exports?(module, :expand_use, 3)
     end)
   end
 

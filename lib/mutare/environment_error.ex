@@ -41,7 +41,7 @@ defmodule Mutare.EnvironmentError do
   """
   @spec verify!(module()) :: :ok
   def verify!(plugin) when is_atom(plugin) do
-    if Code.ensure_loaded?(plugin) and function_exported?(plugin, :required_modules, 0) do
+    if Mutare.Reflection.exports?(plugin, :required_modules, 0) do
       missing =
         plugin.required_modules()
         |> declared!(plugin)

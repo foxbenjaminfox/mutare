@@ -74,12 +74,11 @@ defmodule Mutare.Mutator.Spec do
   # (called here — once per resolved instance, before any file is read — so an invalid option
   # raises at resolution time), else the raw options. The declared-environment check
   # (`required_modules/0`) runs first, so a plugin whose library is absent fails on the
-  # deployment error, never on whatever `init/1` does without it. `Code.ensure_loaded?`
-  # because spec resolution may be the first time the module is touched.
+  # deployment error, never on whatever `init/1` does without it.
   defp init(module, opts) do
     Mutare.EnvironmentError.verify!(module)
 
-    if Code.ensure_loaded?(module) and function_exported?(module, :init, 1),
+    if Mutare.Reflection.exports?(module, :init, 1),
       do: module.init(opts),
       else: opts
   end

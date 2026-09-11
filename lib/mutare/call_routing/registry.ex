@@ -5,6 +5,8 @@ defmodule Mutare.CallRouting.Registry do
   alias Mutare.CallRouting.ContractError
   alias Mutare.CallRouting.Registry.Entry
   alias Mutare.Mutator
+  alias Mutare.Mutator.Dispatch
+  alias Mutare.Reflection
 
   @builtin [
     {Kernel, :match?, 2, [:pattern, :expression]},
@@ -121,8 +123,8 @@ defmodule Mutare.CallRouting.Registry do
 
   defp collect_routes(modules, kind) do
     Enum.flat_map(modules, fn module ->
-      has_routes? = exports?(module, :call_routes, 0)
-      has_router? = exports?(module, :route_arguments, 2)
+      has_routes? = Reflection.exports?(module, :call_routes, 0)
+      has_router? = Reflection.exports?(module, :route_arguments, 2)
 
       entries =
         if has_routes? do
@@ -163,7 +165,7 @@ defmodule Mutare.CallRouting.Registry do
   end
 
   defp prepare_route!(spec, module, kind) do
-    if Spec.classifier?(spec) and not exports?(module, :route_arguments, 2) do
+    if Spec.classifier?(spec) and not Reflection.exports?(module, :route_arguments, 2) do
       contract_error!(
         provider: module,
         route: Spec.key(spec),
@@ -184,17 +186,16 @@ defmodule Mutare.CallRouting.Registry do
 
   defp collect_hosts(modules) do
     Enum.flat_map(modules, fn module ->
-      has_host? = exports?(module, :host, 2)
-      has_selectors? = exports?(module, :hosted_macros, 0)
-
+      # `Dispatch.host?/1` is the one "is a host" decision; the two partial cases below exist
+      # only to name which half of the `MacroHost` pair is missing.
       cond do
-        has_host? and has_selectors? ->
+        Dispatch.host?(module) ->
           module
           |> invoke!(:hosted_macros, 0, [])
           |> resolve_host_selectors!(module)
           |> Enum.map(&%{selector: &1, module: module})
 
-        has_host? ->
+        Reflection.exports?(module, :host, 2) ->
           contract_error!(
             provider: module,
             callback: {:hosted_macros, 0},
@@ -204,7 +205,7 @@ defmodule Mutare.CallRouting.Registry do
                 "the host subscribes to"
           )
 
-        has_selectors? ->
+        Reflection.exports?(module, :hosted_macros, 0) ->
           contract_error!(
             provider: module,
             callback: {:host, 2},
@@ -521,9 +522,6 @@ defmodule Mutare.CallRouting.Registry do
         message: "#{inspect(module)}.#{fun}/#{arity} failed: #{Exception.message(error)}"
       )
   end
-
-  defp exports?(module, fun, arity),
-    do: Code.ensure_loaded?(module) and function_exported?(module, fun, arity)
 
   @spec contract_error!(keyword()) :: no_return()
   defp contract_error!(opts), do: raise(ContractError, opts)

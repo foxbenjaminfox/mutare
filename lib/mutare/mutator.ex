@@ -541,7 +541,7 @@ defmodule Mutare.Mutator do
   end
 
   defp declared_marks(module, config) do
-    if Code.ensure_loaded?(module) and function_exported?(module, :argument_marks, 1),
+    if Mutare.Reflection.exports?(module, :argument_marks, 1),
       do: module.argument_marks(config),
       else: []
   end

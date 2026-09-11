@@ -231,7 +231,7 @@ defmodule Mutare.Transform.UnitReturns do
   end
 
   defp behaviour_callbacks(mod) when is_atom(mod) do
-    if Code.ensure_loaded?(mod) and function_exported?(mod, :behaviour_info, 1),
+    if Mutare.Reflection.exports?(mod, :behaviour_info, 1),
       do: mod.behaviour_info(:callbacks),
       else: []
   end

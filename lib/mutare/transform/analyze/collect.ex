@@ -93,7 +93,7 @@ defmodule Mutare.Transform.Analyze.Collect do
   defp node_level_specs(mutators) do
     specs = Enum.map(mutators, &Spec.coerce/1)
     producers = Dispatch.implementing_any(specs, :mutate, [1, 2])
-    hosts = Dispatch.implementing(specs, :host, 2)
+    hosts = Dispatch.hosts(specs)
 
     specs
     |> Enum.filter(&(&1 in producers or &1 in hosts))

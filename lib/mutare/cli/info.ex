@@ -118,7 +118,7 @@ defmodule Mutare.CLI.Info do
 
       nil ->
         with module when is_atom(module) <- resolve_module(name),
-             true <- Code.ensure_loaded?(module) and function_exported?(module, :name, 0) do
+             true <- Mutare.Reflection.exports?(module, :name, 0) do
           {module.name(), module}
         else
           _ -> nil
