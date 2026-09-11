@@ -84,6 +84,41 @@ defmodule Mutare.Sandbox.Command.OutputTest do
     end
   end
 
+  describe "salient_line/1 (read by Report.HarnessDiagnostic)" do
+    test "skips blank lines and routine chatter, returning the first remaining line trimmed" do
+      output = """
+      Compiling 3 files (.ex)
+      Generated example app
+      Running ExUnit with seed: 1234, max_cases: 16
+      Excluding tags: [:slow]
+
+      ....
+        something odd happened
+      Finished in 0.1 seconds
+      """
+
+      assert Output.salient_line(output) == "something odd happened"
+    end
+
+    test "prefers a failure head over an earlier ordinary line" do
+      for head <- [
+            "** (Mix) Could not start application example: exited in: Example.start(:normal, [])",
+            "error: undefined function foo/0",
+            "Unchecked dependencies for environment test:",
+            "Dependencies have diverged:",
+            "Could not start application example: exited",
+            "Runtime terminating during boot (some other reason)"
+          ] do
+        assert Output.salient_line("a stray notice\n" <> head) == head
+      end
+    end
+
+    test "returns nil when nothing but chatter was captured" do
+      assert Output.salient_line("") == nil
+      assert Output.salient_line("Compiling 1 file (.ex)\n...\nFinished in 0.1 seconds\n") == nil
+    end
+  end
+
   describe "verdict-refinement discriminators (read by Command.outcome/2)" do
     @test_compile_error """
     == Compilation error in file test/plug/router_test.exs ==

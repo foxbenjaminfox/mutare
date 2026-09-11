@@ -5,6 +5,10 @@ defmodule Mutare.Report.HarnessDiagnostic do
   The runner already captures the raw `mix test` output, but the final reports
   need a short, stable summary rather than an entire suite log. This module is the
   shared presentation layer for human, JSON, live, and abort messages.
+
+  It only formats. Picking the output line to show and recognising the known boot
+  crash both read mix's output format, which `Mutare.Sandbox.Command.Output` owns
+  (`salient_line/1`, `boot_failure?/1`).
   """
 
   alias Mutare.Result
@@ -16,9 +20,10 @@ defmodule Mutare.Report.HarnessDiagnostic do
   @doc """
   Return a one-line diagnostic for a harness-errored result.
 
-  Includes the exit status when known plus the first useful output line. The
-  known self-erasing boot crash gets a cause-specific summary because its output
-  is explicitly not useful for recovering the original exception.
+  Includes the exit status when known plus the output's salient line
+  (`Mutare.Sandbox.Command.Output.salient_line/1`), truncated. The known
+  self-erasing boot crash gets a cause-specific summary because its output is
+  explicitly not useful for recovering the original exception.
   """
   @spec summary(Result.t()) :: String.t()
   def summary(%Result{} = result) do
@@ -43,7 +48,7 @@ defmodule Mutare.Report.HarnessDiagnostic do
       Output.boot_failure?(output) ->
         "sandbox node died during boot; likely startup contention"
 
-      line = useful_line(output) ->
+      line = Output.salient_line(output) ->
         truncate(line)
 
       true ->
@@ -52,35 +57,6 @@ defmodule Mutare.Report.HarnessDiagnostic do
   end
 
   defp output_clue(_output), do: "no output captured"
-
-  defp useful_line(output) do
-    lines =
-      output
-      |> String.split("\n")
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == "" or routine_line?(&1)))
-
-    Enum.find(lines, &interesting?/1) || List.first(lines)
-  end
-
-  defp routine_line?(line) do
-    String.starts_with?(line, "Compiling ") or
-      String.starts_with?(line, "Generated ") or
-      String.starts_with?(line, "Running ExUnit with seed:") or
-      String.starts_with?(line, "Excluding tags:") or
-      String.starts_with?(line, "Including tags:") or
-      String.starts_with?(line, "Finished in ") or
-      Regex.match?(~r/^\.*$/, line)
-  end
-
-  defp interesting?(line) do
-    String.starts_with?(line, "** (") or
-      String.starts_with?(line, "error:") or
-      String.starts_with?(line, "Unchecked dependencies") or
-      String.starts_with?(line, "Dependencies have diverged") or
-      String.starts_with?(line, "Could not start application") or
-      String.contains?(line, "Runtime terminating during boot")
-  end
 
   defp truncate(line) do
     if String.length(line) <= @max_line_chars do

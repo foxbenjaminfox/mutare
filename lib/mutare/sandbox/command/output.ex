@@ -3,7 +3,7 @@ defmodule Mutare.Sandbox.Command.Output do
   Read shapes out of a `mix` run's captured output.
 
   A mutant's exit code is the *primary* signal (`Mutare.Sandbox.Command` decodes
-  it), but three jobs need to look *past* the code at the human-readable output:
+  it), but four jobs need to look *past* the code at the human-readable output:
 
     * **Refining a verdict.** Exit `1` is ambiguous — a genuine harness failure or
       a mutation that broke the test suite's own compilation — and a BEAM abort can
@@ -18,6 +18,10 @@ defmodule Mutare.Sandbox.Command.Output do
       dependency-check failures from compile-poisoning so the runner can stop
       recovery immediately and the Mix task can recommend the correct command in
       the original project rather than the disposable sandbox.
+    * **Summarising a failure.** A `:harness_error` has no verdict to explain it, so
+      `Mutare.Report.HarnessDiagnostic` shows the one output line most likely to:
+      `salient_line/1` skips mix's routine chatter and prefers a line that heads a
+      failure.
 
   ## Why these live together
 
@@ -232,6 +236,61 @@ defmodule Mutare.Sandbox.Command.Output do
   def boot_failure?(output) when is_binary(output) do
     Regex.match?(@boot_during_startup, output) and
       Regex.match?(@torn_down_standard_error, output)
+  end
+
+  # Chatter a `mix test` run prints on its way to anything interesting: compile
+  # progress, ExUnit's seed/tag banner and `Finished in` footer, rows of progress
+  # dots. Never the line that explains a failure. Read by `salient_line/1`, which
+  # matches them against trimmed lines.
+  @routine_prefixes [
+    "Compiling ",
+    "Generated ",
+    "Running ExUnit with seed:",
+    "Excluding tags:",
+    "Including tags:",
+    "Finished in "
+  ]
+  @progress_dots ~r/^\.+$/
+
+  # Line starts that head a failure: a raised exception or exit (`** (RuntimeError)`,
+  # `** (Mix)`, `** (EXIT from …)`) and a failed application start. `salient_line/1`
+  # also counts the `error:` header, the dependency-check banners, and the boot-abort
+  # slogan as failure heads, through their patterns above.
+  @failure_prefixes ["** (", "Could not start application"]
+
+  @doc """
+  Returns the captured-output line most likely to explain a failed run, or `nil`.
+
+  Blank lines and routine chatter (compile progress, ExUnit's seed/tag banner,
+  progress dots, the `Finished in` footer) are skipped. Of what remains, the first
+  line that heads a failure wins — a raised `** (…)`, an `error:` header, a
+  dependency-check banner, a failed application start, a boot abort — else the
+  first remaining line. Lines come back trimmed.
+
+  `Mutare.Report.HarnessDiagnostic` uses it to summarise a `:harness_error` in one
+  line; no verdict depends on it.
+  """
+  @spec salient_line(String.t()) :: String.t() | nil
+  def salient_line(output) when is_binary(output) do
+    lines =
+      output
+      |> String.split("\n")
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == "" or routine_line?(&1)))
+
+    Enum.find(lines, &failure_head?/1) || List.first(lines)
+  end
+
+  defp routine_line?(line) do
+    String.starts_with?(line, @routine_prefixes) or Regex.match?(@progress_dots, line)
+  end
+
+  defp failure_head?(line) do
+    String.starts_with?(line, @failure_prefixes) or
+      Regex.match?(@error_marker, line) or
+      Regex.match?(@unchecked_dependencies, line) or
+      Regex.match?(@diverged_dependencies, line) or
+      Regex.match?(@boot_during_startup, line)
   end
 
   @doc """
