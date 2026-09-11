@@ -136,6 +136,9 @@ defmodule Mutare.Transform do
     * `Mutare.Transform.ReceiveClauseEmit` — per-clause receive delivery, preserving
       native mailbox order and one timeout evaluation; clause guards are shared with
       anonymous functions through `Mutare.Transform.ClauseVariants`.
+    * `Mutare.Transform.ClauseGuardEmit` — guard-only delivery for the clauses that can
+      host no extra clause (`with`/`for` `<-`, `with`/`try` `else`, `try` `catch`,
+      `for … reduce:` `do`): the guard becomes a gated guard sequence in place.
     * `Mutare.Transform.RescueEmit` — shares protected bodies across rescue mutants
       when native handler dispatch can reuse an existing exception binding; other
       shapes retain whole-try selection.
@@ -166,6 +169,7 @@ defmodule Mutare.Transform do
     FunctionPlan,
     FnClauseEmit,
     ReceiveClauseEmit,
+    ClauseGuardEmit,
     HostedEmit,
     ImportWitness,
     LiftedEmit,
@@ -1126,6 +1130,11 @@ defmodule Mutare.Transform do
 
       {:receive_clause, candidates} ->
         ReceiveClauseEmit.emit(current, candidates, ctx)
+
+      # A `with`/`for`/`try` carrying guard-only `ClauseGuard`s for clauses that can host no
+      # extra clause → each such guard becomes a gated guard sequence in place.
+      {:clause_guard, candidates} ->
+        ClauseGuardEmit.emit(current, candidates, ctx)
 
       # A `=`-match in statement position → a tuple-export selector (its bindings must escape,
       # so it can't be wrapped like an ordinary node).

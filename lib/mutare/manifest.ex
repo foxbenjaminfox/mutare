@@ -344,6 +344,22 @@ defmodule Mutare.Manifest do
   defp enter({:receive, _meta, [blocks]} = node, regions, var),
     do: {node, record_case(do_block(blocks), node, regions, &pattern_mutant(&1, var))}
 
+  # A guard-sequence construct (`ClauseGuardEmit`): a `with`/`for` `<-` clause or a
+  # `with`/`try` `else`, `try` `catch`, `for … reduce:` `do` arrow clause whose guard carries
+  # one `<var> === <id> and …` alternative per mutant. Each alternative is that mutant's
+  # generated code; the whole construct is the fallback. Only the construct's *own* clause
+  # heads are read — a nested construct is entered on its own.
+  defp enter({form, _meta, args} = node, regions, var)
+       when form in [:with, :for, :try] and is_list(args) do
+    mutants =
+      for head <- clause_heads(args), {id, alt} <- sequence_mutants(head, var), do: {id, alt}
+
+    regions =
+      Enum.reduce(mutants, regions, fn {id, alt}, acc -> push(range_region([id], alt), acc) end)
+
+    {node, push(case_fallback(node, mutants), regions)}
+  end
+
   defp enter(node, regions, _var), do: {node, regions}
 
   defp leave(node, regions), do: {node, regions}
@@ -381,6 +397,37 @@ defmodule Mutare.Manifest do
   end
 
   defp pattern_mutant(_, _), do: {nil, nil}
+
+  # The `when` heads of a `with`/`for`/`try`'s own clauses: its leading `<-` arguments plus
+  # the arrow clauses of every block in its trailing keyword list.
+  defp clause_heads(args) do
+    {leading, trailing} = Enum.split(args, -1)
+
+    generator_heads = for {:<-, _, [{:when, _, _} = head, _rhs]} <- leading, do: head
+
+    arrow_heads =
+      for blocks when is_list(blocks) <- trailing,
+          {_key, clauses} <- blocks,
+          {:->, _, [[{:when, _, _} = head], _body]} <- List.wrap(unwrap_clauses(clauses)),
+          do: head
+
+    generator_heads ++ arrow_heads
+  end
+
+  defp unwrap_clauses({:__block__, _meta, [clauses]}) when is_list(clauses), do: clauses
+  defp unwrap_clauses(clauses), do: clauses
+
+  # The `{id, alternative}` pairs of a guard sequence: the trailing guard's `when`
+  # alternatives (right-nested, as parsed) that carry a gate. A gated original (`=/=`
+  # exclusion) and an unmutated guard yield nothing.
+  defp sequence_mutants({:when, _meta, when_args}, var) when length(when_args) >= 2 do
+    {_patterns, [guard]} = Enum.split(when_args, -1)
+
+    for alt <- alternatives(guard), id = gate_id(alt, var), id != nil, do: {id, alt}
+  end
+
+  defp alternatives({:when, _meta, alts}), do: Enum.flat_map(alts, &alternatives/1)
+  defp alternatives(guard), do: [guard]
 
   # --- regions -------------------------------------------------------------
 

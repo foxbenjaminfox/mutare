@@ -14,7 +14,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
   #
   #   * node-local — carried on a node's `meta[:mutare]` / `:mutare_case` and dispatched by
   #     `Mutare.Transform` off `route/1` (`:in_place` / `:case_clause` / `:fn_clause` /
-  #     `:receive_clause` / `:match_pattern` / `:macro_pattern`).
+  #     `:receive_clause` / `:clause_guard` / `:match_pattern` / `:macro_pattern`).
   #     `classify_node_candidates/1` admits exactly these.
   #   * lifted (`Lifted` / `PatternStructure` / `GuardDrop` / `Drop`) — consumed from
   #     `Mutare.Transform.FunctionPlan`, never node-local; `route/1` reports `:lifted` and
@@ -36,6 +36,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
           | Candidate.CaseClause.t()
           | Candidate.FnClause.t()
           | Candidate.ReceiveClause.t()
+          | Candidate.ClauseGuard.t()
           | Candidate.MatchPattern.t()
           | Candidate.MacroPattern.t()
   @type node_route ::
@@ -43,6 +44,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
           | :case_clause
           | :fn_clause
           | :receive_clause
+          | :clause_guard
           | :match_pattern
           | :macro_pattern
   @type routed_node_candidates :: :none | {node_route(), [node_candidate()]}
@@ -54,6 +56,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
     :case_clause,
     :fn_clause,
     :receive_clause,
+    :clause_guard,
     :match_pattern,
     :macro_pattern
   ]
@@ -140,6 +143,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
 
   defp clause_list_route(%Candidate.FnClause{}), do: :fn_clause
   defp clause_list_route(%Candidate.ReceiveClause{}), do: :receive_clause
+  defp clause_list_route(%Candidate.ClauseGuard{}), do: :clause_guard
   defp clause_list_route(_), do: nil
 
   @doc """
@@ -220,6 +224,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
   defp profile(%Candidate.CaseClause{}), do: {:case_clause, :in_place, nil}
   defp profile(%Candidate.FnClause{}), do: {:fn_clause, :in_place, nil}
   defp profile(%Candidate.ReceiveClause{}), do: {:receive_clause, :in_place, nil}
+  defp profile(%Candidate.ClauseGuard{}), do: {:clause_guard, :in_place, nil}
   defp profile(%Candidate.MatchPattern{}), do: {:match_pattern, :in_place, nil}
   defp profile(%Candidate.MacroPattern{}), do: {:macro_pattern, :in_place, nil}
   defp profile(%Candidate.Lifted{}), do: {:lifted, :lifted_replace, nil}
@@ -333,7 +338,10 @@ defmodule Mutare.Transform.Candidate.Delivery do
   end
 
   defp assert_compatible_routes!(route, candidates) do
-    allowed = if route in [:fn_clause, :receive_clause], do: [route, :in_place], else: [route]
+    allowed =
+      if route in [:fn_clause, :receive_clause, :clause_guard],
+        do: [route, :in_place],
+        else: [route]
 
     case Enum.find(candidates, &(node_route!(&1) not in allowed)) do
       nil ->

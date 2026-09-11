@@ -17,6 +17,8 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   #   * receive  → `attach_receive_candidates/4`
   #   * fn       → `attach_fn_candidates/3`
   #   * try      → `rescue_type_candidates/3`
+  #   * with / for / try guard-only clauses → `guard_only_candidates/2` (with
+  #     `located_clauses/1` / `located_block/2` naming each clause for the emitter)
 
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
@@ -605,4 +607,102 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # mutare:ignore[guard_drop, clause_drop] equivalent — Sourceror always `:__block__`-wraps a list literal (matched above), so this bare-list clause (and its guard) is never reached for real input; it is defensive only.
   defp rescue_types(list) when is_list(list), do: {fn new -> new end, list}
   defp rescue_types(_node), do: nil
+  # --- guard-only clauses: with/for `<-`, with/try `else`, try `catch`, for-reduce `do` ---
+
+  # `Candidate.ClauseGuard`s for the guarded clauses of a construct that can host no extra
+  # clause (see the struct). `located` pairs each `locator` with its clause node — a
+  # `{:<-, _, [head, rhs]}` or `{:->, _, [[head], body]}`; an unguarded head yields nothing.
+  # Guard-operator swaps come from the same `Tag.guard_targets/3` walk the `case`/`fn`/`receive`
+  # paths use. The `GuardDrop` offer follows the shared inert-guard rule and, as for `fn`, skips
+  # a multi-pattern head (`catch kind, reason when …`), which has no single `{:when, pattern,
+  # guard}` node to diff. Pattern-literal and structural pattern mutants are **not** offered —
+  # they would need a clause of their own, which these positions can't provide.
+  def guard_only_candidates(located, mutators) do
+    Enum.flat_map(located, fn {locator, clause} ->
+      case guarded_head_parts(clause) do
+        nil -> []
+        {patterns, guard} -> guard_only_clause_candidates(locator, patterns, guard, mutators)
+      end
+    end)
+  end
+
+  @doc false
+  def located_clauses(clauses) when is_list(clauses),
+    do: Enum.with_index(clauses, fn clause, i -> {{:clause, i}, clause} end)
+
+  # The arrow clauses of block `key` in a construct's trailing keyword list, tolerant of both
+  # Sourceror's wrapped keyword key and the list-literal wrapping a `for … reduce:` `do` keeps.
+  @doc false
+  def located_block(blocks, key) when is_list(blocks) do
+    blocks
+    |> Enum.find_value([], fn
+      {k, v} -> if AST.key_atom(k) == key, do: arrow_clauses(v)
+      _ -> nil
+    end)
+    |> Enum.with_index(fn clause, i -> {{key, i}, clause} end)
+  end
+
+  def located_block(_blocks, _key), do: []
+
+  defp arrow_clauses({:__block__, _meta, [clauses]}) when is_list(clauses),
+    do: arrow_clauses(clauses)
+
+  defp arrow_clauses(clauses) when is_list(clauses) do
+    if Enum.all?(clauses, &match?({:->, _, [_, _]}, &1)), do: clauses, else: []
+  end
+
+  defp arrow_clauses(_other), do: []
+
+  defp guarded_head_parts({:<-, _meta, [{:when, _wm, when_args}, _rhs]})
+       when length(when_args) >= 2,
+       do: split_head(when_args)
+
+  defp guarded_head_parts({:->, _meta, [[{:when, _wm, when_args}], _body]})
+       when length(when_args) >= 2,
+       do: split_head(when_args)
+
+  defp guarded_head_parts(_clause), do: nil
+
+  defp split_head(when_args) do
+    {patterns, [guard]} = Enum.split(when_args, -1)
+    {patterns, guard}
+  end
+
+  defp guard_only_clause_candidates(locator, patterns, guard, mutators) do
+    {tagged_guard, {_next, targets}} = Tag.guard_targets(guard, @fresh_tag_acc, mutators)
+
+    swaps =
+      Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, variant, range ->
+        %Candidate.ClauseGuard{
+          locator: locator,
+          mutant_guard: Tag.replace_tag(tagged_guard, tag, mutated),
+          mutator: mutator,
+          original: original,
+          mutated: mutated,
+          range: range,
+          note: note,
+          variant: variant
+        }
+      end)
+
+    drop =
+      with [pattern] <- patterns,
+           {:ok, spec, when_node, range} <-
+             guard_drop_when_node(pattern, guard, targets, mutators) do
+        [
+          %Candidate.ClauseGuard{
+            locator: locator,
+            mutant_guard: nil,
+            mutator: spec,
+            original: when_node,
+            mutated: pattern,
+            range: range
+          }
+        ]
+      else
+        _ -> []
+      end
+
+    swaps ++ drop
+  end
 end

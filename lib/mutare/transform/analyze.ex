@@ -507,9 +507,16 @@ defmodule Mutare.Transform.Analyze do
     normalized_blocks = Syntax.normalize_clause_blocks(blocks)
     analyzed = recurse({:try, meta, [normalized_blocks]}, :runtime, mutators)
 
+    # `catch`/`else` clause guards get their guard-only mutants (`ClauseGuardEmit`) —
+    # `rescue` clauses carry no guard.
     candidates =
       Attach.build_candidates(node, Dispatch.mutations(node, mutators)) ++
-        ClausePatterns.rescue_type_candidates(normalized_blocks, meta, mutators)
+        ClausePatterns.rescue_type_candidates(normalized_blocks, meta, mutators) ++
+        ClausePatterns.guard_only_candidates(
+          ClausePatterns.located_block(normalized_blocks, :catch) ++
+            ClausePatterns.located_block(normalized_blocks, :else),
+          mutators
+        )
 
     Attach.put_candidates_if_any(analyzed, candidates)
   end
@@ -565,9 +572,22 @@ defmodule Mutare.Transform.Analyze do
   # `true`/`false`) would poison the single build. The `:uniq` value alone is held
   # back from mutators (`analyze_for_arg/2`); the node itself is still offered for
   # parity with the generic clause (no built-in matches `for`).
+  #
+  # A guarded generator (`x when x > 0 <- xs`) and a guarded `reduce:` `do` clause get their
+  # guard-only mutants (`ClauseGuardEmit`); the patterns themselves stay `:pattern`.
   defp analyze_form({:for, _meta, args} = node, :runtime, mutators) when is_list(args) do
     {:for, meta, args} = Attach.offer(node, node, mutators)
+    {qualifiers, trailing} = Enum.split(args, -1)
+
+    guards =
+      ClausePatterns.guard_only_candidates(
+        ClausePatterns.located_clauses(qualifiers) ++
+          Enum.flat_map(trailing, &ClausePatterns.located_block(&1, :do)),
+        mutators
+      )
+
     {:for, meta, Enum.map(args, &analyze_for_arg(&1, mutators))}
+    |> Meta.append_candidates(:in_place, guards)
   end
 
   # `with`: a chain of clauses (`<-`/`=`/bare-expr, every one value-discarded) followed by
@@ -584,11 +604,24 @@ defmodule Mutare.Transform.Analyze do
   defp analyze_form({:with, meta, args} = node, :runtime, mutators)
        when is_list(args) and args != [] do
     if is_list(List.last(args)) do
-      {clauses, [body_kw]} = Enum.split(args, -1)
-      clauses = Enum.map(clauses, &MatchPatterns.analyze_statement(__MODULE__, &1, mutators))
+      {raw_clauses, [body_kw]} = Enum.split(args, -1)
+
+      clauses =
+        Enum.map(raw_clauses, &MatchPatterns.analyze_statement(__MODULE__, &1, mutators))
+
       body_kw = Syntax.normalize_clause_blocks(body_kw)
       rebuilt = {:with, meta, clauses ++ [analyze(body_kw, :runtime, mutators)]}
-      Attach.offer(rebuilt, node, mutators)
+
+      # Guard-only mutants of the `<-` clauses and the `else` clauses (`ClauseGuardEmit`);
+      # their patterns stay `:pattern`.
+      guards =
+        ClausePatterns.guard_only_candidates(
+          ClausePatterns.located_clauses(raw_clauses) ++
+            ClausePatterns.located_block(body_kw, :else),
+          mutators
+        )
+
+      rebuilt |> Attach.offer(node, mutators) |> Meta.append_candidates(:in_place, guards)
     else
       node |> Attach.offer(node, mutators) |> recurse_runtime(mutators)
     end

@@ -9955,3 +9955,50 @@ For the existing guarded fixtures, `receive-20` shrank from 151,105 to 32,623 by
 `receive-40` from 558,085 to 65,209 bytes. With all default mutators, `receive_default-40`
 shrank from 714,875 to 93,214 bytes and from 399 receives to one. These figures include body
 selectors; the single `after` block is excluded from the message-clause counts above.
+
+### Guard-only clauses: `with`/`for` `<-`, `with`/`try` `else`, `try` `catch`, `for … reduce:` `do` `[done in bound scopes]`
+
+A survey of guarded clauses by construct (AST-walked over 409 `.ex` files: this repo, its
+examples, and ten deps — sourceror, req, mint, finch, jason, nimble_options, owl, igniter,
+rewrite, glob_ex) found the four clause-list deliveries covering nearly everything: `def`
+heads 1344, `case` 315, `fn` 62, `receive` 3. The positions with no delivery were `with …
+<-` 56, `with … else` 2, and `try catch`/`try else`/`for` generator 0 each. So in practice
+this is one gap — the `with … <-` guard, at a sixth of `case`'s frequency — with four
+siblings that share its shape and come along for free.
+
+None of these can host an extra clause. A `<-` has no clause list at all, and a `with`
+non-match must hand the *original* value to `else`, so the subject can't be tupled the way
+`CaseClauseEmit` does either. A **guard-only** mutant, though, needs no clause of its own:
+its pattern is the original's. `Mutare.Transform.ClauseGuardEmit` rewrites the clause's
+guard into a guard *sequence* — one `<var> === <id> and <mutant>` alternative per mutant,
+then the original gated by the exclusion of exactly those ids — with the same `:erlang`
+gate builders (`GuardBuild`) the lifted heads and interleaved clauses use, so `Manifest`
+already recognises the gate. Erlang tries each `when` alternative independently, a failing
+(or raising) one fails only itself, and `andalso` short-circuits on the gate before an
+inactive mutant's guard is evaluated — so the rewritten clause behaves exactly as if its
+guard read the active mutant's, and as written under none. Verified in all five positions
+before building (a `try catch` head with two patterns included).
+
+Two limits are principled rather than deferred:
+
+* **Guard-only.** Pattern-literal and structural pattern mutants in these positions would
+  need a second clause. For `with <-` and `for` generators there is no way to get one; for the
+  three clause-list positions the receive-style interleaving would work, but at 2 + 0 + 0
+  occurrences in the survey it isn't worth a second mechanism. `GuardDrop` rides the sequence
+  (its alternative is the bare gate), under the shared inert-guard rule and the same
+  multi-pattern-head skip `fn` documents.
+* **Not claimed outside a bound selector scope.** The gate reads the hoisted `mutare_active`
+  variable — nothing guard-safe can read `:persistent_term` — and, unlike `fn`/`receive`, there
+  is no whole-construct fallback because the clauses' bindings escape. So at module level, in a
+  default-argument position, or in a nested module's `def`, `ClauseGuardEmit` drops the guard
+  candidates *before* claiming: they take no id and leave no site, like any position never
+  offered. (Dropping after claiming would leave an inert id reported as a survivor.)
+
+Coverage is one record before the construct, for every live id — reaching the construct is
+the guards' coverage, as it already is for a `case`'s later clauses. Bodies are left as
+emitted (unlike the fn/receive raw-body split above): no body is duplicated or re-homed by
+this rewrite, so nothing about the environment a body's macros observe changes.
+
+Not done, and related: a `receive … after expr` timeout is still analyzed as a pattern (the
+generic `->` clause), so a non-literal timeout's operators aren't mutated; fixing that needs a
+timeout-mark row for the literal case (see "Argument marks").

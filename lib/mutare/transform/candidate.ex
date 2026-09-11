@@ -566,6 +566,42 @@ defmodule Mutare.Transform.Candidate do
     defstruct [:mutator, :original, :mutated, :range]
   end
 
+  defmodule ClauseGuard do
+    @moduledoc false
+
+    # A guard-only mutation of one clause in a construct that can host no extra clause: a
+    # `with`/`for` `<-` clause, a `with`/`try` `else` clause, a `try` `catch` clause, or a
+    # `for … reduce:` `do` clause. The pattern is the original's, so the mutant needs no clause
+    # of its own — `ClauseGuardEmit` rewrites the clause's guard into a guard *sequence* with one
+    # gated alternative per mutant and records coverage once at the construct's entry.
+    # `mutant_guard` is `nil` for a `GuardDrop` (the alternative is the bare gate). `locator`
+    # names the clause within its construct: `{:clause, i}` is the i-th `with` clause / `for`
+    # qualifier, `{:else | :catch | :do, i}` the i-th arrow clause of that block. The Site is the
+    # focused in-place guard diff, as for a `case` clause's guard.
+    @type locator :: {:clause | :else | :catch | :do, non_neg_integer()}
+    @type t :: %__MODULE__{
+            locator: locator(),
+            mutant_guard: Macro.t() | nil,
+            mutator: Mutare.Mutator.Spec.t(),
+            original: Macro.t(),
+            mutated: Macro.t(),
+            range: Sourceror.Range.t(),
+            note: String.t() | nil,
+            variant: Mutare.Mutator.Mutation.variant()
+          }
+
+    defstruct [
+      :locator,
+      :mutant_guard,
+      :mutator,
+      :original,
+      :mutated,
+      :range,
+      note: nil,
+      variant: nil
+    ]
+  end
+
   @type t ::
           InPlace.t()
           | Lifted.t()
@@ -573,6 +609,7 @@ defmodule Mutare.Transform.Candidate do
           | CasePattern.t()
           | FnClause.t()
           | ReceiveClause.t()
+          | ClauseGuard.t()
           | RescueDrop.t()
           | CaseClause.t()
           | MatchPattern.t()
