@@ -930,6 +930,24 @@ defmodule Mutare.Transform.Analyze do
     end)
   end
 
+  # A **bitstring generator** `<<seg, …, last <- enum>>`: the `<-` rides the *last* segment,
+  # the segments before it are plain pattern segments. The wrapper is `for`-special-form
+  # syntax, not a bitstring value — offering it would let `BitstringLiteral` swap the whole
+  # generator for `<<>>`, and the selector `case` spliced into generator position poisons the
+  # build (`misplaced operator ::/2`). So: leading segments as `:pattern`, the `<-` through the
+  # ordinary generator clause (its LHS a pattern, its RHS runtime), the wrapper never offered.
+  defp analyze_for_arg({:<<>>, meta, segments}, mutators) when is_list(segments) do
+    case List.pop_at(segments, -1) do
+      {{:<-, _gmeta, [_lhs, _rhs]} = generator, leading} ->
+        {:<<>>, meta,
+         Enum.map(leading, &analyze(&1, :pattern, mutators)) ++
+           [analyze(generator, :runtime, mutators)]}
+
+      _ ->
+        MatchPatterns.analyze_match_statement(__MODULE__, {:<<>>, meta, segments}, mutators)
+    end
+  end
+
   # A non-keyword qualifier — a generator (`<-`), a filter, or a **bare `=` match**.
   # `analyze_match_statement/3` offers a `=` LHS to the structural pattern families (a `for`
   # `=` qualifier discards its value, so the tuple-export rewrite is sound) and leaves

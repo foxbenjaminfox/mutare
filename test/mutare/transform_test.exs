@@ -533,6 +533,42 @@ defmodule Mutare.TransformTest do
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
+  describe "for bitstring generators" do
+    # `for <<a::8, b::8 <- bin>>` puts the `<-` on the *last* segment inside a `<<>>` wrapper
+    # that is `for`-special-form syntax, not a bitstring value. Offered as a value it let
+    # `BitstringLiteral` swap the whole generator for `<<>>`, and the selector `case` spliced
+    # into generator position failed the single build (`misplaced operator ::/2`) — so, as
+    # for the `reduce:` block above, these assertions compile the metamutant.
+    @bitgen """
+    defmodule BG do
+      def pairs(bin) do
+        for <<a::8, b::8 <- bin>>, b > a, do: b + a
+      end
+    end
+    """
+
+    test "the Bitstring family never offers the generator wrapper" do
+      {meta, sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(@bitgen,
+          mutators: [Mutare.Mutators.BitstringLiteral]
+        )
+
+      assert sites == []
+      assert_compiles(meta)
+    end
+
+    test "the segments stay patterns while the filter and body mutate, and the full set compiles" do
+      {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(@bitgen)
+
+      # Both `8`s are segment sizes in pattern position: no literal mutant touches them.
+      refute Enum.any?(sites, &(&1.mutator == :integer))
+      # The filter and body are ordinary runtime.
+      assert Enum.any?(sites, &(&1.mutator == :relational and &1.original_form == :>))
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic and &1.original_form == :+))
+      assert_compiles(meta)
+    end
+  end
+
   describe "for ... reduce: comprehension do-blocks" do
     # The `do:` body of a `reduce:` comprehension is a *stab-clause* set (`acc -> expr`).
     # Sourceror represents it identically to a list literal — `{:__block__, _, [[…]]}` —
