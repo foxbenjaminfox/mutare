@@ -26,10 +26,13 @@ defmodule Mutare.Schema do
   every GC scan the growing live set and inflated a big file's transform
   several-fold (see NOTES "Scan is transform-bound"):
 
-    1. **Count** (`count_files/4`) — `Mutare.Transform.count_string/2` per file,
+    1. **Count** (`count_files/4`) — `Mutare.Transform.count_report/2` per file,
        in parallel. It runs the same analyze → plan → emit pipeline but skips the
        dominant final render, returning each file's mutant count and, for a line
-       selection, the matching local ids (without rendering site diffs). The count
+       selection, the matching local ids (without rendering site diffs) — plus the
+       *facts* the end-of-build diagnostics read (matched configuration entries, the
+       comment-directive container, degraded `use`s), collected here because this
+       is the one pass that parses every file: nothing later re-parses. The count
        is drift-proof: it comes from the *same* id-claiming path emission uses, so
        it equals the matching render's `next_id - start_id` by construction.
     2. **Render** (`render_files/5`) — prefix-sum the counts so each sited file
@@ -80,6 +83,18 @@ defmodule Mutare.Schema do
   alias Mutare.Ignore.Directive
   alias Mutare.Run.Context
 
+  @typedoc """
+  A module-level `use` the scan could not expand in-process, with the root-relative file it
+  sits in (`Mutare.Transform.Uses.degraded_use/0` plus `:file`). `mix mutare --check` prints
+  these: a `:call_routes` `:raw` keyed on what such a `use` injects would silently never fire.
+  """
+  @type degraded_use :: %{
+          file: String.t(),
+          module: module(),
+          line: pos_integer() | nil,
+          reason: atom()
+        }
+
   @type t :: %__MODULE__{
           files: [String.t()],
           sites: [Site.t()],
@@ -91,7 +106,8 @@ defmodule Mutare.Schema do
           unknown_directives: [{String.t(), pos_integer(), String.t()}],
           ineffective_skip_lifting: [Lifting.skip_entry()],
           ineffective_call_routes: [Mutare.CallRouting.Spec.t()],
-          ineffective_argument_marks: [Mutare.Mutator.mark_declaration()]
+          ineffective_argument_marks: [Mutare.Mutator.mark_declaration()],
+          degraded_uses: [degraded_use()]
         }
 
   defstruct files: [],
@@ -104,7 +120,8 @@ defmodule Mutare.Schema do
             unknown_directives: [],
             ineffective_skip_lifting: [],
             ineffective_call_routes: [],
-            ineffective_argument_marks: []
+            ineffective_argument_marks: [],
+            degraded_uses: []
 
   @doc """
   Build a schema by discovering files under `root`.
@@ -229,9 +246,10 @@ defmodule Mutare.Schema do
     rel_files
     |> assemble(counted, rendered)
     |> finalize()
-    |> detect_directive_diagnostics()
+    |> detect_directive_diagnostics(counted)
     |> detect_ineffective_skip_lifting(counted, options)
     |> detect_ineffective_config(counted, options)
+    |> record_degraded_uses(counted)
     |> restrict_lines(options.only_lines)
     |> limit(options.max_mutants)
     |> verify_selection!(jobs)
@@ -268,8 +286,8 @@ defmodule Mutare.Schema do
   # === phase 1: count ========================================================
 
   # Read and count every file's mutants in parallel throwaway workers (`count_one/3`),
-  # yielding `[{:counted, rel, source | nil, outcome, skip_lifting_matches}]` in **input
-  # order**. As each file's
+  # yielding `[{:counted, rel, source | nil, outcome, facts}]` in **input order** (`facts` is
+  # the count pass's side channel — see `facts/1`). As each file's
   # result streams back it fires `:on_scan` with the running mutant tally — so live
   # progress flows *during* the (potentially long) count phase rather than in a burst
   # after it. The heavy short-lived ASTs each `count_string/2` builds die with their
@@ -312,12 +330,12 @@ defmodule Mutare.Schema do
       report = Mutare.Transform.count_report(source, count_opts(options, rel))
 
       case report.mutants do
-        0 -> {:counted, rel, source, :no_sites, matches(report)}
-        n -> {:counted, rel, source, {:sites, n}, matches(report)}
+        0 -> {:counted, rel, source, :no_sites, facts(report)}
+        n -> {:counted, rel, source, {:sites, n}, facts(report)}
       end
     rescue
       error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
-        {:counted, rel, nil, {:error, error}, matches(nil)}
+        {:counted, rel, nil, {:error, error}, facts(nil)}
 
       other ->
         {:raise, other, __STACKTRACE__}
@@ -340,29 +358,37 @@ defmodule Mutare.Schema do
     transform_opts(options) ++ [file: rel, selection_lines: lines]
   end
 
-  # The count pass's side-channel matches, one map per file (the 5th element of a `:counted`
-  # tuple): what the file's `:skip_lifting` entries, call routes, and mark declarations reached.
-  # An unparseable file contributes nothing to any of them.
-  defp matches(nil),
+  # The count pass's side channel, one map per file (the 5th element of a `:counted` tuple) —
+  # every fact the end-of-build diagnostics read, collected by the worker that parsed the file
+  # so nothing below re-parses: what the file's `:skip_lifting` entries, call routes, and mark
+  # declarations reached; the local ids a line selection matched; the comment-directive
+  # container (directives, unknown verbs, the misplacement hint's expression end lines); and
+  # the module-level `use`s the scan couldn't expand. An unparseable file contributes nothing
+  # to any of them.
+  defp facts(nil),
     do: %{
       skip_lifting: MapSet.new(),
       routes: MapSet.new(),
       marks: MapSet.new(),
-      selected_ids: nil
+      selected_ids: nil,
+      directives: %Ignore.Directives{},
+      degraded_uses: []
     }
 
-  defp matches(report),
+  defp facts(report),
     do: %{
       skip_lifting: report.skip_lifting_matches,
       routes: report.route_matches,
       marks: report.mark_matches,
-      selected_ids: report.selected_ids
+      selected_ids: report.selected_ids,
+      directives: report.directives,
+      degraded_uses: report.degraded_uses
     }
 
   # The mutant count an outcome contributes to the running `:on_scan` tally (0 for a
   # no-site or skipped file), summed per file as `count_files/4` consumes the stream.
-  defp mutants_found({:counted, _rel, _src, {:sites, n}, _skips}), do: n
-  defp mutants_found({:counted, _rel, _src, _outcome, _skips}), do: 0
+  defp mutants_found({:counted, _rel, _src, {:sites, n}, _facts}), do: n
+  defp mutants_found({:counted, _rel, _src, _outcome, _facts}), do: 0
 
   # === phase 2: render =======================================================
 
@@ -374,11 +400,11 @@ defmodule Mutare.Schema do
   defp render_jobs(counted, max_mutants) do
     {jobs, _state} =
       Enum.flat_map_reduce(counted, {1, max_mutants}, fn
-        {:counted, rel, source, {:sites, count}, matches}, {next_id, remaining} ->
-          {emit_ids, remaining} = select_ids(matches.selected_ids, count, next_id, remaining)
+        {:counted, rel, source, {:sites, count}, facts}, {next_id, remaining} ->
+          {emit_ids, remaining} = select_ids(facts.selected_ids, count, next_id, remaining)
           {[{rel, source, next_id, count, emit_ids}], {next_id + count, remaining}}
 
-        {:counted, _rel, _source, _outcome, _skips}, state ->
+        {:counted, _rel, _source, _outcome, _facts}, state ->
           {[], state}
       end)
 
@@ -548,7 +574,7 @@ defmodule Mutare.Schema do
   # compile, so `Mutare.Poison` re-derives it lazily (see `Mutare.Poison.ids/2`).
   defp assemble(rel_files, counted, rendered) do
     Enum.reduce(counted, %__MODULE__{files: rel_files}, fn
-      {:counted, rel, source, {:sites, _count}, _skips}, schema ->
+      {:counted, rel, source, {:sites, _count}, _facts}, schema ->
         {start_id, meta, sites} = Map.fetch!(rendered, rel)
 
         %{
@@ -559,11 +585,11 @@ defmodule Mutare.Schema do
             start_ids: Map.put(schema.start_ids, rel, start_id)
         }
 
-      {:counted, rel, source, :no_sites, _skips}, schema ->
+      {:counted, rel, source, :no_sites, _facts}, schema ->
         # mutare:ignore[map_keyword] equivalent — dedup'd input → each rel put once (see above)
         %{schema | sources: Map.put(schema.sources, rel, source)}
 
-      {:counted, rel, _source, {:error, reason}, _skips}, schema ->
+      {:counted, rel, _source, {:error, reason}, _facts}, schema ->
         %{schema | skipped: [{rel, reason} | schema.skipped]}
     end)
   end
@@ -671,25 +697,24 @@ defmodule Mutare.Schema do
   #     or `nil`): the line inside the same multi-line expression that has the
   #     mutants the directive named — the "directive on the pipe's first line" miss;
   #   * every comment claiming the reserved `mutare:` namespace with no recognized
-  #     directive (`Ignore.unknown_directives_from_ast/1` — a typo'd or future verb).
+  #     directive (the container's `unknown` — a typo'd or future verb).
   #
   # Run after `finalize/1` (sites in order) but *before* `restrict_lines`/`limit`,
   # so detection sees the full mutation set: a `--line`/`--max-mutants` trim must
   # not make a real directive look ineffective.
   #
-  # Only files whose source contains the literal `mutare:` are re-parsed; the
-  # cheap substring prefilter keeps every other file off the parse path. A
-  # `sources` entry is always a file that parsed cleanly in phase 1 (an
-  # unparseable file is recorded under `:skipped`, not `:sources` — see
-  # `assemble/3`), so the re-parse cannot raise here.
-  defp detect_directive_diagnostics(%__MODULE__{sources: sources, sites: sites} = schema) do
+  # Pure over the count pass's facts: each file's directive container — its directives,
+  # unknown verbs, and the expression end lines the hint is bounded by — was harvested by
+  # the worker that parsed the file (`Mutare.Ignore.directives_from_ast/1`), so nothing here
+  # touches a source or an AST. A file with nothing to diagnose (the common case, and every
+  # unparseable file) carries an empty container and is skipped outright.
+  defp detect_directive_diagnostics(%__MODULE__{sites: sites} = schema, counted) do
     sites_by_file = Enum.group_by(sites, & &1.file)
 
     diagnostics =
-      for {file, source} <- sources,
-          # mutare:ignore[string] equivalent — a substring prefilter; widening it only re-parses more directive-free files, and directives come from comment metadata so a string match never false-positives
-          String.contains?(source, "mutare:"),
-          do: {file, file_diagnostics(source, Map.get(sites_by_file, file, []))}
+      for {:counted, file, _src, _outcome, %{directives: directives}} <- counted,
+          not Ignore.Directives.empty?(directives),
+          do: {file, file_diagnostics(directives, Map.get(sites_by_file, file, []))}
 
     ineffective =
       for {file, {ineffective, _unknown}} <- diagnostics,
@@ -708,18 +733,16 @@ defmodule Mutare.Schema do
     }
   end
 
-  # One parse serves both diagnostics: `{ineffective_with_hints, unknown_verbs}`.
-  defp file_diagnostics(source, sites) do
+  # One container serves both diagnostics: `{ineffective_with_hints, unknown_verbs}`.
+  defp file_diagnostics(%Ignore.Directives{} = directives, sites) do
     occupied = Enum.map(sites, &{&1.line, &1.mutator, &1.variant})
-    ast = Sourceror.parse_string!(source)
-    directives = Ignore.directives_from_ast(ast)
 
     ineffective =
       directives
       |> Ignore.ineffective(occupied)
-      |> Enum.map(&{&1, Ignore.misplacement_hint(ast, &1, occupied)})
+      |> Enum.map(&{&1, Ignore.misplacement_hint(directives, &1, occupied)})
 
-    {ineffective, Ignore.unknown_directives_from_ast(ast)}
+    {ineffective, directives.unknown}
   end
 
   # The `:skip_lifting` mirror of the ineffective-ignore diagnostic: record every configured
@@ -782,9 +805,23 @@ defmodule Mutare.Schema do
   end
 
   defp union_matches(counted, kind) do
-    Enum.reduce(counted, MapSet.new(), fn {:counted, _rel, _src, _outcome, matches}, acc ->
-      MapSet.union(acc, Map.fetch!(matches, kind))
+    Enum.reduce(counted, MapSet.new(), fn {:counted, _rel, _src, _outcome, facts}, acc ->
+      MapSet.union(acc, Map.fetch!(facts, kind))
     end)
+  end
+
+  # The module-level `use`s the scan couldn't expand in-process, across every counted file —
+  # read by the count pass off the tree it annotated (`Mutare.Transform.Uses.degraded_uses/1`),
+  # each stamped with its file here. `mix mutare --check` prints them; a normal run carries
+  # the (normally empty) list for the cost of one prewalk per file. Empty under
+  # `expand_uses: false`: nothing was expanded, so nothing degraded.
+  defp record_degraded_uses(%__MODULE__{} = schema, counted) do
+    degraded =
+      for {:counted, rel, _src, _outcome, facts} <- counted,
+          entry <- facts.degraded_uses,
+          do: Map.put(entry, :file, rel)
+
+    %{schema | degraded_uses: degraded}
   end
 
   # Cap the schema to at most `max` mutants (`--max-mutants`), keeping the first

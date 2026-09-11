@@ -129,8 +129,12 @@ defmodule Mutare.Ignore do
   end
 
   @doc false
-  # Like `directives/1`, but for an AST `Sourceror` already parsed — so `Mutare.Transform` reuses
-  # the AST it parsed for the transform, avoiding a second `Sourceror.parse_string!` per file.
+  # Like `directives/1`, but for an AST `Sourceror` already parsed. This is the **one** walk the
+  # directive machinery makes over a file: `Mutare.Transform` runs it on the AST it parsed for
+  # the transform, and the container it returns carries everything the scan's diagnostics later
+  # read — the directives, the unknown-verb comments (`unknown`), and the expression end lines
+  # the misplacement hint is bounded by (`end_lines`) — so `Mutare.Schema` never re-parses a
+  # source to diagnose it.
   #
   # Region pairing never raises here: a pairing mistake is recorded under the container's
   # `scope_errors` (in document order) for `validate_scopes!/2` to turn into a hard error once a
@@ -171,13 +175,17 @@ defmodule Mutare.Ignore do
 
     {scoped, scope_errors} = pair_scoped(scoped_tokens)
 
+    by_line =
+      line_directives
+      |> Enum.map(fn {comment, order} -> to_directive(comment, order, comment_lines) end)
+      |> Enum.group_by(& &1.line)
+
     %Directives{
-      by_line:
-        line_directives
-        |> Enum.map(fn {comment, order} -> to_directive(comment, order, comment_lines) end)
-        |> Enum.group_by(& &1.line),
+      by_line: by_line,
       scoped: scoped,
-      scope_errors: scope_errors
+      scope_errors: scope_errors,
+      unknown: unknown_verbs(all),
+      end_lines: expression_end_lines(ast, Map.keys(by_line))
     }
   end
 
@@ -285,25 +293,23 @@ defmodule Mutare.Ignore do
   @doc false
   # The comments in `source` that claim the `mutare:` namespace without spelling a recognized
   # directive, as `{comment_line, head}` pairs sorted by line — `head` is the `mutare:<verb>`
-  # text as the user wrote it (spacing preserved), for echoing back in the warning.
+  # text as the user wrote it (spacing preserved), for echoing back in the warning. The
+  # container's `unknown` field, for a caller holding only the source.
   @spec unknown_directives(String.t()) :: [{pos_integer(), String.t()}]
   def unknown_directives(source) when is_binary(source) do
     source
     |> Sourceror.parse_string!()
-    |> unknown_directives_from_ast()
+    |> directives_from_ast()
+    |> Map.fetch!(:unknown)
   end
 
-  @doc false
-  # Like `unknown_directives/1`, but for an already-parsed AST (so `Mutare.Schema` reuses the
-  # parse it needed for ineffective detection). The namespace is reserved: a comment matching
-  # the anchored `mutare:` prefix but no directive parser is a typo'd verb (`ingore`), a
-  # colon-detached one (`mutare: ignore`), or a directive this version doesn't know — each is
-  # surfaced rather than left silently inert, so a future directive (or a slip) can't read as
-  # "no directive here".
-  @spec unknown_directives_from_ast(Macro.t()) :: [{pos_integer(), String.t()}]
-  def unknown_directives_from_ast(ast) do
-    ast
-    |> comments()
+  # The unknown-verb comments among `comments` (every comment in the file). The namespace is
+  # reserved: a comment matching the anchored `mutare:` prefix but no directive parser is a
+  # typo'd verb (`ingore`), a colon-detached one (`mutare: ignore`), or a directive this version
+  # doesn't know — each is surfaced rather than left silently inert, so a future directive (or a
+  # slip) can't read as "no directive here".
+  defp unknown_verbs(comments) do
+    comments
     |> Enum.filter(fn %{text: text} = comment ->
       Regex.match?(@namespace, text) and not directive?(comment)
     end)
@@ -483,18 +489,20 @@ defmodule Mutare.Ignore do
   # one line, and a long pipe reads as one logical statement, so annotating it "from the top" (the
   # directive above `digested_files`, the mutated `ordered:`/`timeout:` two `|>` steps down) is the
   # most common miss. The scan is bounded by the expression's own span, so the hint never points
-  # into an unrelated statement further down the file.
-  @spec misplacement_hint(Macro.t(), Directive.t(), [
+  # into an unrelated statement further down the file. `directives` is the container the
+  # directive came from: its `end_lines` (harvested with the directives) supply that span, so
+  # no AST is needed here.
+  @spec misplacement_hint(Directives.t(), Directive.t(), [
           {pos_integer() | nil, atom(), Directive.query()}
         ]) :: pos_integer() | nil
-  def misplacement_hint(_ast, %Directive{scope: scope}, _occupied) when scope != :line do
+  def misplacement_hint(%Directives{}, %Directive{scope: scope}, _occupied) when scope != :line do
     # The one-line-coverage miss the hint explains can't happen to a scoped directive — an
     # ineffective `-file`/region really did cover every line it names and found nothing.
     nil
   end
 
-  def misplacement_hint(ast, %Directive{} = directive, occupied) do
-    case expression_end_line(ast, directive.line) do
+  def misplacement_hint(%Directives{end_lines: end_lines}, %Directive{} = directive, occupied) do
+    case Map.get(end_lines, directive.line) do
       end_line when is_integer(end_line) and end_line > directive.line ->
         occupied
         |> Enum.filter(fn {line, mutator, target} ->
@@ -509,18 +517,29 @@ defmodule Mutare.Ignore do
     end
   end
 
-  # The last line of the widest expression that *starts* at `line`, or `nil` when no node does
-  # (a blank line, a comment-only line, past EOF). `Sourceror.get_range/1` computes a node's start
+  @doc false
+  # For each of `lines`, the last line of the widest expression that *starts* at it; a line no
+  # node starts on (a blank line, a comment-only line, past EOF) gets no entry. One prewalk
+  # serves every line, and `[]` walks nothing. `Sourceror.get_range/1` computes a node's start
   # from its leftmost token, so a pipe chain's node starts at its first operand's line even though
-  # the `|>` operator meta sits further down.
-  defp expression_end_line(ast, line) do
-    {_ast, max_end} =
-      Macro.prewalk(ast, nil, fn
+  # the `|>` operator meta sits further down — which is exactly the span the misplacement hint
+  # scans.
+  @spec expression_end_lines(Macro.t(), [pos_integer()]) :: %{pos_integer() => pos_integer()}
+  def expression_end_lines(_ast, []), do: %{}
+
+  def expression_end_lines(ast, lines) do
+    wanted = MapSet.new(lines)
+
+    {_ast, end_lines} =
+      Macro.prewalk(ast, %{}, fn
         {_form, meta, _args} = node, acc when is_list(meta) ->
           case node_range(node) do
             %Sourceror.Range{start: start_pos, end: end_pos} ->
-              if start_pos[:line] == line,
-                do: {node, max(acc || end_pos[:line], end_pos[:line])},
+              start = start_pos[:line]
+              stop = end_pos[:line]
+
+              if MapSet.member?(wanted, start),
+                do: {node, Map.update(acc, start, stop, &max(&1, stop))},
                 else: {node, acc}
 
             _no_range ->
@@ -531,7 +550,7 @@ defmodule Mutare.Ignore do
           {node, acc}
       end)
 
-    max_end
+    end_lines
   end
 
   # `Sourceror.get_range/1` is total over real source nodes but can return `nil` (and, defensively,

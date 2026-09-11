@@ -32,28 +32,56 @@ defmodule Mutare.Poison do
 
   When line attribution maps nothing — the signature of an *inline* DSL macro that rejects
   the spliced selector, where the compiler blames the macro-*call* line no manifest region
-  covers — the runner falls back to `macro_poison/2`, which attributes by the macro *name*
+  covers — the runner falls back to `macro_poison/3`, which attributes by the macro *name*
   the compiler blamed (via `Mutare.Manifest.ids_in_named_calls/2`) instead of by line. Only
-  when *both* fail does the run abort.
+  when *both* fail does the run abort. The runner asks for both at once (`attribution/3`),
+  which builds each file's manifest once for the round; `ids/3` and `macro_poison/3` are
+  the two halves on their own.
 
   A schema metamutant contains local integer ids. The runner supplies
-  `Mutare.RuntimeId.file_index(schema.sites)` to `ids/3` and `macro_poison/3` so
-  attribution translates `{file, local_id}` to report ids before merging files.
-  Without an index these APIs return the integers read from the metamutant, as
-  used by standalone transforms. The macro fallback retains the call-site file
-  through that conversion; two files' local id 1 must never collapse together. An id the
-  index doesn't know names no mutant in this run — a file the selection left with nothing
-  to emit renders pristine, and pristine source can imitate a selector — so it is dropped,
-  degrading to "mapped nothing" rather than crashing a run mid-recovery.
+  `Mutare.RuntimeId.file_index(schema.sites)` so attribution translates `{file, local_id}`
+  to report ids before merging files. Without an index these APIs return the integers read
+  from the metamutant, as used by standalone transforms. The macro fallback retains the
+  call-site file through that conversion; two files' local id 1 must never collapse together.
+  An id the index doesn't know names no mutant in this run — a file the selection left with
+  nothing to emit renders pristine, and pristine source can imitate a selector — so it is
+  dropped, degrading to "mapped nothing" rather than crashing a run mid-recovery.
   """
 
   alias Mutare.Manifest
   alias Mutare.Poison.Hint
   alias Mutare.Sandbox.Command.Output
 
-  # The stacktrace marker separating a macro's expansion frames (above) from its call site
-  # (the next source-location frame below). Co-located with the call-site scan it drives.
-  @expanding_macro ~r/expanding macro:/
+  @typedoc "The rendered metamutants of a build, by root-relative file."
+  @type metamutants :: %{optional(String.t()) => String.t()}
+
+  @typedoc """
+  The macro-expansion fallback's matches: `{{module_string, fun_atom}, ids}` per blamed macro
+  that matched at least one mutant, in first-seen order.
+  """
+  @type macro_matches :: [{{String.t(), atom()}, MapSet.t()}]
+
+  # One manifest per file, built on first need and reused for the rest of a round. `nil`
+  # marks a file not in the metamutant map (a dependency, an untracked location), so a
+  # repeated stray reference isn't re-resolved either.
+  @typep manifests :: %{optional(String.t()) => Manifest.t() | nil}
+
+  @doc """
+  Both attributions of one failed compile — `%{line: ids, macro: matches}`, the results of
+  `ids/3` and `macro_poison/3` — from one manifest per file.
+
+  The runner's poison-recovery loop needs both every round (macro attribution takes priority,
+  line attribution backs it up), and the file a blamed macro's call site names is normally
+  one the error located too. Sharing the memo means each such metamutant is parsed and
+  ranged once per round, not once per attribution.
+  """
+  @spec attribution(String.t(), metamutants(), map() | nil) ::
+          %{line: MapSet.t(), macro: macro_matches()}
+  def attribution(compile_output, metamutants, report_ids \\ nil) do
+    {line, manifests} = line_attribution(compile_output, metamutants, report_ids, %{})
+    {macro, _manifests} = macro_attribution(compile_output, metamutants, report_ids, manifests)
+    %{line: line, macro: macro}
+  end
 
   @doc """
   The **macro-expansion fallback** attribution: mutant ids that live inside a call to a
@@ -62,96 +90,74 @@ defmodule Mutare.Poison do
   When a mutation splices a runtime selector `case` into an argument that a macro rewrites
   at compile time (an `Ecto.Query.from/2`-style inline DSL, a macro needing a literal), the
   macro raises *while expanding* and the compiler blames the **macro-call line** — one line
-  above the selector `case` the `Mutare.Manifest` knows about — so `ids/2` finds nothing and
+  above the selector `case` the `Mutare.Manifest` knows about — so `ids/3` finds nothing and
   the run would abort. But the failure output names the culprit in an `expanding macro:
-  Mod.fun/arity` frame (`Hint.expanding_macros/1`). This maps that name back to mutant ids
-  through the **metamutant** (`Manifest.ids_in_named_calls/2`): find every call of that name in
-  the rendered metamutant of the file(s) the error touches, and collect the ids inside its
-  span. Bare-name match (the call is usually an imported `from(...)`, not `Ecto.Query.from`),
-  so two same-named macros are skipped together — conservative, and one of them did raise.
+  Mod.fun/arity` frame, followed by the location that invoked it (`Hint.culprits/1`). This
+  maps that name back to mutant ids through the **metamutant** of that call-site file
+  (`Manifest.ids_in_named_calls/2`): find every call of the name in the rendered source and
+  collect the ids inside its span. Bare-name match (the call is usually an imported
+  `from(...)`, not `Ecto.Query.from`), so two same-named macros in the file are skipped
+  together — conservative, and one of them did raise.
+
+  Only the call-site file is searched — deliberately not every file the error located: a
+  macro defined in the target project also puts frames from its *implementation* file (and
+  Elixir internals) on the stack, and scanning those would drop valid mutants in an unrelated
+  same-named call there as poison. A call site we didn't render (a dependency), or a frame
+  with no location, attributes nothing.
 
   Attributing through the metamutant + manifest (not the schema's `:sites`) is deliberate, and
-  for the same reason as the line-based `ids/2` it backs up: this is positional work in
+  for the same reason as the line-based `ids/3` it backs up: this is positional work in
   **metamutant** space — spans of the rendered source the compiler actually read — which
   `:sites`, recorded in *original*-source coordinates, cannot answer.
 
-  Returns `[{{module_string, fun_atom}, MapSet.t()}]` — one entry per blamed macro that
-  matched at least one mutant — so the caller can drop the union and name each macro for the
-  narration and the `{Module, :fun, :raw}` suggestion.
+  Returns one `{{module_string, fun_atom}, ids}` entry per blamed macro that matched at least
+  one mutant, so the caller can drop the union and name each macro for the narration and the
+  `{Module, :fun, :raw}` suggestion.
   """
-  @spec macro_poison(String.t(), %{optional(String.t()) => String.t()}, map() | nil) ::
-          [{{String.t(), atom()}, MapSet.t()}]
+  @spec macro_poison(String.t(), metamutants(), map() | nil) :: macro_matches()
   def macro_poison(compile_output, metamutants, report_ids \\ nil) do
-    macros = Hint.expanding_macros(compile_output)
-    names = MapSet.new(macros, fn {_module, fun} -> fun end)
+    {matches, _manifests} = macro_attribution(compile_output, metamutants, report_ids, %{})
+    matches
+  end
 
-    ids_by_name =
-      compile_output
-      |> candidate_files(metamutants)
-      |> Enum.reduce(%{}, fn {file, source}, acc ->
-        ids =
-          Map.new(Manifest.ids_in_named_calls(source, names), fn {name, ids} ->
-            {name, MapSet.new(translate(ids, file, report_ids))}
-          end)
+  # Each culprit's name looked up in its own call-site file's manifest (built once, memoized in
+  # `manifests`), ids unioned per macro; macros kept in first-seen order.
+  @spec macro_attribution(String.t(), metamutants(), map() | nil, manifests()) ::
+          {macro_matches(), manifests()}
+  defp macro_attribution(output, metamutants, report_ids, manifests) do
+    culprits = Hint.culprits(output)
 
-        merge_ids(acc, ids)
+    {ids_by_macro, manifests} =
+      Enum.reduce(culprits, {%{}, manifests}, fn
+        {_macro, nil}, acc ->
+          acc
+
+        {{_module, fun} = macro, {file, _line}}, {ids_by_macro, manifests} ->
+          {manifest, manifests} = manifest_for(file, metamutants, manifests)
+          ids = MapSet.new(translate(named_call_ids(manifest, fun), file, report_ids))
+          {Map.update(ids_by_macro, macro, ids, &MapSet.union(&1, ids)), manifests}
       end)
 
-    macros
-    |> Enum.map(fn {_module, fun} = macro ->
-      {macro, Map.get(ids_by_name, fun, MapSet.new())}
-    end)
-    |> Enum.reject(fn {_macro, ids} -> Enum.empty?(ids) end)
+    matches =
+      culprits
+      |> Enum.map(fn {macro, _call_site} -> macro end)
+      |> Enum.uniq()
+      |> Enum.map(&{&1, Map.get(ids_by_macro, &1, MapSet.new())})
+      |> Enum.reject(fn {_macro, ids} -> Enum.empty?(ids) end)
+
+    {matches, manifests}
   end
 
-  # The metamutant sources of the macro **call-site** file(s) — the source location on the frame
-  # that *follows* each `expanding macro:` marker. Deliberately not every `error_locations/1`
-  # file: a macro defined in the target project also puts frames from its *implementation* file
-  # (and Elixir internals) on the stack, *before* the marker; scanning those would drop valid
-  # mutants in an unrelated same-named call there as poison. A call-site file we didn't render
-  # (a dependency) is dropped.
-  defp candidate_files(output, metamutants) do
-    output
-    |> call_site_files()
-    |> Enum.uniq()
-    |> Enum.flat_map(fn file ->
-      case Map.fetch(metamutants, file) do
-        {:ok, source} -> [{file, source}]
-        :error -> []
-      end
-    end)
+  # The local ids inside every call of `fun` in a rendered file; nothing for a file we didn't
+  # render.
+  defp named_call_ids(nil, _fun), do: []
+
+  defp named_call_ids(%Manifest{} = manifest, fun) do
+    manifest
+    |> Manifest.ids_in_named_calls(MapSet.new([fun]))
+    |> Map.get(fun, MapSet.new())
+    |> Enum.to_list()
   end
-
-  # The file on the first source-location frame after each `expanding macro:` line — the site
-  # that invoked the macro. Frames *before* the marker are the macro's own expansion (its impl
-  # file + Elixir internals) and are ignored.
-  defp call_site_files(output) do
-    {_armed?, files} =
-      output
-      |> String.split("\n")
-      |> Enum.reduce({false, []}, fn line, {armed?, files} ->
-        cond do
-          Regex.match?(@expanding_macro, line) -> {true, files}
-          armed? -> arm_call_site(line, files)
-          true -> {false, files}
-        end
-      end)
-
-    Enum.reverse(files)
-  end
-
-  # Once armed by an `expanding macro:` marker, the next line carrying a source location is the
-  # call site: record its file and disarm. A non-location line (the marker's own blank/chatter)
-  # keeps us armed until the frame arrives.
-  defp arm_call_site(line, files) do
-    case Regex.run(Output.source_location_regex(), line) do
-      [_match, file, _num] -> {false, [file | files]}
-      _ -> {true, files}
-    end
-  end
-
-  defp merge_ids(acc, ids_by_name),
-    do: Map.merge(acc, ids_by_name, fn _name, a, b -> MapSet.union(a, b) end)
 
   @doc """
   Mutant ids implicated by `compile_output`, given `%{file => metamutant_source}`.
@@ -161,22 +167,29 @@ defmodule Mutare.Poison do
   lines is parsed once. Returns an empty set when nothing could be mapped (the
   caller then aborts).
   """
-  @spec ids(String.t(), %{optional(String.t()) => String.t()}, map() | nil) :: MapSet.t()
+  @spec ids(String.t(), metamutants(), map() | nil) :: MapSet.t()
   def ids(compile_output, metamutants, report_ids \\ nil) do
-    {ids, _cache} =
-      compile_output
-      |> error_locations()
-      |> Enum.flat_map_reduce(%{}, fn {file, line}, cache ->
-        case manifest_for(file, metamutants, cache) do
-          {nil, cache} ->
-            {[], cache}
+    {ids, _manifests} = line_attribution(compile_output, metamutants, report_ids, %{})
+    ids
+  end
 
-          {manifest, cache} ->
-            {translate(Manifest.ids_at_line(manifest, line), file, report_ids), cache}
+  @spec line_attribution(String.t(), metamutants(), map() | nil, manifests()) ::
+          {MapSet.t(), manifests()}
+  defp line_attribution(output, metamutants, report_ids, manifests) do
+    {ids, manifests} =
+      output
+      |> error_locations()
+      |> Enum.flat_map_reduce(manifests, fn {file, line}, manifests ->
+        case manifest_for(file, metamutants, manifests) do
+          {nil, manifests} ->
+            {[], manifests}
+
+          {manifest, manifests} ->
+            {translate(Manifest.ids_at_line(manifest, line), file, report_ids), manifests}
         end
       end)
 
-    MapSet.new(ids)
+    {MapSet.new(ids), manifests}
   end
 
   # Local ids read back out of a metamutant, mapped to this run's report ids. An id the index

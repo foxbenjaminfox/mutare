@@ -12,8 +12,10 @@ defmodule Mutare.Sandbox.Command.Output do
       consults to split those cases (see that module's moduledoc for *why* each is
       the verdict it is).
     * **Locating a failure.** `Mutare.Poison` maps a failed metamutant compile back
-      to mutant ids (`source_location_regex/0` + `diagnostic_severity/1`), and
-      `Mutare.Runner.Baseline` names the tests in a flaky run (`test_location_regex/0`).
+      to mutant ids (`source_location_regex/0` + `diagnostic_severity/1`, and the
+      `expanding macro:` frames of `macro_expansion_stacks/1` — which `Mutare.Poison.Hint`
+      also reads, for the macro to advise skipping), and `Mutare.Runner.Baseline` names
+      the tests in a flaky run (`test_location_regex/0`).
     * **Diagnosing dependencies.** `dependency_issue/1` distinguishes Mix's
       dependency-check failures from compile-poisoning so the runner can stop
       recovery immediately and the Mix task can recommend the correct command in
@@ -180,6 +182,106 @@ defmodule Mutare.Sandbox.Command.Output do
       true -> nil
     end
   end
+
+  # An `expanding macro: Mod.fun/arity` stacktrace frame — the signature of an exception
+  # raised *during macro expansion* (a `FunctionClauseError` from a literal-only clause, a
+  # `CompileError`/`ArgumentError` a macro raises itself). `\S+` captures the whole qualified
+  # name (`Size.megabytes`, `MyApp.DSL.field`, an operator's `Kernel.|>`); the trailing
+  # `/\d+` is the arity. Unanchored: Elixir prefixes the frame with its app tag
+  # (`(elixir 1.16.0) expanding macro: Kernel.if/2`).
+  @expanding_macro ~r{expanding macro:\s+(\S+)/(\d+)}
+
+  # The header line of an exception/stacktrace (`** (FunctionClauseError) …`), possibly
+  # indented. Each one starts a fresh expansion stack. Deliberately wider than
+  # `@exception_marker`: *any* raised term (`** (exit)`, a dotted `** (Mix.Error)`) heads its
+  # own stacktrace, whether or not it is a compiler diagnostic for `diagnostic_severity/1`.
+  @exception_header ~r/^\s*\*\* \(/
+
+  @typedoc """
+  One `expanding macro:` stacktrace frame: the macro's qualified name and arity as the
+  compiler printed them, and the source location of the frame that follows it — the
+  macro's **call site** — or `nil` when no location frame followed.
+  """
+  @type macro_frame :: %{
+          name: String.t(),
+          arity: non_neg_integer(),
+          call_site: {String.t(), pos_integer()} | nil
+        }
+
+  @doc """
+  The `expanding macro:` frames in `output`, one list per stacktrace, **innermost first**.
+
+  The compiler prints a macro-expansion stack innermost-first: the macro whose expansion
+  raised leads, its enclosing macros follow, and each frame is followed by the source
+  location that invoked it. Each `** (…)` exception header starts a new stack (the lines
+  before the first header form one too); a stack with no frame is dropped. A location line
+  *before* a stack's first frame — the raising macro's own implementation frames — belongs
+  to no frame and is ignored.
+
+  The one reader of this shape: `Mutare.Poison.Hint` takes each stack's innermost frame as
+  the macro to advise skipping, and `Mutare.Poison` takes that frame's call site as the file
+  to look for its mutants in — so a change to how Elixir prints expansion frames is a single
+  fix here.
+
+  ## Examples
+
+      iex> output =
+      ...>   "** (FunctionClauseError) no function clause matching in Size.megabytes/1\\n" <>
+      ...>     "    expanding macro: Size.megabytes/1\\n" <>
+      ...>     "    lib/usage.ex:4: Usage.limit/0\\n" <>
+      ...>     "    (elixir 1.16.0) expanding macro: Kernel.if/2\\n" <>
+      ...>     "    lib/usage.ex:4: Usage.limit/0\\n"
+      iex> Mutare.Sandbox.Command.Output.macro_expansion_stacks(output)
+      [
+        [
+          %{name: "Size.megabytes", arity: 1, call_site: {"lib/usage.ex", 4}},
+          %{name: "Kernel.if", arity: 2, call_site: {"lib/usage.ex", 4}}
+        ]
+      ]
+      iex> Mutare.Sandbox.Command.Output.macro_expansion_stacks("** (CompileError) undefined function foo/0\\n")
+      []
+  """
+  @spec macro_expansion_stacks(String.t()) :: [[macro_frame()]]
+  def macro_expansion_stacks(output) when is_binary(output) do
+    {stacks, open} =
+      output
+      |> String.split("\n")
+      |> Enum.reduce({[], []}, fn line, {stacks, frames} ->
+        if Regex.match?(@exception_header, line),
+          do: {close_stack(stacks, frames), []},
+          else: {stacks, read_frame_line(line, frames)}
+      end)
+
+    stacks |> close_stack(open) |> Enum.reverse()
+  end
+
+  # Stacks and the frames within one accumulate newest-first; a stack closes (on the next
+  # header, or at the end) in frame order, and a frameless one is dropped.
+  defp close_stack(stacks, []), do: stacks
+  defp close_stack(stacks, frames), do: [Enum.reverse(frames) | stacks]
+
+  # A marker line opens a frame with no call site yet; any other line can only be the call
+  # site of the frame just opened.
+  defp read_frame_line(line, frames) do
+    case Regex.run(@expanding_macro, line) do
+      [_match, name, arity] ->
+        [%{name: name, arity: String.to_integer(arity), call_site: nil} | frames]
+
+      nil ->
+        attach_call_site(line, frames)
+    end
+  end
+
+  # The first location line after a frame names its call site. A later location line (until
+  # the next marker), or one before the stack's first frame, attaches to nothing.
+  defp attach_call_site(line, [%{call_site: nil} = frame | rest]) do
+    case Regex.run(@source_location, line) do
+      [_match, file, num] -> [%{frame | call_site: {file, String.to_integer(num)}} | rest]
+      nil -> [frame | rest]
+    end
+  end
+
+  defp attach_call_site(_line, frames), do: frames
 
   @doc """
   Returns whether `output` reports a Mix compilation error in a test script.

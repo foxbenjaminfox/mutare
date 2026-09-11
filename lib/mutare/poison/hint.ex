@@ -20,21 +20,8 @@ defmodule Mutare.Poison.Hint do
   own.
   """
 
+  alias Mutare.Sandbox.Command.Output
   alias Mutare.Transform.StructuralForms
-
-  # An `expanding macro: Mod.fun/arity` stacktrace frame, the signature of an
-  # exception raised *during macro expansion* — a `FunctionClauseError` from a
-  # literal-only clause, a `CompileError`/`ArgumentError` a macro raises itself.
-  # `\S+` captures the whole qualified name (`Size.megabytes`, `MyApp.DSL.field`);
-  # the trailing `/\d+` is the arity. Co-located with the message it feeds rather
-  # than with the exit-code patterns in `Mutare.Sandbox.Command`: this is read only
-  # for human remediation, never to form a verdict.
-  @expanding_macro ~r{expanding macro:\s+(\S+)/(\d+)}
-
-  # The header line of an exception/stacktrace (`** (FunctionClauseError) …`),
-  # possibly indented. Each one starts a fresh expansion stack, so it re-arms the
-  # innermost-frame capture in `innermost_macro_frames/1`.
-  @exception_header ~r/^\s*\*\* \(/
 
   @doc """
   A copy-pasteable remediation hint for the failed-compile `output`, or `nil`.
@@ -54,12 +41,7 @@ defmodule Mutare.Poison.Hint do
   @doc """
   The macro(s) to advise skipping, as distinct `{module_string, function_atom}`
   pairs read from the `expanding macro:` frames in `output`, in first-seen order.
-  `[]` when there are none.
-
-  Each compile error reports only its **innermost** macro — the one whose literal
-  argument was actually mutated. A literal-only macro nested inside another
-  (`if Size.megabytes(5)`) also lists the enclosing macros, but skipping those
-  would needlessly hide valid mutants, so only the culprit is kept.
+  `[]` when there are none. The names of `culprits/1`, deduplicated.
 
       iex> Mutare.Poison.Hint.expanding_macros("expanding macro: Size.megabytes/1\\n")
       [{"Size", :megabytes}]
@@ -67,37 +49,34 @@ defmodule Mutare.Poison.Hint do
   @spec expanding_macros(String.t()) :: [{String.t(), atom()}]
   def expanding_macros(output) when is_binary(output) do
     output
-    |> String.split("\n")
-    |> innermost_macro_frames()
-    |> Enum.flat_map(&split_macro/1)
+    |> culprits()
+    |> Enum.map(fn {macro, _call_site} -> macro end)
     |> Enum.uniq()
   end
 
-  # The innermost `expanding macro:` frame of each stacktrace, in source order. The
-  # compiler prints a macro-expansion stack innermost-first, so within one stacktrace
-  # only the *first* frame is the macro whose literal argument Mutare mutated; the
-  # rest are enclosing context. An `** (Error)` header re-arms capture for the next
-  # stacktrace — so the result is one culprit per error, never an outer wrapper macro.
-  defp innermost_macro_frames(lines) do
-    {frames, _armed?} =
-      Enum.reduce(lines, {[], true}, fn line, {frames, armed?} ->
-        cond do
-          Regex.match?(@exception_header, line) -> {frames, true}
-          armed? -> capture_frame(line, frames)
-          true -> {frames, armed?}
-        end
-      end)
+  @doc """
+  The culprit macro of each stacktrace in `output`, paired with where it was invoked:
+  `{{module_string, function_atom}, {file, line} | nil}`, in source order — one entry per
+  stacktrace whose innermost frame names a macro we can advise on.
 
-    Enum.reverse(frames)
-  end
+  Each compile error reports only its **innermost** macro — the one whose literal argument
+  was actually mutated. A literal-only macro nested inside another (`if Size.megabytes(5)`)
+  also lists the enclosing macros, but skipping those would needlessly hide valid mutants, so
+  only the culprit is kept (the frames come from
+  `Mutare.Sandbox.Command.Output.macro_expansion_stacks/1`, innermost first). The call site is
+  the frame's own — the file whose metamutant holds the poisoning mutant — which is why
+  `Mutare.Poison.macro_poison/3` reads this rather than `expanding_macros/1`.
 
-  # Armed and still looking for this stacktrace's innermost frame: capture an
-  # `expanding macro:` line (and disarm), else stay armed for a later line.
-  defp capture_frame(line, frames) do
-    case Regex.run(@expanding_macro, line) do
-      [_match, qualified, _arity] -> {[qualified | frames], false}
-      nil -> {frames, true}
-    end
+      iex> Mutare.Poison.Hint.culprits("expanding macro: Size.megabytes/1\\n    lib/a.ex:8: A.f/0\\n")
+      [{{"Size", :megabytes}, {"lib/a.ex", 8}}]
+  """
+  @spec culprits(String.t()) :: [{{String.t(), atom()}, {String.t(), pos_integer()} | nil}]
+  def culprits(output) when is_binary(output) do
+    output
+    |> Output.macro_expansion_stacks()
+    |> Enum.flat_map(fn [innermost | _enclosing] ->
+      Enum.map(split_macro(innermost.name), &{&1, innermost.call_site})
+    end)
   end
 
   # Split `Mod.Sub.fun` into `{"Mod.Sub", :fun}`. A name with no `.` (no module

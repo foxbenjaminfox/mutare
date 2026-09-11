@@ -510,8 +510,10 @@ defmodule Mutare.IgnoreTest do
       """
 
       assert Ignore.unknown_directives(source) == [{1, "mutare: ignore"}]
-      # ...and it did not parse as a directive either — the space detaches the verb.
-      assert Ignore.directives(source) == %Directives{}
+      # ...and it did not parse as a directive either — the space detaches the verb; the
+      # container records it as unknown instead.
+      assert %Directives{by_line: %{}, scoped: [], unknown: [{1, "mutare: ignore"}]} =
+               Ignore.directives(source)
     end
 
     test "a hyphen extends the verb, it never starts a reason" do
@@ -521,7 +523,9 @@ defmodule Mutare.IgnoreTest do
       source = "x = 1 # mutare:ignore-lines"
 
       assert Ignore.unknown_directives(source) == [{1, "mutare:ignore-lines"}]
-      assert Ignore.directives(source) == %Directives{}
+
+      assert %Directives{by_line: %{}, scoped: [], unknown: [{1, "mutare:ignore-lines"}]} =
+               Ignore.directives(source)
     end
 
     test "a recognized scoped verb extended by a trailing character is unknown, not a partial match" do
@@ -532,7 +536,7 @@ defmodule Mutare.IgnoreTest do
         source = "x = 1 # mutare:#{verb}"
 
         assert Ignore.unknown_directives(source) == [{1, "mutare:#{verb}"}], verb
-        assert Ignore.directives(source) == %Directives{}, verb
+        assert %Directives{by_line: %{}, scoped: []} = Ignore.directives(source), verb
       end
     end
 
@@ -594,35 +598,42 @@ defmodule Mutare.IgnoreTest do
     end
     """
 
+    # The container carries the expression end lines the hint is bounded by (harvested with
+    # the directives), so the hint needs no AST.
     defp pipe_fixture do
-      ast = Sourceror.parse_string!(@pipe_source)
-      [directive] = @pipe_source |> Ignore.directives() |> Map.fetch!(:by_line) |> Map.fetch!(3)
-      {ast, directive}
+      directives = Ignore.directives(@pipe_source)
+      [directive] = Map.fetch!(directives.by_line, 3)
+      {directives, directive}
+    end
+
+    test "the container records the pipe's span for the directive's suppressed line" do
+      {directives, _directive} = pipe_fixture()
+      assert directives.end_lines == %{3 => 5}
     end
 
     test "points at the pipe step carrying the mutants the directive named" do
-      {ast, directive} = pipe_fixture()
+      {directives, directive} = pipe_fixture()
       occupied = [{4, :arithmetic, []}, {5, :call, []}]
 
-      assert Ignore.misplacement_hint(ast, directive, occupied) == 4
+      assert Ignore.misplacement_hint(directives, directive, occupied) == 4
     end
 
     test "only mutants the directive's filter admits count" do
-      {ast, directive} = pipe_fixture()
+      {directives, directive} = pipe_fixture()
       # A `[arithmetic]` directive misplaced above a pipe with only other-family
       # mutants further down: no hint — the directive wouldn't have matched there.
       occupied = [{4, :relational, []}, {5, :call, []}]
 
-      assert Ignore.misplacement_hint(ast, directive, occupied) == nil
+      assert Ignore.misplacement_hint(directives, directive, occupied) == nil
     end
 
     test "the scan is bounded by the expression's own span" do
-      {ast, directive} = pipe_fixture()
+      {directives, directive} = pipe_fixture()
       # A matching mutant *below* the pipe (line 7+) must not be suggested — the
       # hint would point into an unrelated statement.
       occupied = [{8, :arithmetic, []}]
 
-      assert Ignore.misplacement_hint(ast, directive, occupied) == nil
+      assert Ignore.misplacement_hint(directives, directive, occupied) == nil
     end
 
     test "no hint when the suppressed line starts no multi-line expression" do
@@ -632,10 +643,21 @@ defmodule Mutare.IgnoreTest do
       y = 2
       """
 
-      ast = Sourceror.parse_string!(source)
-      [directive] = source |> Ignore.directives() |> Map.fetch!(:by_line) |> Map.fetch!(3)
+      directives = Ignore.directives(source)
+      [directive] = Map.fetch!(directives.by_line, 3)
 
-      assert Ignore.misplacement_hint(ast, directive, [{5, :arithmetic, []}]) == nil
+      # A single-line expression starts at line 3, so its span is recorded but is no bound.
+      assert directives.end_lines == %{3 => 3}
+      assert Ignore.misplacement_hint(directives, directive, [{5, :arithmetic, []}]) == nil
+    end
+
+    test "a suppressed line no expression starts on has no span at all" do
+      # The directive targets the blank line 3 — nothing starts there.
+      directives = Ignore.directives("x = 1\n# mutare:ignore\n\ny = 2\n")
+      [directive] = Map.fetch!(directives.by_line, 3)
+
+      assert directives.end_lines == %{}
+      assert Ignore.misplacement_hint(directives, directive, [{4, :integer, []}]) == nil
     end
   end
 
@@ -859,7 +881,6 @@ defmodule Mutare.IgnoreTest do
       # mutare:ignore-file[relational]
       """
 
-      ast = Sourceror.parse_string!(source)
       directives = Ignore.directives(source)
       # An arithmetic site on line 3: outside the (empty) region, and not admitted
       # by the `[relational]` file filter — both scoped directives suppress nothing.
@@ -868,8 +889,8 @@ defmodule Mutare.IgnoreTest do
       assert [%Directive{scope: {:region, 1, 2}} = region, %Directive{scope: :file} = file] =
                Ignore.ineffective(directives, occupied)
 
-      assert Ignore.misplacement_hint(ast, region, occupied) == nil
-      assert Ignore.misplacement_hint(ast, file, occupied) == nil
+      assert Ignore.misplacement_hint(directives, region, occupied) == nil
+      assert Ignore.misplacement_hint(directives, file, occupied) == nil
 
       # ...and an occupied line inside the region makes it effective.
       assert [%Directive{scope: :file}] =

@@ -263,33 +263,35 @@ defmodule Mutare.Transform.Uses do
 
   # Stamp a degradation reason (`{module, reason}`) onto the `use` node, or leave the meta
   # untouched when the `use` expanded. Cheap and harmless in the hot path (the key is
-  # stripped before render like every `:mutare_*` stamp); `degraded_uses/2` reads it back.
+  # stripped before render like every `:mutare_*` stamp); `degraded_uses/1` reads it back.
   defp put_degraded(meta, nil), do: meta
   defp put_degraded(meta, {_mod, _reason} = degraded), do: [{@degraded_key, degraded} | meta]
 
-  @doc """
-  The module-level `use`s in `ast` that failed to expand in-process, as
-  `[%{module: module, line: line | nil, reason: reason}]` in source order.
+  @typedoc "A module-level `use` that failed to expand in-process, and why."
+  @type degraded_use :: %{module: module(), line: pos_integer() | nil, reason: atom()}
 
-  This runs the same `annotate/2` walk (so it sees the same module-level `use`s, with the
-  same alias resolution) and reads back the `:mutare_use_degraded` stamps. Only the two
-  module-known, unambiguous failures surface — `:not_loadable` and `:nonstatic_args` (see
-  `t:Mutare.Transform.Uses.Harvest.degradation/0`); a `use` that expanded to genuinely
-  nothing is not reported. `mix mutare --check` uses this to warn that a `:call_routes`
-  `:raw` keyed on such a `use`'s injected macros would be dead. Best-effort and never
-  raises for the same reasons `annotate/2` doesn't.
+  @doc """
+  The module-level `use`s in `annotated` — a tree `annotate/2` has stamped — that failed to
+  expand in-process, as `[%{module: module, line: line | nil, reason: reason}]` in source
+  order.
+
+  Reads back the `:mutare_use_degraded` stamps `annotate/2` left, so it costs one prewalk and
+  re-expands nothing: `Mutare.Transform`'s count pass collects them from the tree it already
+  annotated and reports them to `Mutare.Schema` (its `:degraded_uses`), which `mix mutare
+  --check` prints to warn that a `:call_routes` `:raw` keyed on such a `use`'s injected macros
+  would be dead. Only the two module-known, unambiguous failures surface — `:not_loadable` and
+  `:nonstatic_args` (see `t:Mutare.Transform.Uses.Harvest.degradation/0`); a `use` that
+  expanded to genuinely nothing is not reported.
   """
-  @spec degraded_uses(Macro.t(), [Extension.Spec.t() | module() | {module(), keyword()}]) ::
-          [%{module: module(), line: pos_integer() | nil, reason: atom()}]
-  def degraded_uses(ast, extensions \\ []) do
-    ast
-    |> annotate(extensions)
+  @spec degraded_uses(Macro.t()) :: [degraded_use()]
+  def degraded_uses(annotated) do
+    annotated
     |> collect_degraded()
     |> Enum.reverse()
   end
 
   # Prewalk the annotated tree gathering every `:mutare_use_degraded` stamp into
-  # `[%{module, line, reason}]` (reversed — `degraded_uses/2` flips it to source order).
+  # `[%{module, line, reason}]` (reversed — `degraded_uses/1` flips it to source order).
   defp collect_degraded(annotated) do
     annotated
     |> Macro.prewalk([], fn

@@ -77,17 +77,22 @@ defmodule Mutare.Manifest do
   One file's manifest:
 
     * `:regions` — generated line ranges, for mapping a compile error back to a mutant.
+    * `:ast` — the parsed metamutant the regions were ranged over, retained so the
+      macro-expansion fallback (`ids_in_named_calls/2`) can range a blamed macro's calls in
+      the same tree rather than parse the file a second time. `nil` on a hand-built manifest.
   """
-  @type t :: %__MODULE__{regions: [region()]}
+  @type t :: %__MODULE__{regions: [region()], ast: Macro.t() | nil}
 
-  defstruct regions: []
+  defstruct regions: [], ast: nil
 
   @doc """
   Build a manifest from one file's rendered metamutant source.
 
   Re-parses (for `Sourceror.get_range/1`) and walks the tree once, attributing
   every selector clause, lifted private definition, and selector `case` to the
-  mutant id(s) it belongs to.
+  mutant id(s) it belongs to. The parse is kept on the manifest (`:ast`): one
+  failed compile can need both attributions of the same file, and `Mutare.Poison`
+  holds one manifest per file for the round.
 
   ## Examples
 
@@ -98,7 +103,10 @@ defmodule Mutare.Manifest do
       false
   """
   @spec from_source(String.t()) :: t()
-  def from_source(metamutant_source), do: metamutant_source |> parse() |> build()
+  def from_source(metamutant_source) do
+    ast = parse(metamutant_source)
+    %{build(ast) | ast: ast}
+  end
 
   # Region-build over an already-parsed metamutant AST. The gate clauses read the dispatch
   # variable by name (`<var> === <id>`), and `Mutare.Transform.Names` *salts* that name
@@ -124,14 +132,12 @@ defmodule Mutare.Manifest do
 
   Works in **metamutant space**: the rendered source is what the compiler read, so the ids
   found inside a blamed macro's span are exactly the ones that could have poisoned it — no
-  mapping back to original-source coordinates is needed, or possible. Returns
-  `%{fun_atom => MapSet.t()}`, empty when nothing matched.
+  mapping back to original-source coordinates is needed, or possible. Reads the manifest's
+  retained `:ast` (a `from_source/1` manifest), so the file is parsed once for both
+  attributions. Returns `%{fun_atom => MapSet.t()}`, empty when nothing matched.
   """
-  @spec ids_in_named_calls(String.t(), MapSet.t(atom())) :: %{optional(atom()) => MapSet.t()}
-  def ids_in_named_calls(metamutant_source, names) do
-    ast = parse(metamutant_source)
-    %__MODULE__{regions: regions} = build(ast)
-
+  @spec ids_in_named_calls(t(), MapSet.t(atom())) :: %{optional(atom()) => MapSet.t()}
+  def ids_in_named_calls(%__MODULE__{ast: ast, regions: regions}, names) when not is_nil(ast) do
     ast
     |> named_call_ranges(names)
     |> Enum.reduce(%{}, fn {name, lo, hi}, acc ->

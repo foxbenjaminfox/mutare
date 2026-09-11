@@ -286,16 +286,22 @@ defmodule Mutare.Transform do
     do: count_report(source, opts).mutants
 
   @doc false
-  # `count_string/2` plus the count pass's side-channel diagnostics: the `:skip_lifting` entries,
-  # the call-route keys, and the mark-declaration keys the source matched, so `Mutare.Schema` can
-  # union them across all files and surface the configured entries that matched nothing anywhere
-  # (see `Mutare.Schema.detect_ineffective_skip_lifting/3` and `detect_ineffective_config/3`).
+  # `count_string/2` plus the count pass's side channel: every fact `Mutare.Schema`'s diagnostics
+  # read off a file, collected by the one pass that parsed and annotated it so no diagnostic
+  # re-parses a source. The `:skip_lifting` entries, call-route keys, and mark-declaration keys
+  # the source matched (unioned across files to surface configured entries that matched nothing
+  # anywhere — `Mutare.Schema.detect_ineffective_skip_lifting/3` / `detect_ineffective_config/3`);
+  # the comment-directive container (ineffective directives, unknown `mutare:` verbs, and the
+  # misplacement hint's expression end lines — `detect_directive_diagnostics/2`); and the
+  # module-level `use`s the resolve pre-pass could not expand (`mix mutare --check`).
   @spec count_report(String.t(), keyword()) :: %{
           mutants: non_neg_integer(),
           selected_ids: [pos_integer()] | nil,
           skip_lifting_matches: MapSet.t(Lifting.skip_entry()),
           route_matches: MapSet.t(tuple()),
-          mark_matches: MapSet.t(tuple())
+          mark_matches: MapSet.t(tuple()),
+          directives: Mutare.Ignore.Directives.t(),
+          degraded_uses: [Uses.degraded_use()]
         }
   def count_report(source, opts \\ []) when is_binary(source) do
     # The `:count` sink runs the same analyze → plan → emit pipeline but builds and retains no
@@ -310,7 +316,9 @@ defmodule Mutare.Transform do
         if(ctx.claim.selection_lines, do: Enum.reverse(ctx.claim.selected_ids), else: nil),
       skip_lifting_matches: ctx.claim.skip_matches,
       route_matches: ctx.claim.route_matches,
-      mark_matches: ctx.claim.mark_matches
+      mark_matches: ctx.claim.mark_matches,
+      directives: ctx.config.ignore_directives,
+      degraded_uses: ctx.claim.degraded_uses
     }
   end
 
@@ -375,10 +383,14 @@ defmodule Mutare.Transform do
     # super-forwarding closure variable, and the hoisted pipe-stage closure variable
     # (see `Mutare.Transform.Names`).
     names = Names.generated_names(parsed)
-    # Reuse the pristine parse for comment directives. Keep the comment walk off directive-free
-    # files; matching is deferred until each Site has its final attribution and variant labels.
+    # Reuse the pristine parse for comment directives — the one directive walk per file: the
+    # container also carries the unknown-verb comments and the expression end lines the scan's
+    # diagnostics read, so `Mutare.Schema` never re-parses a source for them (they reach it via
+    # `count_report/2`). Keep the comment walk off files that never claim the `mutare:`
+    # namespace; matching is deferred until each Site has its final attribution and variant
+    # labels.
     directives =
-      if String.contains?(source, "mutare:ignore"),
+      if String.contains?(source, "mutare:"),
         do: Mutare.Ignore.directives_from_ast(parsed),
         else: %Mutare.Ignore.Directives{}
 
@@ -425,24 +437,35 @@ defmodule Mutare.Transform do
       )
 
     annotated = annotate_tree(parsed, opts, extensions, macros, marks)
-    ctx = record_config_matches(ctx, annotated, macros)
+    ctx = record_count_facts(ctx, annotated, macros)
     transform_node(annotated, ctx)
   end
 
-  # The count pass's side channel for the ineffective-configuration diagnostic: which route keys
-  # and mark-declaration keys this source's resolved calls hit (`Mutare.Transform.ConfigMatches`),
-  # read back by `count_report/2`. Count-sink only — the render pass re-walks a source the count
-  # pass already reported, and the diagnostic needs one full scan, not two.
-  defp record_config_matches(
+  # The count pass's side channel, read off the annotated tree it already has: which route keys
+  # and mark-declaration keys this source's resolved calls hit (`Mutare.Transform.ConfigMatches`,
+  # for the ineffective-configuration diagnostic) and which module-level `use`s the resolve
+  # pre-pass could not expand (`Uses.degraded_uses/1`, for `mix mutare --check`). Read back by
+  # `count_report/2`. Count-sink only — the render pass re-walks a source the count pass already
+  # reported, and each diagnostic needs one full scan, not two.
+  defp record_count_facts(
          %Ctx{claim: %ClaimState{sink: :count} = claim} = ctx,
          annotated,
          macros
        ) do
     %{routes: routes, marks: marks} = Mutare.Transform.ConfigMatches.collect(annotated, macros)
-    %{ctx | claim: %{claim | route_matches: routes, mark_matches: marks}}
+
+    %{
+      ctx
+      | claim: %{
+          claim
+          | route_matches: routes,
+            mark_matches: marks,
+            degraded_uses: Uses.degraded_uses(annotated)
+        }
+    }
   end
 
-  defp record_config_matches(ctx, _annotated, _macros), do: ctx
+  defp record_count_facts(ctx, _annotated, _macros), do: ctx
 
   # The immutable transform config for one source: generated names + the resolved/validated
   # `:mutators`, `:skip_ids`, and `:skip_lifting`. `:mutators` may arrive as family atoms / bare modules (tests,

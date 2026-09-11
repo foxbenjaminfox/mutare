@@ -753,8 +753,11 @@ defmodule Mutare.UsesTest do
     end
   end
 
-  describe "degraded_uses/2 (the --check diagnostic)" do
-    defp degraded(source), do: source |> Sourceror.parse_string!() |> Uses.degraded_uses()
+  describe "degraded_uses/1 (the --check diagnostic)" do
+    # Read off the tree `annotate/2` stamped — as the count pass does, from the one annotation
+    # it already ran.
+    defp degraded(source),
+      do: source |> Sourceror.parse_string!() |> Uses.annotate() |> Uses.degraded_uses()
 
     test "flags an unloadable module-level `use` with :not_loadable and its line" do
       source = """

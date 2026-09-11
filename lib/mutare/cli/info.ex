@@ -345,9 +345,10 @@ defmodule Mutare.CLI.Info do
   # recovery, if any, already succeeded — an unrecoverable failure aborts before here via
   # `Mix.raise`), so this reports *how* it compiled: clean, or with recovery, naming the
   # unknown block macros escalated wholesale *and* the inline DSL macros the macro-expansion
-  # fallback skipped, each with its durable `:call_routes` fix. `check` is
+  # fallback skipped, each with its durable `:call_routes` fix — and the module-level `use`s
+  # the scan couldn't expand (`schema.degraded_uses`, collected by the count pass). `check` is
   # `Mutare.Runner.check_with_schema/3`'s result (`%{schema: schema, recovery: recovery | nil}`).
-  def print_check(%{schema: schema, recovery: recovery}, %Project{} = project, degraded_uses) do
+  def print_check(%{schema: schema, recovery: recovery}, %Project{} = project) do
     mutants = length(schema.sites)
     files = map_size(schema.metamutants)
 
@@ -358,7 +359,7 @@ defmodule Mutare.CLI.Info do
     )
 
     print_check_recovery(recovery)
-    print_degraded_uses(degraded_uses)
+    print_degraded_uses(schema.degraded_uses)
   end
 
   # Warn about module-level `use`s the scan couldn't expand in-process (`--check` only). Each

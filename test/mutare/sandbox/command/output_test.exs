@@ -3,6 +3,8 @@ defmodule Mutare.Sandbox.Command.OutputTest do
 
   alias Mutare.Sandbox.Command.Output
 
+  doctest Output
+
   describe "mix output vocabulary (the shared patterns live here)" do
     test "compile_error_banner/0 captures the offending file path" do
       banner = "== Compilation error in file test/foo_test.exs ==\n** (ArgumentError)"
@@ -179,5 +181,95 @@ defmodule Mutare.Sandbox.Command.OutputTest do
   defp unchecked(status) do
     "Unchecked dependencies for environment test:\n* example (Hex package)\n  #{status}\n" <>
       "** (Mix) Can't continue due to errors on dependencies"
+  end
+
+  describe "macro_expansion_stacks/1 (the expanding-macro frames — Poison and Hint read it)" do
+    test "groups frames per exception header, innermost first, each with its own call site" do
+      output = """
+      == Compilation error in file lib/a.ex ==
+      ** (FunctionClauseError) no function clause matching in A.one/1
+          expanding macro: A.one/1
+          lib/a.ex:3: AMod.f/0
+          (elixir #{System.version()}) expanding macro: Kernel.if/2
+          lib/a.ex:2: AMod.f/0
+      == Compilation error in file lib/b.ex ==
+      ** (ArgumentError) argument error
+          expanding macro: B.two/2
+          lib/b.ex:5: BMod.g/0
+      """
+
+      assert Output.macro_expansion_stacks(output) == [
+               [
+                 %{name: "A.one", arity: 1, call_site: {"lib/a.ex", 3}},
+                 %{name: "Kernel.if", arity: 2, call_site: {"lib/a.ex", 2}}
+               ],
+               [%{name: "B.two", arity: 2, call_site: {"lib/b.ex", 5}}]
+             ]
+    end
+
+    test "a location before a stack's first frame — the macro's own implementation — attaches to nothing" do
+      output =
+        "** (RuntimeError) boom\n" <>
+          "    lib/my_dsl.ex:3: MyDsl.\"MACRO-query\"/2\n" <>
+          "    expanding macro: MyDsl.query/1\n" <>
+          "    lib/r.ex:2: R.f/2\n"
+
+      assert Output.macro_expansion_stacks(output) ==
+               [[%{name: "MyDsl.query", arity: 1, call_site: {"lib/r.ex", 2}}]]
+    end
+
+    test "a frame no location line follows has a nil call site" do
+      assert Output.macro_expansion_stacks("expanding macro: Size.megabytes/1\n") ==
+               [[%{name: "Size.megabytes", arity: 1, call_site: nil}]]
+    end
+
+    test "only the first location after a frame is its call site; later ones attach to nothing" do
+      output = "expanding macro: X.y/0\n    lib/x.ex:1: X.z/0\n    lib/x.ex:9: X.w/0\n"
+
+      assert Output.macro_expansion_stacks(output) ==
+               [[%{name: "X.y", arity: 0, call_site: {"lib/x.ex", 1}}]]
+    end
+
+    test "lines before the first header form a stack; a frameless stack is dropped" do
+      output =
+        "expanding macro: X.y/0\nlib/x.ex:1: X.z/0\n** (CompileError) nope\n    lib/x.ex:9: X.w/0\n"
+
+      assert Output.macro_expansion_stacks(output) ==
+               [[%{name: "X.y", arity: 0, call_site: {"lib/x.ex", 1}}]]
+    end
+
+    test "any raised term heads a new stack, not only an `…Error` exception" do
+      # `** (exit)` is no compiler *diagnostic* for `diagnostic_severity/1`, but it does start a
+      # new stacktrace — so the frame after it is a new stack's innermost, not the previous
+      # stack's enclosing macro.
+      assert Output.diagnostic_severity("** (exit) boom") == nil
+
+      output =
+        "expanding macro: A.a/1\nlib/a.ex:1: A.f/0\n** (exit) boom\nexpanding macro: B.b/1\nlib/b.ex:1: B.f/0\n"
+
+      assert [[%{name: "A.a"}], [%{name: "B.b"}]] = Output.macro_expansion_stacks(output)
+    end
+
+    test "intervening non-frame lines within a stack are skipped, not stack boundaries" do
+      output = """
+      ** (FunctionClauseError) no function clause matching in Size.megabytes/1
+          (stacktrace) Elixir.Kernel.some_helper/1
+          (stacktrace) Elixir.Kernel.another_helper/2
+          expanding macro: Size.megabytes/1
+          lib/usage.ex:4: Usage.limit/0
+      """
+
+      assert [[%{name: "Size.megabytes", call_site: {"lib/usage.ex", 4}}]] =
+               Output.macro_expansion_stacks(output)
+    end
+
+    test "no frames at all yields []" do
+      assert Output.macro_expansion_stacks("") == []
+      assert Output.macro_expansion_stacks("** (CompileError) undefined function foo/0\n") == []
+    end
+
+    test "requires a binary" do
+      assert_raise FunctionClauseError, fn -> Output.macro_expansion_stacks(nil) end
+    end
   end
 end

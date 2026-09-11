@@ -218,7 +218,9 @@ one new thread: a `Mutare.Runner.Recovery` struct carried through `compile_with_
     genuinely nothing is **not** flagged (the "expanded but empty" and "raised" cases are
     indistinguishable at the top level, and false positives here would be pure noise). `Uses` stamps
     it under a stripped-before-render meta key; `Uses.degraded_uses/2` reads it back, computed only
-    for `--check` so a normal run pays nothing.
+    for `--check` so a normal run pays nothing. *(Since superseded: the count pass reads the stamps
+    off the tree it already annotated — `Uses.degraded_uses/1` → `Schema.degraded_uses` — so `--check`
+    re-parses and re-expands nothing; see "The count pass is the scan's only parse".)*
 
 ### Macro-expansion poison fallback: recover an inline DSL macro (`from`-style) `[done]`
 Block macros were handled (escalation on a second strike); the harder, more common case is an
@@ -279,6 +281,27 @@ inside it. Key decisions:
     wrote, so nothing matches), we still abort — with `Hint.for_compile_failure/1`'s skip snippet as before.
   * **Consequence:** the `Size.megabytes(5)` "unrecoverable" class is now *recovered* — its literal mutant is
     dropped `:poisoned` and the run proceeds, where it used to abort the whole run.
+
+**One manifest per round, one reader of the frames (2026-09-11).** Two duplications had grown
+around this fallback. (1) `recover_compile_poison/5` called `Poison.ids/3` — which parsed the
+metamutant and built its manifest, memoized within that one call — and then `macro_poison/3`,
+whose `Manifest.ids_in_named_calls/2` took *source* and parsed + built again: the same file,
+normally. `%Manifest{}` now retains its `ast`, `ids_in_named_calls/2` takes the manifest, and
+`Poison.attribution/3` returns both halves (`%{line, macro}`) from one `%{file => manifest}` memo
+threaded through both; `ids/3` and `macro_poison/3` remain as the single halves. Wall-clock this
+was small next to the recompile a round costs — the point is one manifest with one lifetime.
+(2) `Hint` and `Poison` each had an `expanding macro:` regex and a line-walking state machine over
+the same output, under a stale rationale on `Hint`'s ("read only for human remediation, never to
+form a verdict" — untrue from the moment `macro_poison` began reading it) and with a semantic gap:
+`Hint` took the *innermost* frame per stacktrace, `Poison` the call-site file after *every*
+marker, and `macro_poison` cross-producted all names × all files. `Output.macro_expansion_stacks/1`
+is now the one reader — per stacktrace, innermost first, each frame carrying its own call site;
+its `** (` header is deliberately wider than `diagnostic_severity/1`'s `…Error)` marker, since any
+raised term heads a stacktrace — `Hint.culprits/1` pairs each stack's innermost frame with *its*
+call site, and `macro_poison` looks that name up in exactly that file. The only test that noticed
+the tighter pairing was a synthetic headerless two-frame fixture in `runtime_id_test` (two
+`expanding macro:` frames with no `** (…)` between them read as one nested stack); it now carries
+one header per failure, as the compiler prints them.
 
 ### Warn for ineffective `# mutare:ignore` directives `[done]`
 `# mutare:ignore` filtering fails **safe** — a typo'd family (`[arithmatic]`), an empty
@@ -441,8 +464,9 @@ answers to either qualifier — instead of keeping whichever pass ran first.
 ### The `mutare:` comment namespace is reserved — unknown verbs warn `[done]`
 Forward-compat groundwork done *before* any second directive exists: a comment that claims the
 namespace (anchored `# mutare:`, same "must be the comment's purpose" rule as the directive regex)
-but spells no recognized verb is warned at scan time (`Ignore.unknown_directives_from_ast/1` →
-`Schema.detect_directive_diagnostics/1` → the Mix task's stderr warning), and `--strict-ignores`
+but spells no recognized verb is warned at scan time (originally `Ignore.unknown_directives_from_ast/1`
+→ `Schema.detect_directive_diagnostics/1` → the Mix task's stderr warning; now the `unknown` field of the
+`Directives` container the count pass reports, see "The count pass is the scan's only parse"), and `--strict-ignores`
 counts it alongside ineffective directives. Without this, a typo'd verb (`# mutare:ingore`), a
 colon-detached one (`# mutare: ignore`), or a directive from a *newer* Mutare run under an older
 version is silently inert — the same fail-silent class the ineffective warning exists for, but one
@@ -706,6 +730,48 @@ re-render — rejected for the same reason `Site`'s moduledoc gives for not keep
 (an operator-swap node shares the source operands, so retaining ~18.7k of them pins large source
 subtrees — substantial heap for a handful of eventual reads). Re-rendering the few survivor files
 is cheaper than the heap.
+
+#### The count pass is the scan's only parse — diagnostics read its facts, never a source `[done]`
+An audit (2026-09-11) found every source Sourceror-parsed two to four times per scan, and the
+same metamutant parsed twice per poison round (that half is under "Macro-expansion poison
+fallback"). Per source:
+
+  * count and render each parse — the designed two-phase build above. Measured on this repo's
+    biggest `lib/` files the parse is 4–13 % of the count pass and 1–5 % of render, and handing
+    the AST across the worker boundary would copy a multi-MB term through the parent twice and
+    hold it live between phases: the loop-heap penalty this section exists to avoid. That one
+    stays. (What *does* run twice is resolve→analyze→plan→emit; the metamutant text is now
+    `start_id`-independent — "Stable per-file runtime identities" — so the count pass serves only
+    `:max_mutants` and the drift check. Folding count into render for uncapped builds would save
+    on the order of 15–30 % of scan wall-clock at the price of the drift tripwire; weighed,
+    left for a deliberate decision.)
+  * `Schema.detect_directive_diagnostics` re-parsed every file containing `mutare:` to find
+    ineffective directives, unknown verbs, and the misplacement hint's expression span — though
+    the count worker had already parsed the file *and built its `Directives`*, then discarded
+    them because `count_report/2` didn't return them (`Ignore.directives_from_ast/1`'s comment
+    claimed a reuse that held inside `Transform` and not across the system).
+  * `mix mutare --check` re-parsed **and re-annotated** (re-expanding every `use`) each
+    `use`-bearing source to read the `:mutare_use_degraded` stamps the count pass's `Resolve`
+    had already put on its tree. The comment's "computed only for `--check` so a normal run pays
+    nothing" had the cost inverted: collecting the stamps is one prewalk; the re-expansion was
+    the expensive half.
+
+The fix follows the side channel the count pass already had (`skip_lifting_matches` /
+`route_matches` / `mark_matches`): **return small facts from the worker, never the AST.**
+`Transform.count_report/2` now also returns the file's `Directives` container — which
+`Ignore.directives_from_ast/1` fills completely in its one walk: `by_line`/`scoped`, the
+unknown-verb comments (`unknown`), and for each line directive the last line of the expression
+starting on its line (`end_lines`: one `Sourceror.get_range/1` prewalk, ~20 ms on a 1200-line
+file, paid only by directive-bearing files, in both passes — cheaper than gating it) — and
+`degraded_uses` (`Uses.degraded_uses/1`, read off the annotated tree under the count sink only).
+`Schema` keeps the per-file map as the `facts` element of each `:counted` tuple;
+`detect_directive_diagnostics/2` and `record_degraded_uses/2` are pure over it,
+`Ignore.misplacement_hint/3` takes the container instead of an AST, and the Mix task's
+`scan_degraded_uses` is gone (`Info.print_check/2` reads `schema.degraded_uses`). The transform's
+comment-walk gate widened from `"mutare:ignore"` to `"mutare:"` so unknown verbs are seen too.
+
+**Rule going forward:** a new scan-time diagnostic adds a field to `count_report/2`; nothing
+parses a source after the scan.
 
 ### Sandbox isolation & dependencies `[M4, done; isolation question settled]`
 `Mutare.Sandbox` copies the whole project (excluding `_build`/`.git`, keeping

@@ -114,7 +114,7 @@ defmodule Mutare.Transform.Uses.Harvest do
   — an uncompiled dep, or an external-path target) and `:nonstatic_args` (`use Foo,
   runtime_expr` — the opts aren't a compile-time literal). Both mean any `:call_routes`
   `:raw` keyed on what the `use` injects will silently never fire. Read by `mix mutare
-  --check` (via `Mutare.Transform.Uses.degraded_uses/2`).
+  --check` (via `Mutare.Transform.Uses.degraded_uses/1`, off the count pass's annotated tree).
   """
   @type degradation :: {module(), :not_loadable | :nonstatic_args} | nil
 

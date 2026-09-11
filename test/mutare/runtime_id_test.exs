@@ -280,9 +280,11 @@ defmodule Mutare.RuntimeIdTest do
 
     assert Poison.ids(errors, metas, index) == MapSet.new([10, 20])
 
+    # One failure per file, as the compiler prints them: each stacktrace's innermost frame is
+    # looked up in its own call-site file, and the two files' local ids translate apart.
     frames =
       Enum.map_join(Map.keys(metas), "\n", fn file ->
-        "expanding macro: MyDsl.query/1\n#{file}:2: PoisonIdentity.f/1"
+        "** (RuntimeError) boom\nexpanding macro: MyDsl.query/1\n#{file}:2: PoisonIdentity.f/1"
       end)
 
     assert [{{"MyDsl", :query}, ids}] = Poison.macro_poison(frames, metas, index)

@@ -18,6 +18,10 @@ defmodule Mutare.Transform.ClaimState do
   #     (`Mutare.CallRouting.Spec.key/0`) and mark-declaration keys (`{module_key, fun, arity}`) the
   #     resolved calls in this pass hit (`Mutare.Transform.ConfigMatches`), so `Mutare.Schema` can
   #     surface `call_routes:` / `argument_marks:` entries that matched no call anywhere.
+  #   * `degraded_uses` — the module-level `use`s the resolve pre-pass could not expand
+  #     (`Mutare.Transform.Uses.degraded_uses/1`), read off the annotated tree by the count pass
+  #     only, so `mix mutare --check` can warn without re-parsing or re-expanding anything
+  #     (`Mutare.Schema`'s `:degraded_uses`).
   #
   # The `sink` selects what each claim *retains* — the one knob that splits a render from the
   # schema's render-free count pass:
@@ -63,7 +67,8 @@ defmodule Mutare.Transform.ClaimState do
           selected_ids: [pos_integer()],
           skip_matches: MapSet.t(Mutare.Lifting.skip_entry()),
           route_matches: MapSet.t(tuple()),
-          mark_matches: MapSet.t(tuple())
+          mark_matches: MapSet.t(tuple()),
+          degraded_uses: [Mutare.Transform.Uses.degraded_use()]
         }
 
   defstruct sink: :render,
@@ -79,7 +84,8 @@ defmodule Mutare.Transform.ClaimState do
             selected_ids: [],
             skip_matches: MapSet.new(),
             route_matches: MapSet.new(),
-            mark_matches: MapSet.new()
+            mark_matches: MapSet.new(),
+            degraded_uses: []
 
   @doc """
   Claim the next id for `item`, returning `{artifacts, claim}`.
