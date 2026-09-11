@@ -466,4 +466,87 @@ defmodule Mutare.ConfigTest do
       assert options.reporters == [{:human, nil}, {:json, "r.json"}]
     end
   end
+
+  describe "merge/3 with --since" do
+    setup do
+      repo =
+        Path.join(System.tmp_dir!(), "mutare_cfg_since_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(Path.join(repo, "lib"))
+      on_exit(fn -> File.rm_rf!(repo) end)
+
+      git!(repo, ["init", "-q"])
+
+      File.write!(
+        Path.join(repo, "lib/a.ex"),
+        "defmodule A do\n  def f, do: 1\n  def g, do: 2\nend\n"
+      )
+
+      git!(repo, ["add", "."])
+
+      git!(repo, [
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=Test",
+        "commit",
+        "-q",
+        "-m",
+        "init"
+      ])
+
+      # Line 2 changes (uncommitted counts); line 3 does not.
+      File.write!(
+        Path.join(repo, "lib/a.ex"),
+        "defmodule A do\n  def f, do: 9\n  def g, do: 2\nend\n"
+      )
+
+      %{repo: repo}
+    end
+
+    test "scopes :only_lines to the lines changed since the ref", %{repo: repo} do
+      assert Config.merge([], [since: "HEAD"], repo)[:only_lines] == MapSet.new([{"lib/a.ex", 2}])
+    end
+
+    test "narrows an explicit --line filter by intersection rather than replacing it", %{
+      repo: repo
+    } do
+      assert Config.merge([], [since: "HEAD", line: "lib/a.ex:3"], repo)[:only_lines] ==
+               MapSet.new()
+
+      assert Config.merge([], [since: "HEAD", line: "lib/a.ex:2"], repo)[:only_lines] ==
+               MapSet.new([{"lib/a.ex", 2}])
+    end
+
+    test "narrows a .mutare.exs only_lines: filter the same way", %{repo: repo} do
+      file = [only_lines: [{"lib/a.ex", 2}, {"lib/a.ex", 3}]]
+
+      assert Config.merge(file, [since: "HEAD"], repo)[:only_lines] ==
+               MapSet.new([{"lib/a.ex", 2}])
+    end
+
+    test "a malformed file only_lines: fails with the registry's message, not a crash", %{
+      repo: repo
+    } do
+      assert_raise ArgumentError, ~r/:only_lines entries must be \{file, line\}/, fn ->
+        Config.merge([only_lines: [:bogus]], [since: "HEAD"], repo)
+      end
+    end
+
+    test "a ref git cannot resolve is a usage error", %{repo: repo} do
+      assert_raise ArgumentError, ~r/`--since no-such-ref` failed:/, fn ->
+        Config.merge([], [since: "no-such-ref"], repo)
+      end
+    end
+
+    test "without --since the root is never consulted" do
+      assert Config.merge([], [line: "lib/a.ex:3"], "/nonexistent")[:only_lines] ==
+               [{"lib/a.ex", 3}]
+    end
+  end
+
+  defp git!(repo, args) do
+    {_out, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
+    :ok
+  end
 end

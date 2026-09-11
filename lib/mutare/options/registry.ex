@@ -844,6 +844,20 @@ defmodule Mutare.Options.Registry do
   def defaults, do: for(spec <- specs(), do: {spec.key, spec.default})
 
   @doc """
+  Validate and normalise one option's `value` by its `key`, exactly as `Mutare.Options.new/1`
+  will — for a caller that must read a value in its canonical shape before the whole option
+  set is built (`Mutare.Config`'s `--since` narrowing of `:only_lines`). Raises
+  `ArgumentError` on a value the option rejects, with the option's own message.
+  """
+  @spec validate!(atom(), term()) :: term()
+  def validate!(key, value) do
+    case Enum.find(specs(), &(&1.key == key)) do
+      %{validate: validate} -> validate.(value)
+      nil -> raise ArgumentError, "unknown option #{inspect(key)}"
+    end
+  end
+
+  @doc """
   The 1:1 passthrough CLI switches as an `OptionParser` keyword list — the options whose flag is a
   plain `--key`/`--no-key` rename. Composed into the Mix task's `@switches` alongside `Config`'s
   exceptional flags and the task's own project/inspect flags.

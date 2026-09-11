@@ -13,8 +13,8 @@ defmodule Mutare.Config do
   translations in `merge/2`).
   """
 
+  alias Mutare.{Changes, Lifting}
   alias Mutare.Options.Registry
-  alias Mutare.Lifting
 
   @doc "Load `.mutare.exs` from `root`, or `[]` when it is absent."
   @spec load(Path.t()) :: keyword()
@@ -36,13 +36,16 @@ defmodule Mutare.Config do
   leaves the file's value (or the option default) in place. For translated boolean
   flags, the negative form is a real override too: e.g. `--no-full` restores
   coverage-guided selection and `--no-partition-db` disables partitioning even when
-  `.mutare.exs` enabled it.
+  `.mutare.exs` enabled it. `root` is the target project the flags resolve against;
+  only `--since` reads it (it runs `git diff` there).
 
   The recognised flags and what they mean are documented for users in the
   `Mix.Tasks.Mutare` moduledoc — this is the translation layer, so it records only the
   mappings that aren't a 1:1 rename: a repeatable `--only` accumulates into `:paths`
   (each a directory or single `.ex` file, in order), `--line FILE:LINE` into
-  `:only_lines`, `--skip-lifting Module.fun/arity` into `:skip_lifting`, `--skip-call
+  `:only_lines`, which `--since REF` then narrows to the lines changed versus that git
+  ref (intersecting an explicit `--line` or file filter rather than replacing it),
+  `--skip-lifting Module.fun/arity` into `:skip_lifting`, `--skip-call
   Module.fun/arity` (or `Module.fun` for any arity, `Module.*` for a whole module) *appends* a
   `{Module, :fun, arity, :skip}` route to `:call_routes` (the one flag that extends the file value
   rather than replacing it, so a run can skip one more call without restating the file's routes),
@@ -60,15 +63,17 @@ defmodule Mutare.Config do
       iex> Mutare.Config.merge([], report: "json:mutare.json")[:reporters]
       [{:human, nil}, {:json, "mutare.json"}]
   """
-  @spec merge(keyword(), keyword()) :: keyword()
-  def merge(file_config, flags) do
+  @spec merge(keyword(), keyword(), Path.t()) :: keyword()
+  def merge(file_config, flags, root \\ ".") do
     # Only the flags that need *translating* are spelled out here; the 1:1 pass-throughs are
     # folded in by `put_passthrough_flags/2` (the order is immaterial — distinct keys, each
-    # `Keyword.put`). Keeping them apart makes the translations the only thing to read.
+    # `Keyword.put`, except that `--since` narrows whatever `:only_lines` `--line` or the file
+    # put first). Keeping them apart makes the translations the only thing to read.
     file_config
     |> put_unless_nil(:paths, only_paths(flags))
     |> put_unless_nil(:exclude, exclude_globs(flags))
     |> put_unless_nil(:only_lines, parse_lines(flags))
+    |> scope_to_changes(flags, root)
     |> put_unless_nil(:skip_lifting, parse_skip_lifting(flags))
     |> append_skip_calls(flags)
     |> put_translation(:test_selection, test_selection(flags))
@@ -88,6 +93,7 @@ defmodule Mutare.Config do
   @cli_switches [
     only: [:string, :keep],
     line: [:string, :keep],
+    since: :string,
     skip_lifting: [:string, :keep],
     skip_call: [:string, :keep],
     exclude: [:string, :keep],
@@ -226,6 +232,35 @@ defmodule Mutare.Config do
       _ ->
         raise ArgumentError,
               "--line expects FILE:LINE (e.g. lib/foo.ex:42), got: #{inspect(spec)}"
+    end
+  end
+
+  # `--since <ref>` restricts mutation to the lines changed versus that git ref — the same
+  # `:only_lines` site filter `--line` uses — so a one-line edit to a large module mutates
+  # only that line, not the whole file. An `:only_lines` filter already present (a `--line`,
+  # or the file's) is *narrowed* by intersection rather than replaced, after the registry's
+  # own validation of it, so a malformed entry fails with the registry's message rather than
+  # a `MapSet` crash here. A ref git can't resolve is a usage error, raised as an
+  # `ArgumentError` like the other flag mistakes.
+  defp scope_to_changes(config, flags, root) do
+    case flags[:since] do
+      nil ->
+        config
+
+      ref ->
+        case Changes.since(root, ref) do
+          {:ok, changed} ->
+            only_lines =
+              case Registry.validate!(:only_lines, config[:only_lines]) do
+                nil -> changed
+                requested -> MapSet.intersection(requested, changed)
+              end
+
+            Keyword.put(config, :only_lines, only_lines)
+
+          {:error, detail} ->
+            raise ArgumentError, "`--since #{ref}` failed:\n#{detail}"
+        end
     end
   end
 

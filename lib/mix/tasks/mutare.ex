@@ -401,7 +401,6 @@ defmodule Mix.Tasks.Mutare do
   @switches Registry.cli_switches() ++
               Config.cli_switches() ++
               [
-                since: :string,
                 app: [:string, :keep],
                 workspace: :boolean,
                 # inspect-and-exit flags (print information, run nothing)
@@ -441,31 +440,21 @@ defmodule Mix.Tasks.Mutare do
       Mix.raise(Exception.message(error))
 
     error in ArgumentError ->
-      # Some Elixir versions accept repeatable switch specs for parsing but choke on them while
-      # formatting a parse error's "Supported options" block. Re-render with equivalent
-      # non-repeatable specs so malformed CLI syntax still surfaces as a Mix usage error.
-      if option_parser_format_error?(__STACKTRACE__) do
-        Mix.raise(parse_error_message(argv))
-      else
-        reraise error, __STACKTRACE__
-      end
+      # Elixir releases through 1.19 render a missing-argument parse error (`--only` with no
+      # value) by `to_string`-ing the raw switch spec, which fails on a repeatable
+      # `[type, :keep]` spec; fixed upstream. Re-parse with equivalent non-repeatable specs
+      # so the usage error still renders as one.
+      Mix.raise(parse_error_message(argv, error, __STACKTRACE__))
   end
 
-  defp parse_error_message(argv) do
+  # The usage message the repeatable specs kept `OptionParser` from formatting. A re-parse
+  # that finds nothing wrong means the `ArgumentError` was not the formatter's, so it is
+  # re-raised untouched.
+  defp parse_error_message(argv, error, stacktrace) do
     OptionParser.parse!(argv, strict: @parse_error_switches)
-    "invalid command-line arguments"
+    reraise error, stacktrace
   rescue
-    error in OptionParser.ParseError -> Exception.message(error)
-  end
-
-  defp option_parser_format_error?(stacktrace) do
-    Enum.any?(stacktrace, fn
-      {OptionParser, function, _arity, _meta} when function in [:format_error, :format_errors] ->
-        true
-
-      _entry ->
-        false
-    end)
+    parse_error in OptionParser.ParseError -> Exception.message(parse_error)
   end
 
   # Everything past the no-config flags resolves the project + options first; the
@@ -509,28 +498,10 @@ defmodule Mix.Tasks.Mutare do
     # rendering eagerly (they describe *every* site).
     context = %{context | defer_site_code: defer_site_code?(options)}
 
-    {live, schema, run_context} = start_live_scan(project, context, root)
-
-    try do
-      result = Runner.run_with_schema(schema, root, run_context)
-      # Tear the live status block down before anything else prints, so the final
-      # report / error lands on a clean terminal (the block lives on stderr).
-      if live, do: Live.finish(live)
-
-      case result do
-        {:ok, run} ->
-          Outcome.warn_poison_recovery(run)
-          Outcome.report(run, options)
-
-        {:error, reason, detail} ->
-          Mix.raise(Outcome.format_error(reason, detail, root))
-      end
-    after
-      # Backstop for an unexpected raise during the runner; `finish/1` is idempotent. A
-      # scan-time abort (a variant-label `Mutare.Ignore.SpecError`, or a `--strict-ignores`
-      # failure) is already torn down inside `start_live_scan/3` before it reaches here.
-      if live, do: Live.finish(live)
-    end
+    run_compiled(project, context, root, &Runner.run_with_schema/3, fn run ->
+      Outcome.warn_poison_recovery(run)
+      Outcome.report(run, options)
+    end)
   end
 
   # `--check`: the compile-only preflight. Scan + compile the metamutant (with the same
@@ -542,20 +513,38 @@ defmodule Mix.Tasks.Mutare do
   # them (`defer_site_code: true`) to keep the render cheap.
   defp run_check(%Project{} = project, %Context{} = context, root) do
     context = %{context | defer_site_code: true}
+
+    run_compiled(project, context, root, &Runner.check_with_schema/3, fn check ->
+      Info.print_check(check, project)
+    end)
+  end
+
+  # The shape both compile-backed runs share: scan with live progress, hand the schema to
+  # `runner`, tear the live status block down before anything else prints (so the final
+  # report / error lands on a clean terminal — the block lives on stderr), then `on_ok` the
+  # result or raise the error. The `after` is the backstop for an unexpected raise inside the
+  # runner; `Live.finish/1` is idempotent. A scan-time abort (a variant-label
+  # `Mutare.Ignore.SpecError`, or a `--strict-ignores` failure) is already torn down inside
+  # `start_live_scan/3` before it reaches here.
+  defp run_compiled(project, context, root, runner, on_ok) do
     {live, schema, run_context} = start_live_scan(project, context, root)
 
     try do
-      result = Runner.check_with_schema(schema, root, run_context)
-      if live, do: Live.finish(live)
+      result = runner.(schema, root, run_context)
+      finish_live(live)
 
       case result do
-        {:ok, check} -> Info.print_check(check, project)
+        {:ok, value} -> on_ok.(value)
         {:error, reason, detail} -> Mix.raise(Outcome.format_error(reason, detail, root))
       end
     after
-      if live, do: Live.finish(live)
+      finish_live(live)
     end
   end
+
+  # Tear the live reporter down, or nothing under `--quiet` (no reporter).
+  defp finish_live(nil), do: :ok
+  defp finish_live(live), do: Live.finish(live)
 
   # The shared scan/live prelude of a compile-backed run (`run_mutation_testing/3` and
   # `--check`): host-compile for `use` expansion, start the live reporter, scan with live
@@ -582,18 +571,15 @@ defmodule Mix.Tasks.Mutare do
     # variant-label `Mutare.Ignore.SpecError` from `Schema.build`, a `--strict-ignores`
     # `Mix.raise` from `enforce_strict_ignores`, or a custom mutator/extension `throw`/exit)
     # would bypass that `Live.finish` and leave the live block dangling on the terminal. Own
-    # the teardown here: tear it down on any non-successful exit, then re-raise for
-    # `dispatch_with_options/2` to render exception-shaped aborts as clean Mix failures.
-    # `finish/1` is idempotent, so the caller's `after` remains a harmless backstop.
+    # the teardown here: tear it down on any non-successful exit — a raise, throw, or exit
+    # alike — then re-raise as it was for `dispatch_with_options/2` to render
+    # exception-shaped aborts as clean Mix failures. `finish/1` is idempotent, so the
+    # caller's `after` remains a harmless backstop.
     try do
       scan_with_live(project, context, options, root, live)
-    rescue
-      e ->
-        if live, do: Live.finish(live)
-        reraise e, __STACKTRACE__
     catch
       kind, reason ->
-        if live, do: Live.finish(live)
+        finish_live(live)
         :erlang.raise(kind, reason, __STACKTRACE__)
     end
   end
@@ -735,68 +721,19 @@ defmodule Mix.Tasks.Mutare do
     end
   end
 
-  # Resolve `.mutare.exs` + CLI flags into a validated `Mutare.Options`. Both an
-  # unknown mutator (from `Config`) and an invalid option (from `Options.new/1`)
-  # raise `ArgumentError`, surfaced here as a clean Mix failure. `.mutare.exs` and
-  # `--since` resolve against the copy-root (the umbrella root for an umbrella).
+  # Resolve `.mutare.exs` + CLI flags into a validated `Mutare.Options`. An unknown
+  # mutator or an unresolvable `--since` ref (from `Config`) and an invalid option (from
+  # `Options.new/1`) all raise `ArgumentError`, surfaced here as a clean Mix failure.
+  # `.mutare.exs` and `--since` resolve against the copy-root (the umbrella root for an
+  # umbrella).
   defp resolve_options(%Project{} = project, flags) do
     project.copy_root
     |> Config.load()
-    |> Config.merge(flags)
-    |> scope_to_changes(project.copy_root, flags)
+    |> Config.merge(flags, project.copy_root)
     |> Options.new()
   rescue
     error in ArgumentError -> Mix.raise(Exception.message(error))
   end
-
-  # `--since <ref>` restricts mutation to the lines changed versus that git ref
-  # (the same `:only_lines` site filter `--line` uses), so a one-line edit to a
-  # large module mutates only that line, not the whole file. If an explicit
-  # `:only_lines` filter is already present (e.g. `--line`), `--since` narrows it
-  # by intersection rather than replacing the user's requested lines.
-  defp scope_to_changes(config, root, flags) do
-    case flags[:since] do
-      nil ->
-        config
-
-      ref ->
-        case Mutare.Changes.since(root, ref) do
-          {:ok, lines} -> Keyword.put(config, :only_lines, intersect_only_lines(config, lines))
-          {:error, detail} -> Mix.raise("`--since #{ref}` failed:\n#{detail}")
-        end
-    end
-  end
-
-  defp intersect_only_lines(config, changed_lines) do
-    case Keyword.get(config, :only_lines) do
-      nil ->
-        changed_lines
-
-      %MapSet{} = only_lines ->
-        maybe_intersect_valid_lines(only_lines, changed_lines)
-
-      only_lines when is_list(only_lines) ->
-        maybe_intersect_valid_lines(only_lines, changed_lines)
-
-      invalid ->
-        invalid
-    end
-  end
-
-  defp maybe_intersect_valid_lines(only_lines, changed_lines) do
-    if Enum.all?(only_lines, &valid_line_filter?/1) do
-      only_lines
-      |> MapSet.new()
-      |> MapSet.intersection(changed_lines)
-    else
-      only_lines
-    end
-  end
-
-  defp valid_line_filter?({file, line}) when is_binary(file) and file != "" and is_integer(line),
-    do: line > 0
-
-  defp valid_line_filter?(_entry), do: false
 
   # --- output --------------------------------------------------------------
 
