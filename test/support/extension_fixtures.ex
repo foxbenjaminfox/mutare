@@ -342,3 +342,15 @@ defmodule Mutare.Test.ExitingExtension do
   @impl Mutare.UseExpansion
   def expand_use(_used, _args, _context), do: exit(:exited_from_extension)
 end
+
+defmodule Mutare.Test.UndeclaredMutatorWithRoutes do
+  @moduledoc """
+  A mutator that exports `name/0` + `mutate/1` **without** writing `@behaviour Mutare.Mutator`,
+  plus `call_routes/0`. Exists to pin that `Mutare.Extension.extension?/1` recognises a mutator
+  by its exports (as `Mutare.Mutators.resolve/1` does), not by the attribute.
+  """
+
+  def name, do: :undeclared_with_routes
+  def mutate(_node), do: :skip
+  def call_routes, do: []
+end

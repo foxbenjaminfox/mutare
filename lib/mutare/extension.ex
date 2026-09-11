@@ -72,10 +72,8 @@ defmodule Mutare.Extension do
     spec
   end
 
-  defp mutator?(module) do
-    declared = module.module_info(:attributes) |> Keyword.get_values(:behaviour) |> List.flatten()
-    Mutare.Mutator in declared
-  rescue
-    _ -> false
-  end
+  # Same rule as `Mutare.Mutators.resolve/1`: a mutator is recognised by what it exports
+  # (`name/0` + a producing callback), never by a `@behaviour` attribute — so a module that
+  # exports `mutate/1` without the attribute line is still refused as an extension.
+  defp mutator?(module), do: Mutare.Mutator.Dispatch.implemented_by?(module)
 end

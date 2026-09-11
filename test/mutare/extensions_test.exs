@@ -44,8 +44,15 @@ defmodule Mutare.ExtensionsTest do
 
     test "a Mutare.Mutator is not an extension, even one that exports call_routes/0" do
       # QueryMutator is a macro-aware mutator: it exports `call_routes/0` (which on its own would look
-      # extension-like) but declares `@behaviour Mutare.Mutator`, so it is excluded.
+      # extension-like) but also `name/0` + `mutate/1`, so it is excluded.
       refute Extension.extension?(Mutare.Test.QueryMutator)
+    end
+
+    test "mutator-ness is discovered by export, not by a @behaviour attribute" do
+      # Same rule as `Mutare.Mutators.resolve/1`: this module never writes `@behaviour
+      # Mutare.Mutator`, yet exports `name/0` + `mutate/1`, so it is a mutator and must be
+      # refused as an extension despite exporting `call_routes/0`.
+      refute Extension.extension?(Mutare.Test.UndeclaredMutatorWithRoutes)
     end
 
     test "a non-module / unloadable atom is not an extension" do
