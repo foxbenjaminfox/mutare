@@ -107,6 +107,7 @@ defmodule Mutare.Sandbox.CompilerOptions do
   # rather than the target's own later failure. No Mutare dependency or
   # undocumented Mix.ProjectStack API is needed.
   @project_hook :mutare_sandbox_compiler_options
+  @module_value_var :mutare_sandbox_module_value
   @project_bootstrap (quote do
                         unless Code.ensure_loaded?(unquote(@project_hook)) do
                           defmodule unquote(@project_hook) do
@@ -165,7 +166,7 @@ defmodule Mutare.Sandbox.CompilerOptions do
 
     * the source does not parse;
     * the rewritten file does not parse, or Elixir reads it back as anything other than
-      the bootstrap followed by the original with a hook appended to each module body.
+      the bootstrap followed by the original with each module body hooked.
       The two are compared as parsed programs, ignoring only spellings that evaluate
       alike (metadata, block nesting, an empty block as `nil`, a charlist as a `~c`
       sigil), so a render that still parses but moved an expression, altered a literal,
@@ -283,9 +284,9 @@ defmodule Mutare.Sandbox.CompilerOptions do
   defp block([expr]), do: expr
   defp block(exprs), do: {:__block__, [], exprs}
 
-  # Walks the source, appending the hook to every module defined in it, and reports whether
-  # it appended any. The flag rides along rather than being recovered from the result,
-  # because the rendered string cannot distinguish "no module here" from "hook attached".
+  # Walks the source, hooking every module defined in it, and reports whether it hooked any.
+  # The flag rides along rather than being recovered from the result, because the rendered
+  # string cannot distinguish "no module here" from "hook attached".
 
   # A quote is data that can leave the sandbox, including through a macro defined
   # in mix.exs. Never give its modules a dependency on our bootstrap. The bare form is
@@ -304,7 +305,7 @@ defmodule Mutare.Sandbox.CompilerOptions do
     case node do
       {form, meta, [name, [{do_key, body}]]} ->
         if module_definition?(form) and Mutare.AST.key_atom(do_key) == :do,
-          do: {{form, meta, [name, [{do_key, append_project_hook(body)}]]}, true},
+          do: {{form, meta, [name, [{do_key, hook_project_module(body)}]]}, true},
           else: {node, hooked?}
 
       _ ->
@@ -330,12 +331,21 @@ defmodule Mutare.Sandbox.CompilerOptions do
 
   defp module_definition?(_), do: false
 
-  defp append_project_hook(body) do
+  # The hook is registered *after* the body: before-compile hooks run in registration
+  # order, and ours must run after the target's own, so a `project/0` those generate is
+  # already defined when ours looks for it. Registering an attribute evaluates to `:ok`,
+  # though, and `defmodule` returns its body's value as the fourth element of its
+  # `{:module, _, _, value}` — so the body's value is kept in a variable and restated last,
+  # for a mix.exs that pattern-matches on it. The variable is a plain name once rendered, so
+  # its spelling is chosen to collide with nothing a mix.exs would write itself.
+  defp hook_project_module(body) do
     hook = Mutare.AST.literal(@project_hook)
+    value = Macro.var(@module_value_var, nil)
 
     quote do
-      unquote(body)
+      unquote(value) = unquote(body)
       @before_compile unquote(hook)
+      unquote(value)
     end
   end
 

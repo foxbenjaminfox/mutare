@@ -163,6 +163,28 @@ defmodule Mutare.Sandbox.CompilerOptionsTest do
       assert source =~ "Module.defines?(env.module, {:project, 0})"
     end
 
+    test "preserves the value a module body evaluates to" do
+      # `defmodule` returns `{:module, name, binary, value}`, `value` being the body's last
+      # expression. A mix.exs may match on it, so the hook (whose registration evaluates to
+      # `:ok`) cannot be the body's last expression. No `use Mix.Project` here: evaluating one
+      # would push a project onto this VM's Mix.ProjectStack.
+      source = """
+      {:module, _, _, :ready} =
+        defmodule Mutare.CompilerOptionsTest.ValueMatched do
+          @moduledoc false
+          def ready?, do: true
+          :ready
+        end
+
+      {:module, _, _, nil} = defmodule Mutare.CompilerOptionsTest.EmptyBody do
+      end
+      """
+
+      assert {:hooked, rendered} = CompilerOptions.project_source(source)
+      assert {{:module, _, _, nil}, _binding} = Code.eval_string(rendered)
+      assert Mutare.CompilerOptionsTest.ValueMatched.ready?()
+    end
+
     defp mix_project do
       """
       defmodule Example.MixProject do

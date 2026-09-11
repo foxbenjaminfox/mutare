@@ -8245,6 +8245,27 @@ too. None was declined for meaning. The first version of the check declined one 
 and now pinned by the layout-only test. No real Sourceror slip turned up, so the check guards a
 class of failure, not a known instance.
 
+### The hook keeps the value a module body evaluates to `[done]`
+
+`defmodule` returns `{:module, name, binary, value}`, `value` being the last expression of the
+body. Appending `@before_compile …` to the body made that value `:ok` (registering an attribute
+evaluates to `:ok`), so a `mix.exs` that matches on it — `{:module, _, _, :ready} = defmodule …`
+— raised `MatchError` in the sandbox while `project_source/1` still reported `:hooked`. The
+render check could not catch it: `same_program/2` compares the render against the *same* walk,
+so a walk that changes meaning passes its own test. That is the check's boundary — it guards
+the renderer, not the rewrite — and it is worth remembering when the walk changes.
+
+Two ways to keep the value. Prepending the hook keeps the body's last expression last, but
+before-compile hooks run in registration order, and ours must run *after* the target's own so a
+`project/0` those generate is already defined when ours checks `Module.defines?/2` (the
+integration test "project defined by an earlier before_compile hook is also wrapped" pins
+this). So the hook stays appended and the body's value is carried past it in a variable:
+`mutare_sandbox_module_value = (body); @before_compile …; mutare_sandbox_module_value`. An
+`alias`/`import` inside the parenthesised body still scopes over the body's own statements, and
+nothing after the block needs them. The variable is a plain name once rendered, hence the
+unmistakable spelling. Re-swept over every `mix.exs` in the repo (examples, `deps/`, the
+`tmp/` sandboxes: 195 files) after the change — all still hook.
+
 ### Interpreted module definitions `[experiment — no default change]`
 
 Elixir 1.20's `elixirc_options: [module_definition: :interpreted]` changes execution of
