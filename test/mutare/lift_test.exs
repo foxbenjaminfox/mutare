@@ -1310,3 +1310,141 @@ defmodule Mutare.LiftTest do
     end
   end
 end
+
+defmodule Mutare.LiftDefimplTest do
+  @moduledoc """
+  A `Kernel.defimpl` body is a module body: its clause groups are planned and lifted exactly like
+  a `defmodule`'s (guards, head literals, clause structure), the dispatcher lands inside the impl
+  module `P.T`, and `:skip_lifting` names that module. A displaced `defimpl` (a DSL macro over
+  Kernel's) is not a module body and keeps the in-place expression path.
+  """
+  use ExUnit.Case, async: false
+
+  import ExUnit.CaptureLog
+
+  alias Mutare.{Selector, Site}
+
+  @compile {:no_warn_undefined, Mutare.LiftImplProto}
+
+  @probe [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational, Mutare.Mutators.ClauseDrop]
+
+  @source """
+  defprotocol Mutare.LiftImplProto do
+    def run(x)
+  end
+
+  defmodule Mutare.LiftImplPlain do
+    def run(x) when x > 1, do: x + 1
+    def run(x), do: x
+  end
+
+  defimpl Mutare.LiftImplProto, for: Integer do
+    def run(x) when x > 1, do: x + 1
+    def run(x), do: x
+  end
+  """
+
+  defp lifted_on(sites, lines), do: Enum.filter(sites, &(&1.kind == :lifted and &1.line in lines))
+
+  test "a defimpl body lifts like a defmodule body and dispatches through the impl module" do
+    {meta, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(@source, file: "impl.ex", mutators: @probe)
+
+    plain = lifted_on(sites, 6..7)
+    impl = lifted_on(sites, 11..12)
+
+    assert plain != []
+
+    assert Enum.sort(Enum.map(plain, &{&1.mutator, &1.original_code, &1.mutated_code})) ==
+             Enum.sort(Enum.map(impl, &{&1.mutator, &1.original_code, &1.mutated_code}))
+
+    compiled = meta |> Mutare.Test.Compile.string() |> Enum.map(&elem(&1, 0))
+    assert Mutare.LiftImplProto.Integer in compiled
+
+    on_exit(fn -> Selector.put(Selector.baseline()) end)
+
+    Selector.put(Selector.baseline())
+    assert Mutare.LiftImplProto.run(5) == 6
+    assert Mutare.LiftImplProto.run(0) == 0
+
+    # `x > 1 → x < 1` on the impl's guarded clause, delivered by the lifted dispatcher inside
+    # `Mutare.LiftImplProto.Integer`: protocol dispatch reaches it.
+    %Site{id: id} =
+      Enum.find(impl, &(&1.mutator == :relational and &1.mutated_code == "x < 1"))
+
+    Selector.put(id)
+    assert Mutare.LiftImplProto.run(5) == 5
+    assert Mutare.LiftImplProto.run(0) == 1
+  end
+
+  test ":skip_lifting names the impl module P.T" do
+    {{_meta, sites, _next_id}, log} =
+      with_log(fn ->
+        Mutare.Transform.transform_string_with_sites(@source,
+          file: "impl_skip.ex",
+          mutators: @probe,
+          skip_lifting: [{Mutare.LiftImplProto.Integer, :run, 1}]
+        )
+      end)
+
+    assert lifted_on(sites, 6..7) != []
+    assert lifted_on(sites, 11..12) == []
+    assert Enum.any?(sites, &(&1.kind == :in_place and &1.line in 11..12))
+    assert log =~ "impl_skip.ex: Mutare.LiftImplProto.Integer.run/1 matched :skip_lifting"
+  end
+
+  test "the inline `defimpl P, for: T, do:` form and the inferred-`for:` form lift too" do
+    source = """
+    defprotocol Mutare.LiftImplInlineProto do
+      def run(x)
+    end
+
+    defimpl Mutare.LiftImplInlineProto, for: Integer, do: (
+      def run(x) when x > 1, do: x + 1
+      def run(x), do: x
+    )
+
+    defmodule Mutare.LiftImplStruct do
+      defstruct [:x]
+
+      defimpl Mutare.LiftImplInlineProto do
+        def run(%{x: x}) when x > 1, do: x + 1
+        def run(%{x: x}), do: x
+      end
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(source, file: "inline.ex", mutators: @probe)
+
+    assert lifted_on(sites, 6..7) != []
+    assert lifted_on(sites, 14..15) != []
+    compiled = meta |> Mutare.Test.Compile.string() |> Enum.map(&elem(&1, 0))
+    assert Mutare.LiftImplInlineProto.Integer in compiled
+    assert Mutare.LiftImplInlineProto.Mutare.LiftImplStruct in compiled
+  end
+
+  test "a displaced `defimpl` (a DSL macro over Kernel's) is not planned as a module body" do
+    source = """
+    defmodule Mutare.LiftImplDsl do
+      import Kernel, except: [defimpl: 3]
+      import MyDsl, only: [defimpl: 3]
+
+      defimpl P, for: Integer do
+        def run(x) when x > 1, do: x + 1
+        def run(x), do: x
+      end
+    end
+    """
+
+    {_meta, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(source, file: "dsl.ex", mutators: @probe)
+
+    assert lifted_on(sites, 6..7) == []
+
+    assert Enum.any?(
+             sites,
+             &(&1.kind == :in_place and &1.mutator == :arithmetic and &1.line == 6)
+           )
+  end
+end

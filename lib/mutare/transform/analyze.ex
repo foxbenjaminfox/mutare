@@ -192,12 +192,16 @@ defmodule Mutare.Transform.Analyze do
        when form in [:defprotocol, :defdelegate],
        do: node
 
-  # `defimpl`: the protocol alias and the `for:` type are compile-time module
-  # references (a selector there won't compile), but the `do:` block *is* runtime —
-  # its implementation defs must still mutate. Analyze only the `do:` value, passing
-  # the protocol-alias arg and every non-`do:` keyword entry (notably `for:`) through
-  # raw. This handles both the block form (`for:`/`do:` in separate args) and the
-  # inline form (folded into one keyword).
+  # `defimpl` reached as an *expression*: the protocol alias and the `for:` type are
+  # compile-time module references (a selector there won't compile), but the `do:` block
+  # *is* runtime — its implementation defs must still mutate. Analyze only the `do:` value,
+  # passing the protocol-alias arg and every non-`do:` keyword entry (notably `for:`) through
+  # raw. This handles both the block form (`for:`/`do:` in separate args) and the inline form
+  # (folded into one keyword). Two kinds of `defimpl` arrive here: one nested inside a scaffold
+  # (`for type <- … do defimpl … end`, analyzed whole with the scaffold) and a *displaced* one
+  # (a DSL macro over `Kernel.defimpl`). A genuine `Kernel.defimpl` standing as a module-body
+  # statement never does — `Mutare.Transform` plans it as a module body (so its guards/head
+  # literals/clause structure lift), keyed on the impl-module stamp `Resolve` leaves on it.
   defp analyze_form({:defimpl, meta, args}, _context, mutators) when is_list(args) do
     {:defimpl, meta, Enum.map(args, &analyze_defimpl_arg(&1, mutators))}
   end

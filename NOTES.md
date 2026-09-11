@@ -3071,6 +3071,23 @@ aggressive than the literals (it makes nonexistent-module references that crash 
 invoked), but it stays compile-safe: an alias-as-value is just an atom, so a
 reference to a missing module compiles and only fails when actually called — the kill.
 
+A `defimpl` body is a **module body**, not just runtime code — and for a long time only
+the latter was true of it. `Transform.transform_node/2` had a `defmodule` clause (plan the
+statements → lift clause groups → emit) but none for `defimpl`, so a module-level `defimpl`
+fell through to the expression path (`Analyze`'s clause above), whose defs are analyzed *in
+place*: body selectors only. Identical two-clause guarded functions gave 8 lifted mutants in
+a `defmodule` and **0** in a `defimpl` — no guard, head-literal, clause-drop or lifted mutant
+inside any protocol implementation. Now `Resolve` stamps a genuine `Kernel.defimpl` with the
+impl module it opens (`:mutare_impl_module`, `P.T` or the unresolved sentinel), and
+`Transform` plans the stamped node's `do` block exactly like a `defmodule` body under that
+module (so `:skip_lifting` names `P.T`; the dispatcher lands inside the impl module and
+protocol dispatch reaches it). The stamp's *presence* is the Kernel gate: a displaced
+`defimpl` (a DSL macro) carries none and keeps the expression path, as does a `defimpl`
+nested in a scaffold (`for type <- … do defimpl … end`), which is analyzed whole with the
+scaffold. `Behaviours` still leaves a `defimpl` unstamped (empty behaviour set), so an impl's
+`:ok` tails are unit-returning like any non-callback's. `test/mutare/lift_test.exs`
+(`Mutare.LiftDefimplTest`).
+
 ### Bitstring collapse and the sigil non-descent (BitstringLiteral)
 `BitstringLiteral` (`:bitstring`, default-on) collapses a non-empty `<<…>>` to `<<>>`,
 the binary sibling of List/Map/Tuple emptying. To offer the `<<…>>` *node* (not just

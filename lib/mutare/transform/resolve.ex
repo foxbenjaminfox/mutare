@@ -268,6 +268,12 @@ defmodule Mutare.Transform.Resolve do
   # bare `__aliases__`). Gated on the call still resolving to `Kernel.defimpl` (like the `defmodule`
   # gate): a displaced `defimpl` (a DSL macro over Kernel's) defines no `P.T`, so it falls back to
   # ordinary traversal in the enclosing scope. Must precede the bare-call clause.
+  #
+  # A genuine `defimpl` is also stamped with the impl module it opens (`:mutare_impl_module` — the
+  # sentinel when unresolved), which is what tells `Mutare.Transform` to plan its body as a module
+  # body (lifting guards/head literals/clause structure under that module's `:skip_lifting` name)
+  # rather than analyze it in place like any other statement. The stamp's *presence* is the
+  # "this is Kernel's `defimpl`" signal; a displaced one carries none and stays an expression.
   defp walk({:defimpl, meta, args}, env) when is_list(args) and length(args) >= 2 do
     {meta, _module_key} = stamp_bare_call(:defimpl, meta, args, env)
     enclosing = %{env | pipe_mode: :unpiped}
@@ -276,7 +282,7 @@ defmodule Mutare.Transform.Resolve do
       impl = ModuleScope.impl_module(hd(args), defimpl_for_type(args), env.aliases)
       {lead, [last]} = Enum.split(args, -1)
       walked = Enum.map(lead, &walk(&1, enclosing)) ++ [walk(last, %{enclosing | module: impl})]
-      {:defimpl, meta, walked}
+      {:defimpl, Keyword.put(meta, MetaKeys.impl_module_key(), impl), walked}
     else
       {:defimpl, meta, descend(args, env)}
     end

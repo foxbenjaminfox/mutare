@@ -61,6 +61,7 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_use_behaviours`   — `@behaviour`s a `use` injects (on the `use`)    (Uses)
   #   * `:mutare_use_degraded`     — `{module, reason}` a `use` failed to expand     (Uses, read by `--check`)
   #   * `:mutare_behaviours`       — a `defmodule`'s behaviour MapSet               (Behaviours)
+  #   * `:mutare_impl_module`      — the impl module a `Kernel.defimpl` opens (`P.T`, or the unresolved sentinel); absent on a displaced `defimpl` (Resolve, read by Transform)
   #   * `:mutare_marks`            — mutator-requested position marks (label set)   (Resolve.ArgumentMarks, read by Attach.offer)
   #   * `:mutare_mark_call`        — `{module_key, fun, arity}` of a call some mark declaration matched (Resolve, read by ConfigMatches)
   #   * `:mutare_unit_tail`        — a unit-returning function's leaf return tail    (UnitReturns, read by Attach.offer + Analyze.Returns)
@@ -80,7 +81,8 @@ defmodule Mutare.Transform.MetaKeys do
     use_directives_key: :mutare_use_directives,
     use_behaviours_key: :mutare_use_behaviours,
     use_degraded_key: :mutare_use_degraded,
-    behaviours_key: :mutare_behaviours
+    behaviours_key: :mutare_behaviours,
+    impl_module_key: :mutare_impl_module
   ]
 
   @all @delivery ++ Keyword.values(@bookkeeping_keys)

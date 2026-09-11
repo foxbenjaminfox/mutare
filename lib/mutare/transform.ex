@@ -170,6 +170,7 @@ defmodule Mutare.Transform do
     ImportWitness,
     LiftedEmit,
     Meta,
+    MetaKeys,
     ModulePlan,
     Names,
     Overlap,
@@ -552,15 +553,14 @@ defmodule Mutare.Transform do
 
   # === module / statement structure =========================================
 
-  # A module: transform the body of its do-block(s). The module's `@behaviour` set (stamped
-  # by `Mutare.Transform.Behaviours`) is bound on `ctx` for the body and restored on the way
-  # out, so it folds onto the specs handed to analyze/plan (`put_module_behaviours/3` refreshes the
-  # cached enriched list) while the body is walked. Behaviours don't inherit, so a nested
-  # module that re-enters here overwrites and then restores the outer set.
+  # A module: transform the body of its do-block(s) under its own scope (`transform_module_body/4`).
+  # The module's `@behaviour` set (stamped by `Mutare.Transform.Behaviours`) is bound on `ctx` for
+  # the body and restored on the way out, so it folds onto the specs handed to analyze/plan
+  # (`put_module_behaviours/3` refreshes the cached enriched list) while the body is walked.
+  # Behaviours don't inherit, so a nested module that re-enters here overwrites and then restores
+  # the outer set.
   defp transform_node({:defmodule, meta, [alias_node, do_keyword]}, ctx)
        when is_list(do_keyword) do
-    outer = ctx.scope.behaviours
-    outer_mutators = ctx.scope.analysis_mutators
     outer_module = ctx.scope.module
 
     # An unresolvable (dynamic) head threads the explicit sentinel, never `nil`: `nil`
@@ -568,22 +568,35 @@ defmodule Mutare.Transform do
     # parent resolved with the top-level rules would match an unrelated module's
     # `:skip_lifting` entry (see `Mutare.Lifting.unresolved/0`).
     module = Lifting.module_from_alias(alias_node, outer_module) || Lifting.unresolved()
+    {do_keyword, ctx} = transform_module_body(do_keyword, module, meta, ctx)
+    {{:defmodule, meta, [alias_node, do_keyword]}, ctx}
+  end
 
-    {do_keyword, ctx} =
-      transform_do_keyword(
-        do_keyword,
-        put_module_behaviours(ctx, module, Behaviours.behaviours(meta))
-      )
+  # A genuine `Kernel.defimpl` (stamped by `Resolve` with the impl module it opens — `P.T`, or the
+  # unresolved sentinel for a list/inferred/dynamic `for:`): the same module body as a `defmodule`,
+  # so its statements are planned + emitted the same way — guards, head literals and clause
+  # structure lift, and the dispatcher lands inside the impl module. Only the **last** argument
+  # holds the `do` block, whatever the surface form (`defimpl P, for: T do … end` →
+  # `[proto, opts, do-block]`; the inline `defimpl P, for: T, do: …` → `[proto, [for: …, do: …]]`;
+  # `defimpl P do … end` → `[proto, do-block]`); the protocol alias and the `for:` type are
+  # compile-time module references and pass through untouched (a selector there won't compile).
+  # The behaviour set is what `Behaviours` stamped — the empty set, by its own decision not to
+  # stamp a `defimpl` — so an impl's `:ok` tails are unit-returning like any non-callback's.
+  #
+  # A **displaced** `defimpl` (a DSL macro over Kernel's) carries no stamp and falls through to
+  # the expression path (`Analyze`'s `defimpl` clause, in place) — its `do` block is DSL data, not
+  # a module body. So does a `defimpl` nested inside a scaffold (`for type <- … do defimpl … end`),
+  # which never reaches here: the scaffold statement is analyzed whole.
+  defp transform_node({:defimpl, meta, args}, ctx) when is_list(args) and args != [] do
+    case Keyword.fetch(meta, MetaKeys.impl_module_key()) do
+      {:ok, module} ->
+        {lead, [do_keyword]} = Enum.split(args, -1)
+        {do_keyword, ctx} = transform_module_body(do_keyword, module, meta, ctx)
+        {{:defimpl, meta, lead ++ [do_keyword]}, ctx}
 
-    # Restore only the behaviour-derived scope (behaviours don't inherit); the body's
-    # id/site claims and any depth/binding changes stay as the body left them.
-    restored =
-      Ctx.update_scope(
-        ctx,
-        &%{&1 | behaviours: outer, analysis_mutators: outer_mutators, module: outer_module}
-      )
-
-    {{:defmodule, meta, [alias_node, do_keyword]}, restored}
+      :error ->
+        in_place({:defimpl, meta, args}, ctx)
+    end
   end
 
   # A block: either a module body (contains clauses → plan + emit) or an
@@ -603,6 +616,30 @@ defmodule Mutare.Transform do
 
   defp transform_do_keyword(keyword, ctx),
     do: AST.update_do_block_reduce(keyword, ctx, &transform_body/2)
+
+  # Transform a module's `do` block under its own scope: bind `module` (the `:skip_lifting` name)
+  # and the `@behaviour` set `Behaviours` stamped on `meta`, transform the body, then restore only
+  # the module-derived scope (behaviours don't inherit); the body's id/site claims and any
+  # depth/binding changes stay as the body left them.
+  defp transform_module_body(do_keyword, module, meta, ctx) do
+    outer = ctx.scope.behaviours
+    outer_mutators = ctx.scope.analysis_mutators
+    outer_module = ctx.scope.module
+
+    {do_keyword, ctx} =
+      transform_do_keyword(
+        do_keyword,
+        put_module_behaviours(ctx, module, Behaviours.behaviours(meta))
+      )
+
+    restored =
+      Ctx.update_scope(
+        ctx,
+        &%{&1 | behaviours: outer, analysis_mutators: outer_mutators, module: outer_module}
+      )
+
+    {do_keyword, restored}
+  end
 
   defp transform_body({:__block__, meta, statements}, ctx) do
     {statements, ctx} = transform_statements(statements, ctx)
@@ -816,7 +853,8 @@ defmodule Mutare.Transform do
   #     (`:runtime`, via the def clause), while its head stays `:pattern`
   #     (unmutated; these functions are not lifted). Nesting (`for` in `if` in …)
   #     is handled for free — `:scaffold` propagates through the generic descent.
-  defp transform_statement({:defmodule, _meta, _args} = node, ctx), do: transform_node(node, ctx)
+  defp transform_statement({form, _meta, _args} = node, ctx) when form in [:defmodule, :defimpl],
+    do: transform_node(node, ctx)
 
   defp transform_statement({:__block__, meta, statements}, ctx) do
     {statements, ctx} = transform_statements(statements, ctx)
