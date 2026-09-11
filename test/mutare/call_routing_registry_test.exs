@@ -241,6 +241,30 @@ defmodule Mutare.CallRouting.RegistryTest do
       end
     end
 
+    test "a declarative entry may not forge the resolver's internal {:hosted, hosts} stamp" do
+      # `Mutare.Transform.Resolve.RouteStamp` rewrites a code provider's `:hosted` to
+      # `{:hosted, hosts}` with the hosts the registry matched. That form is internal, not
+      # vocabulary: a configuration entry written in it is rejected outright, as an unknown
+      # treatment, at every depth. Were it accepted, the forged list would bypass the stamp and
+      # pick which enabled mutators receive `host/2`.
+      host = Mutator.Spec.for_module(Mutare.Test.SecondHostMutator)
+      forged = {:hosted, [Mutare.Test.SecondHostMutator]}
+
+      for args <- [
+            [:expression, forged],
+            forged,
+            [:expression, [:raw, on: forged]],
+            [:expression, {:keyword, [forged]}]
+          ] do
+        assert_raise ArgumentError, ~r/treatment must be one of.*got: \{:hosted,/s, fn ->
+          Macros.build([{Mutare.Test.HostDSL, :filter, 2, args}], [host])
+        end
+      end
+
+      # The predicate on an already-built spec answers truthfully too.
+      assert Spec.adapter_graded?(%Spec{module: [:X], name: :f, arity: 1, args: [forged]})
+    end
+
     test "conflicting code-provided routes raise instead of depending on provider order" do
       mutator = Mutator.Spec.for_module(Mutare.Test.QueryMutator)
 

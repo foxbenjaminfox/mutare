@@ -150,6 +150,7 @@ defmodule Mutare.CallRouting.Spec do
   # `{:keyword, …}` is adapter-grade at its wrapper, so nested values need no recursion here; a
   # keyed refinement is user-tier at its wrapper, so its leading treatment and values are checked.
   defp adapter_treatment?(:hosted), do: true
+  defp adapter_treatment?({:hosted, _hosts}), do: true
   defp adapter_treatment?(:interpolated), do: true
   defp adapter_treatment?({:keyword, _treatments}), do: true
 
@@ -349,7 +350,8 @@ defmodule Mutare.CallRouting.Spec do
       iex> Mutare.CallRouting.Spec.normalize_position!({:keyword, [:interpolated, :raw]})
       {:keyword, [:interpolated, :raw]}
   """
-  @spec normalize_position!(term()) :: position()
+  @spec normalize_position!(term()) ::
+          atom() | {:keyword, [position()]} | {:keyed, atom(), [{atom(), position()}]}
   def normalize_position!(treatment) when treatment in @treatments, do: treatment
 
   def normalize_position!(@call_skip) do
@@ -358,10 +360,10 @@ defmodule Mutare.CallRouting.Spec do
             "({Module, :fun, arity, :skip}); to leave one argument as written, use :raw"
   end
 
-  # Already normalized (a `:hosted` the resolver rewrote to `{:hosted, hosts}`, or a keyed
-  # refinement passing through a second validation) — accepted as-is.
-  def normalize_position!({:hosted, hosts} = position) when is_list(hosts), do: position
-
+  # A keyed refinement passing through a second validation — accepted as-is. The resolver's
+  # `{:hosted, hosts}` stamp (`Mutare.Transform.Resolve.RouteStamp`) is deliberately *not*
+  # accepted: it is internal, written after validation, and an author-supplied one would carry a
+  # forged host list past the registry's config check.
   def normalize_position!({:keyed, leading, pairs} = position)
       when is_atom(leading) and is_list(pairs) do
     normalize_keyed!([leading | pairs])
