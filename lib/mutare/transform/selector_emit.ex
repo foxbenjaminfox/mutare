@@ -78,13 +78,20 @@ defmodule Mutare.Transform.SelectorEmit do
   end
 
   # The id/site/sink mechanics live on `Mutare.Transform.ClaimState` (which owns that state);
-  # here we pass the config it consults and thread the updated `claim` back onto `ctx`.
-  # The render vs. count sink branch is `ClaimState.claim/5`.
-  defp claim_item(%Ctx{config: config, claim: claim} = ctx, item, site_fns, artifact_fn) do
+  # here we pass the config it consults, the enclosing block-macro tag the scope carries, and
+  # thread the updated `claim` back onto `ctx`. The render vs. count sink branch is
+  # `ClaimState.claim/6`.
+  defp claim_item(
+         %Ctx{config: config, scope: scope, claim: claim} = ctx,
+         item,
+         site_fns,
+         artifact_fn
+       ) do
     {artifacts, claim} =
       ClaimState.claim(
         claim,
         config,
+        scope.block_macro,
         item,
         site_fns,
         artifact_fn

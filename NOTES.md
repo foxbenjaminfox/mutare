@@ -130,9 +130,9 @@ them, which is what `:poisoned` *means*, and more informative than a registry `:
 (which would make them vanish entirely).
 
 Identity is **per-invocation** — `{file, {macro_name, nid}}`, tagged on each
-`Site.block_macro` by the transform (`Transform.emit_block_macro/2` tags the sites its
-block-body `emit` created — they are the head of the newest-first `ctx.sites`; the `nid`
-is the block-macro statement node's). The bare name alone was wrong: a DSL that dispatches
+`Site.block_macro` by the transform (`Transform.emit_block_macro/2` binds the tag on
+`Scope.block_macro` for the body's emit, and `ClaimState.claim/6` stamps it on each site as
+it is claimed; the `nid` is the block-macro statement node's). The bare name alone was wrong: a DSL that dispatches
 on an argument — `guarded :guard do …` splicing into a guard (hostile) vs `guarded :body
 do …` into a body (fine) — would bucket *both* invocations under `:guarded`, so a poison
 in one would silently suppress the other's valid mutants. That is the same lossy-identity

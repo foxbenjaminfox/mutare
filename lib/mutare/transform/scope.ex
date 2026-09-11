@@ -36,20 +36,27 @@ defmodule Mutare.Transform.Scope do
   #     (`defmodule Module.concat(...)`) — distinct values, because a module nested under
   #     an unresolvable parent must never resolve with the top-level rules (it could match
   #     an unrelated module's `:skip_lifting` entry).
+  #   * `block_macro` — the `{name, nid}` identity of the *unknown* module-level block macro
+  #     (`custom_dsl do … end`) whose `do` body the emit walk is currently inside, or `nil`.
+  #     `Mutare.Transform.emit_block_macro/2` binds it for the body's emit and restores it after;
+  #     `Mutare.Transform.ClaimState.claim/6` stamps it onto every `Mutare.Site` claimed
+  #     meanwhile (`Site.block_macro`), so poison recovery can skip the whole invocation at once.
 
   @type t :: %__MODULE__{
           active_bound: boolean(),
           module_depth: non_neg_integer(),
           behaviours: MapSet.t(module()),
           analysis_mutators: [Mutare.Mutator.Spec.t()],
-          module: Mutare.Lifting.enclosing()
+          module: Mutare.Lifting.enclosing(),
+          block_macro: {atom(), non_neg_integer()} | nil
         }
 
   defstruct active_bound: false,
             module_depth: 0,
             behaviours: MapSet.new(),
             analysis_mutators: [],
-            module: nil
+            module: nil,
+            block_macro: nil
 
   @doc """
   Whether a selector emitted in this scope can read the hoisted active-id variable directly:

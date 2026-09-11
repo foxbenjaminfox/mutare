@@ -87,10 +87,14 @@ defmodule Mutare.Transform.ClaimState do
       poisoned site but emits no artifact. An id outside `emit_ids` also emits no
       artifact, but its site remains unpoisoned for directive diagnostics. Match ignores on
       the constructed Site and retain its reason, withholding the artifact when ignored.
+
+  `block_macro` is the enclosing unknown block macro's `{name, nid}` tag (`Mutare.Transform.Scope`),
+  or `nil`; a rendered `Site` records it under `Site.block_macro`.
   """
   @spec claim(
           t(),
           Config.t(),
+          {atom(), non_neg_integer()} | nil,
           item,
           {(pos_integer(), item, String.t(), {boolean(), boolean()} -> Site.t()),
            (item -> pos_integer() | nil)},
@@ -100,6 +104,7 @@ defmodule Mutare.Transform.ClaimState do
   def claim(
         %__MODULE__{sink: :count} = claim,
         config,
+        _block_macro,
         item,
         {_site_fn, line_fn},
         artifact_fn
@@ -114,6 +119,7 @@ defmodule Mutare.Transform.ClaimState do
   def claim(
         %__MODULE__{sink: :render} = claim,
         %Config{} = config,
+        block_macro,
         item,
         {site_fn, _line_fn},
         artifact_fn
@@ -128,6 +134,7 @@ defmodule Mutare.Transform.ClaimState do
       id
       |> site_fn.(item, config.file, flags)
       |> runtime_identity(config)
+      |> Map.put(:block_macro, block_macro)
       |> apply_ignore(config.ignore_directives)
 
     claim = %{claim | next_id: id + 1}

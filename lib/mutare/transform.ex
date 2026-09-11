@@ -883,17 +883,20 @@ defmodule Mutare.Transform do
   # dropping one mutant at a time and re-hitting the next selector. A *registered* macro is left
   # untagged (`tag` is `nil`), so the user's `:call_routes` choice is honoured and never auto-skipped.
   #
-  # Sites accumulate newest-first (`SelectorEmit.claim_items/4` prepends), so the ones
-  # this `emit` created are exactly the head of `ctx.claim.sites` above the count we held
-  # before it. (Under the `:count` sink no sites are retained, so `before` is 0 and the
-  # tagging is an inert no-op — the count pass needs no block-macro tags.)
+  # The tag is bound on the scope for the body's emit (`Scope.block_macro`) and stamped onto each
+  # `Mutare.Site` as it is claimed (`ClaimState.claim/6`), then restored — so a site carries the
+  # tag because it was *claimed inside* the block, not because of where it landed in the
+  # accumulator.
   defp emit_block_macro(node, ctx) do
-    before = length(ctx.claim.sites)
+    outer = ctx.scope.block_macro
+    tag = block_macro_tag(node)
 
     {emitted, ctx} =
-      node |> Analyze.analyze_module_macro_block(ctx.scope.analysis_mutators) |> emit(ctx)
+      node
+      |> Analyze.analyze_module_macro_block(ctx.scope.analysis_mutators)
+      |> emit(Ctx.update_scope(ctx, &%{&1 | block_macro: tag}))
 
-    {emitted, tag_block_macro_sites(ctx, before, block_macro_tag(node))}
+    {emitted, Ctx.update_scope(ctx, &%{&1 | block_macro: outer})}
   end
 
   # The per-invocation tag for an unknown block macro: `{name, nid}`, or `nil` for a
@@ -908,16 +911,6 @@ defmodule Mutare.Transform do
       nil -> nil
       name -> {name, Resolve.nid(node)}
     end
-  end
-
-  # A registered macro (or one that produced no sites) needs no tagging.
-  defp tag_block_macro_sites(ctx, _before, nil), do: ctx
-
-  defp tag_block_macro_sites(ctx, before, tag) do
-    Ctx.update_claim(ctx, fn claim ->
-      {new, prior} = Enum.split(claim.sites, length(claim.sites) - before)
-      %{claim | sites: Enum.map(new, &%{&1 | block_macro: tag}) ++ prior}
-    end)
   end
 
   # A lifted clause group becomes ONE private function `<base>` plus a public
