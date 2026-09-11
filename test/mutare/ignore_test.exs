@@ -1521,7 +1521,7 @@ defmodule Mutare.IgnoreTest do
       assert Enum.all?(ignored, &(&1.site.line == skip_line()))
 
       # keep/1's mutant is covered and killed; with the other ignored, score is 100%.
-      assert Mutare.Report.score(run.results) == 100.0
+      assert Mutare.Score.score(run.results) == 100.0
     end
   end
 

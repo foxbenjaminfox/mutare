@@ -59,6 +59,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replacements from poisoning the build. IDs, diagnostic sites, reasons, and
   mutant-cap consumption are preserved; wholly withheld files keep their exact
   original source.
+- **The score and CI gates moved to `Mutare.Score`.** `score/1`, `percent/1`,
+  `passes_gate?/2`, `gate_failures/2`, `harness_error_rate/1`, and
+  `harness_errors_exceed?/2` were defined on `Mutare.Report`, the human-report
+  renderer; they now live on their own module. `Mutare.Report.summary/1` and the
+  renderers are unchanged.
 
 ## [0.1.2] - 2026-09-07
 

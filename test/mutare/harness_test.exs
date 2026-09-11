@@ -28,7 +28,7 @@ defmodule Mutare.HarnessTest do
 
   import ExUnit.CaptureLog
 
-  alias Mutare.Report
+  alias Mutare.{Report, Score}
   alias Mutare.Sandbox.Command
   alias Mutare.Sandbox.Command.{Exit, Result}
   alias Mutare.Test.Project
@@ -197,7 +197,7 @@ defmodule Mutare.HarnessTest do
 
       # Excluded from the denominator: nothing was actually measured (100% over 0).
       assert Report.summary(run.results) =~ "1 harness-error"
-      assert Report.score(run.results) == 100.0
+      assert Score.score(run.results) == 100.0
 
       # Retried once, but recorded — and warned — exactly once.
       assert log |> String.split("failed at the harness level") |> length() == 2
@@ -247,7 +247,7 @@ defmodule Mutare.HarnessTest do
       assert {:ok, run} = result
       # The verdict is unchanged — a harness error kept out of the score.
       assert [%{status: :harness_error}] = run.results
-      assert Report.score(run.results) == 100.0
+      assert Score.score(run.results) == 100.0
 
       # ...but the warning is the *specific* one: it names the cause and the levers,
       # and does not send the user to output that can't help.
@@ -302,7 +302,7 @@ defmodule Mutare.HarnessTest do
       assert {:ok, run} = result
       # The verdict is unchanged — a harness error kept out of the score.
       assert [%{status: :harness_error}] = run.results
-      assert Report.score(run.results) == 100.0
+      assert Score.score(run.results) == 100.0
 
       # The load-bearing assertion: exactly one attempt, despite harness_retries: 3.
       assert File.read!(Path.join(sandbox, "sigkill_attempts.log")) == "."

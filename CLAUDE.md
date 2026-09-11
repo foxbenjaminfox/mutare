@@ -134,9 +134,11 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   read once, by `Sandbox.Command.Output.macro_expansion_stacks/1`, for `Hint` and `Poison` alike.
   Only when both fail does the run abort — `Hint` then renders a copy-pasteable `:skip` snippet.
 - **`Mutare.Report`** (+ `Live`, `Json`/`Html`/`Sarif`) — the default human reporter diffs each
-  surviving mutant against the **original** source and computes the score
-  `killed / (total − no_coverage − ignored − poisoned − harness_error)`. `Live` is the live stderr
-  progress (`GenServer`); the machine reporters are pure renderers selected via `:reporters`.
+  surviving mutant against the **original** source. `Live` is the live stderr progress
+  (`GenServer`); the machine reporters are pure renderers selected via `:reporters`. The score
+  `killed / (total − no_coverage − ignored − poisoned − harness_error)` and the CI gates are
+  **`Mutare.Score`** — consumed by the runner's harness-error abort and the CLI's gate check, so
+  they are not a reporter's concern.
 - **Config surface** — `Mutare.Options` (validated user config) + `Options.Registry` (the single
   source of every option's default/CLI-switch/validator) + `Mutare.Run.Context` (runtime wiring:
   the resolved project + the four live-progress hooks). `Mutare.Config`/`Changes` +

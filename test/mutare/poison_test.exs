@@ -196,7 +196,7 @@ defmodule Mutare.PoisonTest do
 
       # gte?/2's relational mutants still ran and were killed.
       assert Enum.count(run.results, &(&1.status == :killed)) == 2
-      assert Mutare.Report.score(run.results) == 100.0
+      assert Mutare.Score.score(run.results) == 100.0
     end
 
     @tag :runner
@@ -236,7 +236,7 @@ defmodule Mutare.PoisonTest do
       # the surviving lifted mutants (guard relational swaps + clause drops) ran;
       # the boundary test kills them, so the run completes rather than aborting.
       refute Enum.empty?(Enum.filter(run.results, &(&1.status == :killed)))
-      assert Mutare.Report.score(run.results) == 100.0
+      assert Mutare.Score.score(run.results) == 100.0
     end
 
     @tag :runner

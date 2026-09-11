@@ -501,7 +501,7 @@ defmodule Mutare.CoverageTest do
           assert [%Result{status: :killed}, %Result{status: :no_coverage}] = run.results
         end
 
-        assert Mutare.Report.score(run.results) == 100.0
+        assert Mutare.Score.score(run.results) == 100.0
       end
     end
 

@@ -58,7 +58,8 @@ defmodule Mutare.Runner do
     Report,
     Run,
     Sandbox,
-    Schema
+    Schema,
+    Score
   }
 
   alias Mutare.Run.Context
@@ -473,9 +474,9 @@ defmodule Mutare.Runner do
   # denominator — many mutants measured nothing. Past `:max_harness_error_rate`
   # (a fraction of the mutants that *ran*; `nil` disables) we abort rather than
   # report a score the broken sandbox makes meaningless. The decision is
-  # `Report`'s (pure, tested, mirroring `passes_gate?`); the message is here.
+  # `Mutare.Score`'s (pure, tested, mirroring `passes_gate?`); the message is here.
   defp harness_error_guard(results, %Options{max_harness_error_rate: max_rate}) do
-    if Report.harness_errors_exceed?(results, max_rate) do
+    if Score.harness_errors_exceed?(results, max_rate) do
       {:error, :too_many_harness_errors, harness_error_detail(results, max_rate)}
     else
       :ok
@@ -484,7 +485,7 @@ defmodule Mutare.Runner do
 
   defp harness_error_detail(results, max_rate) do
     errors = Enum.count(results, &(&1.status == :harness_error))
-    rate = Report.harness_error_rate(results)
+    rate = Score.harness_error_rate(results)
 
     base =
       "#{errors} mutant run(s) failed at the harness level — #{pct(rate)} of the mutants that " <>
@@ -509,5 +510,5 @@ defmodule Mutare.Runner do
     |> Enum.map_join("\n", &("  " <> Report.HarnessDiagnostic.line(&1)))
   end
 
-  defp pct(rate), do: "#{Report.percent(rate * 100)}%"
+  defp pct(rate), do: "#{Score.percent(rate * 100)}%"
 end

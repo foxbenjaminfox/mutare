@@ -168,6 +168,7 @@ defmodule Mutare.MixProject do
           Mutare.Runner,
           Mutare.Options,
           Mutare.Result,
+          Mutare.Score,
           Mutare.Site
         ],
         "Writing mutators": [

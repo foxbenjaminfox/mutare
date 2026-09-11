@@ -6,7 +6,7 @@ defmodule Mutare.CLI.Outcome do
   # `format_error/3` renders each terminal `{:error, reason, detail}` into the message the task
   # `Mix.raise`s. All output is the task's (stdout report, stderr notes) — this only builds it.
 
-  alias Mutare.{CLI, Options, Report, Run, Schema}
+  alias Mutare.{CLI, Options, Run, Schema, Score}
   alias Mutare.Poison.Hint
   alias Mutare.Sandbox.Command.Output
   alias Mutare.Sandbox.DependencyDiagnostic
@@ -108,7 +108,7 @@ defmodule Mutare.CLI.Outcome do
   end
 
   defp gate(results, %Options{} = options) do
-    case Report.gate_failures(results, options) do
+    case Score.gate_failures(results, options) do
       [] ->
         :ok
 
