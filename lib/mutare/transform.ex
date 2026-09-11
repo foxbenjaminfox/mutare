@@ -780,56 +780,47 @@ defmodule Mutare.Transform do
   #
   # A lifted clause's threaded parameter is in scope in every block, so every block reads the
   # bound var and no prologue is added.
-  defp emit_clause_body(body_kw, ctx, :lifted) when is_list(body_kw),
-    do: emit_body_blocks(body_kw, ctx, fn _key -> true end)
+  defp emit_clause_body(body_kw, ctx, :lifted) when is_list(body_kw) do
+    Enum.map_reduce(body_kw, ctx, fn {key, value}, ctx -> emit_block(key, value, ctx, true) end)
+  end
 
   # An in-place clause's prologue binds the id in `:do` only, so its sibling blocks
   # (`rescue`/`catch`/`else`/`after`) keep the inline read and `:do` alone gets the prepended
   # prologue.
   defp emit_clause_body(body_kw, ctx, :in_place) when is_list(body_kw) do
-    {body_kw, ctx} = emit_body_blocks(body_kw, ctx, &(AST.key_atom(&1) == :do))
-    {prepend_do_prologue(body_kw, ctx.config.active_var, ctx.config.runtime_namespace), ctx}
-  end
-
-  # Emit each `{key, value}` body block with the active-id read bound iff `bound?.(key)`.
-  defp emit_body_blocks(body_kw, ctx, bound?) do
     Enum.map_reduce(body_kw, ctx, fn {key, value}, ctx ->
-      {value, ctx} = emit(value, Ctx.update_scope(ctx, &%{&1 | active_bound: bound?.(key)}))
-      {{key, value}, ctx}
+      if AST.key_atom(key) == :do,
+        do: emit_prologue_block(key, value, ctx),
+        else: emit_block(key, value, ctx, false)
     end)
   end
 
-  # Prepend `<var> = :persistent_term.get(...)` to the `:do` block — but only when that
-  # block actually references the hoisted variable (i.e. it spliced at least one hoisted
-  # selector). With no reference the binding would draw an "unused variable" warning, so
-  # an unmutated `:do` block is left untouched.
-  defp prepend_do_prologue(body_kw, var, namespace) do
-    Enum.map(body_kw, fn {key, value} = pair ->
-      if AST.key_atom(key) == :do and references_var?(value, var),
-        do: {key, prepend_statement(value, LiftedEmit.active_read(var, namespace))},
-        else: pair
-    end)
+  # A non-lifted clause's `:do` block: emit it with the binding in scope, then prepend the
+  # prologue `<var> = :persistent_term.get(...)` — but only if the emit actually referenced the
+  # binding (`Scope.active_referenced`, reset here and set by `SelectorEmit` as the bound read
+  # is emitted). With no reference the binding would draw an "unused variable" warning, so an
+  # unmutated `:do` block is left untouched.
+  defp emit_prologue_block(key, value, ctx) do
+    ctx = Ctx.update_scope(ctx, &%{&1 | active_bound: true, active_referenced: false})
+    {value, ctx} = emit(value, ctx)
+
+    value =
+      if ctx.scope.active_referenced,
+        do:
+          prepend_statement(
+            value,
+            LiftedEmit.active_read(ctx.config.active_var, ctx.config.runtime_namespace)
+          ),
+        else: value
+
+    {{key, value}, ctx}
   end
 
-  # Whether `ast` mentions `var` as a variable/bare-name node *in this scope*. Since `var`
-  # is a generated name the source provably never uses, any occurrence is a spliced hoisted
-  # selector's scrutinee/record — so this is exactly "did the `:do` block get a hoisted
-  # selector". A runtime nested `defmodule` is pruned (replaced with `nil` on the way down):
-  # its inner selectors use the inline read, so any `var` there is a *local* catch-all
-  # binding, not a use of this body's prologue — counting it would add an unused prologue.
-  defp references_var?(ast, var) do
-    {_ast, found?} =
-      Macro.traverse(
-        ast,
-        false,
-        fn node, acc -> if(module_scope?(node), do: {nil, acc}, else: {node, acc}) end,
-        fn
-          {^var, _meta, context} = node, _acc when is_atom(context) -> {node, true}
-          node, acc -> {node, acc}
-        end
-      )
-
-    found?
+  # Any other block: bound iff the clause is lifted (its dispatcher parameter is in scope in
+  # every block); a non-lifted clause's sibling blocks keep the inline read.
+  defp emit_block(key, value, ctx, bound) do
+    {value, ctx} = emit(value, Ctx.update_scope(ctx, &%{&1 | active_bound: bound}))
+    {{key, value}, ctx}
   end
 
   # A non-clause-group module statement (an `{:other}` in the plan). Four routes:
@@ -932,6 +923,9 @@ defmodule Mutare.Transform do
     # Source clauses with in-place body selectors — claims the body ids first. The body
     # reads the threaded `mutare_active` parameter directly (the dispatcher binds it);
     # head default values keep the self-contained read (they ride onto the dispatcher).
+    # `active_referenced` is reset first so it answers, after the emit, whether any body
+    # selector took that parameter (see below).
+    ctx = Ctx.update_scope(ctx, &%{&1 | active_referenced: false})
     {orig_clauses, ctx} = emit_clauses(plan.clauses, ctx, :lifted)
 
     # Then the lifted candidates, in order, each claiming its id. Non-skipped ones
@@ -949,7 +943,7 @@ defmodule Mutare.Transform do
         end
       )
 
-    if claimed == [] and not references_var?(orig_clauses, ctx.config.active_var) do
+    if claimed == [] and not ctx.scope.active_referenced do
       # All lifted variants were withheld, and no body needs the dispatcher's
       # active-id parameter. Keep the original function, including super/defaults.
       {orig_clauses, ctx}
@@ -1146,8 +1140,12 @@ defmodule Mutare.Transform do
 
     # All mutations here skipped → no selector; emit the node unchanged.
     case clauses do
-      [] -> {default, ctx}
-      _ -> {pin_if_needed(SelectorEmit.selector_case(default, clauses, ctx), candidates), ctx}
+      [] ->
+        {default, ctx}
+
+      _ ->
+        {case_node, ctx} = SelectorEmit.selector_case(default, clauses, ctx)
+        {pin_if_needed(case_node, candidates), ctx}
     end
   end
 

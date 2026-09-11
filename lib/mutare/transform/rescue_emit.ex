@@ -49,10 +49,10 @@ defmodule Mutare.Transform.RescueEmit do
       default = Meta.strip_delivery(node)
 
       if length(rescues) >= 2 do
-        rewritten = factor(meta, blocks, rescues, binding, ctx)
-        {select(rewritten, whole, ctx), ctx}
+        {rewritten, ctx} = factor(meta, blocks, rescues, binding, ctx)
+        select(rewritten, whole, ctx)
       else
-        {select(default, claimed, ctx), ctx}
+        select(default, claimed, ctx)
       end
     else
       _ -> :fallback
@@ -95,6 +95,11 @@ defmodule Mutare.Transform.RescueEmit do
   defp literal_types?(type), do: is_atom(type)
 
   defp factor(meta, blocks, rescues, binding, ctx) do
+    # The exclusion guards and the record below read the enclosing binding directly (the
+    # eligibility check above guarantees it is bound); the shared-body selectors read it as
+    # their common subject.
+    ctx = SelectorEmit.reference_active(ctx)
+    {subject, ctx} = SelectorEmit.subject(ctx)
     ids = Enum.map(rescues, &elem(&1, 0))
     [{_, first} | _] = rescues
     {:try, _, [raw_blocks]} = first.replacement
@@ -115,7 +120,7 @@ defmodule Mutare.Transform.RescueEmit do
       end)
 
     fallback = {:->, [], [[{:_, [], nil}], handlers(blocks, reraised)]}
-    dispatch = SelectorEmit.raw_case(branches, fallback, ctx)
+    {dispatch, ctx} = SelectorEmit.raw_case(branches, fallback, ctx)
     catch_clause = {:->, [], [[AST.literal(:error), binding], dispatch]}
 
     shared =
@@ -126,37 +131,37 @@ defmodule Mutare.Transform.RescueEmit do
 
         value =
           case AST.key_atom(key) do
-            :else -> share_else(raw, emitted, exclusion, ctx)
-            _ -> share_body(raw, emitted, exclusion, ctx)
+            :else -> share_else(raw, emitted, exclusion, subject)
+            _ -> share_body(raw, emitted, exclusion, subject)
           end
 
         {key, value}
       end)
 
-    Render.block_wrap(
-      {:__block__, [],
-       [
-         Recorder.record_ast(ids, ctx.config.active_var, ctx.config.runtime_namespace),
-         {:try, meta, [shared ++ [catch: [catch_clause]]]}
-       ]}
-    )
+    {Render.block_wrap(
+       {:__block__, [],
+        [
+          Recorder.record_ast(ids, ctx.config.active_var, ctx.config.runtime_namespace),
+          {:try, meta, [shared ++ [catch: [catch_clause]]]}
+        ]}
+     ), ctx}
   end
 
   defp handlers(blocks, reraised),
     do: {:try, [do: [], end: []], [[do: reraised, rescue: block(blocks, :rescue)]]}
 
-  defp share_else(raw, emitted, exclusion, ctx) do
+  defp share_else(raw, emitted, exclusion, subject) do
     Enum.zip_with(raw, emitted, fn {:->, _, [_, raw_body]}, {:->, meta, [head, body]} ->
-      {:->, meta, [head, share_body(raw_body, body, exclusion, ctx)]}
+      {:->, meta, [head, share_body(raw_body, body, exclusion, subject)]}
     end)
   end
 
-  defp share_body(body, body, _exclusion, _ctx), do: body
+  defp share_body(body, body, _exclusion, _subject), do: body
 
-  defp share_body(raw, emitted, exclusion, ctx) do
+  defp share_body(raw, emitted, exclusion, subject) do
     original = {:->, [], [[{:when, [], [{:_, [], nil}, exclusion]}], emitted]}
     mutant = {:->, [], [[{:_, [], nil}], raw]}
-    Render.selector_case(SelectorEmit.subject(ctx), [original, mutant])
+    Render.selector_case(subject, [original, mutant])
   end
 
   defp block(blocks, name) do
@@ -169,7 +174,7 @@ defmodule Mutare.Transform.RescueEmit do
     end
   end
 
-  defp select(node, [], _ctx), do: node
+  defp select(node, [], ctx), do: {node, ctx}
 
   defp select(node, claimed, ctx) do
     branches =

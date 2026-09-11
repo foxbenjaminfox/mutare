@@ -43,10 +43,10 @@ defmodule Mutare.Transform.ReceiveClauseEmit do
         {id, c}
       end)
 
-    {deliver(Meta.strip_delivery(node), claimed, ctx), ctx}
+    deliver(Meta.strip_delivery(node), claimed, ctx)
   end
 
-  defp deliver(node, [], _ctx), do: node
+  defp deliver(node, [], ctx), do: {node, ctx}
 
   # The clause-head candidates are delivered by rewriting the `receive`'s clause lists in place —
   # which needs the hoisted active-id variable in scope; without it every candidate takes the
@@ -63,10 +63,10 @@ defmodule Mutare.Transform.ReceiveClauseEmit do
     {heads, whole} =
       Enum.split_with(claimed, fn {_id, c} -> match?(%Candidate.ReceiveClause{}, c) end)
 
-    default =
+    {default, ctx} =
       case heads do
         [] ->
-          node
+          {node, ctx}
 
         [{_, %Candidate.ReceiveClause{raw_receive: {:receive, _, [raw_blocks]}}} | _] ->
           ids = Enum.map(heads, &elem(&1, 0))
@@ -80,14 +80,17 @@ defmodule Mutare.Transform.ReceiveClauseEmit do
                 ClauseVariants.share_bodies(clauses, block(raw_blocks, :after), ids, var)
             end)
 
-          {:__block__, [],
-           [Recorder.record_ast(ids, var, ctx.config.runtime_namespace), rewritten]}
+          record = Recorder.record_ast(ids, var, ctx.config.runtime_namespace)
+
+          # The interleaved clauses' gates, the shared after-bodies' guards and the entry-time
+          # record read the enclosing binding directly, not through a selector subject.
+          {{:__block__, [], [record, rewritten]}, SelectorEmit.reference_active(ctx)}
       end
 
     select(default, whole, ctx)
   end
 
-  defp select(node, [], _ctx), do: node
+  defp select(node, [], ctx), do: {node, ctx}
 
   defp select(node, claimed, ctx) do
     branches =

@@ -65,7 +65,7 @@ defmodule Mutare.Transform.HostedEmit do
             ctx.config.runtime_namespace
           )
 
-        case_node = SelectorEmit.raw_case(clauses, catch_all, ctx)
+        {case_node, ctx} = SelectorEmit.raw_case(clauses, catch_all, ctx)
         {cand.splice.(node, case_node), ctx, case_node}
     end
   end

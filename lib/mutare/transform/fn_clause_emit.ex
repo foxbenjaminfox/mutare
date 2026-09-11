@@ -41,10 +41,10 @@ defmodule Mutare.Transform.FnClauseEmit do
         {id, c}
       end)
 
-    {deliver(Meta.strip_delivery(node), claimed, ctx), ctx}
+    deliver(Meta.strip_delivery(node), claimed, ctx)
   end
 
-  defp deliver(node, [], _ctx), do: node
+  defp deliver(node, [], ctx), do: {node, ctx}
 
   # The clause-head candidates are delivered by rewriting the `fn`'s clause list in place — which
   # needs the hoisted active-id variable in scope; without it every candidate takes the
@@ -63,23 +63,25 @@ defmodule Mutare.Transform.FnClauseEmit do
     {heads, whole} =
       Enum.split_with(claimed, fn {_id, c} -> match?(%Candidate.FnClause{}, c) end)
 
-    default =
+    {default, ctx} =
       case heads do
         [] ->
-          node
+          {node, ctx}
 
         [{_, %Candidate.FnClause{raw_fn: {:fn, _, raw_clauses}}} | _] ->
           rewritten = ClauseVariants.interleave(clauses, raw_clauses, heads, var)
           ids = Enum.map(heads, &elem(&1, 0))
+          record = Recorder.record_ast(ids, var, ctx.config.runtime_namespace)
 
-          {:__block__, [],
-           [Recorder.record_ast(ids, var, ctx.config.runtime_namespace), {:fn, meta, rewritten}]}
+          # The interleaved clauses' gates and the creation-time record read the enclosing
+          # binding directly, not through a selector subject.
+          {{:__block__, [], [record, {:fn, meta, rewritten}]}, SelectorEmit.reference_active(ctx)}
       end
 
     select(default, whole, ctx)
   end
 
-  defp select(node, [], _ctx), do: node
+  defp select(node, [], ctx), do: {node, ctx}
 
   defp select(node, claimed, ctx) do
     branches =

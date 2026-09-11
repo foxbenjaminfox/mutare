@@ -162,7 +162,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
       _ ->
         ids = SelectorEmit.ids_from_clauses(clauses)
-        case_node = SelectorEmit.raw_case(clauses, catch_all.(ids), ctx)
+        {case_node, ctx} = SelectorEmit.raw_case(clauses, catch_all.(ids), ctx)
         {{:=, [], [export, case_node]}, ctx}
     end
   end

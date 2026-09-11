@@ -74,9 +74,8 @@ defmodule Mutare.Transform.CaseClauseEmit do
            [Recorder.record_ast(all_ids, var, ctx.config.runtime_namespace), tuple]}
 
         record_clause = {:->, [], [[tuple], record_body]}
-
-        subject =
-          {:case, [], [{SelectorEmit.subject(ctx), emitted_subject}, [do: [record_clause]]]}
+        {read, ctx} = SelectorEmit.subject(ctx)
+        subject = {:case, [], [{read, emitted_subject}, [do: [record_clause]]]}
 
         {{:case, meta, [subject, [{do_key, new_clauses}]]}, ctx}
     end

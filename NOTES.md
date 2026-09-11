@@ -1064,8 +1064,9 @@ by the outer function's emit (it isn't separately planned/lifted), so `active_bo
 otherwise leak straight through the `defmodule` boundary. Fix: `emit/2` is a
 `Macro.traverse`, not a `postwalk` — it counts nested-module depth on the way down
 (`Ctx.module_depth`, bumped on `defmodule`/`defimpl`/`defprotocol`), and `SelectorEmit.subject/1`
-gates the hoisted form on `module_depth == 0`; `references_var?/2` prunes the same subtrees
-so the outer prologue is added only for a *direct*-body reference. A mixed body
+gates the hoisted form on `module_depth == 0`, and only that hoisted form sets
+`Scope.active_referenced` (the flag `emit_clause_body/3` reads to decide the prologue), so
+the outer prologue is added only for a *direct*-body reference. A mixed body
 (`a = x + 1; defmodule … ; a * 2`) hoists the direct sites and inlines the nested one, the
 depth restoring to 0 after the `defmodule` so the trailing site re-hoists.
 
@@ -5852,8 +5853,8 @@ nest cleanly in emit's post-order walk (the original branch of the outer selecto
 holds the already-emitted bodies; the mutant branches are raw copies). The hoisted
 active-id read just works: a `fn` is a closure, so an enclosing `def`'s
 `mutare_active` binding (dispatcher param or `:do`-prologue) is in scope inside the
-body, and `references_var?/2` already descends `fn` to add the prologue when a body
-selector needs it; persistent_term is process-constant, so a captured value is always
+body, and a body selector inside the `fn` sets `Scope.active_referenced` like any other, so
+the prologue is added when one needs it; persistent_term is process-constant, so a captured value is always
 the live active id even if the closure runs in another process. Scoped to `fn`
 **only** — `receive` (which shares `attach_clause_pattern_candidates/4`) is *not* a
 function, so its clause tails are return paths only when the whole `receive` sits in

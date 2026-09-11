@@ -41,8 +41,8 @@ defmodule Mutare.Transform.ClauseGuardEmit do
       end)
 
     {guards, whole} = Enum.split_with(claimed, fn {_id, c} -> clause_guard?(c) end)
-    default = deliver(Meta.strip_delivery(node), guards, ctx)
-    {select(default, whole, ctx), ctx}
+    {default, ctx} = deliver(Meta.strip_delivery(node), guards, ctx)
+    select(default, whole, ctx)
   end
 
   defp deliverable?(%Ctx{scope: scope}), do: Scope.active_var_bound?(scope)
@@ -50,8 +50,10 @@ defmodule Mutare.Transform.ClauseGuardEmit do
   defp clause_guard?(%Candidate.ClauseGuard{}), do: true
   defp clause_guard?(_candidate), do: false
 
-  defp deliver(node, [], _ctx), do: node
+  defp deliver(node, [], ctx), do: {node, ctx}
 
+  # The gates and the coverage record read the hoisted binding directly, so the delivery records
+  # the reference (`SelectorEmit.reference_active/1`) for the enclosing prologue to bind it.
   defp deliver(node, guards, ctx) do
     var = ctx.config.active_var
 
@@ -61,10 +63,11 @@ defmodule Mutare.Transform.ClauseGuardEmit do
       |> Enum.reduce(node, fn {locator, variants}, acc -> rewrite(acc, locator, variants, var) end)
 
     ids = Enum.map(guards, &elem(&1, 0))
-    {:__block__, [], [Recorder.record_ast(ids, var, ctx.config.runtime_namespace), rewritten]}
+    record = Recorder.record_ast(ids, var, ctx.config.runtime_namespace)
+    {{:__block__, [], [record, rewritten]}, SelectorEmit.reference_active(ctx)}
   end
 
-  defp select(node, [], _ctx), do: node
+  defp select(node, [], ctx), do: {node, ctx}
 
   defp select(node, whole, ctx) do
     branches =

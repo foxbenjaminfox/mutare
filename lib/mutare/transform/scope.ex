@@ -41,6 +41,16 @@ defmodule Mutare.Transform.Scope do
   #     `Mutare.Transform.emit_block_macro/2` binds it for the body's emit and restores it after;
   #     `Mutare.Transform.ClaimState.claim/6` stamps it onto every `Mutare.Site` claimed
   #     meanwhile (`Site.block_macro`), so poison recovery can skip the whole invocation at once.
+  #   * `active_referenced` — whether the emit has referenced the hoisted `active_var` binding
+  #     since the flag was last reset: a selector read it as its subject
+  #     (`Mutare.Transform.SelectorEmit.subject/1`), or a per-clause delivery read it directly in
+  #     a gate or a creation-time coverage record (`SelectorEmit.reference_active/1`). The reader
+  #     that must decide whether the binding exists at all resets it first and reads it after the
+  #     enclosed emit: `Mutare.Transform.emit_clause_body/3` for a non-lifted `:do` block's
+  #     prologue (an unreferenced binding would warn "unused"), `emit_function_plan/2` for whether
+  #     a group with no lifted mutant still needs its dispatcher. Meaningful only between such a
+  #     reset and its read; a nested module scope never sets it (its selectors use the inline
+  #     read, `module_depth`), so a reference there never adds an outer prologue.
 
   @type t :: %__MODULE__{
           active_bound: boolean(),
@@ -48,7 +58,8 @@ defmodule Mutare.Transform.Scope do
           behaviours: MapSet.t(module()),
           analysis_mutators: [Mutare.Mutator.Spec.t()],
           module: Mutare.Lifting.enclosing(),
-          block_macro: {atom(), non_neg_integer()} | nil
+          block_macro: {atom(), non_neg_integer()} | nil,
+          active_referenced: boolean()
         }
 
   defstruct active_bound: false,
@@ -56,13 +67,16 @@ defmodule Mutare.Transform.Scope do
             behaviours: MapSet.new(),
             analysis_mutators: [],
             module: nil,
-            block_macro: nil
+            block_macro: nil,
+            active_referenced: false
 
   @doc """
   Whether a selector emitted in this scope can read the hoisted active-id variable directly:
   the variable is bound (`active_bound`) *and* the walk is not inside a runtime nested module
   (`module_depth == 0`), whose function bodies can't see the outer binding. The one definition
   every emit path consults before choosing the hoisted form over the self-contained read.
+  Emitted code that reads the variable must record the reference
+  (`Mutare.Transform.SelectorEmit.reference_active/1`), or the enclosing clause may not bind it.
   """
   @spec active_var_bound?(t()) :: boolean()
   def active_var_bound?(%__MODULE__{active_bound: bound, module_depth: depth}),

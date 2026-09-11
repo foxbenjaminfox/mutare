@@ -37,32 +37,48 @@ defmodule Mutare.Transform.SelectorEmit do
   def ids_from_clauses(clauses), do: for({:->, _, [[id], _]} <- clauses, do: id)
 
   @doc """
-  Build an ordinary selector `case` with a coverage-recording catch-all branch.
+  Build an ordinary selector `case` with a coverage-recording catch-all branch, returning it
+  with the scope updated (`subject/1`).
   """
-  @spec selector_case(Macro.t(), [Macro.t()], Ctx.t()) :: Macro.t()
+  @spec selector_case(Macro.t(), [Macro.t()], Ctx.t()) :: {Macro.t(), Ctx.t()}
   def selector_case(default_node, mutant_clauses, %Ctx{config: %Config{active_var: var}} = ctx) do
     ids = ids_from_clauses(mutant_clauses)
     catch_all = catch_all_clause(ids, default_node, var, ctx.config.runtime_namespace)
-    Render.selector_case(subject(ctx), mutant_clauses ++ [catch_all])
+    {subject, ctx} = subject(ctx)
+    {Render.selector_case(subject, mutant_clauses ++ [catch_all]), ctx}
   end
 
-  @doc "Build a raw selector `case` from already assembled clauses."
-  @spec raw_case([Macro.t()], Macro.t(), Ctx.t()) :: Macro.t()
+  @doc "Build a raw selector `case` from already assembled clauses, with the scope updated (`subject/1`)."
+  @spec raw_case([Macro.t()], Macro.t(), Ctx.t()) :: {Macro.t(), Ctx.t()}
   def raw_case(mutant_clauses, catch_all, %Ctx{} = ctx) do
-    {:case, [], [subject(ctx), [do: mutant_clauses ++ [catch_all]]]}
+    {subject, ctx} = subject(ctx)
+    {{:case, [], [subject, [do: mutant_clauses ++ [catch_all]]]}, ctx}
   end
 
   @doc """
-  The selector `case` scrutinee for the current emit scope.
+  Record that the emitted code references the hoisted binding (`Scope.active_referenced`).
 
-  When the active-id variable is already bound in the current function scope, selectors read that
-  variable. Otherwise they keep the self-contained `:persistent_term` read.
+  `subject/1` does this for every selector that reads the variable as its scrutinee; a
+  per-clause delivery that reads it directly — a `<var> === <id>` gate in an `fn`/`receive`
+  clause, an exclusion guard, a creation-time coverage record — calls this itself.
+  `Mutare.Transform` reads the flag back to decide whether to bind the variable at all.
   """
-  @spec subject(Ctx.t()) :: Macro.t()
-  def subject(%Ctx{scope: scope, config: %Config{} = config}) do
+  @spec reference_active(Ctx.t()) :: Ctx.t()
+  def reference_active(%Ctx{} = ctx),
+    do: Ctx.update_scope(ctx, &%{&1 | active_referenced: true})
+
+  @doc """
+  The selector `case` scrutinee for the current emit scope, with the scope updated.
+
+  When the active-id variable is bound here (`Scope.active_var_bound?/1`), selectors read that
+  variable and the reference is recorded (`reference_active/1`). Otherwise they keep the
+  self-contained `:persistent_term` read.
+  """
+  @spec subject(Ctx.t()) :: {Macro.t(), Ctx.t()}
+  def subject(%Ctx{scope: scope, config: %Config{active_var: var} = config} = ctx) do
     if Scope.active_var_bound?(scope),
-      do: {config.active_var, [], nil},
-      else: Mutare.Metamutant.subject_ast(config.runtime_namespace)
+      do: {{var, [], nil}, reference_active(ctx)},
+      else: {Mutare.Metamutant.subject_ast(config.runtime_namespace), ctx}
   end
 
   @doc "The selector catch-all branch: baseline plus every inactive mutant."
