@@ -42,16 +42,27 @@ defmodule Mutare.Runner.Compile do
   # detail, sandbox}`; either way the sandbox is handed back so `with_compiled_sandbox/3`
   # owns cleanup uniformly (this function never cleans up itself).
   def run(schema, root, %Context{} = context) do
-    sandbox = Sandbox.prepare(root, schema, context)
+    on_phase = Context.hook(context, :on_phase)
+    {sandbox, materialized} = Sandbox.prepare(root, schema, context)
+    narrate_materialization(on_phase, materialized)
 
-    deps = %{
-      root: root,
-      options: context.options,
-      sandbox: sandbox,
-      on_phase: Context.hook(context, :on_phase)
-    }
-
+    deps = %{root: root, options: context.options, sandbox: sandbox, on_phase: on_phase}
     compile_with_recovery(deps, schema, %Recovery{}, @poison_attempts)
+  end
+
+  # Relay what materialising found out (`t:Mutare.Sandbox.materialized/0`) as `:on_phase` detail
+  # events for `--verbose` (`Mutare.Report.Live`), during the `:compiling` phase where the facts
+  # arise: each `mix.exs` whose inference override did not land (its project compiles with
+  # inference on, which can stretch the one compile from seconds to hours — a long compile
+  # should not go unexplained), then the app-build seed's outcome (the reused/recompiled
+  # counts, or an otherwise-silent fall back to a cold compile). `Mutare.Sandbox` reports;
+  # only the runner narrates.
+  defp narrate_materialization(on_phase, %{declined: declined, seed: seed}) do
+    for {file, reason} <- declined,
+        do: on_phase.({:inference_override_declined, %{file: file, reason: reason}})
+
+    on_phase.({:seed_app_build, seed})
+    :ok
   end
 
   # Compile the materialised sandbox. A dependency-check failure stops immediately;

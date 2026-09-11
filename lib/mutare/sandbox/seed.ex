@@ -127,9 +127,9 @@ defmodule Mutare.Sandbox.Seed do
   # `--no-seed-app-build` opts out wholesale (force a cold compile — a debugging escape
   # hatch for the no-op surface, or a paranoid CI).
   #
-  # Returns a `t:summary/0` describing what it did, which `Mutare.Sandbox` relays on the
-  # `:on_phase` hook so `--verbose` can surface both the speed-up and an otherwise-silent
-  # fallback. `project` (a `Mutare.Project` or `nil` for a single-app run) attributes each
+  # Returns a `t:summary/0` describing what it did, which `Mutare.Sandbox.prepare/3` hands
+  # back and `Mutare.Runner.Compile` relays on the `:on_phase` hook, so `--verbose` can
+  # surface both the speed-up and an otherwise-silent fallback. `project` (a `Mutare.Project` or `nil` for a single-app run) attributes each
   # metamutant to its owning app.
   @typedoc """
   What the app-build seed did, for `--verbose` narration:

@@ -69,7 +69,7 @@ defmodule Mutare.NamespaceRunnerTest do
     test_a = Path.join(root, "test/a_test.exs")
     File.write!(test_a, String.replace(File.read!(test_a), "== 7", "== 10"))
     schema = Schema.build(root, mutators: [:arithmetic])
-    assert Sandbox.prepare(root, schema, opts) == sandbox
+    assert {^sandbox, _} = Sandbox.prepare(root, schema, opts)
     assert File.read!(Path.join(sandbox, "lib/b.ex")) == old_b
     assert File.stat!(Path.join(sandbox, "lib/b.ex"), time: :posix).mtime == old_mtime
     {changed, 0} = Invocation.mix(sandbox, ["compile", "--verbose"], 0)

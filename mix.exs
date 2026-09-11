@@ -42,6 +42,7 @@ defmodule Mutare.MixProject do
     Mutare.Transform.Config
     Mutare.Runner.Hydrate
     Mutare.Sandbox.Seed
+    Mutare.Sandbox.Mirror
     Mutare.Options.Registry
     Mutare.CallRouting.Registry
     Mutare.Mutator.Dispatch
@@ -53,10 +54,11 @@ defmodule Mutare.MixProject do
   # A couple of *typespecs* in visible modules reference a hidden internal type
   # (`Mutare.Schema.t`'s `ineffective_ignores` field uses `Mutare.Ignore.Directive.t`;
   # `Mutare.Calls`'s `module_key` re-exports `Mutare.Transform.Calls.module_key`;
-  # `Mutare.Options.t`'s `skip_lifting` field uses `Mutare.Lifting.skip_entry`).
+  # `Mutare.Options.t`'s `skip_lifting` field uses `Mutare.Lifting.skip_entry`;
+  # `Mutare.Sandbox.materialized`'s `seed` field uses `Mutare.Sandbox.Seed.summary`).
   # Typespec autolinking bypasses `:skip_code_autolink_to`, so those are silenced by the
   # *referencing* module instead — keep this list tight.
-  @typespec_refs_to_hidden ~w(Mutare.Calls Mutare.Options Mutare.Schema)
+  @typespec_refs_to_hidden ~w(Mutare.Calls Mutare.Options Mutare.Sandbox Mutare.Schema)
 
   def project do
     [

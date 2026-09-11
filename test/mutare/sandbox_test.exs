@@ -62,7 +62,7 @@ defmodule Mutare.SandboxTest do
   test "allows a sibling sandbox", context do
     sandbox = Path.join(context.base, "sandbox")
 
-    assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+    assert {^sandbox, _} = Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
     assert File.read!(Path.join(sandbox, "keep.txt")) == "keep"
   end
 
@@ -73,7 +73,7 @@ defmodule Mutare.SandboxTest do
     sandbox = Path.join(context.base, "sandbox")
     refute File.exists?(sandbox)
 
-    assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+    assert {^sandbox, _} = Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
     assert File.read!(Path.join(sandbox, "keep.txt")) == "keep"
     assert File.regular?(Path.join(sandbox, @marker))
   end
@@ -137,7 +137,7 @@ defmodule Mutare.SandboxTest do
   test "preserves the active internal lock when resetting an owned explicit sandbox", context do
     sandbox = Path.join(context.base, "sandbox")
     fresh = [sandbox: sandbox, keep_sandbox: false]
-    assert Sandbox.prepare(context.project, context.schema, fresh) == sandbox
+    assert {^sandbox, _} = Sandbox.prepare(context.project, context.schema, fresh)
     stale = Path.join(sandbox, "stale.txt")
     File.write!(stale, "stale")
 
@@ -145,7 +145,7 @@ defmodule Mutare.SandboxTest do
     lock_dir = Path.join(sandbox, @lock)
 
     try do
-      assert Sandbox.prepare(context.project, context.schema, fresh) == sandbox
+      assert {^sandbox, _} = Sandbox.prepare(context.project, context.schema, fresh)
       assert File.dir?(lock_dir)
       refute File.exists?(stale)
       assert File.read!(Path.join(sandbox, "keep.txt")) == "keep"
@@ -158,7 +158,7 @@ defmodule Mutare.SandboxTest do
     # No explicit `:sandbox` in fresh mode → a throwaway temp dir. `System.unique_integer/1`
     # repeats across BEAM instances, so the OS pid is what keeps two concurrent
     # `mix mutare` runs from colliding on the same path (and wiping each other).
-    sandbox = Sandbox.prepare(context.project, context.schema, keep_sandbox: false)
+    {sandbox, _} = Sandbox.prepare(context.project, context.schema, keep_sandbox: false)
     on_exit(fn -> File.rm_rf!(sandbox) end)
 
     assert Path.basename(sandbox) =~ ~r/^mutare_sandbox_#{System.pid()}_\d+$/
@@ -169,7 +169,7 @@ defmodule Mutare.SandboxTest do
   test "rematerialize/2 rewrites only changed metamutants and reuses the path", context do
     schema = %Schema{metamutants: %{"lib/a.ex" => "defmodule A do\n  def x, do: 1\nend\n"}}
     sandbox = Path.join(context.base, "sandbox")
-    assert Sandbox.prepare(context.project, schema, sandbox: sandbox) == sandbox
+    assert {^sandbox, _} = Sandbox.prepare(context.project, schema, sandbox: sandbox)
 
     path = Path.join(sandbox, "lib/a.ex")
     # Backdate the metamutant so a no-op rewrite is detectable: `put_if_changed`
@@ -192,7 +192,7 @@ defmodule Mutare.SandboxTest do
     sandbox = Path.join(context.base, "sandbox")
     File.mkdir_p!(sandbox)
 
-    assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+    assert {^sandbox, _} = Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
     assert File.read!(Path.join(sandbox, "keep.txt")) == "keep"
     assert File.regular?(Path.join(sandbox, @marker))
   end
@@ -202,12 +202,12 @@ defmodule Mutare.SandboxTest do
     fresh = [sandbox: sandbox, keep_sandbox: false]
 
     # First run marks and populates it.
-    assert Sandbox.prepare(context.project, context.schema, fresh) == sandbox
+    assert {^sandbox, _} = Sandbox.prepare(context.project, context.schema, fresh)
     stale = Path.join(sandbox, "stale.txt")
     File.write!(stale, "stale")
 
     # Second fresh run on the same (now owned) path wipes the stale file and rebuilds.
-    assert Sandbox.prepare(context.project, context.schema, fresh) == sandbox
+    assert {^sandbox, _} = Sandbox.prepare(context.project, context.schema, fresh)
     refute File.exists?(stale)
     assert File.read!(Path.join(sandbox, "keep.txt")) == "keep"
     assert File.regular?(Path.join(sandbox, @marker))
@@ -252,7 +252,7 @@ defmodule Mutare.SandboxTest do
     project = Project.resolve(umbrella)
     schema = Schema.build(umbrella, project: project)
 
-    assert Sandbox.prepare(umbrella, schema, sandbox: sandbox, project: project) == sandbox
+    assert {^sandbox, _} = Sandbox.prepare(umbrella, schema, sandbox: sandbox, project: project)
 
     for app <- ["core", "web"] do
       helper = File.read!(Path.join(sandbox, "apps/#{app}/test/test_helper.exs"))
@@ -278,7 +278,7 @@ defmodule Mutare.SandboxTest do
     project = Project.resolve(umbrella)
     schema = Schema.build(umbrella, project: project)
 
-    assert Sandbox.prepare(umbrella, schema, sandbox: sandbox, project: project) == sandbox
+    assert {^sandbox, _} = Sandbox.prepare(umbrella, schema, sandbox: sandbox, project: project)
 
     # The real app is mutated and bootstrapped like any other…
     assert Map.has_key?(schema.metamutants, "apps/mutare_support/lib/support.ex")
@@ -458,11 +458,11 @@ defmodule Mutare.SandboxTest do
     test "preserves a previous build between runs, but a fresh run wipes it", context do
       sandbox = Path.join(context.base, "sandbox")
 
-      assert Sandbox.prepare(context.project, context.schema,
-               sandbox: sandbox,
-               keep_sandbox: true
-             ) ==
-               sandbox
+      assert {^sandbox, _} =
+               Sandbox.prepare(context.project, context.schema,
+                 sandbox: sandbox,
+                 keep_sandbox: true
+               )
 
       # Seed a compiled artifact the way `mix compile` would, under an excluded dir.
       cached = Path.join(sandbox, "_build/test/keep")
@@ -531,9 +531,9 @@ defmodule Mutare.SandboxTest do
     end
 
     test "with no :sandbox, derives a stable per-project temp dir", context do
-      first = Sandbox.prepare(context.project, context.schema, keep_sandbox: true)
+      {first, _} = Sandbox.prepare(context.project, context.schema, keep_sandbox: true)
       on_exit(fn -> File.rm_rf!(first) end)
-      second = Sandbox.prepare(context.project, context.schema, keep_sandbox: true)
+      {second, _} = Sandbox.prepare(context.project, context.schema, keep_sandbox: true)
 
       assert first == second
       assert String.starts_with?(first, System.tmp_dir!())
@@ -665,17 +665,19 @@ defmodule Mutare.SandboxTest do
       project = Project.resolve(umbrella)
       schema = Schema.build(umbrella, project: project)
 
-      assert Sandbox.prepare(umbrella, schema,
-               sandbox: sandbox,
-               project: project,
-               keep_sandbox: true
-             ) == sandbox
+      assert {^sandbox, _} =
+               Sandbox.prepare(umbrella, schema,
+                 sandbox: sandbox,
+                 project: project,
+                 keep_sandbox: true
+               )
 
-      assert Sandbox.prepare(umbrella, schema,
-               sandbox: sandbox,
-               project: project,
-               keep_sandbox: true
-             ) == sandbox
+      assert {^sandbox, _} =
+               Sandbox.prepare(umbrella, schema,
+                 sandbox: sandbox,
+                 project: project,
+                 keep_sandbox: true
+               )
 
       for app <- ["core", "web"] do
         helper = File.read!(Path.join(sandbox, "apps/#{app}/test/test_helper.exs"))
@@ -696,7 +698,7 @@ defmodule Mutare.SandboxTest do
       seed_dep(context.project, "dep_a")
       sandbox = Path.join(context.base, "sandbox")
 
-      assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+      assert {^sandbox, _} = Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
 
       assert File.read!(Path.join(sandbox, "_build/test/lib/dep_a/ebin/dep_a.app")) ==
                "{application, dep_a, []}."
@@ -711,7 +713,7 @@ defmodule Mutare.SandboxTest do
       File.write!(Path.join(app_ebin, "app_self.app"), "{application, app_self, []}.")
 
       sandbox = Path.join(context.base, "sandbox")
-      assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+      assert {^sandbox, _} = Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
 
       # The dep is seeded; the app's own build is left out so mix must (re)compile
       # the metamutant rather than risk serving a stale original beam.
@@ -724,14 +726,14 @@ defmodule Mutare.SandboxTest do
       File.mkdir_p!(Path.join([context.project, "deps", "dev_only"]))
       sandbox = Path.join(context.base, "sandbox")
 
-      assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+      assert {^sandbox, _} = Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
       refute File.exists?(Path.join(sandbox, "_build/test/lib/dev_only"))
     end
 
     test "a dependency-free project (no deps/) seeds nothing and still prepares", context do
       sandbox = Path.join(context.base, "sandbox")
 
-      assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+      assert {^sandbox, _} = Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
       refute File.exists?(Path.join(sandbox, "_build"))
     end
 
@@ -965,7 +967,7 @@ defmodule Mutare.SandboxTest do
       assert File.read!(witness) == "kept"
     end
 
-    test "reports the seeded outcome (reused/recompiled counts) on :on_phase", context do
+    test "reports the seeded outcome (reused/recompiled counts)", context do
       project = context.project
       put_app_beam(project, "myapp", "lib/foo.ex", "Foo#{uniq()}")
       put_app_beam(project, "myapp", "lib/bar.ex", "Bar#{uniq()}")
@@ -1063,13 +1065,13 @@ defmodule Mutare.SandboxTest do
       assert elixir_cache_key(sandbox, "late") == {[], ["lib"], false}
     end
 
-    test "narrates each mix.exs whose inference wrap declined, with the reason", context do
+    test "reports each mix.exs whose inference wrap declined, with the reason", context do
       project = context.project
 
       # A declined wrap leaves its project compiling with inference on, which can stretch the
-      # one compile from seconds to hours, so `--verbose` must be able to say which and why.
-      # The root is an unparseable template, kept byte-for-byte; `late` builds its project in
-      # a required file; `early` wraps and must not be mentioned.
+      # one compile from seconds to hours, so the runner (for `--verbose`) must be told which
+      # and why, in path order. The root is an unparseable template, kept byte-for-byte;
+      # `late` builds its project in a required file; `early` wraps and must not be mentioned.
       root_source = "defmodule <%= @module %>.MixProject, do: :ok\n"
       File.write!(Path.join(project, "mix.exs"), root_source)
       put_mix_exs(project, "apps/early", "Early.MixProject")
@@ -1083,27 +1085,15 @@ defmodule Mutare.SandboxTest do
       apps = [%{app: :early, dir: "apps/early"}, %{app: :late, dir: "apps/late"}]
       umbrella = %Mutare.Project{umbrella?: true, apps: apps, mutate_scope: apps}
       sandbox = Path.join(context.base, "sandbox")
-      test_pid = self()
 
-      hook = fn
-        {:inference_override_declined, info} -> send(test_pid, {:declined, info})
-        _ -> :ok
-      end
+      {_sandbox, %{declined: declined}} =
+        Sandbox.prepare(project, %Schema{metamutants: %{}}, sandbox: sandbox, project: umbrella)
 
-      Sandbox.prepare(project, %Schema{metamutants: %{}},
-        sandbox: sandbox,
-        project: umbrella,
-        on_phase: hook
-      )
+      assert [
+               {"apps/late/mix.exs", "it defines no module of its own to hook"},
+               {"mix.exs", "it does not parse" <> _}
+             ] = declined
 
-      assert_received {:declined,
-                       %{
-                         file: "apps/late/mix.exs",
-                         reason: "it defines no module of its own to hook"
-                       }}
-
-      assert_received {:declined, %{file: "mix.exs", reason: "it does not parse" <> _}}
-      refute_received {:declined, %{file: "apps/early/mix.exs"}}
       assert File.read!(Path.join(sandbox, "mix.exs")) == root_source
     end
 
@@ -1253,18 +1243,10 @@ defmodule Mutare.SandboxTest do
     end
   end
 
-  # Run `Sandbox.prepare/3` with an `:on_phase` hook and return the app-build seed's summary
-  # (the `{:seed_app_build, summary}` detail event `--verbose` renders).
+  # Run `Sandbox.prepare/3` and return the app-build seed's summary it reports (what the runner
+  # relays as the `{:seed_app_build, summary}` detail event `--verbose` renders).
   defp capture_seed(project, schema, opts) do
-    test_pid = self()
-
-    hook = fn
-      {:seed_app_build, summary} -> send(test_pid, {:captured_seed, summary})
-      _ -> :ok
-    end
-
-    Sandbox.prepare(project, schema, Keyword.put(opts, :on_phase, hook))
-    assert_receive {:captured_seed, summary}
+    {_sandbox, %{seed: summary}} = Sandbox.prepare(project, schema, opts)
     summary
   end
 

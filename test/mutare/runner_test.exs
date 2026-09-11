@@ -47,9 +47,17 @@ defmodule Mutare.RunnerTest do
     project: project,
     sandbox: sandbox
   } do
-    assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
+    test_pid = self()
+    on_phase = fn event -> send(test_pid, {:phase, event}) end
+
+    assert {:ok, run} =
+             Mutare.run(project, sandbox: sandbox, mutators: @probe, on_phase: on_phase)
 
     assert %Run{} = run
+
+    # What materialising the sandbox found out reaches the hook through the runner's relay
+    # (`Mutare.Sandbox.prepare/3` fires nothing itself) — the `--verbose` narration's source.
+    assert_received {:phase, {:seed_app_build, %{outcome: _}}}
     assert length(run.results) == 3
     assert Enum.count(run.results, &(&1.status == :killed)) == 2
     assert [survivor] = Enum.filter(run.results, &(&1.status == :survived))

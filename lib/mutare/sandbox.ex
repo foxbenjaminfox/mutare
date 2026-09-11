@@ -26,12 +26,12 @@ defmodule Mutare.Sandbox do
   Two materialisation modes, chosen by `:keep_sandbox`:
 
     * **kept (default, `keep_sandbox: true`)** — the sandbox (and its compiled `_build`)
-      is *preserved* between runs and re-materialised in place: a file is
-      rewritten only when its desired content differs (unchanged files keep their
-      mtime, so mix's incremental compiler reuses `_build`), and files Mutare no
-      longer owns are pruned. The mirror carries each source's permission mode and
-      recreates its symlinks (never following them), matching what the fresh copy
-      preserves. Without an explicit `:sandbox` it lives at a stable per-project
+      is *preserved* between runs and re-materialised in place by
+      `Mutare.Sandbox.Mirror`: a file is rewritten only when its desired content
+      differs (unchanged files keep their mtime, so mix's incremental compiler reuses
+      `_build`), and files Mutare no longer owns are pruned. The mirror carries each
+      source's permission mode and recreates its symlinks (never following them),
+      matching what the fresh copy preserves. Without an explicit `:sandbox` it lives at a stable per-project
       temp dir; CI pins `:sandbox` at a cached directory instead. See `NOTES.md`
       for the cache pattern.
     * **fresh (`keep_sandbox: false`)** — a throwaway dir is wiped and re-copied every run, so
@@ -48,17 +48,16 @@ defmodule Mutare.Sandbox do
   alias Mutare.{Options, Project, Schema}
   alias Mutare.Coverage.Recorder
   alias Mutare.Run.Context
-  alias Mutare.Sandbox.{CompilerOptions, Lock, Ownership, Paths, Seed}
+  alias Mutare.Sandbox.{CompilerOptions, Lock, Mirror, Ownership, Paths, Seed}
   alias Mutare.Sandbox.Command.Invocation
 
-  # Sourced from `Mutare.Sandbox.Lock` (its single owner) so the excluded-paths list and the
-  # ownership guard (`Mutare.Sandbox.Ownership`) share one lock filename.
+  # The top-level entries a sandbox never takes from the target: build output, VCS and editor
+  # state, and the lock. One list for both modes — the fresh copy skips them and the kept-mode
+  # mirror (`Mutare.Sandbox.Mirror`) is handed the same list — so the two can't drift. The lock
+  # name is sourced from `Mutare.Sandbox.Lock` (its single owner) so this list and the ownership
+  # guard (`Mutare.Sandbox.Ownership`) share one filename.
   @lock_name Lock.name()
   @excluded ~w(_build .git .elixir_ls .lexical cover) ++ [@lock_name]
-
-  # The permission bits of a `File.Stat` mode, masking off the file-type bits, so a
-  # mirrored mode compares and chmods cleanly (`0o100755` → `0o755`).
-  @permission_bits 0o7777
 
   # The build environment every sandbox `mix` runs under is owned by
   # `Mutare.Sandbox.Command.Invocation` (`Invocation.mix_env/0`), which sets it on
@@ -141,14 +140,25 @@ defmodule Mutare.Sandbox do
   @default_helper "ExUnit.start()\n"
   @coverage_helper_rel "lib/__mutare__/coverage_helper.ex"
 
+  @typedoc """
+  What `prepare/3` found out while materialising — the facts `--verbose` narrates, which
+  `Mutare.Runner.Compile` relays on the `:on_phase` hook: the app-build seed's outcome
+  (`t:Mutare.Sandbox.Seed.summary/0`), and each `mix.exs` whose type-signature-inference
+  override did not land, paired with the reason, in path order. Such a project compiles with
+  inference on, which can stretch the one compile from seconds to hours, so a long compile
+  should not go unexplained.
+  """
+  @type materialized :: %{seed: Seed.summary(), declined: [{Path.t(), String.t()}]}
+
   @doc """
-  Prepare a sandbox for `schema` taken from `root`. Returns the sandbox path.
+  Prepare a sandbox for `schema` taken from `root`. Returns the sandbox path and a
+  `t:materialized/0` summary of what happened.
 
   `opts` may be a `Mutare.Run.Context`, a `Mutare.Options` struct, or a keyword
   list. `:sandbox` selects the target directory; without it Mutare uses a stable
   per-project temp directory (kept mode, the default) or a fresh one (`keep_sandbox:
   false`). The context's project scope controls which umbrella apps are
-  materialized.
+  materialized; its hooks are not consulted — the runner narrates the summary.
 
   The sandbox must be separate from the project tree: it may not be the project
   root, contain the project, or live inside it. This check is done here because it
@@ -160,7 +170,8 @@ defmodule Mutare.Sandbox do
   `:keep_sandbox` is enabled. If a generated fresh-path sandbox already exists,
   Mutare treats it as a stale leftover and refuses it.
   """
-  @spec prepare(Path.t(), Schema.t(), Context.t() | Options.t() | keyword()) :: Path.t()
+  @spec prepare(Path.t(), Schema.t(), Context.t() | Options.t() | keyword()) ::
+          {Path.t(), materialized()}
   def prepare(root, %Schema{} = schema, opts \\ []) do
     context = Context.new(opts)
     options = context.options
@@ -173,18 +184,21 @@ defmodule Mutare.Sandbox do
     # Built once for both modes: the manifest carries the generated files, and `wrapped`
     # names the `mix.exs` files whose inference override actually landed — which only the
     # rewrite itself knows, and which `Seed.app_build/6` needs below. `declined` pairs each
-    # other `mix.exs` with the rewrite's reason: its project compiles with inference on, which
-    # can stretch the one compile from seconds to hours, so each is narrated before it starts.
+    # other `mix.exs` with the rewrite's reason.
     {overrides, wrapped, declined} = override_files(root, schema, project)
-    narrate_declined(context, declined)
+    declined = log_declined(declined)
 
     if options.keep_sandbox do
       # Reuse the existing sandbox (and its `_build`): re-materialise it in place,
-      # touching only what changed and pruning what's gone.
-      sync(root, sandbox, overrides)
+      # touching only what changed and pruning what's gone. The ownership marker is
+      # neither a source nor an override, so the mirror is told to keep it.
+      Mirror.sync(root, sandbox, overrides,
+        exclude: @excluded,
+        managed: [Ownership.marker_name()]
+      )
     else
       # Bulk-copy the project, then overlay every generated file from the **one**
-      # `override_files/3` manifest `sync/3` also uses (metamutant source, coverage
+      # `override_files/3` manifest the mirror also uses (metamutant source, coverage
       # helper, wrapped test helper) — so adding a generated file is a single edit, not
       # one per mode.
       copy_project(root, sandbox)
@@ -205,15 +219,9 @@ defmodule Mutare.Sandbox do
     # experience when someone aims Mutare at a single module. Best-effort and fail-safe by
     # construction: it can only ever fall back to today's cold compile. `--no-seed-app-build`
     # (`:seed_app_build` false) opts out entirely, forcing a cold compile.
-    #
-    # Its outcome (seeded + reused/recompiled counts, a fall back to a cold compile, or
-    # skipped) rides the `:on_phase` hook as a `{:seed_app_build, summary}` detail event, so
-    # `--verbose` can surface both the speed-up and an otherwise-silent fallback. Fired here
-    # (during the runner's `:compiling` phase) since this is where the seed decision is made.
-    seed_summary = Seed.app_build(root, sandbox, schema, options, project, wrapped)
-    Context.hook(context, :on_phase).({:seed_app_build, seed_summary})
+    seed = Seed.app_build(root, sandbox, schema, options, project, wrapped)
 
-    sandbox
+    {sandbox, %{seed: seed, declined: declined}}
   end
 
   @doc false
@@ -295,20 +303,20 @@ defmodule Mutare.Sandbox do
     end
   end
 
-  # The byte-aware sandbox writer lets poison recovery (`rematerialize/2`) touch
-  # only changed metamutants, preserving other mtimes for Mix's incremental compiler.
+  # The mirror's byte-aware writer lets poison recovery (`rematerialize/2`) touch only
+  # changed metamutants, preserving other mtimes for Mix's incremental compiler.
   # Selection can leave an entry identical to its original even on the first write.
   defp write_metamutants(sandbox, %Schema{metamutants: metamutants}) do
     for {rel, source} <- metamutants do
-      put_sandbox_file_if_changed(sandbox, rel, source)
+      Mirror.put_file_if_changed(sandbox, rel, source)
     end
   end
 
   # Overlay each generated file (the `override_files/3` manifest) onto the bulk-copied project
-  # — the fresh-mode counterpart to `sync/3`'s in-place overlay, sharing the one manifest.
-  # The byte-aware sandbox writer keeps unchanged entries at their copied mtime.
+  # — the fresh-mode counterpart to `Mirror.sync/4`'s in-place overlay, sharing the one
+  # manifest. The byte-aware writer keeps unchanged entries at their copied mtime.
   defp write_overrides(sandbox, overrides) do
-    for {rel, content} <- overrides, do: put_sandbox_file_if_changed(sandbox, rel, content)
+    for {rel, content} <- overrides, do: Mirror.put_file_if_changed(sandbox, rel, content)
     :ok
   end
 
@@ -385,69 +393,11 @@ defmodule Mutare.Sandbox do
     @bootstrap <> "\n" <> @coverage_setup <> "\n" <> user_source <> "\n" <> @coverage_after_suite
   end
 
-  # === keep-sandbox incremental materialisation ==============================
-
-  # Re-materialise an owned sandbox in place. A managed file is rewritten only when
-  # its desired content differs (an unchanged file keeps its mtime, so mix's
-  # incremental compiler reuses `_build`); files Mutare no longer owns are pruned.
-  # `@excluded` dirs (notably `_build`/`cover`) are never read, written, or pruned,
-  # so the compiled artifacts survive between runs.
-  #
-  # The mirror carries the source's *shape*, not just its bytes: permission modes and
-  # symlinks, which `copy_project/2`'s `File.cp_r!` preserves for free and a
-  # content-only sync would silently flatten (a `0755` script arriving `0644`, a symlink
-  # vanishing) — NOTES "`--keep-sandbox`: incremental materialisation for CI caching".
-  defp sync(root, sandbox, overrides) do
-    sources = source_entries(root)
-    source_set = MapSet.new(sources, fn {rel, _kind} -> rel end)
-
-    managed =
-      MapSet.union(source_set, MapSet.new([Ownership.marker_name() | Map.keys(overrides)]))
-
-    # 1. mirror every source: file contents byte-aware, symlinks as symlinks (never
-    #    followed), empty directories as directories. Paths a generated override owns are
-    #    skipped — step 2 materialises those as ordinary files.
-    for {rel, kind} <- sources, not Map.has_key?(overrides, rel) do
-      mirror_source(root, sandbox, rel, kind)
-    end
-
-    # 2. write every generated file (metamutant source, injected test helper, coverage
-    #    helper, config). Deliberately *after* the mirror, so an override always wins
-    #    over a copied symlink at its own path or at one of its parents, and lands as a
-    #    real file inside the sandbox instead of being written through the link.
-    for {rel, content} <- overrides, do: put_sandbox_file_if_changed(sandbox, rel, content)
-
-    # 3. mirror permission bits, last: a suite may invoke a project script or native
-    #    helper, which needs its executable bit. Applied to overridden paths too — the
-    #    metamutant of an executable script keeps the script's mode, as it does on the
-    #    fresh path, where `File.cp_r!` copies the mode and the overlay's `File.write!`
-    #    preserves it.
-    for {rel, {:regular, mode}} <- sources, do: mirror_mode_if_changed(sandbox, rel, mode)
-
-    # 4. drop anything left in the sandbox that Mutare should no longer own.
-    prune(sandbox, managed)
-  end
-
-  defp mirror_source(root, sandbox, rel, {:regular, _mode}) do
-    put_sandbox_file_if_changed(sandbox, rel, File.read!(Path.join(root, rel)))
-  end
-
-  defp mirror_source(_root, sandbox, rel, {:symlink, target}) do
-    put_sandbox_symlink_if_changed(sandbox, rel, target)
-  end
-
-  # An empty source directory: created (or cleared of whatever else sat at its path), and
-  # kept by `prune/2` because it is managed, even though nothing under it is.
-  defp mirror_source(_root, sandbox, rel, :directory) do
-    ensure_sandbox_parent!(sandbox, rel)
-    ensure_sandbox_dir!(Path.join(sandbox, rel))
-  end
-
   # The files Mutare generates rather than copies, keyed by sandbox-relative path (the same
-  # key space as `Schema.metamutants` and `source_entries/1`) — the **single manifest** both
-  # materialisation modes use: `sync/3` overlays it onto an existing sandbox, the fresh path
-  # (`prepare/3`) `write_overrides/2`-es it over a fresh copy. Adding a generated file is one
-  # edit here, automatically reaching both modes.
+  # key space as `Schema.metamutants` and the mirror's source entries) — the **single manifest**
+  # both materialisation modes use: `Mirror.sync/4` overlays it onto an existing sandbox, the
+  # fresh path (`prepare/3`) `write_overrides/2`-es it over a fresh copy. Adding a generated
+  # file is one edit here, automatically reaching both modes.
   #
   # Returns `{overrides, wrapped, declined}`, where `wrapped` holds the relative paths of the
   # `mix.exs` files that came back with an inference hook actually attached, and `declined`
@@ -479,18 +429,15 @@ defmodule Mutare.Sandbox do
     end)
   end
 
-  # Log (opt-in debug) and relay each declined wrap on `:on_phase`, as `Seed` does for its own
-  # fallback, so `--verbose` can say why the one compile runs long. In path order, so the
-  # narration is stable from run to run.
-  defp narrate_declined(context, declined) do
-    on_phase = Context.hook(context, :on_phase)
+  # Log (opt-in debug) each declined wrap, as `Seed` does for its own fallback, and hand them
+  # back in path order so the runner's narration is stable from run to run.
+  defp log_declined(declined) do
+    declined = Enum.sort(declined)
 
-    for {file, reason} <- Enum.sort(declined) do
-      Logger.debug("Mutare: #{file} keeps type-signature inference on — " <> reason)
-      on_phase.({:inference_override_declined, %{file: file, reason: reason}})
-    end
+    for {file, reason} <- declined,
+        do: Logger.debug("Mutare: #{file} keeps type-signature inference on — " <> reason)
 
-    :ok
+    declined
   end
 
   # Root and real umbrella children, plus the generated support project's mix.exs
@@ -569,189 +516,5 @@ defmodule Mutare.Sandbox do
 
       {rel, helper_contents(user_helper)}
     end)
-  end
-
-  # Generated sandbox files must be materialised inside the sandbox even when the
-  # copied target contained a symlink at that path (or in one of its parent
-  # components). File.write!/2 would follow those symlinks and mutate the linked
-  # file outside the sandbox, so this helper first recreates the path as ordinary
-  # directories plus a regular file.
-  defp put_sandbox_file_if_changed(sandbox, rel, content) do
-    path = Path.join(sandbox, rel)
-    ensure_sandbox_parent!(sandbox, rel)
-
-    case File.lstat(path) do
-      {:ok, %File.Stat{type: :regular, size: size}} when size == byte_size(content) ->
-        unless File.read(path) == {:ok, content}, do: File.write!(path, content)
-
-      {:ok, %File.Stat{type: :regular}} ->
-        File.write!(path, content)
-
-      {:ok, %File.Stat{type: type}} ->
-        remove_existing_path!(path, type)
-        File.write!(path, content)
-
-      {:error, :enoent} ->
-        File.write!(path, content)
-
-      {:error, reason} ->
-        raise File.Error, reason: reason, action: "inspect sandbox file", path: path
-    end
-  end
-
-  # A source symlink is recreated as a symlink carrying the *same* raw target, exactly
-  # as `File.cp_r!` does on the fresh path — the link is never followed, so a link
-  # pointing outside the project is copied, not chased, and nothing is ever written
-  # through it. Generated overrides are overlaid afterwards (see `sync/3`), so a path
-  # Mutare owns replaces the link rather than dereferencing it.
-  defp put_sandbox_symlink_if_changed(sandbox, rel, target) do
-    path = Path.join(sandbox, rel)
-    ensure_sandbox_parent!(sandbox, rel)
-
-    case File.lstat(path) do
-      {:ok, %File.Stat{type: :symlink}} ->
-        unless File.read_link(path) == {:ok, target} do
-          File.rm!(path)
-          File.ln_s!(target, path)
-        end
-
-      {:ok, %File.Stat{type: type}} ->
-        remove_existing_path!(path, type)
-        File.ln_s!(target, path)
-
-      {:error, :enoent} ->
-        File.ln_s!(target, path)
-
-      {:error, reason} ->
-        raise File.Error, reason: reason, action: "inspect sandbox file", path: path
-    end
-  end
-
-  # Only ever chmods a regular file, and only when the bits actually differ: the sandbox
-  # path may legitimately have become something else (a symlink Mutare no longer owns is
-  # pruned, not chmodded), and a no-op chmod is not free — `File.chmod/2` is Erlang's
-  # `write_file_info` with only the mode filled in, which resets the file's mtime to *now*.
-  # That would hand mix a spuriously-changed file on every sync and undo the whole point of
-  # the byte-aware mirror, so the mtime is put back after a real mode change.
-  defp mirror_mode_if_changed(sandbox, rel, mode) do
-    path = Path.join(sandbox, rel)
-
-    case File.lstat(path, time: :posix) do
-      {:ok, %File.Stat{type: :regular, mode: current, mtime: mtime}}
-      when Bitwise.band(current, @permission_bits) != mode ->
-        File.chmod!(path, mode)
-        File.touch!(path, mtime)
-
-      _ ->
-        :ok
-    end
-  end
-
-  defp ensure_sandbox_parent!(sandbox, rel) do
-    rel
-    |> Path.dirname()
-    |> Path.split()
-    |> Enum.reject(&(&1 in [".", ""]))
-    |> Enum.reduce(sandbox, fn part, parent ->
-      path = Path.join(parent, part)
-      ensure_sandbox_dir!(path)
-      path
-    end)
-  end
-
-  defp ensure_sandbox_dir!(path) do
-    case File.lstat(path) do
-      {:ok, %File.Stat{type: :directory}} ->
-        :ok
-
-      {:ok, %File.Stat{type: type}} ->
-        remove_existing_path!(path, type)
-        File.mkdir!(path)
-
-      {:error, :enoent} ->
-        File.mkdir!(path)
-
-      {:error, reason} ->
-        raise File.Error, reason: reason, action: "inspect sandbox directory", path: path
-    end
-  end
-
-  defp remove_existing_path!(path, :directory), do: File.rm_rf!(path)
-  defp remove_existing_path!(path, :symlink), do: File.rm!(path)
-  defp remove_existing_path!(path, _type), do: File.rm!(path)
-
-  # Every mirrorable entry under `root` (skipping `@excluded` at the top level, matching
-  # `copy_project/2`) as `{rel, kind}`, with `rel` keyed exactly like `Schema.metamutants`
-  # (`relative/2`) and `kind` recording what has to be recreated: `{:regular, mode}` (the
-  # permission bits, file-type bits masked off), `{:symlink, target}` (the raw link
-  # target), or `:directory` for a directory with nothing in it. A non-empty directory is
-  # walked but is not itself an entry — it is implied by the files under it
-  # (`ensure_sandbox_parent!`). An *empty* one has nothing to imply it, so it is an entry
-  # of its own; without that a shallow git checkout under `deps/` loses its empty
-  # `.git/refs/heads` and `.git/refs/tags`, git stops recognising the checkout, and Mix
-  # reports every git dependency as a lock mismatch — a Phoenix app's `heroicons`/`daisyui`
-  # (NOTES "The kept sandbox is the default"). A symlink is recorded, never descended, so
-  # its subtree is mirrored only where it also lives under `root` in its own right. Anything
-  # else (device, socket, unreadable) is skipped, as before.
-  defp source_entries(root) do
-    for entry <- File.ls!(root),
-        entry not in @excluded,
-        source <- walk(root, Path.join(root, entry)) do
-      source
-    end
-  end
-
-  defp walk(root, path) do
-    case File.lstat(path) do
-      {:ok, %File.Stat{type: :directory}} ->
-        case File.ls!(path) do
-          [] ->
-            [{rel_path(root, path), :directory}]
-
-          children ->
-            for child <- children, source <- walk(root, Path.join(path, child)), do: source
-        end
-
-      {:ok, %File.Stat{type: :regular, mode: mode}} ->
-        [{rel_path(root, path), {:regular, Bitwise.band(mode, @permission_bits)}}]
-
-      {:ok, %File.Stat{type: :symlink}} ->
-        case File.read_link(path) do
-          {:ok, target} -> [{rel_path(root, path), {:symlink, target}}]
-          {:error, _} -> []
-        end
-
-      _ ->
-        []
-    end
-  end
-
-  defp rel_path(root, path), do: path |> Path.relative_to(root) |> to_string()
-
-  # Delete sandbox files and symlinks not in `managed`, then any directory left empty —
-  # unless the empty directory is itself managed (an empty source directory, mirrored on
-  # purpose). Never descends `@excluded` dirs, so `_build`/`cover` and their artifacts
-  # survive — nor a symlink (`lstat` types it as `:symlink`), so pruning removes the link
-  # itself and never walks into whatever it points at.
-  defp prune(sandbox, managed) do
-    for entry <- File.ls!(sandbox), entry not in @excluded do
-      prune_path(Path.join(sandbox, entry), entry, managed)
-    end
-  end
-
-  defp prune_path(path, rel, managed) do
-    case File.lstat(path) do
-      {:ok, %File.Stat{type: :directory}} ->
-        for child <- File.ls!(path),
-            do: prune_path(Path.join(path, child), Path.join(rel, child), managed)
-
-        if File.ls!(path) == [] and not MapSet.member?(managed, rel), do: File.rmdir!(path)
-
-      {:ok, %File.Stat{type: type}} when type in [:regular, :symlink] ->
-        unless MapSet.member?(managed, rel), do: File.rm!(path)
-
-      _ ->
-        :ok
-    end
   end
 end

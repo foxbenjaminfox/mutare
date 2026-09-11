@@ -8,7 +8,7 @@ defmodule Mutare.Sandbox.Ownership do
   # lstat dispatch (`ensure_ownable_directory!/2`), so the safety-critical "never touch a
   # non-directory" rule lives in exactly one place.
 
-  alias Mutare.Sandbox.Lock
+  alias Mutare.Sandbox.{Lock, Mirror}
 
   # Sourced from `Mutare.Sandbox.Lock`, the single owner of the lock filename, so the "the lock is
   # not real content" carve-out (in `reset!/1` and `effectively_empty?/1`) can't drift from it.
@@ -47,7 +47,9 @@ defmodule Mutare.Sandbox.Ownership do
   # auto-generated default) — it decides how an existing *owned* dir is treated in fresh mode.
   def claim!(sandbox, keep?, pinned?) do
     ensure_ownable_directory!(sandbox, fn -> handle_existing_dir!(sandbox, keep?, pinned?) end)
-    put_if_changed(marker_path(sandbox), @marker_body)
+    # The sandbox's one writer (byte-aware, never through a symlink), so an unchanged marker
+    # keeps its mtime like every other managed file.
+    Mirror.put_file_if_changed(sandbox, @marker_name, @marker_body)
   end
 
   # The lstat dispatch `claim!/3` and `ensure_lockable!/1` share: create an absent path, run
@@ -159,25 +161,5 @@ defmodule Mutare.Sandbox.Ownership do
         refuse!(sandbox, "is a non-empty directory without Mutare's ownership marker")
       end
     end)
-  end
-
-  # Write only when the bytes actually change, so unchanged files keep their mtime.
-  # A size check short-circuits the full read for the common unchanged-large-file
-  # case.
-  defp put_if_changed(path, content) do
-    unless same_content?(path, content) do
-      File.mkdir_p!(Path.dirname(path))
-      File.write!(path, content)
-    end
-  end
-
-  defp same_content?(path, content) do
-    case File.stat(path) do
-      {:ok, %File.Stat{type: :regular, size: size}} when size == byte_size(content) ->
-        File.read(path) == {:ok, content}
-
-      _ ->
-        false
-    end
   end
 end

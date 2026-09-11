@@ -234,15 +234,15 @@ defmodule Mutare.Report.Live do
   def handle_cast({:phase, {:coverage_done, _summary} = event}, state),
     do: {:noreply, maybe_detail(state, event)}
 
-  # The app-build `_build` seed's outcome (fired by `Mutare.Sandbox` during the compile
-  # phase). A verbose-only `✓`/`↺` scrollback note surfacing the reused/recompiled beam
+  # The app-build `_build` seed's outcome (reported by `Mutare.Sandbox`, relayed by the runner
+  # during the compile phase). A verbose-only `✓`/`↺` scrollback note surfacing the reused/recompiled beam
   # counts, or an otherwise-silent fall back to a cold compile; a `:skipped` outcome (the
   # broad-run default) leaves no line even in verbose. Inert (no line) in every other mode.
   def handle_cast({:phase, {:seed_app_build, summary}}, state),
     do: {:noreply, maybe_seed_note(state, summary)}
 
-  # A `mix.exs` whose inference override did not land (fired by `Mutare.Sandbox` during the
-  # compile phase, once per file): its project compiles with type-signature inference on,
+  # A `mix.exs` whose inference override did not land (reported by `Mutare.Sandbox`, relayed by
+  # the runner during the compile phase, once per file): its project compiles with type-signature inference on,
   # which can stretch the one compile from seconds to hours. A verbose-only `↺` note naming
   # the file and the reason, so a long compile does not go unexplained; inert otherwise.
   def handle_cast({:phase, {:inference_override_declined, _info} = event}, state),

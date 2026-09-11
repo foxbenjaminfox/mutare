@@ -91,14 +91,20 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   back to the local mutant id(s) living there, so **Poison** can attribute a compile error and
   translate to report ids. Keyed by id;
   no metamutant↔original line mapping.
-- **`Mutare.Sandbox`** (+ `Ownership`, `Lock`, `Seed`, `Command`, `Command.Invocation`/`Output`,
-  `CompilerOptions`) — materializes a temp copy of the target, overwrites the metamutant sources,
+- **`Mutare.Sandbox`** (+ `Mirror`, `Ownership`, `Lock`, `Seed`, `Command`,
+  `Command.Invocation`/`Output`, `CompilerOptions`) — materializes a temp copy of the target,
+  overwrites the metamutant sources,
   injects a dependency-free bootstrap (selector reader + timeout/owner-death watchers + coverage
   helper — the owner-death watcher also prefixes `config/config.exs`, covering the one compile), and
   seeds the deps'/app's compiled `_build` so the one compile is minimal. `Ownership` is the
   safety guard — the one place that may `rm_rf!` a sandbox — deciding whether a path is adopted,
-  wiped, or refused untouched (it never touches a non-directory or an unmarked non-empty dir). `Command` is the **decoding side of the
-  exit-code contract**: it runs a mutant `mix test` and reads exit code + output into a typed outcome
+  wiped, or refused untouched (it never touches a non-directory or an unmarked non-empty dir).
+  `Mirror` is the kept-mode in-place re-materialisation (byte-aware, symlink-safe,
+  mtime-preserving) and the one writer every sandbox file goes through, the ownership marker
+  included. `prepare/3` fires no hooks: it returns what it found out (the app-build seed
+  outcome, declined inference wraps) and `Runner.Compile` narrates it. `Command` is the
+  **decoding side of the exit-code contract**: it runs a mutant `mix test` and reads exit code +
+  output into a typed outcome
   (`:passed`/`:failed`/`:timeout`/`:sigkilled`/`:harness_error`, refined from output into
   `:suite_compile_error`/`:atom_exhausted`/`:boot_failure`); the codes themselves are the leaf
   `Command.Exit`, which the watcher ASTs in `Command.Invocation` also read. `Invocation.environment/2`

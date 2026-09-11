@@ -64,6 +64,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `harness_errors_exceed?/2` were defined on `Mutare.Report`, the human-report
   renderer; they now live on their own module. `Mutare.Report.summary/1` and the
   renderers are unchanged.
+- **`Mutare.Sandbox.prepare/3` returns `{sandbox, materialized}` and fires no
+  hooks.** The app-build seed outcome and each declined inference wrap come back
+  in the second element; `Mutare.Runner.Compile` relays them on `:on_phase`, so
+  the sandbox no longer reads the run context's live-progress hooks. The kept-mode
+  in-place mirror moved to `Mutare.Sandbox.Mirror`, whose byte-aware, symlink-safe
+  writer now also writes the ownership marker (it was written through a second,
+  symlink-following writer).
 
 ## [0.1.2] - 2026-09-07
 
