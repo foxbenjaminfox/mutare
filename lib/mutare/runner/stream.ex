@@ -215,7 +215,11 @@ defmodule Mutare.Runner.Stream do
     on_start.(site)
     # Check out a distinct partition for this run (and its harness retries), check it back in when
     # done — see `Mutare.Runner.Partitions`.
-    result = Partitions.with_slot(partitions, fn env -> MutantRun.classify(ctx, site, env) end)
+    result =
+      Partitions.with_slot(partitions, fn partition ->
+        MutantRun.classify(ctx, site, partition)
+      end)
+
     Hydrate.result(ctx.hydrate, result)
   end
 end

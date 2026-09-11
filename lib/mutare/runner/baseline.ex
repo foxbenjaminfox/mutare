@@ -58,8 +58,7 @@ defmodule Mutare.Runner.Baseline do
   """
 
   alias Mutare.Selector
-  alias Mutare.Sandbox.Command
-  alias Mutare.Sandbox.Command.{Invocation, Output}
+  alias Mutare.Sandbox.Command.{Exit, Invocation, Output}
 
   @type outcome :: {:pass, non_neg_integer()} | {:fail, String.t()}
   @type result ::
@@ -73,14 +72,16 @@ defmodule Mutare.Runner.Baseline do
   output}` when consistently red, or `{:error, :baseline_flaky, detail}` when the
   runs disagree.
 
-  `env` is extra environment for each run — a fixed partition entry (e.g.
-  `MIX_TEST_PARTITION=1`) when `:partition_env` is on, so a partitioned suite finds
-  a valid database; `[]` (the default) adds none. The baseline is sequential, so
-  one fixed partition suffices (`Mutare.Runner.Partitions`).
+  `opts` are the run options each run is invoked with
+  (`t:Mutare.Sandbox.Command.Invocation.run_opts/0`): a fixed `:partition` entry
+  (e.g. `MIX_TEST_PARTITION=1`) when `:partition_env` is on, so a partitioned suite
+  finds a valid database, and the `:max_heap_mb` cap; `[]` (the default) sets none.
+  The baseline is sequential, so one fixed partition suffices
+  (`Mutare.Runner.Partitions`).
   """
-  @spec run(Path.t(), pos_integer(), [{String.t(), String.t()}]) :: result()
-  def run(sandbox, runs \\ 1, env \\ []) when is_integer(runs) and runs >= 1 do
-    run(sandbox, runs, 0, env)
+  @spec run(Path.t(), pos_integer(), Invocation.run_opts()) :: result()
+  def run(sandbox, runs \\ 1, opts \\ []) when is_integer(runs) and runs >= 1 do
+    run(sandbox, runs, 0, opts)
   end
 
   @doc """
@@ -90,10 +91,10 @@ defmodule Mutare.Runner.Baseline do
   A retry wraps the full `runs` sample. `:baseline_flaky` is never retried because
   a mixed pass/fail sample has already proven suite nondeterminism.
   """
-  @spec run(Path.t(), pos_integer(), non_neg_integer(), [{String.t(), String.t()}]) :: result()
-  def run(sandbox, runs, retries, env)
+  @spec run(Path.t(), pos_integer(), non_neg_integer(), Invocation.run_opts()) :: result()
+  def run(sandbox, runs, retries, opts)
       when is_integer(runs) and runs >= 1 and is_integer(retries) and retries >= 0 do
-    retry(sandbox, runs, retries, env)
+    retry(sandbox, runs, retries, opts)
   end
 
   @doc """
@@ -117,12 +118,12 @@ defmodule Mutare.Runner.Baseline do
     end
   end
 
-  defp retry(sandbox, runs, retries_left, env) do
-    result = sandbox |> collect(runs, env) |> classify()
+  defp retry(sandbox, runs, retries_left, opts) do
+    result = sandbox |> collect(runs, opts) |> classify()
 
     case result do
       {:error, :baseline_failed, _output} when retries_left > 0 ->
-        retry(sandbox, runs, retries_left - 1, env)
+        retry(sandbox, runs, retries_left - 1, opts)
 
       result ->
         result
@@ -131,20 +132,19 @@ defmodule Mutare.Runner.Baseline do
 
   # Run the suite up to `runs` times, stopping as soon as the outcomes disagree
   # (a pass and a fail both seen → flakiness proven, the rest would be wasted).
-  @spec collect(Path.t(), pos_integer(), [{String.t(), String.t()}]) :: [outcome()]
-  defp collect(sandbox, runs, env) do
+  @spec collect(Path.t(), pos_integer(), Invocation.run_opts()) :: [outcome()]
+  defp collect(sandbox, runs, opts) do
     Enum.reduce_while(1..runs, [], fn _i, acc ->
-      {ms, output, status} =
-        Invocation.timed_mix(sandbox, ["test"], Selector.baseline(), nil, env)
+      {ms, output, status} = Invocation.timed_mix(sandbox, ["test"], Selector.baseline(), opts)
 
       acc = [run_outcome(status, ms, output) | acc]
       if disagree?(acc), do: {:halt, acc}, else: {:cont, acc}
     end)
   end
 
-  # `Command.success?/1` owns the "0 means success" reading of the exit code.
+  # `Exit.success?/1` owns the "0 means success" reading of the exit code.
   defp run_outcome(status, ms, output) do
-    if Command.success?(status), do: {:pass, ms}, else: {:fail, output}
+    if Exit.success?(status), do: {:pass, ms}, else: {:fail, output}
   end
 
   defp disagree?(outcomes) do

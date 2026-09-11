@@ -14,21 +14,21 @@ defmodule Mutare.Runner.MutantRun do
 
   require Logger
 
-  def classify(_ctx, %Site{poisoned: true} = site, _env) do
+  def classify(_ctx, %Site{poisoned: true} = site, _partition) do
     %Result{site: site, status: :poisoned, duration_ms: 0, output: nil}
   end
 
-  def classify(_ctx, %Site{ignored: true} = site, _env) do
+  def classify(_ctx, %Site{ignored: true} = site, _partition) do
     %Result{site: site, status: :ignored, duration_ms: 0, output: nil}
   end
 
-  def classify(%RunCtx{selection: :run_all} = ctx, site, env),
-    do: run_mutant(ctx, site, broaden([], site, ctx.scopes), env)
+  def classify(%RunCtx{selection: :run_all} = ctx, site, partition),
+    do: run_mutant(ctx, site, broaden([], site, ctx.scopes), partition)
 
-  def classify(%RunCtx{selection: {:selective, outcomes}} = ctx, site, env) do
+  def classify(%RunCtx{selection: {:selective, outcomes}} = ctx, site, partition) do
     case Map.fetch(outcomes, site.id) do
       {:ok, {:run, test_args}} ->
-        run_mutant(ctx, site, broaden(test_args, site, ctx.scopes), env)
+        run_mutant(ctx, site, broaden(test_args, site, ctx.scopes), partition)
 
       {:ok, :no_coverage} ->
         %Result{site: site, status: :no_coverage, duration_ms: 0, output: nil}
@@ -37,7 +37,7 @@ defmodule Mutare.Runner.MutantRun do
       # practice; a missing id is a bug, not a no-coverage signal — run it rather
       # than silently drop a mutant from the score.
       :error ->
-        run_mutant(ctx, site, broaden([], site, ctx.scopes), env)
+        run_mutant(ctx, site, broaden([], site, ctx.scopes), partition)
     end
   end
 
@@ -99,11 +99,11 @@ defmodule Mutare.Runner.MutantRun do
   # innocent run reaped under someone else's memory pressure, an external kill) is
   # one excluded-from-score harness error; the cost of retrying a real one is the
   # host. Fail toward the host's safety.
-  defp run_mutant(%RunCtx{} = ctx, site, test_args, env) do
+  defp run_mutant(%RunCtx{} = ctx, site, test_args, partition) do
     result =
       ctx
-      |> run_mutant_attempt(site, test_args, env, ctx.retries, @boot_failure_retries)
-      |> require_unanimous_kill(ctx, site, test_args, env, ctx.kill_runs - 1)
+      |> run_mutant_attempt(site, test_args, partition, ctx.retries, @boot_failure_retries)
+      |> require_unanimous_kill(ctx, site, test_args, partition, ctx.kill_runs - 1)
 
     if result.outcome in [:harness_error, :boot_failure, :sigkilled],
       do: warn_harness_error(site, result)
@@ -118,23 +118,21 @@ defmodule Mutare.Runner.MutantRun do
   # real verdict (and the recovered kills) falls through unretried — as does
   # `:sigkilled`, deliberately (see `run_mutant/4`: retrying a likely-OOM-killed
   # mutant re-detonates it on the host).
-  defp run_mutant_attempt(%RunCtx{} = ctx, site, test_args, env, retries, boot_retries) do
+  defp run_mutant_attempt(%RunCtx{} = ctx, site, test_args, partition, retries, boot_retries) do
     result =
-      Command.timed_test(
-        ctx.sandbox,
-        test_args,
-        Mutare.RuntimeId.of(site),
-        ctx.cap,
-        env ++ ctx.heap_env
+      Command.timed_test(ctx.sandbox, test_args, Mutare.RuntimeId.of(site),
+        cap: ctx.cap,
+        max_heap_mb: ctx.max_heap_mb,
+        partition: partition
       )
 
     case result.outcome do
       :boot_failure when boot_retries > 0 ->
         Process.sleep(boot_backoff_ms())
-        run_mutant_attempt(ctx, site, test_args, env, retries, boot_retries - 1)
+        run_mutant_attempt(ctx, site, test_args, partition, retries, boot_retries - 1)
 
       :harness_error when retries > 0 ->
-        run_mutant_attempt(ctx, site, test_args, env, retries - 1, boot_retries)
+        run_mutant_attempt(ctx, site, test_args, partition, retries - 1, boot_retries)
 
       _ ->
         result
@@ -145,17 +143,19 @@ defmodule Mutare.Runner.MutantRun do
   # its own infrastructure retries above; only kill outcomes are repeated, and all
   # attempts must kill. A passing rerun is the conservative verdict, while a
   # persistent harness error stays an infrastructure failure.
-  defp require_unanimous_kill(result, _ctx, _site, _test_args, _env, remaining)
+  defp require_unanimous_kill(result, _ctx, _site, _test_args, _partition, remaining)
        when remaining <= 0,
        do: result
 
-  defp require_unanimous_kill(result, ctx, site, test_args, env, remaining) do
+  defp require_unanimous_kill(result, ctx, site, test_args, partition, remaining) do
     if kill_outcome?(result.outcome) do
-      next = run_mutant_attempt(ctx, site, test_args, env, ctx.retries, @boot_failure_retries)
+      next =
+        run_mutant_attempt(ctx, site, test_args, partition, ctx.retries, @boot_failure_retries)
+
       combined = combine_attempts(result, next)
 
       if kill_outcome?(next.outcome) do
-        require_unanimous_kill(combined, ctx, site, test_args, env, remaining - 1)
+        require_unanimous_kill(combined, ctx, site, test_args, partition, remaining - 1)
       else
         combined
       end

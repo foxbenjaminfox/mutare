@@ -89,8 +89,8 @@ defmodule Mutare.Sandbox.CompilerOptionsIntegrationTest do
       assert File.read!(Path.join(fixture.sandbox, "untouched-compiles")) == "compiled\n"
       assert File.read!(Path.join(fixture.project, manifest_rel)) == original_manifest
 
-      for env <- [[], [{"MUTARE_COVERAGE", "1"}]] do
-        {output, status} = Invocation.mix(fixture.sandbox, ["test"], 0, env: env)
+      for opts <- [[], [coverage: coverage(fixture.sandbox)]] do
+        {output, status} = Invocation.mix(fixture.sandbox, ["test"], 0, opts)
         assert status == 0, output
         refute output =~ "Compiling "
       end
@@ -131,8 +131,8 @@ defmodule Mutare.Sandbox.CompilerOptionsIntegrationTest do
     manifest = Path.join(fixture.sandbox, "_build/test/lib/inference_default/.mix/compile.elixir")
     before_manifest = File.read!(manifest)
 
-    for env <- [[], [{"MUTARE_COVERAGE", "1"}]] do
-      {output, status} = Invocation.mix(fixture.sandbox, ["test"], 0, env: env)
+    for opts <- [[], [coverage: coverage(fixture.sandbox)]] do
+      {output, status} = Invocation.mix(fixture.sandbox, ["test"], 0, opts)
       assert status == 0, output
       refute output =~ "Compiling "
       assert File.read!(Path.join(fixture.sandbox, "compiled-options")) == compiled
@@ -374,15 +374,17 @@ defmodule Mutare.Sandbox.CompilerOptionsIntegrationTest do
     end
   end
 
+  # A coverage-probe boot: the `:coverage` run option, dump landing in the sandbox.
+  defp coverage(sandbox),
+    do: {Path.join(sandbox, Mutare.Coverage.Recorder.dump_file()), sandbox}
+
   defp prepare(fixture) do
     Sandbox.prepare(fixture.project, %Schema{}, sandbox: fixture.sandbox)
   end
 
   defp compile_and_observe(sandbox, observation \\ "compiled-options") do
     {output, status} =
-      Invocation.mix(sandbox, ["compile" | CompilerOptions.compile_args()], 0,
-        env: CompilerOptions.compiler_env()
-      )
+      Invocation.mix(sandbox, ["compile" | CompilerOptions.compile_args()], 0, compile: true)
 
     assert status == 0, output
 

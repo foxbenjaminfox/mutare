@@ -12,8 +12,8 @@ defmodule Mutare.Runner.Compile do
   alias Mutare.{Poison, Schema, Sandbox, Selector, Site}
   alias Mutare.Run.Context
   alias Mutare.Runner.Partitions
-  alias Mutare.Sandbox.{Command, CompilerOptions}
-  alias Mutare.Sandbox.Command.{Invocation, Output}
+  alias Mutare.Sandbox.CompilerOptions
+  alias Mutare.Sandbox.Command.{Exit, Invocation, Output}
 
   # The poison-recovery bookkeeping threaded through `compile_with_recovery/4`: how many
   # rebuild rounds have run, the accumulated dropped ids (`skip_ids`, forwarded to each
@@ -331,33 +331,30 @@ defmodule Mutare.Runner.Compile do
 
   defp block_macro_key(_), do: nil
 
-  # The one compilation. `Command.success?/1` owns the "0 means success" reading;
-  # `CompilerOptions` carries the diagnostics-only speed switches (the SSA alias
-  # pass off via env, the verify pass off via `compile_args/0` — free compile
+  # The one compilation. `Exit` owns the exit-code readings; `CompilerOptions`
+  # carries the diagnostics-only speed switches (the SSA alias pass off via the
+  # `:compile` run option, the verify pass off via `compile_args/0` — free compile
   # wins, applied only here since per-mutant runs never recompile the lib).
-  # `partition_env` is the fixed partition entry (or `[]`), so a config read at
+  # `partition` is the fixed partition entry (or `[]`), so a config read at
   # compile time finds a valid partition — see `compile_with_recovery/5`.
   #
   # `:compile_timeout` arms the config-hosted wall-clock watcher
-  # (`Invocation.compile_watcher_ast/0`): the compile halts *itself* with the
-  # timeout exit past the cap, which we decode here as `:compile_timed_out` —
-  # never fed to poison recovery (there is no error to attribute, and a rebuild
-  # cannot make an oversized compile faster).
-  defp compile(sandbox, partition_env, compile_timeout) do
+  # (`Invocation.compile_watcher_ast/0`) via the `:compile_cap` run option: the
+  # compile halts *itself* with the timeout exit past the cap, which we read here as
+  # `:compile_timed_out` — never fed to poison recovery (there is no error to
+  # attribute, and a rebuild cannot make an oversized compile faster).
+  defp compile(sandbox, partition, compile_timeout) do
     {output, status} =
       Invocation.mix(sandbox, ["compile" | CompilerOptions.compile_args()], Selector.baseline(),
-        env: CompilerOptions.compiler_env() ++ partition_env ++ cap_env(compile_timeout)
+        compile: true,
+        compile_cap: compile_timeout,
+        partition: partition
       )
 
     cond do
-      Command.success?(status) -> :ok
-      status == Command.timeout_exit() -> {:error, :compile_timed_out, output}
+      Exit.success?(status) -> :ok
+      Exit.timed_out?(status) -> {:error, :compile_timed_out, output}
       true -> {:error, :compile_failed, output}
     end
   end
-
-  defp cap_env(nil), do: []
-
-  defp cap_env(ms) when is_integer(ms),
-    do: [{Invocation.compile_timeout_env(), Integer.to_string(ms)}]
 end

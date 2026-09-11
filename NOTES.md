@@ -4372,8 +4372,9 @@ naming a key Mutare itself sets (`MIX_ENV`, `MUTARE_ACTIVE_MUTANT`, the coverage
 vars…) would land a duplicate key in the `System.cmd` env list, where Erlang's
 resolution is unspecified — silently clobbering, say, `MIX_ENV`. So `Options`
 rejects such a name up front, validated against the authoritative
-`Invocation.reserved_env_names/0` (sourced from the very accessors that build the env,
-so it can't drift). The same validator also requires portable-POSIX env-name syntax,
+`Invocation.reserved_env_names/0` (originally a hand-kept list sourced from the env
+accessors; it drifted once regardless — see "The reserved env set is derived from the
+one env builder" — and is now derived from the builder itself). The same validator also requires portable-POSIX env-name syntax,
 for the same "fail at config time" reason: `System.cmd(env: ...)` *raises* on a `=` or
 a NUL byte in a key, so a name like `"A=B"` used to pass `Options.new/1` and then blow
 up deep inside the first sandbox `mix`. The pool-size↔`max_concurrency` coupling the non-blocking
@@ -4386,6 +4387,38 @@ note below): that wanted to *split mutants* across runners and rejected
 we run the *whole* selected suite per mutant and only want each concurrent worker
 on its own DB. Reusing `MIX_TEST_PARTITION` here is purely to name a slot the user's
 config already understands, not to filter tests.
+
+### The reserved env set is derived from the one env builder `[done]`
+
+The partition validator above depends on `Invocation.reserved_env_names/0` being complete,
+and its first version was a list kept *next to* the code that set the variables — sourced
+from the same accessors, which felt drift-proof. It wasn't: the compile invocation set
+`ERL_COMPILER_OPTIONS` through `CompilerOptions.compiler_env/0` and nobody had added that
+key to the list, so a `:partition_env` of `"ERL_COMPILER_OPTIONS"` passed validation and
+produced the duplicate-key clobber the validator exists to prevent. The fix at the time
+was to add the entry; the structural fix is that there is no longer a list to add to.
+
+Every variable Mutare sets on a sandbox `mix` is now emitted by one builder,
+`Invocation.environment/2`, from **named run options** (`:cap`, `:compile_cap`, `:compile`,
+`:coverage`, `:max_heap_mb`, `:partition`); the raw `env:` passthrough on `Invocation.mix/4`
+is gone, so a caller cannot set a variable the builder doesn't know about.
+`reserved_env_names/0` is then the builder's key set with every option armed — a new run
+option is reserved the moment it exists. The `:partition` entry is the one key outside the
+set, by design: its name *is* the user's `:partition_env`, appended last, and the set is
+what that name is checked against. The five `++` sites that used to assemble per-run-kind
+env lists (compile, baseline, probe, per-mutant, and the base) collapsed into the callers
+naming their options, and `RunCtx` carries `max_heap_mb` rather than a precomputed env
+fragment.
+
+Same commit, same seam: the exit codes moved out of `Command` into the leaf
+`Command.Exit`. `Command.outcome/1` was documented as the single decoder, yet the compile
+and the coverage probe compared `status == Command.timeout_exit()` by hand — not wrongly,
+since they aren't mutant runs and the mutant-verdict vocabulary doesn't fit them, but the
+"single decoder" claim was false. `Exit` now offers the two readings those runs actually
+need (`success?/1`, `timed_out?/1`) beside `decode/1`, all over the same constants. It also
+removes the `Command` ↔ `Invocation` cycle: the watcher ASTs embedded the codes by calling
+back into `Command`, while `Command.timed_test` called `Invocation.timed_mix`. Both now
+read the leaf.
 
 ### Kill detection stops at the first failure (`--max-failures 1`) `[done]`
 A mutant is killed the moment *any* test fails — the verdict is killed-vs-survived,

@@ -6,22 +6,37 @@ defmodule Mutare.Sandbox.Command.Invocation do
   change between runs, so mix's incremental compiler finds nothing to rebuild
   and the per-mutant cost is process boot plus the suite. `MIX_ENV=test` and
   the variables selecting the mutant (`Mutare.Selector.environment/1`) are always
-  set; an optional `cap` (ms) bounds a run that overruns (a mutation can turn a
-  terminating loop infinite).
+  set; the rest of a run's environment comes from named **run options**
+  (`t:run_opts/0`) — an optional wall-clock `:cap` (a mutation can turn a
+  terminating loop infinite), the compile's own cap and compiler switches, the
+  coverage probe's capture vars, the heap cap, and the per-worker partition entry.
 
   This module owns everything about *how a run is invoked*: the environment it
-  runs under (`mix_env/0`, the reserved variable set in `reserved_env_names/0`,
-  the self-hosting isolation vars), the raw spawn (`mix/4`/`timed_mix/5`), and the
-  **timeout enforcement mechanism** — the env var the cap travels in
-  (`timeout_env/0`) and the dependency-free watcher AST (`watcher_ast/0`) that
-  `Mutare.Sandbox` renders into the target's test bootstrap. The matching half —
-  *decoding* what a run did from its exit code, including the `timeout_exit/0` the
-  watcher signals — is `Mutare.Sandbox.Command`; `Mutare.Sandbox.Command.timed_test/5`
+  runs under (`environment/2`, the one builder every sandbox `mix` goes through;
+  `mix_env/0`; the self-hosting isolation vars), the raw spawn
+  (`mix/4`/`timed_mix/4`), and the **timeout enforcement mechanism** — the env var
+  the cap travels in (`timeout_env/0`) and the dependency-free watcher AST
+  (`watcher_ast/0`) that `Mutare.Sandbox` renders into the target's test bootstrap.
+  The matching half — *decoding* what a run did from its exit code — is
+  `Mutare.Sandbox.Command`; the codes both halves share are the leaf
+  `Mutare.Sandbox.Command.Exit`, and `Mutare.Sandbox.Command.timed_test/4`
   composes the two (run here, decode there).
+
+  ## The reserved variable set is the builder's key set
+
+  Every variable Mutare sets on a sandbox `mix` is emitted by `environment/2` —
+  there is no raw env passthrough — so `reserved_env_names/0` is *derived* from it
+  (the builder run with every option armed), not maintained alongside it. A new run
+  option cannot be forgotten from the reserved set, because the set is whatever the
+  builder emits. The one key deliberately outside it is the `:partition` entry: its
+  name is the user's `:partition_env`, appended last, and the reserved set is what
+  `Mutare.Options` validates that name against.
+
+  ## Self-halt watchers
 
   The cap is not enforced by killing a process tree (which needs platform-specific
   signals); instead the watcher reads `timeout_env/0` and, after the deadline,
-  `System.halt/1`s the run itself with `Mutare.Sandbox.Command.timeout_exit/0`.
+  `System.halt/1`s the run itself with `Mutare.Sandbox.Command.Exit.timeout/0`.
 
   A second, structurally identical self-halt guards against the opposite failure:
   the *owner* dying rather than the run overrunning. Every run's stdin is a pipe
@@ -29,9 +44,14 @@ defmodule Mutare.Sandbox.Command.Invocation do
   — however abruptly — the pipe hits EOF. The owner-death watcher
   (`owner_watch_ast/0`, gated by `owner_watch_env/0`, rendered by `Mutare.Sandbox`
   into the sandbox's config and test bootstrap) blocks reading stdin and halts the
-  run with `Mutare.Sandbox.Command.owner_lost_exit/0` the moment that EOF arrives,
+  run with `Mutare.Sandbox.Command.Exit.owner_lost/0` the moment that EOF arrives,
   so no sandbox `mix` outlives the run that spawned it.
   """
+
+  alias Mutare.Coverage.Recorder
+  alias Mutare.Sandbox.Command.Exit
+  alias Mutare.Sandbox.CompilerOptions
+  alias Mutare.Selector
 
   @timeout_env "MUTARE_TIMEOUT"
   @compile_timeout_env "MUTARE_COMPILE_TIMEOUT"
@@ -77,82 +97,132 @@ defmodule Mutare.Sandbox.Command.Invocation do
   @spec owner_watch_env() :: String.t()
   def owner_watch_env, do: @owner_watch_env
 
+  @typedoc """
+  The named run options every sandbox `mix` is invoked with. Each one maps to the
+  environment entries `environment/2` emits for it:
+
+    * `:cap` (ms, or `nil`) — the run's wall-clock cap, handed to the injected timeout
+      watcher (`timeout_env/0`), which halts the run itself if it overruns.
+    * `:compile_cap` (ms, or `nil`) — the **one metamutant compile**'s wall-clock cap
+      (`compile_timeout_env/0`), armed only on that invocation.
+    * `:compile` (boolean) — the compiler switches that speed the one compile
+      (`Mutare.Sandbox.CompilerOptions.compiler_env/0`).
+    * `:coverage` (`{dump_path, root}`, or `nil`) — the coverage probe's capture
+      flag, dump path and path-normalisation root (`Mutare.Coverage.Recorder`).
+    * `:max_heap_mb` (MB, or `nil`) — the per-process heap cap (`heap_cap_env/1`).
+    * `:partition` (`[{name, id}]` or `[]`) — the user-named partition entry
+      (`Mutare.Runner.Partitions.entry/2`), appended last.
+
+  Every option is optional; an absent or `nil` option emits nothing.
+  """
+  @type run_opts :: [
+          cap: pos_integer() | nil,
+          compile_cap: pos_integer() | nil,
+          compile: boolean(),
+          coverage: {Path.t(), Path.t()} | nil,
+          max_heap_mb: pos_integer() | nil,
+          partition: [{String.t(), String.t()}]
+        ]
+
   @doc """
   Run `mix <args>` in `sandbox` as a fresh OS process, returning
   `{output, exit_status}`.
 
-  `MIX_ENV=test` and `MUTARE_ACTIVE_MUTANT` are always set; `mutant_id`
-  is a runtime identity (`Mutare.Selector.baseline/0` for a baseline run). For a
-  schema mutant, `Selector.environment/1` splits its `{file, local_id}` into the
-  namespace and integer environment variables; integer calls clear any inherited
-  namespace. `opts`:
-
-    * `:cap` (ms, or `nil`) — handed to the injected timeout watcher, which halts
-      the run itself if it overruns, so there is no process tree to kill and
-      nothing platform-specific.
-    * `:env` — further environment variables (the coverage probe sets its capture
-      flag this way).
+  The environment is `environment/2` of `mutant_id` and `opts` (see `t:run_opts/0`).
+  `mutant_id` is a runtime identity (`Mutare.Selector.baseline/0` for a baseline
+  run); for a schema mutant, `Selector.environment/1` splits its `{file, local_id}`
+  into the namespace and integer environment variables, and integer calls clear any
+  inherited namespace.
   """
-  @spec mix(Path.t(), [String.t()], Mutare.RuntimeId.t(),
-          cap: pos_integer() | nil,
-          env: [{String.t(), String.t()}]
-        ) :: {String.t(), non_neg_integer()}
+  @spec mix(Path.t(), [String.t()], Mutare.RuntimeId.t(), run_opts()) ::
+          {String.t(), non_neg_integer()}
   def mix(sandbox, args, mutant_id, opts \\ []) do
-    env =
-      [
-        {"MIX_ENV", @mix_env},
-        # Arm the owner-death watcher: this run's stdin is our pipe, so EOF on it
-        # means we died and the run must halt itself rather than orphan.
-        {@owner_watch_env, "1"},
-        # Self-hosting isolation: give the suite-under-test a private selection
-        # key so its own `Selector.put/1` calls can't clobber the harness's
-        # active-mutant slot. Inert on a normal target (no `Mutare.Selector`
-        # compiled in); see `Mutare.Selector`'s moduledoc.
-        {Mutare.Selector.override_env(), Mutare.Selector.suite_key()},
-        # The same isolation for the coverage helper module name: give the
-        # suite-under-test's `test/support/mutare_cov.ex` stand-in a private name so
-        # it can't co-define `:mutare_cov` with the real helper the sandbox writes
-        # (a clash that breaks the probe's `dump/1`). Inert on a normal target (no
-        # such stand-in compiled in); see `Mutare.Coverage.Recorder`'s moduledoc.
-        {Mutare.Coverage.Recorder.fixture_override_env(),
-         Mutare.Coverage.Recorder.suite_fixture_module()}
-      ]
-      |> Kernel.++(Mutare.Selector.environment(mutant_id))
-      |> maybe_cap(opts[:cap])
-      |> Kernel.++(opts[:env] || [])
-
-    System.cmd("mix", args, cd: sandbox, stderr_to_stdout: true, env: env)
+    System.cmd("mix", args,
+      cd: sandbox,
+      stderr_to_stdout: true,
+      env: environment(mutant_id, opts)
+    )
   end
 
   @doc """
-  The environment variable names Mutare itself sets on a sandbox `mix` — the base
-  env in `mix/4` plus the cap (`timeout_env/0`), the coverage-probe vars, and the
-  one-compile `ERL_COMPILER_OPTIONS` (`Mutare.Sandbox.CompilerOptions.compiler_env/0`)
-  folded in via `:env`. The authoritative reserved set: `Mutare.Options` rejects a
-  `:partition_env` that collides with one of these, since the partition entry is
-  *appended* to this list and a duplicate key's resolution is unspecified (it would
-  silently clobber e.g. `MIX_ENV`). Sourced from the same accessors the env is
-  built from, so it can't drift.
+  The full environment a sandbox `mix` for `mutant_id` runs under, given its run
+  options (`t:run_opts/0`) — the one builder `mix/4` uses and `reserved_env_names/0`
+  derives from.
+
+  Always present: `MIX_ENV`, the owner-death watcher's arming variable, the two
+  self-hosting isolation variables, and the selector variables for `mutant_id`. Then
+  one group per armed option, in `t:run_opts/0` order, and the `:partition` entry
+  last. Pure apart from reading Mutare's *own* environment where an entry merges
+  with an inherited value (`heap_cap_env/1`, `CompilerOptions.compiler_env/0`).
+  """
+  @spec environment(Mutare.RuntimeId.t(), run_opts()) :: [{String.t(), String.t() | nil}]
+  def environment(mutant_id, opts \\ []) do
+    [
+      {"MIX_ENV", @mix_env},
+      # Arm the owner-death watcher: this run's stdin is our pipe, so EOF on it
+      # means we died and the run must halt itself rather than orphan.
+      {@owner_watch_env, "1"},
+      # Self-hosting isolation: give the suite-under-test a private selection
+      # key so its own `Selector.put/1` calls can't clobber the harness's
+      # active-mutant slot. Inert on a normal target (no `Mutare.Selector`
+      # compiled in); see `Mutare.Selector`'s moduledoc.
+      {Selector.override_env(), Selector.suite_key()},
+      # The same isolation for the coverage helper module name: give the
+      # suite-under-test's `test/support/mutare_cov.ex` stand-in a private name so
+      # it can't co-define `:mutare_cov` with the real helper the sandbox writes
+      # (a clash that breaks the probe's `dump/1`). Inert on a normal target (no
+      # such stand-in compiled in); see `Mutare.Coverage.Recorder`'s moduledoc.
+      {Recorder.fixture_override_env(), Recorder.suite_fixture_module()}
+    ] ++
+      Selector.environment(mutant_id) ++
+      cap_env(@timeout_env, opts[:cap]) ++
+      cap_env(@compile_timeout_env, opts[:compile_cap]) ++
+      compile_env(opts[:compile]) ++
+      coverage_env(opts[:coverage]) ++
+      heap_cap_env(opts[:max_heap_mb]) ++
+      Keyword.get(opts, :partition, [])
+  end
+
+  defp cap_env(_var, nil), do: []
+  defp cap_env(var, ms) when is_integer(ms) and ms > 0, do: [{var, Integer.to_string(ms)}]
+
+  defp compile_env(true), do: CompilerOptions.compiler_env()
+  defp compile_env(_), do: []
+
+  # The dump path and the path-normalisation root travel in env vars so the helper,
+  # running with a per-app cwd in an umbrella, writes one union dump with
+  # root-relative keys.
+  defp coverage_env(nil), do: []
+
+  defp coverage_env({dump, root}) when is_binary(dump) and is_binary(root),
+    do: [{Recorder.env_var(), "1"}, {Recorder.dump_path_env(), dump}, {Recorder.root_env(), root}]
+
+  # Every run option armed with a representative value: the environment this builds
+  # names every variable Mutare can set, and nothing else.
+  @every_option [
+    cap: 1,
+    compile_cap: 1,
+    compile: true,
+    coverage: {"mutare_coverage.dump", "."},
+    max_heap_mb: 1
+  ]
+
+  @doc """
+  The environment variable names Mutare itself sets on a sandbox `mix`: the keys of
+  `environment/2` with every run option armed (`:partition` excepted — its name is
+  the user's, and this set is what it is validated against).
+
+  Derived, not listed: a run option added to `environment/2` is reserved by
+  construction. `Mutare.Options` rejects a `:partition_env` that collides with one
+  of these, since the partition entry is appended to the environment and a
+  duplicate key's resolution is unspecified (it would silently clobber e.g.
+  `MIX_ENV`).
   """
   @spec reserved_env_names() :: [String.t()]
   def reserved_env_names do
-    [
-      "MIX_ENV",
-      @timeout_env,
-      @compile_timeout_env,
-      @owner_watch_env,
-      # Carries the `:max_heap_mb` cap (`heap_cap_env/1`) when that option is on.
-      @erl_options_env,
-      # Set on the one metamutant compile, which appends the partition entry after it.
-      Mutare.Sandbox.CompilerOptions.env_var(),
-      Mutare.Selector.env_var(),
-      Mutare.Selector.namespace_env(),
-      Mutare.Selector.override_env(),
-      Mutare.Coverage.Recorder.env_var(),
-      Mutare.Coverage.Recorder.dump_path_env(),
-      Mutare.Coverage.Recorder.root_env(),
-      Mutare.Coverage.Recorder.fixture_override_env()
-    ]
+    Selector.baseline()
+    |> environment(@every_option)
+    |> Enum.map(fn {name, _value} -> name end)
   end
 
   @doc """
@@ -205,18 +275,12 @@ defmodule Mutare.Sandbox.Command.Invocation do
 
   @doc """
   Like `mix/4`, but wall-clock-timed: returns `{elapsed_ms, output, exit_status}`.
-
-  `env` is extra environment passed straight through to `mix/4` (the runner uses
-  it to set a per-worker partition var, e.g. `MIX_TEST_PARTITION`); `[]` adds none.
+  `opts` are the run options (`t:run_opts/0`), passed straight through.
   """
-  @spec timed_mix(Path.t(), [String.t()], Mutare.RuntimeId.t(), pos_integer() | nil, [
-          {String.t(), String.t()}
-        ]) ::
+  @spec timed_mix(Path.t(), [String.t()], Mutare.RuntimeId.t(), run_opts()) ::
           {non_neg_integer(), String.t(), non_neg_integer()}
-  def timed_mix(sandbox, args, mutant_id, cap \\ nil, env \\ []) do
-    {micros, {output, status}} =
-      :timer.tc(fn -> mix(sandbox, args, mutant_id, cap: cap, env: env) end)
-
+  def timed_mix(sandbox, args, mutant_id, opts \\ []) do
+    {micros, {output, status}} = :timer.tc(fn -> mix(sandbox, args, mutant_id, opts) end)
     {div(micros, 1000), output, status}
   end
 
@@ -225,7 +289,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
 
   Reads `timeout_env/0`: with no cap it is inert, otherwise it spawns a process
   that sleeps for the cap and then `System.halt/1`s the run with
-  `Mutare.Sandbox.Command.timeout_exit/0` — so the run halts *itself* and there is
+  `Mutare.Sandbox.Command.Exit.timeout/0` — so the run halts *itself* and there is
   no process tree to kill. `Mutare.Sandbox` renders this AST into the target
   project's test bootstrap, mirroring how it renders `Mutare.Selector.bootstrap_ast/0`,
   so the target needs nothing platform-specific and no dependency on Mutare.
@@ -241,7 +305,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
   prefix (mix evaluates config before the compilers run, the same property the
   owner-death watcher uses), and `Mutare.Runner` sets the variable only on the
   compile invocation — so a thrashing compile halts itself with
-  `Mutare.Sandbox.Command.timeout_exit/0` instead of blocking the run
+  `Mutare.Sandbox.Command.Exit.timeout/0` instead of blocking the run
   indefinitely, and every other sandbox boot evaluates the watcher inert.
   """
   @spec compile_watcher_ast() :: Macro.t()
@@ -252,7 +316,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
   # when the variable is unset or empty, so each watcher fires only for the run
   # kind whose invocation arms it.
   defp deadline_watcher(env_var) do
-    timeout_exit = Mutare.Sandbox.Command.timeout_exit()
+    timeout_exit = Exit.timeout()
 
     quote do
       case System.get_env(unquote(env_var)) do
@@ -277,7 +341,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
   Reads `owner_watch_env/0`: unset (a manual run in a kept sandbox, CI with a
   closed stdin) it is inert, otherwise it spawns a process that blocks reading
   stdin and, on `:eof`, `System.halt/1`s the run with
-  `Mutare.Sandbox.Command.owner_lost_exit/0`. Under `mix/4` the run's stdin is a
+  `Mutare.Sandbox.Command.Exit.owner_lost/0`. Under `mix/4` the run's stdin is a
   pipe whose write end only the owning Mutare process holds; when that process
   dies — clean exit, crash, or SIGKILL (the kernel closes its descriptors) — the
   pipe hits EOF and the run reaps itself, instead of surviving re-parented (a
@@ -298,7 +362,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
   @spec owner_watch_ast() :: Macro.t()
   def owner_watch_ast do
     owner_watch_env = @owner_watch_env
-    owner_lost_exit = Mutare.Sandbox.Command.owner_lost_exit()
+    owner_lost_exit = Exit.owner_lost()
 
     quote do
       case System.get_env(unquote(owner_watch_env)) do
@@ -325,7 +389,4 @@ defmodule Mutare.Sandbox.Command.Invocation do
       end
     end
   end
-
-  defp maybe_cap(env, nil), do: env
-  defp maybe_cap(env, cap), do: [{@timeout_env, Integer.to_string(cap)} | env]
 end

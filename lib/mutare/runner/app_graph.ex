@@ -27,8 +27,7 @@ defmodule Mutare.Runner.AppGraph do
   """
 
   alias Mutare.Project
-  alias Mutare.Sandbox.Command
-  alias Mutare.Sandbox.Command.Invocation
+  alias Mutare.Sandbox.Command.{Exit, Invocation}
   alias Mutare.Selector
 
   require Logger
@@ -91,7 +90,7 @@ defmodule Mutare.Runner.AppGraph do
     names = Enum.map(apps, & &1.app)
     {output, status} = Invocation.mix(sandbox, @args, Selector.baseline())
 
-    if Command.success?(status) do
+    if Exit.success?(status) do
       case parse(output, names) do
         {:ok, forward} -> {:ok, forward}
         :error -> degrade(output, "incomplete dependency tree in the mix eval output")

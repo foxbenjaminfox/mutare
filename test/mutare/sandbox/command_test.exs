@@ -2,59 +2,60 @@ defmodule Mutare.Sandbox.CommandTest do
   use ExUnit.Case, async: true
 
   alias Mutare.Sandbox.Command
+  alias Mutare.Sandbox.Command.Exit
 
   test "timeout exit code constant" do
-    assert Command.timeout_exit() == 124
+    assert Exit.timeout() == 124
   end
 
   test "failure exit is distinct from the codes a harness failure can produce" do
-    assert Command.failure_exit() == 101
+    assert Exit.failure() == 101
     # 0 = success, 1 = mix/compile failure, 2 = ExUnit default, 124 = timeout.
-    refute Command.failure_exit() in [0, 1, 2, Command.timeout_exit()]
+    refute Exit.failure() in [0, 1, 2, Exit.timeout()]
   end
 
-  describe "success?/1 is the single home for \"0 means success\"" do
+  describe "Exit.success?/1 is the single home for \"0 means success\"" do
     test "0 is the only success code" do
-      assert Command.success?(0)
+      assert Exit.success?(0)
     end
 
     test "every other exit code is not success" do
-      for status <- [1, 2, 3, Command.failure_exit(), Command.timeout_exit(), 137, 255] do
-        refute Command.success?(status), "exit #{status} must not read as success"
+      for status <- [1, 2, 3, Exit.failure(), Exit.timeout(), 137, 255] do
+        refute Exit.success?(status), "exit #{status} must not read as success"
       end
     end
 
-    test "agrees with outcome/1 on the pass code" do
+    test "agrees with decode/1 on the pass code" do
       # The two readings of exit 0 must never drift apart.
-      assert Command.success?(0) == (Command.outcome(0) == :passed)
+      assert Exit.success?(0) == (Exit.decode(0) == :passed)
     end
   end
 
-  describe "outcome/1 decodes the exit-code contract" do
+  describe "Exit.decode/1 decodes the exit-code contract" do
     test "0 is a pass (the mutation survived)" do
-      assert Command.outcome(0) == :passed
+      assert Exit.decode(0) == :passed
     end
 
     test "the forced failure exit is a clean test failure (a kill)" do
-      assert Command.outcome(Command.failure_exit()) == :failed
+      assert Exit.decode(Exit.failure()) == :failed
     end
 
     test "the watcher's exit code is a timeout" do
-      assert Command.outcome(Command.timeout_exit()) == :timeout
+      assert Exit.decode(Exit.timeout()) == :timeout
     end
 
     test "an OS SIGKILL (128 + 9, the OOM killer's signature) is :sigkilled" do
       # A harness error by verdict, but decoded distinctly so the runner never
       # retries it — a likely-OOM mutant re-detonates on a back-to-back re-run.
-      assert Command.outcome(Command.sigkill_exit()) == :sigkilled
-      assert Command.sigkill_exit() == 137
+      assert Exit.decode(Exit.sigkill()) == :sigkilled
+      assert Exit.sigkill() == 137
     end
 
     test "every other exit code is a harness error, never a kill" do
       # 1 = compile error / missing dep / broken helper; 2 = ExUnit default were
       # --exit-status ever dropped; 139 = 128 + SIGSEGV. None is a kill.
       for status <- [1, 2, 3, 127, 139, 255] do
-        assert Command.outcome(status) == :harness_error,
+        assert Exit.decode(status) == :harness_error,
                "exit #{status} must not be miscounted as a kill"
       end
     end
@@ -93,8 +94,8 @@ defmodule Mutare.Sandbox.CommandTest do
     test "output never overrides a real verdict (pass/fail/timeout win)" do
       # The refinement only applies to the otherwise-`:harness_error` case.
       assert Command.outcome(0, @test_compile_error) == :passed
-      assert Command.outcome(Command.failure_exit(), @test_compile_error) == :failed
-      assert Command.outcome(Command.timeout_exit(), @test_compile_error) == :timeout
+      assert Command.outcome(Exit.failure(), @test_compile_error) == :failed
+      assert Command.outcome(Exit.timeout(), @test_compile_error) == :timeout
     end
 
     # The BEAM prints this to stderr (merged into the captured output) and aborts
@@ -114,8 +115,8 @@ defmodule Mutare.Sandbox.CommandTest do
 
     test "the atom banner never overrides a real verdict (pass/fail/timeout win)" do
       assert Command.outcome(0, @atom_crash) == :passed
-      assert Command.outcome(Command.failure_exit(), @atom_crash) == :failed
-      assert Command.outcome(Command.timeout_exit(), @atom_crash) == :timeout
+      assert Command.outcome(Exit.failure(), @atom_crash) == :failed
+      assert Command.outcome(Exit.timeout(), @atom_crash) == :timeout
     end
 
     # The emulator's self-erasing boot crash: a supervised child fails to start under
@@ -141,8 +142,8 @@ defmodule Mutare.Sandbox.CommandTest do
 
     test "the boot banner never overrides a real verdict (pass/fail/timeout win)" do
       assert Command.outcome(0, @boot_crash) == :passed
-      assert Command.outcome(Command.failure_exit(), @boot_crash) == :failed
-      assert Command.outcome(Command.timeout_exit(), @boot_crash) == :timeout
+      assert Command.outcome(Exit.failure(), @boot_crash) == :failed
+      assert Command.outcome(Exit.timeout(), @boot_crash) == :timeout
     end
 
     test "a detected kill is never masked by a co-occurring boot banner" do
@@ -155,10 +156,10 @@ defmodule Mutare.Sandbox.CommandTest do
       # A SIGKILLed run's output stops wherever the kill landed, so banner-matching
       # against it would be guesswork — and none of the markers' causes exits via
       # SIGKILL anyway (a compile error exits 1; atom exhaustion aborts the VM itself).
-      assert Command.outcome(Command.sigkill_exit(), "") == :sigkilled
-      assert Command.outcome(Command.sigkill_exit(), @test_compile_error) == :sigkilled
-      assert Command.outcome(Command.sigkill_exit(), @atom_crash) == :sigkilled
-      assert Command.outcome(Command.sigkill_exit(), @boot_crash) == :sigkilled
+      assert Command.outcome(Exit.sigkill(), "") == :sigkilled
+      assert Command.outcome(Exit.sigkill(), @test_compile_error) == :sigkilled
+      assert Command.outcome(Exit.sigkill(), @atom_crash) == :sigkilled
+      assert Command.outcome(Exit.sigkill(), @boot_crash) == :sigkilled
     end
   end
 
@@ -173,7 +174,7 @@ defmodule Mutare.Sandbox.CommandTest do
 
     test "forces the failure exit status so a kill is distinct from a harness error" do
       assert flag_value(Command.test_argv([]), "--exit-status") ==
-               Integer.to_string(Command.failure_exit())
+               Integer.to_string(Exit.failure())
     end
 
     test "forces --max-failures 1, since one failure is enough to declare a kill" do

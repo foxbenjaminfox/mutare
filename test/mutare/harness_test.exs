@@ -30,7 +30,7 @@ defmodule Mutare.HarnessTest do
 
   alias Mutare.Report
   alias Mutare.Sandbox.Command
-  alias Mutare.Sandbox.Command.Result
+  alias Mutare.Sandbox.Command.{Exit, Result}
   alias Mutare.Test.Project
 
   @moduletag :runner
@@ -74,7 +74,7 @@ defmodule Mutare.HarnessTest do
     # The forced `--exit-status` is what makes this a `:failed` (kill) rather than
     # an ambiguous non-zero exit indistinguishable from infrastructure failure.
     assert %Result{outcome: :failed, exit_status: status} = Command.timed_test(project, [], 0)
-    assert status == Command.failure_exit()
+    assert status == Exit.failure()
   end
 
   test "a lib that can't compile is a harness error, NOT a kill" do
@@ -101,7 +101,7 @@ defmodule Mutare.HarnessTest do
     assert %Result{outcome: :harness_error, exit_status: status} =
              Command.timed_test(project, [], 0)
 
-    refute status in [0, Command.failure_exit()]
+    refute status in [0, Exit.failure()]
   end
 
   test "a test SUITE that can't compile is a kill, not a harness error" do
@@ -127,7 +127,7 @@ defmodule Mutare.HarnessTest do
 
     # Still exit 1 (a compile error), but the output refinement makes it a kill,
     # not the infra `:harness_error` a bare exit-code read would give.
-    refute status in [0, Command.failure_exit()]
+    refute status in [0, Exit.failure()]
   end
 
   describe "through the runner" do

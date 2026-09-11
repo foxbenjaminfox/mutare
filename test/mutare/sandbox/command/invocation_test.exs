@@ -3,8 +3,7 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
   use ExUnit.Case, async: false
 
   alias Mutare.Sandbox
-  alias Mutare.Sandbox.Command
-  alias Mutare.Sandbox.Command.Invocation
+  alias Mutare.Sandbox.Command.{Exit, Invocation}
 
   setup do
     on_exit(fn ->
@@ -20,22 +19,88 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
     assert Invocation.owner_watch_env() == "MUTARE_OWNER_WATCH"
   end
 
-  test "reserved_env_names/0 lists the variables Mutare sets on every sandbox mix" do
-    names = Invocation.reserved_env_names()
-    # The base env and the cap vars are always reserved (a `:partition_env` colliding
-    # with one of these is rejected by `Mutare.Options`).
-    assert "MIX_ENV" in names
-    assert Invocation.timeout_env() in names
-    assert Invocation.compile_timeout_env() in names
-    assert Invocation.owner_watch_env() in names
-    # Carries the `:max_heap_mb` cap when that option is on.
-    assert "ELIXIR_ERL_OPTIONS" in names
-    # Set on the one compile (`CompilerOptions.compiler_env/0`), which appends the
-    # partition entry after it — so a `:partition_env` naming it would duplicate the key.
-    assert "ERL_COMPILER_OPTIONS" in names
-    assert Enum.all?(Mutare.Sandbox.CompilerOptions.compiler_env(), fn {k, _} -> k in names end)
-    # Sourced from the accessors that build the env, so no duplicates can creep in.
-    assert names == Enum.uniq(names)
+  describe "environment/2 (the one env builder every sandbox mix goes through)" do
+    defp keys(env), do: Enum.map(env, fn {k, _} -> k end)
+
+    test "the base env is always present, selector vars included" do
+      env = Invocation.environment(Mutare.Selector.baseline())
+      assert {"MIX_ENV", "test"} in env
+      assert {Invocation.owner_watch_env(), "1"} in env
+      assert Mutare.Selector.env_var() in keys(env)
+      assert Mutare.Selector.namespace_env() in keys(env)
+      assert Mutare.Selector.override_env() in keys(env)
+      assert Mutare.Coverage.Recorder.fixture_override_env() in keys(env)
+    end
+
+    test "an unarmed option emits nothing, an armed one emits exactly its entries" do
+      base = Invocation.environment(0)
+      extra = fn opts -> Invocation.environment(0, opts) -- base end
+
+      assert extra.(cap: nil) == []
+      assert extra.(cap: 1500) == [{Invocation.timeout_env(), "1500"}]
+      assert extra.(compile_cap: 90_000) == [{Invocation.compile_timeout_env(), "90000"}]
+      assert extra.(compile: false) == []
+      assert extra.(compile: true) == Mutare.Sandbox.CompilerOptions.compiler_env()
+
+      assert extra.(coverage: {"/s/cov.dump", "/s"}) == [
+               {Mutare.Coverage.Recorder.env_var(), "1"},
+               {Mutare.Coverage.Recorder.dump_path_env(), "/s/cov.dump"},
+               {Mutare.Coverage.Recorder.root_env(), "/s"}
+             ]
+
+      assert extra.(max_heap_mb: 64) == Invocation.heap_cap_env(64)
+      assert extra.(partition: [{"MIX_TEST_PARTITION", "3"}]) == [{"MIX_TEST_PARTITION", "3"}]
+    end
+
+    test "the partition entry is appended last, so it never lands under a reserved key" do
+      env =
+        Invocation.environment({"lib/a.ex", 2},
+          cap: 1,
+          compile: true,
+          coverage: {"d", "r"},
+          max_heap_mb: 1,
+          partition: [{"MIX_TEST_PARTITION", "2"}]
+        )
+
+      assert List.last(env) == {"MIX_TEST_PARTITION", "2"}
+      assert keys(env) == Enum.uniq(keys(env))
+    end
+  end
+
+  describe "reserved_env_names/0 is derived from the builder" do
+    # The regression this design closes: `ERL_COMPILER_OPTIONS` was once set by the
+    # compile invocation but missing from a hand-maintained reserved list, so a
+    # `:partition_env` naming it passed validation and produced a duplicate key.
+    # Now every key any run kind can emit is reserved by construction.
+    test "every key any run kind's environment emits is reserved" do
+      names = Invocation.reserved_env_names()
+
+      run_kinds = [
+        [compile: true, compile_cap: 1],
+        [max_heap_mb: 1],
+        [coverage: {"d", "r"}, cap: 1, max_heap_mb: 1],
+        [cap: 1, max_heap_mb: 1],
+        []
+      ]
+
+      for opts <- run_kinds, id <- [Mutare.Selector.baseline(), {"lib/a.ex", 1}] do
+        for {key, _} <- Invocation.environment(id, opts) do
+          assert key in names, "#{key} (emitted for #{inspect(opts)}) is not reserved"
+        end
+      end
+    end
+
+    test "names the known set, without duplicates, and never the partition entry" do
+      names = Invocation.reserved_env_names()
+      assert "MIX_ENV" in names
+      assert Invocation.timeout_env() in names
+      assert Invocation.compile_timeout_env() in names
+      assert Invocation.owner_watch_env() in names
+      assert "ELIXIR_ERL_OPTIONS" in names
+      assert "ERL_COMPILER_OPTIONS" in names
+      assert names == Enum.uniq(names)
+      refute "MIX_TEST_PARTITION" in names
+    end
   end
 
   describe "heap_cap_env/1 (the :max_heap_mb per-process heap cap)" do
@@ -76,7 +141,7 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
 
     assert rendered =~ ~s|System.get_env("#{Invocation.timeout_env()}")|
     # The watcher signals the timeout via the exit code the Command contract decodes.
-    assert rendered =~ "System.halt(#{Command.timeout_exit()})"
+    assert rendered =~ "System.halt(#{Exit.timeout()})"
   end
 
   test "watcher AST is inert when no cap is set" do
@@ -97,7 +162,7 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
     # runner's compile invocation sets it — never from a mutant run's test cap.
     assert rendered =~ ~s|System.get_env("#{Invocation.compile_timeout_env()}")|
     refute rendered =~ ~s|"#{Invocation.timeout_env()}"|
-    assert rendered =~ "System.halt(#{Command.timeout_exit()})"
+    assert rendered =~ "System.halt(#{Exit.timeout()})"
   end
 
   test "compile-watcher AST is inert when no cap is set" do
@@ -112,7 +177,7 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
 
     assert rendered =~ ~s|System.get_env("#{Invocation.owner_watch_env()}")|
     # The watcher signals owner death via the code the Command contract reserves.
-    assert rendered =~ "System.halt(#{Command.owner_lost_exit()})"
+    assert rendered =~ "System.halt(#{Exit.owner_lost()})"
   end
 
   test "owner-watch AST is inert when the gate is not set" do

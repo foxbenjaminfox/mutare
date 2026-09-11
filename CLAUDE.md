@@ -97,10 +97,13 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   helper — the owner-death watcher also prefixes `config/config.exs`, covering the one compile), and
   seeds the deps'/app's compiled `_build` so the one compile is minimal. `Ownership` is the
   safety guard — the one place that may `rm_rf!` a sandbox — deciding whether a path is adopted,
-  wiped, or refused untouched (it never touches a non-directory or an unmarked non-empty dir). `Command` is the **run side of the
-  exit-code contract**: it runs a mutant `mix test` and decodes the exit code into a typed outcome
+  wiped, or refused untouched (it never touches a non-directory or an unmarked non-empty dir). `Command` is the **decoding side of the
+  exit-code contract**: it runs a mutant `mix test` and reads exit code + output into a typed outcome
   (`:passed`/`:failed`/`:timeout`/`:sigkilled`/`:harness_error`, refined from output into
-  `:suite_compile_error`/`:atom_exhausted`/`:boot_failure`).
+  `:suite_compile_error`/`:atom_exhausted`/`:boot_failure`); the codes themselves are the leaf
+  `Command.Exit`, which the watcher ASTs in `Command.Invocation` also read. `Invocation.environment/2`
+  is the one env builder every sandbox `mix` goes through (named run options, no raw env passthrough),
+  and `reserved_env_names/0` is *derived* from it.
 - **`Mutare.Runner`** (+ `Compile`, `Baseline`, `CoverageProbe`, `AppGraph`, `Stream`, `MutantRun`,
   `Partitions`, `RunCtx`) — the orchestrator, now thin: it sequences the phases and owns sandbox
   lifecycle + the run-level harness-error abort guard, delegating the heavy concerns to submodules.
@@ -165,7 +168,7 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   generated code.** The `:persistent_term` selection key, `MUTARE_ACTIVE_MUTANT`, and
   `MUTARE_MUTANT_NAMESPACE` live in
   `Mutare.Selector`; the timeout and owner-death env vars + watchers in
-  `Mutare.Sandbox.Command.Invocation` and their exit codes in `Mutare.Sandbox.Command`; the
+  `Mutare.Sandbox.Command.Invocation` and their exit codes in `Mutare.Sandbox.Command.Exit`; the
   coverage contract (`MUTARE_COVERAGE`, `:mutare_track`, the ETS tables, `MutareCov`, the dump
   file) in `Mutare.Coverage.Recorder`. `Mutare.Transform` emits the selectors/coverage into the
   metamutant; `Mutare.Sandbox` emits the reader/watchers/helper into the bootstrap (and the

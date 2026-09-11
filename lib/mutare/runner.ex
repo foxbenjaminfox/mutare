@@ -74,8 +74,6 @@ defmodule Mutare.Runner do
     Stream
   }
 
-  alias Mutare.Sandbox.Command.Invocation
-
   # `sandbox` is where the run *was* materialised. For a throwaway
   # (`--no-keep-sandbox`, no `--sandbox`) run it is removed once the run completes —
   # the path is informational, not a live dir; the default kept run and `--sandbox`
@@ -283,8 +281,10 @@ defmodule Mutare.Runner do
       # suite itself fits under it — a too-small cap fails the baseline loudly
       # instead of minting false kills mid-run. (The one metamutant compile is
       # deliberately *not* capped — see `Invocation.heap_cap_env/1`.)
-      heap_env = Invocation.heap_cap_env(options.max_heap_mb)
-      fixed_env = Partitions.entry(options.partition_env, 1) ++ heap_env
+      fixed_opts = [
+        partition: Partitions.entry(options.partition_env, 1),
+        max_heap_mb: options.max_heap_mb
+      ]
 
       with {:ok, baseline_ms} <-
              run_baseline(
@@ -292,11 +292,11 @@ defmodule Mutare.Runner do
                sandbox,
                options.baseline_runs,
                options.baseline_retries,
-               fixed_env
+               fixed_opts
              ) do
         # Verbose-only detail: the baseline timing the cap is scaled from.
         on_phase.({:baseline_done, baseline_ms})
-        ctx = build_run_ctx(schema, sandbox, context, baseline_ms, fixed_env, hydrate)
+        ctx = build_run_ctx(schema, sandbox, context, baseline_ms, fixed_opts, hydrate)
 
         # The run configuration the verbose running line reports (worker count); fired
         # just before `{:running, total}` so the reporter has it when it renders the label.
@@ -353,13 +353,15 @@ defmodule Mutare.Runner do
 
   # The coverage probe + per-app test scopes + timeout cap, assembled into the `RunCtx` threaded
   # to every per-mutant `classify`. Runs after a green baseline, on the fixed (pre-pool) partition.
-  defp build_run_ctx(schema, sandbox, %Context{} = context, baseline_ms, fixed_env, hydrate) do
+  defp build_run_ctx(schema, sandbox, %Context{} = context, baseline_ms, fixed_opts, hydrate) do
     options = context.options
     on_phase = Context.hook(context, :on_phase)
     mode = options.test_selection
     on_phase.(:coverage_probe)
     cap = timeout_cap(baseline_ms, schema, options)
-    selection = CoverageProbe.run(sandbox, schema, mode, fixed_env, probe_cap(cap, options))
+
+    selection =
+      CoverageProbe.run(sandbox, schema, mode, [{:cap, probe_cap(cap, options)} | fixed_opts])
 
     # Verbose-only detail: the per-mutant coverage breakdown plus the derived timeout
     # cap (the probe summary is pure; this assembles the display payload).
@@ -378,7 +380,7 @@ defmodule Mutare.Runner do
       retries: options.harness_retries,
       kill_runs: options.kill_runs,
       hydrate: hydrate,
-      heap_env: Invocation.heap_cap_env(options.max_heap_mb)
+      max_heap_mb: options.max_heap_mb
     }
   end
 
@@ -414,9 +416,9 @@ defmodule Mutare.Runner do
   # notification fires immediately before `Baseline.run/4` inside the `with`
   # chain (where a bare side effect between `<-` clauses can't live). `env` carries
   # the fixed partition entry (or `[]`).
-  defp run_baseline(on_phase, sandbox, baseline_runs, baseline_retries, env) do
+  defp run_baseline(on_phase, sandbox, baseline_runs, baseline_retries, opts) do
     on_phase.(:baseline)
-    Baseline.run(sandbox, baseline_runs, baseline_retries, env)
+    Baseline.run(sandbox, baseline_runs, baseline_retries, opts)
   end
 
   # Per-mutant wall-clock cap. An explicit `:timeout` (ms) wins; otherwise
