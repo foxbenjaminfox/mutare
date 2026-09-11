@@ -4,8 +4,8 @@ defmodule Mutare.Transform.PipeEmit do
   # `x |> case … end` does not compile — `Kernel.|>/2` cannot pipe into a `case`.
   # When ordinary selector emission wraps a pipe stage, the selector lands in exactly that
   # illegal RHS position. Run on the parent `|>` during the same postwalk (the RHS is already
-  # emitted), this lifts the selector out of the pipe into a one-shot closure invoked on the
-  # piped value:
+  # emitted, and carries the marker `Render.selector_case/2` stamped on it), this lifts the
+  # selector out of the pipe into a one-shot closure invoked on the piped value:
   #
   #     lhs |> (fn mutare_piped ->
   #               case <subject> do
@@ -26,22 +26,23 @@ defmodule Mutare.Transform.PipeEmit do
   """
   @spec hoist(Macro.t(), Ctx.t()) :: Macro.t()
   def hoist({:|>, meta, [lhs, rhs]} = node, ctx) do
-    # Recognise a block-wrapped selector `case` as the pipe's RHS, then confirm its subject in
-    # either supported shape: an inline `:persistent_term` read or the hoisted active-id variable.
-    with {:ok, subject, clauses} <- Render.selector_case_parts(rhs),
-         true <- Mutare.Metamutant.subject?(subject, ctx.config.active_var) do
-      var = {ctx.config.piped_var, [], nil}
+    # The pipe's RHS is one of our selectors iff it carries the builder's marker; the subject
+    # (inline read or hoisted variable) is reused as-is inside the closure.
+    case Render.selector_case_parts(rhs) do
+      {:ok, subject, clauses} ->
+        var = {ctx.config.piped_var, [], nil}
 
-      piped =
-        Enum.map(clauses, fn {:->, m, [pat, body]} ->
-          {:->, m, [pat, pipe_tail(var, body)]}
-        end)
+        piped =
+          Enum.map(clauses, fn {:->, m, [pat, body]} ->
+            {:->, m, [pat, pipe_tail(var, body)]}
+          end)
 
-      closure = {:fn, [], [{:->, [], [[var], Render.selector_case(subject, piped)]}]}
-      invocation = {{:., [], [closure]}, [], []}
-      {:|>, meta, [lhs, invocation]}
-    else
-      _ -> node
+        closure = {:fn, [], [{:->, [], [[var], Render.selector_case(subject, piped)]}]}
+        invocation = {{:., [], [closure]}, [], []}
+        {:|>, meta, [lhs, invocation]}
+
+      :error ->
+        node
     end
   end
 

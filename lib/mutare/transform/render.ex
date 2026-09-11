@@ -2,6 +2,7 @@ defmodule Mutare.Transform.Render do
   @moduledoc false
 
   alias Mutare.AST
+  alias Mutare.Transform.Meta
 
   # Sourceror rendering workarounds for the metamutant, kept apart from the
   # semantic transform. The metamutant is a throwaway build artifact that only
@@ -35,23 +36,27 @@ defmodule Mutare.Transform.Render do
 
   @doc """
   Build a selector `case` — `case <subject> do <clauses> end` — `block_wrap/1`ped so
-  it renders safely in any position.
+  it renders safely in any position, and marked as emit-built (`Meta.put_selector/1`).
 
-  This and `selector_case_parts/1` are the single home for the selector shape, so the
-  one builder (`Mutare.Transform.SelectorEmit.selector_case/3`) and the one reader that must reach back
-  into a just-built selector (`Mutare.Transform.PipeEmit.hoist/2`, which lifts the `case`
-  out of an illegal pipe-RHS position) cannot encode the shape independently and
-  silently drift — a mismatch there would yield an uncompilable metamutant with no
-  error pointing back here.
+  This and `selector_case_parts/1` are the single home for the selector shape. The one
+  reader that must reach back into a just-built selector (`Mutare.Transform.PipeEmit.hoist/2`,
+  which lifts the `case` out of an illegal pipe-RHS position) recognises it by the marker
+  this builder stamps, not by reconstructing its shape — so a user's own `case` can never be
+  mistaken for one, and the two can't drift apart silently (a mismatch would yield an
+  uncompilable metamutant with no error pointing back here). The marker is internal node
+  metadata, stripped with the rest before rendering.
   """
-  def selector_case(subject, clauses), do: block_wrap({:case, [], [subject, [do: clauses]]})
+  def selector_case(subject, clauses),
+    do: block_wrap(Meta.put_selector({:case, [], [subject, [do: clauses]]}))
 
   @doc """
   Destructure a node built by `selector_case/2` into `{:ok, subject, clauses}`, or
-  `:error` for any other shape. The inverse of `selector_case/2`.
+  `:error` for anything else — including a `case` of the same shape the emit did not build.
+  The inverse of `selector_case/2`.
   """
-  def selector_case_parts({:__block__, _bmeta, [{:case, _cmeta, [subject, [do: clauses]]}]}),
-    do: {:ok, subject, clauses}
+  def selector_case_parts({:__block__, _bmeta, [{:case, _cmeta, [subject, [do: clauses]]} = c]}) do
+    if Meta.selector?(c), do: {:ok, subject, clauses}, else: :error
+  end
 
   def selector_case_parts(_node), do: :error
 

@@ -212,6 +212,27 @@ defmodule Mutare.Transform.Meta do
 
   def delete_tag(node), do: node
 
+  # --- emitted-selector marker -----------------------------------------------
+
+  @doc """
+  Mark a `case` node as a selector the emit built (`:mutare_selector`), so a later emit step
+  that must reach back into it — `Mutare.Transform.PipeEmit.hoist/2`, lifting a selector out of
+  an illegal pipe-RHS position — recognises it by this handoff rather than by its shape. Stamped
+  by the one builder, `Mutare.Transform.Render.selector_case/2`; total over a bare literal.
+  """
+  @spec put_selector(Macro.t()) :: Macro.t()
+  def put_selector({form, meta, args}) when is_list(meta),
+    do: {form, Keyword.put(meta, MetaKeys.selector_key(), true), args}
+
+  def put_selector(node), do: node
+
+  @doc "Whether `node` is a selector `case` the emit built (`put_selector/1`); `false` for a bare literal."
+  @spec selector?(Macro.t()) :: boolean()
+  def selector?({_form, meta, _args}) when is_list(meta),
+    do: Keyword.get(meta, MetaKeys.selector_key(), false)
+
+  def selector?(_node), do: false
+
   # --- mutator-requested position marks --------------------------------------
 
   @doc """

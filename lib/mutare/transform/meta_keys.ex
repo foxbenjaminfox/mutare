@@ -64,8 +64,10 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_marks`            — mutator-requested position marks (label set)   (Resolve.ArgumentMarks, read by Attach.offer)
   #   * `:mutare_mark_call`        — `{module_key, fun, arity}` of a call some mark declaration matched (Resolve, read by ConfigMatches)
   #   * `:mutare_unit_tail`        — a unit-returning function's leaf return tail    (UnitReturns, read by Attach.offer + Analyze.Returns)
+  #   * `:mutare_selector`         — marks a selector `case` the emit built           (Render.selector_case, read by PipeEmit.hoist)
   @bookkeeping_keys [
     tag_key: :mutare_tag,
+    selector_key: :mutare_selector,
     nid_key: :mutare_nid,
     marks_key: :mutare_marks,
     mark_call_key: :mutare_mark_call,

@@ -1080,8 +1080,9 @@ or a tupled-`case` clause's `{<var>, <pat>}` pattern — and threads it through 
 subject recognisers and the lifted/tupled gate matchers (`mutant_id/2`/`gate_id/2`/
 `pattern_mutant/2`). So a poison inside a hoisted in-place selector maps back to its mutant
 id; a user `case` is safe because the dispatch name is salted away from every identifier
-the source uses, so it can never equal a user scrutinee's name. `PipeEmit.hoist` recognises
-both subject shapes directly (it has `ctx.active_var`), so a hoisted pipe-stage selector is
+the source uses, so it can never equal a user scrutinee's name. `PipeEmit.hoist` needs neither
+shape: `Render.selector_case/2` marks every selector it builds (`Meta.put_selector/1`), and the
+hoist recognises a pipe-RHS selector by that marker, so a hoisted pipe-stage selector is
 still lifted out of its illegal `x |> case` position. (This shares one recovered name with
 the salt fix `active_var/1` was introduced for — the `<var> === <id>` gate match — rather
 than re-discovering it per `case`: whenever a hoisted bare-variable subject exists, the
