@@ -15,23 +15,24 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
 
   @typep diag :: %{warn?: boolean(), file: String.t()}
 
-  @doc """
-  Stamp a call's meta with known-macro argument routing, when the registry matches it.
+  # The slice of the resolve pass's env this stamp reads: the known-macro registry, whether the
+  # call is a `|>` right-hand side (for its effective arity), and the diagnostics wiring (whether
+  # advisory warnings print, and the file that labels them) — see
+  # `Mutare.Transform.Resolve.annotate/3`.
+  @typep env :: %{
+           :call_routes => Routes.registry(),
+           :pipe_mode => Mutator.pipe_mode(),
+           :diag => diag(),
+           optional(atom()) => term()
+         }
 
-  `diag` carries the pass's diagnostics wiring (whether advisory warnings print, and the
-  file that labels them) — see `Mutare.Transform.Resolve.annotate/3`.
+  @doc """
+  Stamp a call's meta with known-macro argument routing, when the registry in `env` matches it.
   """
-  @spec stamp(
-          keyword(),
-          Spec.module_key() | nil,
-          atom(),
-          [Macro.t()],
-          Macro.t(),
-          Routes.registry(),
-          Mutator.pipe_mode(),
-          diag()
-        ) :: keyword()
-  def stamp(meta, module_key, fun, args, call_node, registry, pipe_mode, diag) do
+  @spec stamp(keyword(), Spec.module_key() | nil, atom(), [Macro.t()], Macro.t(), env()) ::
+          keyword()
+  def stamp(meta, module_key, fun, args, call_node, env) do
+    %{call_routes: registry, pipe_mode: pipe_mode, diag: diag} = env
     arity = Mutator.effective_arity(args, pipe_mode)
 
     case Routes.lookup(registry, module_key, fun, arity) do

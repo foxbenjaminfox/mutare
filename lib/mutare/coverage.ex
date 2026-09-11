@@ -30,8 +30,7 @@ defmodule Mutare.Coverage do
       manufacture a false survivor.
 
   Two more keys carry the finer **test-case** granularity `:tests` selection uses
-  (both keyed by mutant id; either one absent reads as empty, degrading `:tests` to
-  `:coverage`):
+  (both keyed by mutant id):
 
     * `:by_test` — `%{mutant id => MapSet(runnable test names)}`: the individual
       ExUnit tests (`test `/`doctest `/`property ` names) that covered each id, so a
@@ -44,7 +43,9 @@ defmodule Mutare.Coverage do
 
   `Mutare.Runner.CoverageProbe` reconciles them all. A valid empty aggregate means
   no emitted mutant was covered. The helper writes an explicit error if any
-  capture table is missing, so lost capture data cannot masquerade as zero hits.
+  capture table is missing, so lost capture data cannot masquerade as zero hits,
+  and it always writes all five keys — a dump missing one is malformed, not a
+  partial capture, and is rejected like any other wrong shape.
 
   Schema dumps record `{file_namespace, local_id}` identities; standalone
   transforms record integers. On disk, each id collection groups local ids under
@@ -77,17 +78,17 @@ defmodule Mutare.Coverage do
       covered it (`:tests` narrowing).
     * `wholefile` — ids with a labeled but non-narrowable attribution
       (`setup_all`/`on_exit`), which `:tests` must not narrow to named tests.
-
-  An absent `by_test`/`wholefile` key reads as empty (degrading `:tests` to
-  `:coverage`).
   """
-  @type t :: %{
+  @type t :: %__MODULE__{
           aggregate: MapSet.t(Mutare.RuntimeId.t()),
           by_file: %{String.t() => MapSet.t(Mutare.RuntimeId.t())},
           unlabeled: MapSet.t(Mutare.RuntimeId.t()),
           by_test: %{Mutare.RuntimeId.t() => MapSet.t(String.t())},
           wholefile: MapSet.t(Mutare.RuntimeId.t())
         }
+
+  @enforce_keys [:aggregate, :by_file, :unlabeled, :by_test, :wholefile]
+  defstruct @enforce_keys
 
   @doc """
   Read and decode the probe's coverage dump at `path`.
@@ -106,23 +107,8 @@ defmodule Mutare.Coverage do
     with {:ok, binary} <- File.read(path),
          {:ok, decoded} <- decode(binary),
          :ok <- valid_shape(decoded),
-         {:ok, decoded} <- translate(decoded, report_ids) do
-      %{
-        aggregate: aggregate,
-        by_file: by_file,
-        unlabeled: unlabeled,
-        by_test: by_test,
-        wholefile: wholefile
-      } = decoded
-
-      {:ok,
-       %{
-         aggregate: MapSet.new(aggregate),
-         by_file: Map.new(by_file, fn {file, ids} -> {file, MapSet.new(ids)} end),
-         unlabeled: MapSet.new(unlabeled),
-         by_test: Map.new(by_test, fn {id, names} -> {id, MapSet.new(names)} end),
-         wholefile: MapSet.new(wholefile)
-       }}
+         {:ok, coverage} <- translate(decoded, report_ids) do
+      {:ok, coverage}
     else
       {:error, reason} ->
         Logger.warning(
@@ -138,40 +124,91 @@ defmodule Mutare.Coverage do
   end
 
   # Flatten each namespace group back to runtime identities and, given an index, convert those to
-  # report ids — every id-bearing field together. A missing identity is uncertainty, never an absent
-  # hit: the runner must fall back to running every mutant.
+  # report ids — every id-bearing field together, into the `MapSet`s the runner consumes. A
+  # missing identity is uncertainty, never an absent hit: the first one stops the translation
+  # with `{:error, {:unknown_runtime_id, id}}`, and the runner falls back to running every
+  # mutant.
   defp translate(decoded, report_ids) do
-    id = if report_ids, do: &Map.fetch!(report_ids, &1), else: & &1
+    lookup = lookup(report_ids)
 
-    ids = fn grouped ->
-      for {namespace, locals} <- grouped, local <- locals, do: id.(runtime_id(namespace, local))
+    with {:ok, aggregate} <- id_set(decoded.aggregate, lookup),
+         {:ok, unlabeled} <- id_set(decoded.unlabeled, lookup),
+         {:ok, wholefile} <- id_set(decoded.wholefile, lookup),
+         {:ok, by_file} <- map_values(decoded.by_file, &id_set(&1, lookup)),
+         {:ok, by_test} <- names_by_id(decoded.by_test, lookup) do
+      {:ok,
+       %__MODULE__{
+         aggregate: aggregate,
+         by_file: by_file,
+         unlabeled: unlabeled,
+         by_test: by_test,
+         wholefile: wholefile
+       }}
     end
+  end
 
-    by_test =
-      for {namespace, names_by_id} <- Map.get(decoded, :by_test, %{}),
-          {local, names} <- names_by_id,
-          into: %{},
-          do: {id.(runtime_id(namespace, local)), names}
+  # The identity translation: report ids through the index, or the runtime identities as
+  # recorded when there is none. Returns `{:ok, id}` or `:error` for an identity the index lacks.
+  defp lookup(nil), do: &{:ok, &1}
+  defp lookup(report_ids), do: &Map.fetch(report_ids, &1)
 
-    {:ok,
-     %{
-       aggregate: ids.(decoded.aggregate),
-       by_file: Map.new(decoded.by_file, fn {file, grouped} -> {file, ids.(grouped)} end),
-       unlabeled: ids.(Map.get(decoded, :unlabeled, %{})),
-       by_test: by_test,
-       wholefile: ids.(Map.get(decoded, :wholefile, %{}))
-     }}
-  rescue
-    error in KeyError -> {:error, {:unknown_runtime_id, error.key}}
+  # A namespace-grouped id collection → `{:ok, MapSet}` of translated ids.
+  defp id_set(grouped, lookup) do
+    grouped
+    |> Enum.flat_map(fn {namespace, locals} -> Enum.map(locals, &runtime_id(namespace, &1)) end)
+    |> translate_all(lookup)
+    |> case do
+      {:ok, ids} -> {:ok, MapSet.new(ids)}
+      error -> error
+    end
+  end
+
+  # The per-test attribution — `%{namespace => %{local => names}}` — flattened to
+  # `%{id => MapSet(names)}` with every id translated.
+  defp names_by_id(by_test, lookup) do
+    entries =
+      for {namespace, names_by_local} <- by_test,
+          {local, names} <- names_by_local,
+          do: {runtime_id(namespace, local), MapSet.new(names)}
+
+    with {:ok, ids} <- translate_all(Enum.map(entries, &elem(&1, 0)), lookup) do
+      {:ok, ids |> Enum.zip(Enum.map(entries, &elem(&1, 1))) |> Map.new()}
+    end
+  end
+
+  # Translate every identity (order preserved), or stop at the first the index lacks.
+  defp translate_all(runtime_ids, lookup) do
+    Enum.reduce_while(runtime_ids, {:ok, []}, fn runtime_id, {:ok, acc} ->
+      case lookup.(runtime_id) do
+        {:ok, id} -> {:cont, {:ok, [id | acc]}}
+        :error -> {:halt, {:error, {:unknown_runtime_id, runtime_id}}}
+      end
+    end)
+    |> case do
+      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
+      error -> error
+    end
+  end
+
+  # Apply `fun` (returning `{:ok, value} | {:error, _}`) to each value of `map`, stopping at the
+  # first error.
+  defp map_values(map, fun) do
+    Enum.reduce_while(map, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      case fun.(value) do
+        {:ok, translated} -> {:cont, {:ok, Map.put(acc, key, translated)}}
+        error -> {:halt, error}
+      end
+    end)
   end
 
   defp runtime_id(nil, id), do: id
   defp runtime_id(namespace, id), do: {namespace, id}
 
-  # The decoded payload must be a map carrying the keys and field types the rest of the module
-  # assumes. A valid-but-wrong-shaped term (e.g. an atom, or a map missing `:aggregate`/`:by_file`)
-  # routes to `:bad_shape` → the caller's run-all fallback, never a false `:no_coverage` and never
-  # an unhandled `{:ok, term}` crashing the `with`.
+  # The decoded payload must be a map carrying all five keys with the field types the rest of the
+  # module assumes (the helper always writes all five — `Mutare.Coverage.HelperTemplate`). A
+  # valid-but-wrong-shaped term (e.g. an atom, or a map missing a key) routes to `:bad_shape` →
+  # the caller's run-all fallback, never a false `:no_coverage` and never an unhandled
+  # `{:ok, term}` crashing the `with`.
   #
   # The check goes all the way *into* the collections, not just their outer type, because the
   # elements are what the rest of the pipeline consumes: `MapSet.new/1` raises
@@ -180,12 +217,18 @@ defmodule Mutare.Coverage do
   # raises on a non-binary). Either would escape `read_dump/1` as an exception, contradicting the
   # documented `{:error, _}` contract. The traversal is O(dump) and runs once, right after a full
   # instrumented suite — free next to what it guards.
-  defp valid_shape(%{aggregate: aggregate, by_file: by_file} = decoded) do
+  defp valid_shape(%{
+         aggregate: aggregate,
+         by_file: by_file,
+         unlabeled: unlabeled,
+         by_test: by_test,
+         wholefile: wholefile
+       }) do
     if grouped_ids?(aggregate) and
-         grouped_ids?(Map.get(decoded, :unlabeled, %{})) and
-         grouped_ids?(Map.get(decoded, :wholefile, %{})) and
+         grouped_ids?(unlabeled) and
+         grouped_ids?(wholefile) and
          map_of?(by_file, &is_binary/1, &grouped_ids?/1) and
-         map_of?(Map.get(decoded, :by_test, %{}), &namespace?/1, &names_by_id?/1),
+         map_of?(by_test, &namespace?/1, &names_by_id?/1),
        do: :ok,
        else: :bad_shape
   end

@@ -1,31 +1,24 @@
 defmodule Mutare.Runner.Stream do
   @moduledoc false
   # The per-mutant run loop, extracted from `Mutare.Runner`: stream every site through
-  # `Mutare.Runner.MutantRun.classify/3` across `:workers` partition lanes, collect in source order,
+  # `Mutare.Runner.MutantRun.run/2` across `:workers` partition lanes, collect in source order,
   # and report each result the collector **accepts** — stopping early at the Nth survivor
   # (`--max-survivors`) or when the wall-clock budget (`--time-budget`) elapses, whichever fires
-  # first (draining, never killing, in-flight runs). `confirm_timeouts/7` is the sequential,
+  # first (draining, never killing, in-flight runs). `confirm_timeouts/2` is the sequential,
   # uncontended re-run that settles a provisional streamed `:timeout` (`:confirm_timeouts`).
-  # `deadline/1` reads the budget once, as the phase begins. Returns
-  # `{results_in_source_order, stopped_early?}`.
+  # `deadline/1` reads the budget once, as the phase begins. Both passes take the
+  # `Mutare.Runner.RunCtx` — the partition pool, deadline, hooks, and options all ride there — and
+  # return `{results_in_source_order, stopped_early?}`.
 
   alias Mutare.{Duration, Options, Result}
-  alias Mutare.Runner.{Hydrate, MutantRun, Partitions}
+  alias Mutare.Runner.{MutantRun, Partitions, RunCtx}
 
-  # Run every site through `classify` concurrently (one partition slot per lane) and collect in
-  # source order, reporting each accepted result — stopping early at the Nth survivor
-  # (`--max-survivors`) or when a task launched after the wall-clock budget elapsed
-  # (`--time-budget`) skips its real run, whichever comes first. Returns
-  # `{results, stopped_early?}`.
-  def stream_and_collect(
-        schema,
-        ctx,
-        partitions,
-        %Options{} = options,
-        deadline,
-        on_start,
-        reporter
-      ) do
+  # Run every site concurrently (one partition slot per lane) and collect in source order,
+  # reporting each accepted result — stopping early at the Nth survivor (`--max-survivors`) or
+  # when a task launched after the wall-clock budget elapsed (`--time-budget`) skips its real
+  # run, whichever comes first. Returns `{results, stopped_early?}`.
+  @spec stream_and_collect(RunCtx.t(), [Mutare.Site.t()]) :: {[Result.t()], boolean()}
+  def stream_and_collect(%RunCtx{options: %Options{} = options} = ctx, sites) do
     # Set once the survivor cap is reached or the launch deadline has elapsed: tasks that start
     # *after* it skip their real run, letting the collector **drain** the rest of the stream cheaply
     # rather than halting it. Draining lets the already-in-flight `mix test` runs finish instead of
@@ -35,14 +28,14 @@ defmodule Mutare.Runner.Stream do
     # back a trivial skip.
     capped = :atomics.new(1, signed: false)
 
-    schema.sites
+    sites
     |> Task.async_stream(
       fn site ->
         cond do
           :atomics.get(capped, 1) == 1 ->
             :capped
 
-          past_deadline?(deadline) ->
+          past_deadline?(ctx.deadline) ->
             :atomics.put(capped, 1, 1)
             :capped
 
@@ -50,18 +43,18 @@ defmodule Mutare.Runner.Stream do
             # No reporting here — that's the collector's call to make (this result may still be
             # discarded as a post-stop straggler). Hydration stays in the worker, where it
             # parallelises (NOTES "Deferred site-code hydration").
-            run_and_hydrate(ctx, partitions, on_start, site)
+            MutantRun.run(ctx, site)
         end
       end,
       # `max_concurrency` is driven from the pool itself so it can never drift from
       # the token count: the pool's non-blocking checkout relies on one token per
       # concurrency lane. Falls back to `options.workers` when partitioning is off
       # (no pool). See `Mutare.Runner.Partitions`.
-      max_concurrency: Partitions.max_concurrency(partitions, options.workers),
+      max_concurrency: Partitions.max_concurrency(ctx.partitions, options.workers),
       ordered: true,
       timeout: :infinity
     )
-    |> collect_until_stop(options, capped, reporter)
+    |> collect_until_stop(ctx, capped)
   end
 
   # The monotonic instant the wall-clock budget (`--time-budget`) expires, or nil when unset. Read
@@ -79,7 +72,7 @@ defmodule Mutare.Runner.Stream do
   # whole stream; otherwise we record results until the Nth `:survived` (`--max-survivors`) or until
   # a task reports that it skipped because the wall-clock budget had elapsed (`--time-budget`) —
   # whichever fires first — then signal `capped` (so tasks not yet started skip — see
-  # `stream_and_collect/7`) and **drain the rest** rather than halting. Returns
+  # `stream_and_collect/2`) and **drain the rest** rather than halting. Returns
   # `{results_in_source_order, stopped_early?}`.
   #
   # Every accepted result is reported *here*, as the collector takes it, never in the worker that
@@ -101,7 +94,7 @@ defmodule Mutare.Runner.Stream do
   # finish cleanly instead of being killed mid-write; their real results are discarded, and every
   # post-trigger site comes back as a cheap `:capped` skip. Draining is what keeps the sandbox/project
   # teardown from racing a dying subprocess. See NOTES "Early stop: survivor cap and time budget".
-  defp collect_until_stop(stream, %Options{} = options, capped, reporter) do
+  defp collect_until_stop(stream, %RunCtx{options: %Options{} = options} = ctx, capped) do
     {acc, _survivors, stopped} =
       Enum.reduce(stream, {[], 0, false}, fn
         # A task that skipped because the cap was already set — discard. If the collector has not
@@ -116,7 +109,7 @@ defmodule Mutare.Runner.Stream do
           {acc, survivors, true}
 
         {:ok, result}, {acc, survivors, false} ->
-          report(reporter, result, options)
+          report(ctx, result)
           survivors = survivors + survivor_count(result)
           acc = [result | acc]
 
@@ -132,11 +125,12 @@ defmodule Mutare.Runner.Stream do
   end
 
   # Report one accepted result. Under `:confirm_timeouts` a streamed `:timeout` is *provisional* —
-  # the sequential confirmation pass (`confirm_timeouts/7`) re-runs it and reports the final
+  # the sequential confirmation pass (`confirm_timeouts/2`) re-runs it and reports the final
   # verdict, so no (possibly false) TIMEOUT line may land here.
-  defp report(_reporter, %Result{status: :timeout}, %Options{confirm_timeouts: true}), do: :ok
+  defp report(%RunCtx{options: %Options{confirm_timeouts: true}}, %Result{status: :timeout}),
+    do: :ok
 
-  defp report(reporter, result, _options) do
+  defp report(%RunCtx{reporter: reporter}, result) do
     reporter.(result)
     :ok
   end
@@ -169,8 +163,13 @@ defmodule Mutare.Runner.Stream do
   # after the stream (and after a `--max-survivors` stop, whose drained stragglers
   # were discarded, not confirmed), so a confirmed survivor can push the reported
   # survivors past the requested cap — the honest reading of a run that was already
-  # stopped early.
-  def confirm_timeouts(results, ctx, partitions, on_phase, on_start, reporter, deadline) do
+  # stopped early. With `:confirm_timeouts` off (`--no-confirm-timeouts`) the streamed
+  # verdicts stand as reported.
+  @spec confirm_timeouts(RunCtx.t(), [Result.t()]) :: {[Result.t()], boolean()}
+  def confirm_timeouts(%RunCtx{options: %Options{confirm_timeouts: false}}, results),
+    do: {results, false}
+
+  def confirm_timeouts(%RunCtx{reporter: reporter, deadline: deadline} = ctx, results) do
     case Enum.count(results, &(&1.status == :timeout)) do
       0 ->
         {results, false}
@@ -180,7 +179,7 @@ defmodule Mutare.Runner.Stream do
           report_unconfirmed_timeouts(results, reporter)
           {results, true}
         else
-          on_phase.({:confirming_timeouts, count})
+          ctx.on_phase.({:confirming_timeouts, count})
 
           Enum.map_reduce(results, false, fn
             %Result{status: :timeout, site: site} = provisional, stopped ->
@@ -188,7 +187,7 @@ defmodule Mutare.Runner.Stream do
                 reporter.(provisional)
                 {provisional, true}
               else
-                result = run_and_hydrate(ctx, partitions, on_start, site)
+                result = MutantRun.run(ctx, site)
                 reporter.(result)
                 {result, false}
               end
@@ -205,21 +204,5 @@ defmodule Mutare.Runner.Stream do
       %Result{status: :timeout} = result -> reporter.(result)
       _result -> :ok
     end)
-  end
-
-  # Launch one mutant under a partition slot (announcing its start first) and fill in a displayed
-  # survivor's deferred diff code before it reaches the reporter — the sequence shared by the async
-  # stream and the sequential timeout-confirmation pass. A no-op hydrate on the eager path or a
-  # killed/no-coverage result (see `Mutare.Runner.Hydrate`).
-  defp run_and_hydrate(ctx, partitions, on_start, site) do
-    on_start.(site)
-    # Check out a distinct partition for this run (and its harness retries), check it back in when
-    # done — see `Mutare.Runner.Partitions`.
-    result =
-      Partitions.with_slot(partitions, fn partition ->
-        MutantRun.classify(ctx, site, partition)
-      end)
-
-    Hydrate.result(ctx.hydrate, result)
   end
 end

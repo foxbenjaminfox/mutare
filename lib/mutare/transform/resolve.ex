@@ -166,18 +166,7 @@ defmodule Mutare.Transform.Resolve do
     module_key = Aliases.resolve_path(path, env.aliases)
     call_node = {{:., dot_meta, [aliases, fun]}, call_meta, args}
 
-    call_meta =
-      RouteStamp.stamp(
-        call_meta,
-        module_key,
-        fun,
-        args,
-        call_node,
-        env.call_routes,
-        env.pipe_mode,
-        env.diag
-      )
-
+    call_meta = RouteStamp.stamp(call_meta, module_key, fun, args, call_node, env)
     call_meta = stamp_mark_call(call_meta, module_key, fun, args, env)
     {{:., dot_meta, [stamped, fun]}, call_meta, descend_marked(args, module_key, fun, env)}
   end
@@ -209,19 +198,7 @@ defmodule Mutare.Transform.Resolve do
 
       module_key ->
         call_node = {{:., dot_meta, [mod, fun]}, call_meta, args}
-
-        call_meta =
-          RouteStamp.stamp(
-            call_meta,
-            module_key,
-            fun,
-            args,
-            call_node,
-            env.call_routes,
-            env.pipe_mode,
-            env.diag
-          )
-
+        call_meta = RouteStamp.stamp(call_meta, module_key, fun, args, call_node, env)
         call_meta = stamp_mark_call(call_meta, module_key, fun, args, env)
         {{:., dot_meta, [mod, fun]}, call_meta, descend_marked(args, module_key, fun, env)}
     end
@@ -314,19 +291,7 @@ defmodule Mutare.Transform.Resolve do
     meta = Imports.stamp(fun, meta, args, env.imports, env.kernel, env.pipe_mode)
     arity = Mutator.effective_arity(args, env.pipe_mode)
     module_key = bare_module_key(fun, arity, meta, env)
-
-    meta =
-      RouteStamp.stamp(
-        meta,
-        module_key,
-        fun,
-        args,
-        {fun, meta, args},
-        env.call_routes,
-        env.pipe_mode,
-        env.diag
-      )
-
+    meta = RouteStamp.stamp(meta, module_key, fun, args, {fun, meta, args}, env)
     {stamp_mark_call(meta, module_key, fun, args, env), module_key}
   end
 

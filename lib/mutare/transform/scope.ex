@@ -50,4 +50,14 @@ defmodule Mutare.Transform.Scope do
             behaviours: MapSet.new(),
             analysis_mutators: [],
             module: nil
+
+  @doc """
+  Whether a selector emitted in this scope can read the hoisted active-id variable directly:
+  the variable is bound (`active_bound`) *and* the walk is not inside a runtime nested module
+  (`module_depth == 0`), whose function bodies can't see the outer binding. The one definition
+  every emit path consults before choosing the hoisted form over the self-contained read.
+  """
+  @spec active_var_bound?(t()) :: boolean()
+  def active_var_bound?(%__MODULE__{active_bound: bound, module_depth: depth}),
+    do: bound and depth == 0
 end

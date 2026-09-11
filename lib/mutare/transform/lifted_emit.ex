@@ -5,8 +5,8 @@ defmodule Mutare.Transform.LiftedEmit do
   # clauses for a lifted function group, given the already-claimed candidate ids. Pure — no
   # `Ctx`, no id-claiming. `Mutare.Transform.emit_function_plan/2` owns the stateful half
   # (threading `Ctx`, claiming ids via `SelectorEmit.claim_items/4`, emitting in-place body
-  # selectors) and calls into here with plain data: the source clauses, the `{id, index, clause, witness}`
-  # claims, the base name, the dispatch variable, and the super-forwarding closure variable.
+  # selectors) and calls `assemble/5` with plain data: the plan, the emitted source clauses, the
+  # `{id, index, clause, witness}` claims, the group number, and the config.
   #
   # The interleaving scheme: each source clause's mutant clauses (one per candidate overriding
   # it, gated `when <var> === <id>`) precede the source clause itself (gated `when <var> !==
@@ -15,102 +15,62 @@ defmodule Mutare.Transform.LiftedEmit do
 
   alias Mutare.Coverage.Recorder
   alias Mutare.Metamutant
-  alias Mutare.Transform.{ClauseAST, Config, GuardBuild, ImportWitness, Super}
+  alias Mutare.Transform.{ClauseAST, Config, FunctionPlan, GuardBuild, ImportWitness, Super}
 
-  @doc """
-  The lifted function's base clauses, interleaved: for each source clause, its mutant clauses
-  (gated `when <var> === <id>`) come *before* the source clause itself (gated `when <var> !==
-  <those ids>`, so it steps aside when a mutant is active). A dropped clause contributes only
-  its exclusion (no mutant clause); a bodiless header contributes neither — its defaults ride
-  on the dispatcher and it has no body to lift.
-  """
-  @spec build_base_clauses(
-          [Macro.t()],
-          [{non_neg_integer(), non_neg_integer(), Macro.t() | :drop, term()}],
-          atom(),
-          atom(),
-          atom() | nil
-        ) ::
-          [Macro.t()]
-  def build_base_clauses(orig_clauses, claimed, base, var, super_var) do
-    # One grouping by source clause, not a scan of all M candidates per clause. Every claimed
-    # candidate overrides (guard/literal/structure) or drops its clause, so the group *is* both
-    # the clause's mutant clauses and the id set excluding its original version.
-    by_clause = Enum.group_by(claimed, fn {_id, index, _clause, _witness} -> index end)
-
-    orig_clauses
-    |> Enum.with_index()
-    |> Enum.flat_map(fn {orig, index} ->
-      group = Map.get(by_clause, index, [])
-
-      mutant_clauses =
-        for {id, _index, clause, witness} <- group,
-            clause != :drop,
-            do: lifted_mutant(base, id, clause, var, super_var, witness)
-
-      if ClauseAST.bodiless_header?(orig) do
-        mutant_clauses
-      else
-        excluded = Enum.map(group, fn {id, _index, _clause, _witness} -> id end)
-        mutant_clauses ++ [lifted_original(base, orig, excluded, var, super_var)]
-      end
-    end)
+  # The fixed facts of one lifted group, derived once in `assemble/5` and read by every clause
+  # builder below: the public signature (`vis`/`name`/`arity` — the dispatcher keeps the real
+  # name), the private `base` name the clauses are relocated under, the dispatch variable `var`
+  # (`Config.active_var`) and the file's runtime `namespace` (both for the active-id read and the
+  # coverage record), and `super_var` — the super-forwarding closure variable, non-`nil` only
+  # when a lifted body calls `super` (see `build_dispatcher/3`).
+  defmodule Group do
+    @moduledoc false
+    @enforce_keys [:vis, :name, :arity, :base, :var, :namespace, :super_var]
+    defstruct @enforce_keys
   end
 
+  @typep claim :: {non_neg_integer(), non_neg_integer(), Macro.t() | :drop, term()}
+
   @doc """
-  The public dispatcher: read the active mutant id once, record coverage for the group's lifted
-  ids (inert off the probe — see `Mutare.Coverage.Recorder`), then tail-call the lifted function
-  with the id threaded as the extra first argument.
-
-      def f(mutare_arg1, mutare_arg2 \\ <default>, ...) do
-        mutare_active = :persistent_term.get(:mutare_active, 0)
-        <record ids>
-        <base>(mutare_active, mutare_arg1, mutare_arg2, ...)
-      end
-
-  `defaults` (position → expression, from the source's default args) is overlaid onto the
-  dispatcher *head* — so the public function keeps the original multi-arity contract — while the
-  call to the base passes the *plain* vars (the defaults are already resolved by the time the
-  head's body runs). The base therefore always sees the full arity.
-
-  `super_var` (non-`nil` only when a lifted body calls `super`) adds a closure
-  `<super_var> = &super/arity` bound here — `super` is legal inside the dispatcher (the
-  overriding function), even captured — and threaded to the base as its second argument, so the
-  relocated body can call `super` through it (`Mutare.Transform.Super`).
+  The lifted function group as emitted: the public dispatcher followed by the interleaved base
+  clauses (`build_base_clauses/3`). `orig_clauses` are the source clauses with their in-place
+  body selectors already emitted; `claimed` the `{id, clause_index, mutated_clause | :drop,
+  witness}` claims; `group_number` the file-wide lifted-group counter (for a collision-free base
+  name).
   """
-  @spec build_dispatcher(
-          atom(),
-          atom(),
-          arity(),
-          [non_neg_integer()],
-          atom(),
-          Config.t(),
-          map(),
-          atom() | nil
-        ) ::
-          Macro.t()
-  def build_dispatcher(
-        vis,
-        name,
-        arity,
-        mut_ids,
-        base,
-        %Config{active_var: var, runtime_namespace: namespace},
-        defaults,
-        super_var
+  @spec assemble(FunctionPlan.t(), [Macro.t()], [claim()], non_neg_integer(), Config.t()) ::
+          [Macro.t()]
+  def assemble(
+        %FunctionPlan{signature: {vis, name, arity}} = plan,
+        orig_clauses,
+        claimed,
+        group_number,
+        %Config{} = config
       ) do
-    call_args = dispatcher_args(arity)
-    head_args = with_defaults(call_args, defaults)
-    var_node = Recorder.catch_all_pattern(var)
-    read = active_read(var, namespace)
+    group = %Group{
+      vis: vis,
+      name: name,
+      arity: arity,
+      base: :"#{base_name(name, arity, group_number, config.prefix)}",
+      var: config.active_var,
+      namespace: config.runtime_namespace,
+      # If any lifted body calls `super`, the relocated base copies can't (super is legal only
+      # in the overriding function): the dispatcher binds a forwarding closure and threads it.
+      super_var: if(Super.in_clauses?(plan.clauses), do: config.super_var, else: nil)
+    }
 
-    {super_args, super_stmts} = super_closure_binding(super_var, arity)
-    call = {base, [], [var_node | super_args] ++ call_args}
+    # Default arguments (`def f(a, b \\ 1)`) expand to multiple arities. They stay on the
+    # public dispatcher — which keeps the original arity contract — while the base function
+    # takes the full arity with `\\` stripped (`clause_parts/1`). The default *expressions* are
+    # taken from the already-emitted clauses, so their in-place selectors ride along and the
+    # dispatcher keeps mutating its defaults.
+    defaults = clause_defaults(orig_clauses)
+    mut_ids = Enum.map(claimed, fn {id, _index, _clause, _witness} -> id end)
 
-    record = if mut_ids == [], do: [], else: [Recorder.record_ast(mut_ids, var, namespace)]
-    body = {:__block__, [], [read] ++ super_stmts ++ record ++ [call]}
-
-    {vis, [], [{name, [], head_args}, [do: body]]}
+    [
+      build_dispatcher(group, mut_ids, defaults)
+      | build_base_clauses(group, orig_clauses, claimed)
+    ]
   end
 
   @doc """
@@ -123,16 +83,79 @@ defmodule Mutare.Transform.LiftedEmit do
   def active_read(var, namespace \\ nil),
     do: {:=, [], [Recorder.catch_all_pattern(var), Metamutant.subject_ast(namespace)]}
 
-  @doc """
-  The default-argument expressions of a lifted group, keyed by 0-based head position. They live
-  on exactly one source clause — a bodiless header in a multi-clause group, or the lone clause
-  of a single-clause group — so the first clause carrying any `\\` supplies them all. The
-  expressions come straight from the *emitted* clauses, so their in-place default-value
-  selectors are intact and the dispatcher that hosts them keeps mutating the defaults at call
-  time.
-  """
-  @spec clause_defaults([Macro.t()]) :: %{optional(non_neg_integer()) => Macro.t()}
-  def clause_defaults(clauses) do
+  # The lifted function's base clauses, interleaved: for each source clause, its mutant clauses
+  # (gated `when <var> === <id>`) come *before* the source clause itself (gated `when <var> !==
+  # <those ids>`, so it steps aside when a mutant is active). A dropped clause contributes only
+  # its exclusion (no mutant clause); a bodiless header contributes neither — its defaults ride
+  # on the dispatcher and it has no body to lift.
+  defp build_base_clauses(%Group{} = group, orig_clauses, claimed) do
+    # One grouping by source clause, not a scan of all M candidates per clause. Every claimed
+    # candidate overrides (guard/literal/structure) or drops its clause, so the group *is* both
+    # the clause's mutant clauses and the id set excluding its original version.
+    by_clause = Enum.group_by(claimed, fn {_id, index, _clause, _witness} -> index end)
+
+    orig_clauses
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {orig, index} ->
+      claims = Map.get(by_clause, index, [])
+
+      mutant_clauses =
+        for {id, _index, clause, witness} <- claims,
+            clause != :drop,
+            do: lifted_mutant(group, id, clause, witness)
+
+      if ClauseAST.bodiless_header?(orig) do
+        mutant_clauses
+      else
+        excluded = Enum.map(claims, fn {id, _index, _clause, _witness} -> id end)
+        mutant_clauses ++ [lifted_original(group, orig, excluded)]
+      end
+    end)
+  end
+
+  # The public dispatcher: read the active mutant id once, record coverage for the group's lifted
+  # ids (inert off the probe — see `Mutare.Coverage.Recorder`), then tail-call the lifted function
+  # with the id threaded as the extra first argument.
+  #
+  #     def f(mutare_arg1, mutare_arg2 \\ <default>, ...) do
+  #       mutare_active = :persistent_term.get(:mutare_active, 0)
+  #       <record ids>
+  #       <base>(mutare_active, mutare_arg1, mutare_arg2, ...)
+  #     end
+  #
+  # `defaults` (position → expression, from the source's default args) is overlaid onto the
+  # dispatcher *head* — so the public function keeps the original multi-arity contract — while the
+  # call to the base passes the *plain* vars (the defaults are already resolved by the time the
+  # head's body runs). The base therefore always sees the full arity.
+  #
+  # `super_var` (non-`nil` only when a lifted body calls `super`) adds a closure
+  # `<super_var> = &super/arity` bound here — `super` is legal inside the dispatcher (the
+  # overriding function), even captured — and threaded to the base as its second argument, so the
+  # relocated body can call `super` through it (`Mutare.Transform.Super`).
+  defp build_dispatcher(%Group{} = group, mut_ids, defaults) do
+    call_args = dispatcher_args(group.arity)
+    head_args = with_defaults(call_args, defaults)
+    var_node = Recorder.catch_all_pattern(group.var)
+    read = active_read(group.var, group.namespace)
+
+    {super_args, super_stmts} = super_closure_binding(group.super_var, group.arity)
+    call = {group.base, [], [var_node | super_args] ++ call_args}
+
+    record =
+      if mut_ids == [], do: [], else: [Recorder.record_ast(mut_ids, group.var, group.namespace)]
+
+    body = {:__block__, [], [read] ++ super_stmts ++ record ++ [call]}
+
+    {group.vis, [], [{group.name, [], head_args}, [do: body]]}
+  end
+
+  # The default-argument expressions of a lifted group, keyed by 0-based head position. They live
+  # on exactly one source clause — a bodiless header in a multi-clause group, or the lone clause
+  # of a single-clause group — so the first clause carrying any `\\` supplies them all. The
+  # expressions come straight from the *emitted* clauses, so their in-place default-value
+  # selectors are intact and the dispatcher that hosts them keeps mutating the defaults at call
+  # time.
+  defp clause_defaults(clauses) do
     Enum.find_value(clauses, %{}, fn clause ->
       defaults =
         clause
@@ -154,6 +177,9 @@ defmodule Mutare.Transform.LiftedEmit do
   unique across groups; `?`/`!` (valid only at the end of a function name) are replaced so the
   sanitized base is a legal identifier (e.g. `ok?` → `__mutare_ok__1_g1`). The public dispatcher
   keeps the real name (including any `?`/`!`).
+
+  Public because the test suite's rendered-name pins (`Mutare.Test.Metamutant.lifted_name/4`)
+  derive from it, so a change to the composition moves every assertion with it.
   """
   @spec base_name(atom(), arity(), non_neg_integer(), String.t()) :: String.t()
   def base_name(name, arity, group, prefix) do
@@ -193,21 +219,24 @@ defmodule Mutare.Transform.LiftedEmit do
   # `<base>`, given the `mutare_active` extra arg, and gated `when mutare_active === <id> [and
   # <its own guard>]`. Raw body (no in-place selectors): only one mutant is ever active, so a
   # body selector here could never fire.
-  defp lifted_mutant(base, id, clause, var, super_var, witness) do
+  defp lifted_mutant(%Group{} = group, id, clause, witness) do
     {clause_meta, call_meta, args, guards, body} = clause_parts(clause)
-    guard = GuardBuild.and_into(GuardBuild.gate(id, var), GuardBuild.combine(guards))
+    guard = GuardBuild.and_into(GuardBuild.gate(id, group.var), GuardBuild.combine(guards))
     body = ImportWitness.prepend(body, witness)
-    lifted_clause(base, clause_meta, call_meta, args, guard, body, var, super_var)
+    lifted_clause(group, clause_meta, call_meta, args, guard, body)
   end
 
   # One lifted *original* clause: the source clause (with its in-place body selectors), renamed
   # to `<base>`, given the `mutare_active` extra arg, and gated `when mutare_active !== <id>` for
   # each `id` that overrides/drops it — so it yields to its mutant clauses when their id is
   # active, and behaves normally otherwise (including for any skipped/poisoned id).
-  defp lifted_original(base, clause, excluded_ids, var, super_var) do
+  defp lifted_original(%Group{} = group, clause, excluded_ids) do
     {clause_meta, call_meta, args, guards, body} = clause_parts(clause)
-    guard = GuardBuild.merge(GuardBuild.exclusion(excluded_ids, var), GuardBuild.combine(guards))
-    lifted_clause(base, clause_meta, call_meta, args, guard, body, var, super_var)
+
+    guard =
+      GuardBuild.merge(GuardBuild.exclusion(excluded_ids, group.var), GuardBuild.combine(guards))
+
+    lifted_clause(group, clause_meta, call_meta, args, guard, body)
   end
 
   # Assemble a `<base>` clause: `defp <base>(mutare_active, [<super_var>,] <args...>) [when
@@ -221,9 +250,9 @@ defmodule Mutare.Transform.LiftedEmit do
   # closure as its second parameter; this clause's body is rewritten to call `super` through it.
   # A clause whose own body has no `super` still takes the (shared) parameter but ignores it — a
   # bare `_` (`super_param/2`).
-  defp lifted_clause(base, clause_meta, call_meta, args, guard, body, var, super_var) do
-    {body, super_params} = super_param(body, super_var)
-    call = {base, call_meta, [Recorder.catch_all_pattern(var) | super_params] ++ args}
+  defp lifted_clause(%Group{} = group, clause_meta, call_meta, args, guard, body) do
+    {body, super_params} = super_param(body, group.super_var)
+    call = {group.base, call_meta, [Recorder.catch_all_pattern(group.var) | super_params] ++ args}
     head = if guard, do: {:when, [], [call, guard]}, else: call
     {:defp, clause_meta, [head | body]}
   end

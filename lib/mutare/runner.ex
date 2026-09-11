@@ -201,6 +201,7 @@ defmodule Mutare.Runner do
   defp with_compiled_sandbox(%Schema{} = schema, %Context{} = context, fun) do
     options = context.options
     root = context.project.copy_root
+    on_phase = Context.hook(context, :on_phase)
 
     if Schema.count(schema) == 0 do
       {:error, :nothing_to_mutate, nothing_to_mutate_detail(options.paths, root)}
@@ -208,12 +209,10 @@ defmodule Mutare.Runner do
       lock = Sandbox.acquire_lock(root, context)
 
       try do
-        on_phase = Context.hook(context, :on_phase)
-
         on_phase.(:compiling)
         compile_started = System.monotonic_time(:millisecond)
 
-        case Compile.run(schema, root, context) do
+        case Compile.run(schema, context) do
           {:error, reason, detail, sandbox} ->
             cleanup_sandbox(sandbox, options)
             {:error, reason, detail}
@@ -260,8 +259,6 @@ defmodule Mutare.Runner do
   defp run_mutants(schema, sandbox, %Context{} = context, recovery) do
     options = context.options
     on_phase = Context.hook(context, :on_phase)
-    on_start = Context.hook(context, :on_start)
-    reporter = Context.hook(context, :reporter)
 
     # Per-worker partition pool (e.g. `MIX_TEST_PARTITION`) for DB isolation across
     # the concurrent runs; `:disabled` (the default) when `:partition_env` is unset.
@@ -277,11 +274,11 @@ defmodule Mutare.Runner do
     try do
       # The baseline + coverage probe are sequential (pre-pool), so they share one
       # fixed partition (`1`) — a partitioned suite still needs a valid database.
-      # Both also get the `:max_heap_mb` heap cap (`[]` when off): running the
-      # baseline under the same cap the mutants get validates up front that the
-      # suite itself fits under it — a too-small cap fails the baseline loudly
-      # instead of minting false kills mid-run. (The one metamutant compile is
-      # deliberately *not* capped — see `Invocation.heap_cap_env/1`.)
+      # Both also get the `:max_heap_mb` heap cap (`nil` when off), as every per-mutant run
+      # does (`MutantRun` reads it off `RunCtx.options`): running the baseline under the same
+      # cap the mutants get validates up front that the suite itself fits under it — a
+      # too-small cap fails the baseline loudly instead of minting false kills mid-run. (The
+      # one metamutant compile is deliberately *not* capped — see `Invocation.heap_cap_env/1`.)
       fixed_opts = [
         partition: Partitions.entry(options.partition_env, 1),
         max_heap_mb: options.max_heap_mb
@@ -297,7 +294,13 @@ defmodule Mutare.Runner do
              ) do
         # Verbose-only detail: the baseline timing the cap is scaled from.
         on_phase.({:baseline_done, baseline_ms})
-        ctx = build_run_ctx(schema, sandbox, context, baseline_ms, fixed_opts, hydrate)
+        cap = timeout_cap(baseline_ms, schema, options)
+        selection = probe_coverage(schema, sandbox, context, cap, fixed_opts)
+
+        # Per owning app, the test dirs a whole-suite run may be narrowed to (the app +
+        # its declared dependents). Empty for a single project, and when nothing broad
+        # will run — see `app_scopes/3` and `Mutare.Runner.MutantRun`'s broadening.
+        scopes = app_scopes(context.project, sandbox, selection)
 
         # The run configuration the verbose running line reports (worker count); fired
         # just before `{:running, total}` so the reporter has it when it renders the label.
@@ -307,33 +310,24 @@ defmodule Mutare.Runner do
 
         on_phase.({:running, length(schema.sites)})
 
-        deadline = Stream.deadline(options.time_budget)
+        ctx = %RunCtx{
+          options: options,
+          sandbox: sandbox,
+          selection: selection,
+          cap: cap,
+          scopes: scopes,
+          partitions: partitions,
+          # Read here, as the per-mutant phase begins, so compile/baseline/probe are not
+          # charged against the budget.
+          deadline: Stream.deadline(options.time_budget),
+          hydrate: hydrate,
+          on_start: Context.hook(context, :on_start),
+          reporter: Context.hook(context, :reporter),
+          on_phase: on_phase
+        }
 
-        {results, stopped_early} =
-          Stream.stream_and_collect(
-            schema,
-            ctx,
-            partitions,
-            options,
-            deadline,
-            on_start,
-            reporter
-          )
-
-        {results, confirmation_stopped_early} =
-          if options.confirm_timeouts do
-            Stream.confirm_timeouts(
-              results,
-              ctx,
-              partitions,
-              on_phase,
-              on_start,
-              reporter,
-              deadline
-            )
-          else
-            {results, false}
-          end
+        {results, stopped_early} = Stream.stream_and_collect(ctx, schema.sites)
+        {results, confirmation_stopped_early} = Stream.confirm_timeouts(ctx, results)
 
         run = %Run{
           schema: schema,
@@ -352,37 +346,21 @@ defmodule Mutare.Runner do
     end
   end
 
-  # The coverage probe + per-app test scopes + timeout cap, assembled into the `RunCtx` threaded
-  # to every per-mutant `classify`. Runs after a green baseline, on the fixed (pre-pool) partition.
-  defp build_run_ctx(schema, sandbox, %Context{} = context, baseline_ms, fixed_opts, hydrate) do
+  # The coverage probe, announced and run after a green baseline under the fixed (pre-pool)
+  # run options `opts` (partition + heap cap) plus its own `cap`. Returns the per-mutant test
+  # selection.
+  defp probe_coverage(schema, sandbox, %Context{} = context, cap, opts) do
     options = context.options
     on_phase = Context.hook(context, :on_phase)
-    mode = options.test_selection
     on_phase.(:coverage_probe)
-    cap = timeout_cap(baseline_ms, schema, options)
 
-    selection =
-      CoverageProbe.run(sandbox, schema, mode, [{:cap, probe_cap(cap, options)} | fixed_opts])
+    probe_opts = [{:cap, probe_cap(cap, options)} | opts]
+    selection = CoverageProbe.run(sandbox, schema, options.test_selection, probe_opts)
 
     # Verbose-only detail: the per-mutant coverage breakdown plus the derived timeout
     # cap (the probe summary is pure; this assembles the display payload).
     on_phase.({:coverage_done, Map.put(CoverageProbe.summarize(selection), :cap_ms, cap)})
-
-    # Per owning app, the test dirs a whole-suite run may be narrowed to (the app +
-    # its declared dependents). Empty for a single project, and when nothing broad
-    # will run — see `app_scopes/3` and `Mutare.Runner.MutantRun`'s broadening.
-    scopes = app_scopes(context.project, sandbox, selection)
-
-    %RunCtx{
-      sandbox: sandbox,
-      selection: selection,
-      cap: cap,
-      scopes: scopes,
-      retries: options.harness_retries,
-      kill_runs: options.kill_runs,
-      hydrate: hydrate,
-      max_heap_mb: options.max_heap_mb
-    }
+    selection
   end
 
   # The umbrella narrowing map. Reading the declared inter-app graph costs one Mix

@@ -119,12 +119,8 @@ defmodule Mutare.Site do
           Mutare.Mutator.Spec.t(),
           keyword()
         ) :: t()
-  def in_place(id, file, range, original_node, mutated_node, mutator, opts \\ []) do
-    %{
-      replace(id, file, range, original_node, mutated_node, mutator, :in_place, opts)
-      | note: opts[:note]
-    }
-  end
+  def in_place(id, file, range, original_node, mutated_node, mutator, opts \\ []),
+    do: replace(id, file, range, original_node, mutated_node, mutator, :in_place, opts)
 
   @doc """
   Builds a site for a node replacement delivered through function lifting.
@@ -142,12 +138,8 @@ defmodule Mutare.Site do
           Mutare.Mutator.Spec.t(),
           keyword()
         ) :: t()
-  def lifted_replace(id, file, range, original_node, mutated_node, mutator, opts \\ []) do
-    %{
-      replace(id, file, range, original_node, mutated_node, mutator, :lifted, opts)
-      | note: opts[:note]
-    }
-  end
+  def lifted_replace(id, file, range, original_node, mutated_node, mutator, opts \\ []),
+    do: replace(id, file, range, original_node, mutated_node, mutator, :lifted, opts)
 
   # The id/file/location fields every constructor sets identically from the mutant id, source file,
   # and Sourceror range. Extracted so a change to how a location is read (the `range` shape, a new
@@ -320,6 +312,10 @@ defmodule Mutare.Site do
   defp keyword_pair_code(key, value, renderer),
     do: "#{keyword_key_code(key, renderer)} #{renderer.(value)}"
 
+  # Render a keyword *key* node (`keyword_key?/1`) in `key:` form — the one home for it, shared by
+  # the keyword-pair renderer above and a replaced key's own code (`render_code/4`): `Sourceror`
+  # renders the bare atom node as `:trim`, which spliced over the `trim:` span the site's range
+  # covers would yield invalid `:mutare true`.
   defp keyword_key_code({:__block__, _meta, [atom]}, _renderer) when is_atom(atom),
     do: Macro.inspect_atom(:key, atom)
 
@@ -369,9 +365,10 @@ defmodule Mutare.Site do
   defp maybe_render(_node, false, _range), do: nil
   defp maybe_render(node, true, range), do: render_source_code(node, code_renderer(range))
 
-  # In-place and lifted sites differ only in `kind`: both are a node replacement
-  # recorded with the original/mutated nodes, their AST *forms* (the node's head tag —
-  # `:+`/`:==` for an operator swap, `:__block__` for a literal), and rendered code.
+  # The one body behind the replace-site constructors — in-place and lifted sites differ only in
+  # `kind`: both are a node replacement recorded with the original/mutated nodes, their AST
+  # *forms* (the node's head tag — `:+`/`:==` for an operator swap, `:__block__` for a literal),
+  # rendered code, and the optional `:note`/`:variant` the delivery layer threads through.
   defp replace(id, file, range, original_node, mutated_node, mutator, kind, opts) do
     variant = opts[:variant]
     render? = Keyword.get(opts, :render?, true)
@@ -395,6 +392,7 @@ defmodule Mutare.Site do
         original_code: render_code(original_node, keyword_key?, render?, renderer),
         mutated_code: render_code(mutated_node, keyword_key?, render?, renderer),
         summary: replace_summary(mutator.name, original_node, mutated_node, summary?),
+        note: opts[:note],
         variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node, variant)
     }
   end
@@ -418,24 +416,8 @@ defmodule Mutare.Site do
   defp keyword_key?(_node), do: false
 
   defp render_code(_node, _keyword_key?, false, _renderer), do: nil
-
-  defp render_code({:__block__, _meta, [atom]}, true, true, _renderer) when is_atom(atom),
-    do: Macro.inspect_atom(:key, atom)
-
-  # An interpolated atom key: `Sourceror.to_string/1` renders the *value* form (`:"k#{x}"`);
-  # move the colon to render the keyword form the source — and the colon-corrected range —
-  # uses (`"k#{x}":`).
-  defp render_code(
-         {{:., _, [:erlang, :binary_to_atom]}, _meta, _args} = node,
-         true,
-         true,
-         renderer
-       ) do
-    ":" <> content = renderer.(node)
-    content <> ":"
-  end
-
-  defp render_code(node, _keyword_key?, true, renderer), do: render_source_code(node, renderer)
+  defp render_code(node, true, true, renderer), do: keyword_key_code(node, renderer)
+  defp render_code(node, false, true, renderer), do: render_source_code(node, renderer)
 
   # `renderer` is an `AST.to_string` closure (`code_renderer/1`), not `Sourceror.to_string/1`
   # directly: the node's subtree carries the comments Sourceror parked on it (a trailing

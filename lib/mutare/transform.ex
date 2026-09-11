@@ -164,6 +164,8 @@ defmodule Mutare.Transform do
     Candidate.Delivery,
     CaseClauseEmit,
     ClaimState,
+    ConfigMatches,
+    CountReport,
     Config,
     Ctx,
     FunctionPlan,
@@ -185,7 +187,6 @@ defmodule Mutare.Transform do
     Resolve,
     Scope,
     SelectorEmit,
-    Super,
     UnitReturns,
     Uses
   }
@@ -286,23 +287,11 @@ defmodule Mutare.Transform do
     do: count_report(source, opts).mutants
 
   @doc false
-  # `count_string/2` plus the count pass's side channel: every fact `Mutare.Schema`'s diagnostics
-  # read off a file, collected by the one pass that parsed and annotated it so no diagnostic
-  # re-parses a source. The `:skip_lifting` entries, call-route keys, and mark-declaration keys
-  # the source matched (unioned across files to surface configured entries that matched nothing
-  # anywhere — `Mutare.Schema.detect_ineffective_skip_lifting/3` / `detect_ineffective_config/3`);
-  # the comment-directive container (ineffective directives, unknown `mutare:` verbs, and the
-  # misplacement hint's expression end lines — `detect_directive_diagnostics/2`); and the
-  # module-level `use`s the resolve pre-pass could not expand (`mix mutare --check`).
-  @spec count_report(String.t(), keyword()) :: %{
-          mutants: non_neg_integer(),
-          selected_ids: [pos_integer()] | nil,
-          skip_lifting_matches: MapSet.t(Lifting.skip_entry()),
-          route_matches: MapSet.t(tuple()),
-          mark_matches: MapSet.t(tuple()),
-          directives: Mutare.Ignore.Directives.t(),
-          degraded_uses: [Uses.degraded_use()]
-        }
+  # `count_string/2` plus the count pass's side channels, as a `Mutare.Transform.CountReport`
+  # (whose comment lists each fact and its reader): the `--line`-selected local ids, and every
+  # fact `Mutare.Schema`'s end-of-build diagnostics read off a file — collected here, by the one
+  # pass that parsed and annotated it, so no diagnostic re-parses a source.
+  @spec count_report(String.t(), keyword()) :: CountReport.t()
   def count_report(source, opts \\ []) when is_binary(source) do
     # The `:count` sink runs the same analyze → plan → emit pipeline but builds and retains no
     # `Mutare.Site` per claim — only advancing the id and tallying — so the per-mutant `Sourceror`
@@ -310,15 +299,13 @@ defmodule Mutare.Transform do
     # path as a render; see `Mutare.Transform.ClaimState`).
     {_transformed, ctx} = plan_and_emit(source, Keyword.put(opts, :sink, :count))
 
-    %{
+    %CountReport{
       mutants: ClaimState.total(ctx.claim),
       selected_ids:
         if(ctx.claim.selection_lines, do: Enum.reverse(ctx.claim.selected_ids), else: nil),
-      skip_lifting_matches: ctx.claim.skip_matches,
-      route_matches: ctx.claim.route_matches,
-      mark_matches: ctx.claim.mark_matches,
+      matches: ctx.matches,
       directives: ctx.config.ignore_directives,
-      degraded_uses: ctx.claim.degraded_uses
+      degraded_uses: ctx.degraded_uses
     }
   end
 
@@ -447,22 +434,10 @@ defmodule Mutare.Transform do
   # pre-pass could not expand (`Uses.degraded_uses/1`, for `mix mutare --check`). Read back by
   # `count_report/2`. Count-sink only — the render pass re-walks a source the count pass already
   # reported, and each diagnostic needs one full scan, not two.
-  defp record_count_facts(
-         %Ctx{claim: %ClaimState{sink: :count} = claim} = ctx,
-         annotated,
-         macros
-       ) do
-    %{routes: routes, marks: marks} = Mutare.Transform.ConfigMatches.collect(annotated, macros)
-
-    %{
-      ctx
-      | claim: %{
-          claim
-          | route_matches: routes,
-            mark_matches: marks,
-            degraded_uses: Uses.degraded_uses(annotated)
-        }
-    }
+  defp record_count_facts(%Ctx{claim: %ClaimState{sink: :count}} = ctx, annotated, macros) do
+    matches = ConfigMatches.collect(annotated, macros)
+    ctx = Ctx.update_matches(ctx, &ConfigMatches.union(&1, matches))
+    %{ctx | degraded_uses: Uses.degraded_uses(annotated)}
   end
 
   defp record_count_facts(ctx, _annotated, _macros), do: ctx
@@ -689,15 +664,15 @@ defmodule Mutare.Transform do
     emit_module_plan(plan, record_skip_matches(ctx, plan.skip_lifting_matches))
   end
 
-  # Accumulate the `:skip_lifting` entries this statement sequence matched onto the claim
-  # state, so `count_report/2` can hand them to `Mutare.Schema` — which unions them across
+  # Accumulate the `:skip_lifting` entries this statement sequence matched onto the context's
+  # `matches`, so `count_report/2` can hand them to `Mutare.Schema` — which unions them across
   # the count pass and surfaces the configured entries that matched *nothing* (the
   # ineffective-entry diagnostic, mirroring ineffective `# mutare:ignore` directives).
   defp record_skip_matches(ctx, matches) do
     if MapSet.size(matches) == 0 do
       ctx
     else
-      Ctx.update_claim(ctx, &%{&1 | skip_matches: MapSet.union(&1.skip_matches, matches)})
+      Ctx.update_matches(ctx, &ConfigMatches.add_skip_lifting(&1, matches))
     end
   end
 
@@ -733,7 +708,7 @@ defmodule Mutare.Transform do
         emit_function_plan(plan, ctx)
 
       {:in_place, clauses}, ctx ->
-        in_place_clauses(clauses, ctx)
+        emit_clauses(clauses, ctx, :in_place)
 
       {:statement, statement}, ctx ->
         {node, ctx} = transform_statement(statement, ctx)
@@ -741,52 +716,49 @@ defmodule Mutare.Transform do
     end)
   end
 
-  # Transform each *non-lifted* clause in place (body selectors only), preserving its
-  # position. The `:do` block's active-id read is hoisted to a once-per-call prologue
-  # (`emit_clause/3`'s `lifted?: false`); the head's default values and the other body
-  # blocks keep the self-contained `:persistent_term` read (out of the prologue's scope).
-  defp in_place_clauses(clauses, ctx), do: emit_clauses(clauses, ctx, false)
+  # The two ways a def/defp clause's body gets its active-id read, named by the clause's
+  # delivery (`emit_clauses/3` and down):
+  #
+  #   * `:in_place` — a non-lifted clause, transformed in place (body selectors only) and kept
+  #     in position. The `:do` block's read is hoisted to a once-per-call prologue; the head's
+  #     default values and the other body blocks keep the self-contained `:persistent_term`
+  #     read (out of the prologue's scope).
+  #   * `:lifted` — a source clause of a lifted group (an original the dispatcher forwards to).
+  #     The dispatcher threads the active id as the base clause's first parameter, so the whole
+  #     body reads it directly (no prologue, every body block covered); only the head's default
+  #     values — extracted onto the dispatcher head, out of any binding's scope — keep the
+  #     self-contained read.
+  @typep delivery :: :in_place | :lifted
 
-  # Transform each *source* clause of a lifted group (the originals the dispatcher
-  # forwards to). The dispatcher threads the active id as the base clause's first
-  # parameter, so the whole body reads it directly (no prologue, every body block
-  # covered); only the head's default values — extracted onto the dispatcher head, out of
-  # any binding's scope — keep the self-contained read.
-  defp lifted_source_clauses(clauses, ctx), do: emit_clauses(clauses, ctx, true)
-
-  # Emit each clause in turn, threading `ctx`. `lifted?` selects the active-id read
-  # strategy (`emit_clause/3`): hoisted-to-a-prologue for an in-place `:do` block, or
-  # dispatcher-threaded for a lifted base clause.
-  defp emit_clauses(clauses, ctx, lifted?) do
+  # Emit each clause in turn, threading `ctx`.
+  @spec emit_clauses([Macro.t()], Ctx.t(), delivery()) :: {[Macro.t()], Ctx.t()}
+  defp emit_clauses(clauses, ctx, delivery) do
     Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
-      {clause, ctx} = emit_clause(clause, ctx, lifted?)
+      {clause, ctx} = emit_clause(clause, ctx, delivery)
       {[clause], ctx}
     end)
   end
 
-  # Emit one def/defp clause with the active-id read hoisted out of its per-site selectors.
-  # `lifted?` is the clause kind: a lifted base clause reads the id from the dispatcher's
-  # threaded parameter (in scope across every body block), a non-lifted clause binds it in a
-  # `:do`-block prologue (in scope in `:do` only). The head (default values) is emitted with
-  # the read *unbound* either way (those expressions run in a generated head clause where no
-  # binding is in scope), the body with it bound where the binding reaches. The one-shot
-  # `active_bound` toggles are scoped to this clause and restored on the way out, so they
-  # never leak into the next module item.
-  defp emit_clause(clause, ctx, lifted?) do
+  # Emit one def/defp clause with the active-id read hoisted out of its per-site selectors. The
+  # head (default values) is emitted with the read *unbound* either way (those expressions run
+  # in a generated head clause where no binding is in scope), the body with it bound where the
+  # binding reaches (`emit_clause_body/3`). The one-shot `active_bound` toggles are scoped to
+  # this clause and restored on the way out, so they never leak into the next module item.
+  defp emit_clause(clause, ctx, delivery) do
     bound0 = ctx.scope.active_bound
 
     {emitted, ctx} =
-      emit_annotated_clause(Analyze.annotate(clause, ctx.scope.analysis_mutators), ctx, lifted?)
+      emit_annotated_clause(Analyze.annotate(clause, ctx.scope.analysis_mutators), ctx, delivery)
 
     {emitted, Ctx.update_scope(ctx, &%{&1 | active_bound: bound0})}
   end
 
   # A normal body-bearing def/defp clause: emit the head with the read unbound, then the
   # body blocks (`emit_clause_body/3`).
-  defp emit_annotated_clause({vis, meta, [head, body_kw]}, ctx, lifted?)
+  defp emit_annotated_clause({vis, meta, [head, body_kw]}, ctx, delivery)
        when vis in [:def, :defp] and is_list(body_kw) do
     {head, ctx} = emit(head, unbind_active(ctx))
-    {body_kw, ctx} = emit_clause_body(body_kw, ctx, lifted?)
+    {body_kw, ctx} = emit_clause_body(body_kw, ctx, delivery)
     {{vis, meta, [head, body_kw]}, ctx}
   end
 
@@ -794,36 +766,37 @@ defmodule Mutare.Transform do
   # to hoist into, so emit the whole node with the read unbound — identical to the
   # pre-hoist behaviour. (A header's only runtime sub-positions are its default values,
   # which keep the self-contained read regardless.)
-  defp emit_annotated_clause(node, ctx, _lifted?), do: emit(node, unbind_active(ctx))
+  defp emit_annotated_clause(node, ctx, _delivery), do: emit(node, unbind_active(ctx))
 
   # Mark the active-id read as unbound for the enclosed emit (a head's default values run in
   # a generated head clause where no binding is in scope, so they keep the self-contained read).
   defp unbind_active(ctx), do: Ctx.update_scope(ctx, &%{&1 | active_bound: false})
 
-  # Emit each body block's value with the active-id read bound where the binding reaches:
-  # the `:do` block always (a non-lifted clause's prologue binds it; a lifted clause's
-  # dispatcher parameter is in scope there), and the other blocks (`rescue`/`catch`/`else`/
-  # `after`) only for a lifted clause — there the parameter is in scope everywhere, whereas
-  # a non-lifted clause's `:do`-block prologue is *not* visible in its sibling blocks, so
-  # they keep the self-contained read. Block order (`:do` first) is preserved, so ids land
-  # exactly as a single whole-clause emit would assign them. The `is_list` guard asserts
-  # the caller's contract (`emit_annotated_clause/3` only reaches here for a list body_kw);
-  # there is no fallback because a body-bearing def/defp clause always has a keyword body.
-  defp emit_clause_body(body_kw, ctx, lifted?) when is_list(body_kw) do
-    # A lifted clause's threaded parameter is in scope in every block (so every block reads the
-    # bound var); a non-lifted clause's prologue binds the id in `:do` only, so its sibling blocks
-    # keep the inline read and `:do` alone gets the prepended prologue.
-    {body_kw, ctx} =
-      Enum.map_reduce(body_kw, ctx, fn {key, value}, ctx ->
-        bound = AST.key_atom(key) == :do or lifted?
-        {value, ctx} = emit(value, Ctx.update_scope(ctx, &%{&1 | active_bound: bound}))
-        {{key, value}, ctx}
-      end)
+  # Emit each body block's value with the active-id read bound where the binding reaches. Block
+  # order (`:do` first) is preserved, so ids land exactly as a single whole-clause emit would
+  # assign them. The `is_list` guard asserts the caller's contract (`emit_annotated_clause/3`
+  # only reaches here for a list body_kw); there is no fallback because a body-bearing def/defp
+  # clause always has a keyword body.
+  #
+  # A lifted clause's threaded parameter is in scope in every block, so every block reads the
+  # bound var and no prologue is added.
+  defp emit_clause_body(body_kw, ctx, :lifted) when is_list(body_kw),
+    do: emit_body_blocks(body_kw, ctx, fn _key -> true end)
 
-    {if(lifted?,
-       do: body_kw,
-       else: prepend_do_prologue(body_kw, ctx.config.active_var, ctx.config.runtime_namespace)
-     ), ctx}
+  # An in-place clause's prologue binds the id in `:do` only, so its sibling blocks
+  # (`rescue`/`catch`/`else`/`after`) keep the inline read and `:do` alone gets the prepended
+  # prologue.
+  defp emit_clause_body(body_kw, ctx, :in_place) when is_list(body_kw) do
+    {body_kw, ctx} = emit_body_blocks(body_kw, ctx, &(AST.key_atom(&1) == :do))
+    {prepend_do_prologue(body_kw, ctx.config.active_var, ctx.config.runtime_namespace), ctx}
+  end
+
+  # Emit each `{key, value}` body block with the active-id read bound iff `bound?.(key)`.
+  defp emit_body_blocks(body_kw, ctx, bound?) do
+    Enum.map_reduce(body_kw, ctx, fn {key, value}, ctx ->
+      {value, ctx} = emit(value, Ctx.update_scope(ctx, &%{&1 | active_bound: bound?.(key)}))
+      {{key, value}, ctx}
+    end)
   end
 
   # Prepend `<var> = :persistent_term.get(...)` to the `:do` block — but only when that
@@ -957,24 +930,16 @@ defmodule Mutare.Transform do
   # <id>` for every mutant that overrides or drops them, so exactly one wins for
   # any (id, args): the mutant when its id is active and its head/guard match, else
   # the original. Ids are assigned exactly as before — in-place **body** ids first
-  # (`in_place_clauses` over the source clauses), then the lifted candidates in
+  # (`emit_clauses/3` over the source clauses), then the lifted candidates in
   # `candidates/1` order — so the scheme is invisible to ids, Sites, and coverage.
-  defp emit_function_plan(%FunctionPlan{signature: {_vis, name, arity}} = plan, ctx) do
+  defp emit_function_plan(%FunctionPlan{} = plan, ctx) do
     group = ctx.claim.group + 1
     ctx = Ctx.update_claim(ctx, &%{&1 | group: group})
-    base = :"#{LiftedEmit.base_name(name, arity, group, ctx.config.prefix)}"
-    var = ctx.config.active_var
-
-    # If any lifted body calls `super`, the relocated base copies can't (super is
-    # legal only in the overriding function). `super_var` is the closure variable the
-    # dispatcher binds and forwards (`Mutare.Transform.Super`); `nil` when the group
-    # is super-free, leaving the common path byte-for-byte unchanged.
-    super_var = if Super.in_clauses?(plan.clauses), do: ctx.config.super_var, else: nil
 
     # Source clauses with in-place body selectors — claims the body ids first. The body
     # reads the threaded `mutare_active` parameter directly (the dispatcher binds it);
     # head default values keep the self-contained read (they ride onto the dispatcher).
-    {orig_clauses, ctx} = lifted_source_clauses(plan.clauses, ctx)
+    {orig_clauses, ctx} = emit_clauses(plan.clauses, ctx, :lifted)
 
     # Then the lifted candidates, in order, each claiming its id. Non-skipped ones
     # yield `{id, clause_index, mutated_clause | :drop}`; a skipped (poisoned) id
@@ -991,55 +956,13 @@ defmodule Mutare.Transform do
         end
       )
 
-    if claimed == [] and not references_var?(orig_clauses, var) do
+    if claimed == [] and not references_var?(orig_clauses, ctx.config.active_var) do
       # All lifted variants were withheld, and no body needs the dispatcher's
       # active-id parameter. Keep the original function, including super/defaults.
       {orig_clauses, ctx}
     else
-      {assemble_lifted(
-         plan,
-         orig_clauses,
-         claimed,
-         base,
-         ctx.config,
-         super_var
-       ), ctx}
+      {LiftedEmit.assemble(plan, orig_clauses, claimed, group, ctx.config), ctx}
     end
-  end
-
-  defp assemble_lifted(
-         %FunctionPlan{signature: {vis, name, arity}},
-         orig_clauses,
-         claimed,
-         base,
-         config,
-         super_var
-       ) do
-    var = config.active_var
-    mut_ids = Enum.map(claimed, fn {id, _i, _c, _w} -> id end)
-
-    # Default arguments (`def f(a, b \\ 1)`) expand to multiple arities. They stay
-    # on the public dispatcher — which keeps the original arity contract — while the
-    # base function takes the full arity with `\\` stripped (`clause_parts`). The
-    # default *expressions* are taken from the already-emitted clauses, so their
-    # in-place selectors ride along and the dispatcher keeps mutating its defaults.
-    defaults = LiftedEmit.clause_defaults(orig_clauses)
-
-    base_clauses = LiftedEmit.build_base_clauses(orig_clauses, claimed, base, var, super_var)
-
-    dispatcher =
-      LiftedEmit.build_dispatcher(
-        vis,
-        name,
-        arity,
-        mut_ids,
-        base,
-        config,
-        defaults,
-        super_var
-      )
-
-    [dispatcher | base_clauses]
   end
 
   # === in-place transform: analyze (annotate) then assign/emit ===============

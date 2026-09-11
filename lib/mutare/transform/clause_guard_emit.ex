@@ -45,8 +45,7 @@ defmodule Mutare.Transform.ClauseGuardEmit do
     {select(default, whole, ctx), ctx}
   end
 
-  defp deliverable?(%Ctx{scope: %Scope{active_bound: true, module_depth: 0}}), do: true
-  defp deliverable?(_ctx), do: false
+  defp deliverable?(%Ctx{scope: scope}), do: Scope.active_var_bound?(scope)
 
   defp clause_guard?(%Candidate.ClauseGuard{}), do: true
   defp clause_guard?(_candidate), do: false

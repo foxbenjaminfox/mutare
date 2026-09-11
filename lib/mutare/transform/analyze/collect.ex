@@ -161,22 +161,20 @@ defmodule Mutare.Transform.Analyze.Collect do
   # active branch evaluates `wrap(mutated)` at the position `splice` fills — so splicing
   # `wrap(mutated)` directly *is* the value the weave takes when that mutant is selected, the
   # selector degenerated to its chosen branch. Attribution mirrors `HostedEmit`'s Site
-  # recording: a relayed mutant keeps its `producer` spec, a host-authored one the hosting
-  # spec; `note` rides verbatim, and `variant` is resolved now against the hosted fragment's
-  # own `{original, mutated}` pair. That pair is lost once an outer host relays this lowered
+  # recording: the result's `spec` is already the recording family (a relayed mutant's producer,
+  # else the host); `note` rides verbatim, and `variant` is resolved now against the hosted
+  # fragment's own `{original, mutated}` pair. That pair is lost once an outer host relays this lowered
   # rebuild, so a producer that derives labels through `variant/2` must be materialized here.
   # The multi-host selector chaining emit performs (`target_key`/fallback) has no analog here:
   # each lowered mutant is an independent single-point rebuild, not a combined build.
   defp lower_hosted(%Candidate.Hosted{} = cand, call_node, rev_path) do
-    for {mutated, note, variant, producer} <- cand.mutants do
-      mutator = producer || cand.mutator
-
+    for %Dispatch.Result{spec: mutator, node: mutated} = result <- cand.mutants do
       {rev_path,
        %{
          mutator: mutator,
          mutated: cand.splice.(call_node, cand.wrap.(mutated)),
-         note: note,
-         variant: resolved_variant(mutator, cand.original, mutated, variant)
+         note: result.note,
+         variant: resolved_variant(mutator, cand.original, mutated, result.variant)
        }}
     end
   end

@@ -764,7 +764,8 @@ unknown-verb comments (`unknown`), and for each line directive the last line of 
 starting on its line (`end_lines`: one `Sourceror.get_range/1` prewalk, ~20 ms on a 1200-line
 file, paid only by directive-bearing files, in both passes — cheaper than gating it) — and
 `degraded_uses` (`Uses.degraded_uses/1`, read off the annotated tree under the count sink only).
-`Schema` keeps the per-file map as the `facts` element of each `:counted` tuple;
+`Schema` keeps the per-file map as the `facts` element of each `:counted` tuple *(since folded
+into `%Schema.Counted{}`'s `CountReport`; see "Data shapes: one struct per produced thing")*;
 `detect_directive_diagnostics/2` and `record_degraded_uses/2` are pure over it,
 `Ignore.misplacement_hint/3` takes the container instead of an AST, and the Mix task's
 `scan_degraded_uses` is gone (`Info.print_check/2` reads `schema.degraded_uses`). The transform's
@@ -10197,3 +10198,68 @@ obvious from the code:
   else, skip set included. Neither is a new fact (`Mutare.Transform` and NOTES "Stable per-file
   runtime identities" state both); they are now checked over generated modules rather than by
   example only.
+
+### Data shapes: one struct per produced thing `[done]`
+
+A pass over the tuples, bags, and parallel structs that had accumulated at the seams
+between stages. The mechanics live in each module; what is recorded here is the *shape
+decision* at each seam and the one place a public contract was deliberately left alone.
+
+  * **One produced-mutation shape on both delivery paths.** `Dispatch.Result` is now the
+    only thing a produced mutation becomes once the transform sees it: `Dispatch.to_result/2`
+    validates the author-facing return (bare node or `%Mutation{}`) and resolves the recording
+    spec (`producer || spec`) in one place, and the selector-host path carries the same
+    `%Result{}`s on `Candidate.Hosted.mutants` that the ordinary path carries. The
+    `{node, note, variant, producer}` quad and the `attribution_of/1` side-read it forced are
+    gone. **`Mutare.Analyze.expression_mutations/3` keeps its `{spec, node, note, variant}`
+    tuple on purpose**: it is a published contract that `mutare_ecto` destructures
+    (`island.ex`), and it is a *generation* output the caller wraps into a `%Mutation{}` — not
+    a delivery shape. Changing it would be a breaking companion release for no internal gain.
+  * **`RunCtx` is the whole per-mutant bundle.** It now carries the `options` (config is
+    *read* from them — `harness_retries`, `kill_runs`, `max_heap_mb`, `workers`,
+    `max_survivors`, `confirm_timeouts` — never copied into a sibling field that could drift),
+    the partition pool, the deadline, the hydrator, and the three resolved hooks, so
+    `Stream.stream_and_collect(ctx, sites)`, `Stream.confirm_timeouts(ctx, results)`, and
+    `MutantRun.run(ctx, site)` take the bundle plus the one thing that varies. The
+    `:confirm_timeouts` gate moved *into* `confirm_timeouts/2`. (The heap cap is one of those
+    reads: "The reserved env set is derived from the one env builder" had just swapped
+    `RunCtx.heap_env` for a `max_heap_mb` field, and with `options` on the bundle that field
+    was exactly such a copy.)
+    `Compile`'s ad-hoc deps map is gone: its loop threads the `Run.Context` (root, options and
+    `on_phase` all derive from it) plus the sandbox, and the attempt budget is
+    `@poison_attempts - recovery.rounds` rather than a parallel countdown.
+  * **Schema's phase records are structs.** `%Schema.Counted{rel, source, outcome}` with
+    `outcome :: {:ok, %CountReport{}} | {:error, parser_error}` replaces the `:counted`
+    5-tuple and its fifth-slot `facts` map (every fact the map carried is a `CountReport`
+    field), and `%Schema.Job{}` replaces the render-job tuple plus the packed
+    `{count, emit_ids}`; `render_one/3` reads the two render flags off the `Run.Context`
+    instead of taking them positionally. The three ineffective-configuration detectors share
+    one `full_scan?/1` gate and one union.
+  * **`ClaimState` is claim state again.** The count pass's configuration diagnostics
+    (`skip_lifting`/route/mark matches) were never touched by `claim/5`; they now live on
+    `Ctx.matches` as a `%ConfigMatches{}` (the module that already collected two of them),
+    and `Transform.count_report/2` returns a
+    `%CountReport{mutants, selected_ids, matches, directives, degraded_uses}`. The last two
+    are the facts "The count pass is the scan's only parse" added, which had parked
+    `degraded_uses` on `ClaimState` as well; it is a `Ctx` field instead. Unlike `matches` it
+    is read once off the annotated tree before the walk and never grows, so it rides `Ctx`
+    only to reach `count_report/2`.
+  * **Coverage dump: a `%Coverage{}`, strict shape, no rescue-as-control-flow.** The helper
+    always writes all five keys (`HelperTemplate.dump_payload/0`), so the "absent key reads as
+    empty" defaults were dead — and dangerous, since a truncated attribution read as empty
+    could manufacture a false survivor. `valid_shape/1` now requires all five, and
+    `translate/2` threads `{:ok, _} | {:error, {:unknown_runtime_id, id}}` through a `with`
+    instead of raising `KeyError` out of `Map.fetch!/2` and rescuing it.
+  * **Harvest returns `{directives, behaviours}`.** `collect/3` no longer smuggles a
+    behaviour through the directive list as a `{:mutare_behaviour, mod}` tuple that every
+    later step had to special-case away from `Macro.to_string/1`.
+  * **Emit-side plumbing named, not flagged.** The clause-emit path takes a
+    `delivery :: :lifted | :in_place` atom and `emit_clause_body/3` is two clauses (one per
+    read strategy) instead of a boolean threaded through four functions and read twice at the
+    bottom; `LiftedEmit.assemble/5` derives a `%LiftedEmit.Group{}` (signature, base name,
+    dispatch variables, super closure) once and hands it to the clause builders, retiring the
+    8-argument dispatcher builder; `RouteStamp.stamp/6` takes the resolve `env` rather than
+    three of its fields spelled out at each of three call sites; and the
+    `%Scope{active_bound: true, module_depth: 0}` pattern that four emit modules repeated is
+    `Scope.active_var_bound?/1` (`ClauseGuardEmit`, written in parallel, had a fifth copy; it
+    reads the helper too).

@@ -46,11 +46,18 @@ defmodule Mutare.Transform.FnClauseEmit do
 
   defp deliver(node, [], _ctx), do: node
 
-  defp deliver(
-         {:fn, meta, clauses} = node,
-         claimed,
-         %Ctx{scope: %Scope{active_bound: true, module_depth: 0}} = ctx
-       ) do
+  # The clause-head candidates are delivered by rewriting the `fn`'s clause list in place — which
+  # needs the hoisted active-id variable in scope; without it every candidate takes the
+  # whole-node selector.
+  defp deliver({:fn, _meta, _clauses} = node, claimed, %Ctx{} = ctx) do
+    if Scope.active_var_bound?(ctx.scope),
+      do: rewrite_heads(node, claimed, ctx),
+      else: select(node, claimed, ctx)
+  end
+
+  defp deliver(node, claimed, ctx), do: select(node, claimed, ctx)
+
+  defp rewrite_heads({:fn, meta, clauses} = node, claimed, ctx) do
     var = ctx.config.active_var
 
     {heads, whole} =
@@ -71,8 +78,6 @@ defmodule Mutare.Transform.FnClauseEmit do
 
     select(default, whole, ctx)
   end
-
-  defp deliver(node, claimed, ctx), do: select(node, claimed, ctx)
 
   defp select(node, [], _ctx), do: node
 

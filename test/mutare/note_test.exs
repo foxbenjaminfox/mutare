@@ -100,7 +100,11 @@ defmodule Mutare.NoteTest do
     end
   end
 
-  describe "Mutation.new/tagged and normalize_mutant/1 (the shared noted-mutant contract)" do
+  describe "Mutation.new/tagged and to_result/2 (the shared noted-mutant contract)" do
+    alias Mutare.Mutator.Dispatch.Result
+
+    @arith Mutare.Mutator.Spec.for_module(Mutare.Mutators.Arithmetic)
+
     test "new/2 builds the struct; new/1 defaults the note to nil" do
       assert Mutation.new(1, "why") == %Mutation{node: 1, note: "why"}
       assert Mutation.new(1) == %Mutation{node: 1, note: nil}
@@ -139,31 +143,37 @@ defmodule Mutare.NoteTest do
       end
     end
 
-    test "normalize_mutant quads a struct / bare node with its note, variant, and producer" do
-      assert Dispatch.normalize_mutant(%Mutation{node: {:x, [], nil}, note: "n"}) ==
-               {{:x, [], nil}, "n", nil, nil}
+    test "to_result records a struct / bare node with its note and variant under the spec" do
+      assert Dispatch.to_result(%Mutation{node: {:x, [], nil}, note: "n"}, @arith) ==
+               %Result{spec: @arith, node: {:x, [], nil}, note: "n"}
 
-      assert Dispatch.normalize_mutant({:x, [], nil}) == {{:x, [], nil}, nil, nil, nil}
+      assert Dispatch.to_result({:x, [], nil}, @arith) == %Result{
+               spec: @arith,
+               node: {:x, [], nil}
+             }
     end
 
-    test "tagged/2 carries the variant label(s) through normalize_mutant" do
+    test "tagged/2 carries the variant label(s) through to_result" do
       assert Mutation.tagged(1, "zero") == %Mutation{node: 1, note: nil, variant: "zero"}
 
-      assert Dispatch.normalize_mutant(%Mutation{node: {:x, [], nil}, variant: "zero"}) ==
-               {{:x, [], nil}, nil, "zero", nil}
+      assert Dispatch.to_result(%Mutation{node: {:x, [], nil}, variant: "zero"}, @arith) ==
+               %Result{spec: @arith, node: {:x, [], nil}, variant: "zero"}
 
-      assert Dispatch.normalize_mutant(%Mutation{node: 1, note: "n", variant: ["pred", "zero"]}) ==
-               {1, "n", ["pred", "zero"], nil}
+      assert Dispatch.to_result(%Mutation{node: 1, note: "n", variant: ["pred", "zero"]}, @arith) ==
+               %Result{spec: @arith, node: 1, note: "n", variant: ["pred", "zero"]}
     end
 
-    test "a producer spec rides through normalize_mutant; a non-spec producer is rejected" do
-      spec = Mutare.Mutator.Spec.for_module(Mutare.Mutators.IntegerLiteral)
+    test "a producer spec becomes the recording spec; a non-spec producer is rejected" do
+      producer = Mutare.Mutator.Spec.for_module(Mutare.Mutators.IntegerLiteral)
 
-      assert Dispatch.normalize_mutant(%Mutation{node: 1, producer: spec}) ==
-               {1, nil, nil, spec}
+      assert Dispatch.to_result(%Mutation{node: 1, producer: producer}, @arith) ==
+               %Result{spec: producer, node: 1}
 
       assert_raise ArgumentError, ~r/:producer must be a Mutare.Mutator.Spec or nil/, fn ->
-        Dispatch.normalize_mutant(%Mutation{node: 1, producer: Mutare.Mutators.IntegerLiteral})
+        Dispatch.to_result(
+          %Mutation{node: 1, producer: Mutare.Mutators.IntegerLiteral},
+          @arith
+        )
       end
 
       assert_raise ArgumentError, ~r/:producer must be a Mutare.Mutator.Spec or nil/, fn ->
@@ -175,13 +185,13 @@ defmodule Mutare.NoteTest do
       assert_raise ArgumentError,
                    ~r/must be a %Mutare.Mutator.Mutation\{\}, not a bare map/,
                    fn ->
-                     Dispatch.normalize_mutant(%{node: 1, note: "n"})
+                     Dispatch.to_result(%{node: 1, note: "n"}, @arith)
                    end
     end
 
     test "a non-string struct note is rejected" do
       assert_raise ArgumentError, ~r/:note must be a string or nil/, fn ->
-        Dispatch.normalize_mutant(%Mutation{node: 1, note: 42})
+        Dispatch.to_result(%Mutation{node: 1, note: 42}, @arith)
       end
     end
 
@@ -189,14 +199,17 @@ defmodule Mutare.NoteTest do
       # No quoted AST node is a struct, so any struct other than %Mutation{} is a library bug —
       # fail loud rather than letting it through as `mutated` (which would crash Sourceror later).
       assert_raise ArgumentError, ~r/must be a %Mutare.Mutator.Mutation\{\}, got a/, fn ->
-        Dispatch.normalize_mutant(1..2)
+        Dispatch.to_result(1..2, @arith)
       end
     end
 
     test "an empty-string note is coerced to nil (a blank note carries no signal)" do
       # So the report never renders a dangling "  — " suffix; the same coercion the header
       # already proves it produces no em-dash for a noteless mutant (see above).
-      assert Dispatch.normalize_mutant(%Mutation{node: 1, note: ""}) == {1, nil, nil, nil}
+      assert Dispatch.to_result(%Mutation{node: 1, note: ""}, @arith) == %Result{
+               spec: @arith,
+               node: 1
+             }
     end
 
     test "a bare nil mutation item raises instead of disappearing" do

@@ -63,7 +63,7 @@ defmodule Mutare.CLI.Diagnostics do
   end
 
   # The `:skip_lifting` mirror of `warn_ineffective_ignores/1`: a configured entry that
-  # matched no function anywhere in the scan (`Mutare.Schema.detect_ineffective_skip_lifting`
+  # matched no function anywhere in the scan (`Mutare.Schema.detect_ineffective_config/3`
   # — recorded only on a full scan, so `--since`/`--only`/`--line` never false-positive).
   # Without it a typo'd module or a wrong arity leaves the escape hatch silently inert —
   # the user keeps hitting the baseline failure the entry was meant to avoid. Onto stderr,

@@ -203,7 +203,7 @@ defmodule Mutare.RuntimeIdTest do
     File.write!(path, :erlang.term_to_binary(payload))
     assert {:ok, coverage} = Coverage.read_dump(path, %{a => 3, b => 17})
 
-    assert coverage == %{
+    assert coverage == %Coverage{
              aggregate: MapSet.new([3, 17]),
              by_file: %{"test/b_test.exs" => MapSet.new([17])},
              unlabeled: MapSet.new([3]),
@@ -217,8 +217,10 @@ defmodule Mutare.RuntimeIdTest do
     assert raw.by_test == %{b => MapSet.new(["test b"])}
 
     # An unknown id in *any* field must invalidate the dump, even when its aggregate is valid.
+    empty = Map.new(payload, fn {field, _} -> {field, %{}} end)
+
     for field <- Map.keys(payload) do
-      field_only = Map.merge(%{aggregate: %{}, by_file: %{}}, Map.take(payload, [field]))
+      field_only = Map.merge(empty, Map.take(payload, [field]))
       File.write!(path, :erlang.term_to_binary(field_only))
 
       assert capture_log(fn ->

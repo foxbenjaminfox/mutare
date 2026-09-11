@@ -14,16 +14,19 @@ defmodule Mutare.Mutator.Dispatch do
   defmodule Result do
     @moduledoc false
 
-    # One node-level mutation, produced by `Mutare.Mutator.Dispatch.mutations/3`. A struct rather
-    # than a bare `{spec, node, note, variant}` tuple so a producing family's optional `:attribution`
-    # (a report-location override on the whole-node rewrite path) can ride through the transform's
-    # choke points without every intermediate destructure having to grow a positional slot: the
-    # consumers that don't care (guard/pattern tagging in `Mutare.Transform.Tag`) match `%Result{}`
-    # and read only the fields they use; the one that does (`Mutare.Transform.Analyze.Attach`) reads
-    # `:attribution`. `spec` is the producing `Mutare.Mutator.Spec` (the `%Mutation{}`'s explicit
-    # `:producer` when relayed, else the returning mutator); `node` the replacement AST; `note`/`variant`
-    # the optional advisory / `# mutare:ignore` tag; `attribution` the optional
-    # `Mutare.Mutator.Mutation.Attribution` (`nil` for a bare-node or unattributed mutation).
+    # One produced mutation, as the transform sees it — the single shape on **both** delivery
+    # paths: the ordinary `mutate/1`/`mutate/2` return (`mutations/3`) and a selector host's
+    # target `:mutants` (`host_targets/3`, carried on `Mutare.Transform.Candidate.Hosted`). Built
+    # only by `to_result/2`, which is where the author-facing return contract (a bare node or a
+    # `%Mutare.Mutator.Mutation{}`) is validated and the recording spec resolved. A struct so a
+    # field only some consumers read (`:attribution`, read by `Mutare.Transform.Analyze.Attach`
+    # alone) rides through every choke point without a positional slot: the consumers that don't
+    # care (guard/pattern tagging in `Mutare.Transform.Tag`, `Mutare.Transform.HostedEmit`) match
+    # `%Result{}` and read only the fields they use. `spec` is the **recording** `Mutare.Mutator.Spec`
+    # (the `%Mutation{}`'s explicit `:producer` when relayed, else the returning mutator); `node` the
+    # replacement AST; `note`/`variant` the optional advisory / `# mutare:ignore` tag; `attribution`
+    # the optional `Mutare.Mutator.Mutation.Attribution` (`nil` for a bare-node or unattributed
+    # mutation).
 
     @enforce_keys [:spec, :node]
     defstruct [:spec, :node, note: nil, variant: nil, attribution: nil]
@@ -116,53 +119,31 @@ defmodule Mutare.Mutator.Dispatch do
 
   defp tag(_spec, :skip, _context), do: []
 
-  # Pair each returned mutation with its producing spec, carrying its note, variant tag, and
-  # report-location override: the mutator's optional `finalize/2` funnel runs first
-  # (`finalize_mutations/3`), then each element is normalized by `normalize_mutant/1` into a
-  # `{node, note, variant, producer}` quad (enforcing the enriched-mutant contract — no bare nil
-  # slot, struct required, string note) and its `:attribution` read alongside, and each becomes a
-  # `%Result{}` recorded under its spec — or the `%Mutation{}`'s explicit `producer` when set (the
-  # relayed-mutation attribution: the site and its ignore vocabulary belong to the family that
-  # reasoned about the mutant, not the one that returned it). `attribution` is the whole-node
-  # rewrite's report-location override (`nil` for a bare node or an unattributed `%Mutation{}`); it
-  # rides only this ordinary path, not the hosted quad (`normalize_target/3`), which locates via its
-  # own `Target.range`.
+  # The mutator's optional `finalize/2` funnel runs first (`finalize_mutations/3`), then each
+  # returned mutation becomes the `%Result{}` recorded under its spec (`to_result/2`) — or under the
+  # `%Mutation{}`'s explicit `producer` when set (the relayed-mutation attribution: the site and its
+  # ignore vocabulary belong to the family that reasoned about the mutant, not the one that
+  # returned it).
   defp tag(spec, mutations, context) when is_list(mutations),
     do:
       mutations
       |> finalize_mutations(spec, context)
-      |> Enum.map(fn mutation ->
-        {node, note, variant, producer} = normalize_mutant(mutation)
-
-        %Result{
-          spec: producer || spec,
-          node: node,
-          note: note,
-          variant: variant,
-          attribution: attribution_of(mutation)
-        }
-      end)
-
-  # The report-location override a `%Mutation{}` carries, or `nil` for a bare-node mutation (the
-  # common case). Read separately from `normalize_mutant/1` so the shared `{node, note, variant,
-  # producer}` quad — and the hosted `:mutants` path that also uses it — stays untouched.
-  defp attribution_of(%Mutation{attribution: attribution}), do: attribution
-  defp attribution_of(_node), do: nil
+      |> Enum.map(&to_result(&1, spec))
 
   # Apply the spec's optional `c:Mutare.Mutator.finalize/2` hook to each produced mutation —
   # the core-guaranteed tag → filter → enrich funnel a family-rich mutator would otherwise
   # have to remember at every delivery site. The one definition both delivery paths share:
   # the `mutate/1`/`mutate/2` return (`tag/3`) and a host target's `:mutants`
-  # (`normalize_target/3`). Each raw element is validated by `normalize_mutant/1` *before*
-  # reaching plugin code (so a malformed producer return fails loud with core's message, not
-  # a confusing crash inside the plugin's `finalize/2`); the finalized value is validated
-  # again by the caller's `normalize_mutants/1`. A relayed mutation (an explicit `:producer`
-  # — the sub-contract case) passes through untouched: it belongs to the producing family,
-  # whose own funnel already ran when the mutation was generated.
+  # (`normalize_target/3`). Each raw element is validated (`validate!/1`) *before* reaching
+  # plugin code (so a malformed producer return fails loud with core's message, not a
+  # confusing crash inside the plugin's `finalize/2`); the finalized value is validated again
+  # when the caller builds its `%Result{}` (`to_result/2`). A relayed mutation (an explicit
+  # `:producer` — the sub-contract case) passes through untouched: it belongs to the producing
+  # family, whose own funnel already ran when the mutation was generated.
   defp finalize_mutations(mutations, %Spec{module: module} = spec, context) do
     if callback_enabled?(spec, :finalize, 2) and exports?(module, :finalize, 2) do
       Enum.flat_map(mutations, fn mutation ->
-        _validated = normalize_mutant(mutation)
+        validate!(mutation)
         finalize(module, mutation, context)
       end)
     else
@@ -338,14 +319,14 @@ defmodule Mutare.Mutator.Dispatch do
   # and a 2-arity `:splice`. A malformed target raises (a library bug, not a target to silently
   # drop) — caught at transform time with the offending value. Each mutant runs through the
   # host's optional `finalize/2` funnel (`finalize_mutations/3`, same as a `mutate/2` return —
-  # a `:skip` removes it, and `host_targets/3` drops a target left with no mutants), then is
-  # normalized to a `{node, note, variant, producer}` quad by the shared `normalize_mutants/1`.
-  # A host fragment is *usually* untagged (foreign semantics, no vocabulary), so `variant` is nil —
-  # but a hosting mutator declaring `variants/0` may tag one via `Mutation.tagged/2`, and that label
-  # is preserved here and carried through `Mutare.Transform.HostedEmit` to the Site. `producer` is
-  # the sub-contract attribution: a mutant the host relayed from a core family (collected via
-  # `Mutare.Analyze.expression_mutations/3`) carries that family's spec, and `HostedEmit` records
-  # its Site under the producer instead of the host.
+  # a `:skip` removes it, and `host_targets/3` drops a target left with no mutants), then becomes
+  # the same `%Result{}` the ordinary path records (`to_result/2`). A host fragment is *usually*
+  # untagged (foreign semantics, no vocabulary), so `variant` is nil — but a hosting mutator
+  # declaring `variants/0` may tag one via `Mutation.tagged/2`, and that label rides through
+  # `Mutare.Transform.HostedEmit` to the Site. The result's `spec` is the sub-contract
+  # attribution resolved: a mutant the host relayed from a core family (collected via
+  # `Mutare.Analyze.expression_mutations/3`) records under that family's spec, a host-authored
+  # one under the host's.
   defp normalize_target(
          %Mutare.Mutator.MacroHost.Target{
            original: original,
@@ -358,7 +339,7 @@ defmodule Mutare.Mutator.Dispatch do
        when is_list(mutants) and is_function(splice, 2) do
     %{
       original: original,
-      mutants: mutants |> finalize_mutations(spec, context) |> normalize_mutants(),
+      mutants: mutants |> finalize_mutations(spec, context) |> Enum.map(&to_result(&1, spec)),
       splice: splice,
       wrap: target_wrap(Map.get(target, :wrap)),
       range: target_range(Map.get(target, :range))
@@ -400,66 +381,84 @@ defmodule Mutare.Mutator.Dispatch do
             stacktrace
   end
 
-  # Normalize one mutant — a bare node, or a `%Mutare.Mutator.Mutation{}` carrying a note, a
-  # variant tag, and/or a producer spec — to a `{node, note, variant, producer}` quad (a bare
-  # node gets `note: nil, variant: nil, producer: nil`).
-  # The single home for the enriched-mutant contract, shared by the `mutate/1`,`mutate/2` return
-  # path (`tag/3`) and the selector-host `:mutants` path (`normalize_target/3`).
-  #
+  @doc """
+  The `%Result{}` one produced mutation is recorded as: a bare replacement node, or a
+  `%Mutare.Mutator.Mutation{}` carrying a note, a variant tag, a producer spec, and/or a
+  report-location override. Recorded under `spec` — the returning mutator — unless the
+  `%Mutation{}` names an explicit `:producer` (a relayed sub-contract mutant, recorded under the
+  family that reasoned about it). The single home for the enriched-mutant contract, shared by the
+  `mutate/1`/`mutate/2` return path (`tag/3`) and the selector-host `:mutants` path
+  (`normalize_target/3`), so malformed entries fail loud in one place (`validate!/1`).
+
+  An empty-string note is coerced to `nil`: a blank note carries no signal, and `nil` keeps the
+  report from rendering a dangling `— ` suffix (and the JSON reporter from emitting an empty
+  `description`).
+  """
+  @spec to_result(Macro.t() | Mutation.t(), Spec.t()) :: Result.t()
+  def to_result(mutation, %Spec{} = spec) do
+    validate!(mutation)
+
+    case mutation do
+      %Mutation{} = mutation ->
+        %Result{
+          spec: mutation.producer || spec,
+          node: mutation.node,
+          note: presence(mutation.note),
+          variant: mutation.variant,
+          attribution: mutation.attribution
+        }
+
+      node ->
+        %Result{spec: spec, node: node}
+    end
+  end
+
   # Anything other than a bare node or a well-formed `%Mutation{}` is a library bug — a bare
   # top-level `nil` (filter it before returning the list, or use `Mutare.AST.literal(nil)` for a
   # literal nil replacement), a bare `%{node:, note:}` *map* (the struct is required: a quoted map
   # literal is itself a valid mutation node, so a bare map can't unambiguously mean "noted mutant"),
   # some *other* struct (no AST node is a struct, and the note would otherwise silently vanish), or a
-  # `%Mutation{}` whose `:note` is neither a string nor nil (the report renders it verbatim). All
-  # raise rather than silently drop — fail loud over a vanishing/garbled mutant. An empty-string note
-  # is coerced to `nil`: a blank note carries no signal, and `nil` keeps the report from rendering a
-  # dangling `— ` suffix (and the JSON reporter from emitting an empty `description`).
-  @spec normalize_mutant(Macro.t() | Mutation.t() | map()) ::
-          {Macro.t(), String.t() | nil, Mutation.variant(), Spec.t() | nil}
-  def normalize_mutant(%Mutation{node: node, note: note, variant: variant, producer: producer})
-      when (is_binary(note) or is_nil(note)) and
-             (is_nil(producer) or is_struct(producer, Spec)),
-      do: {node, presence(note), variant, producer}
+  # `%Mutation{}` whose `:note` is neither a string nor nil (the report renders it verbatim) or
+  # whose `:producer` is not a spec. All raise rather than silently drop — fail loud over a
+  # vanishing/garbled mutant.
+  defp validate!(%Mutation{note: note, producer: producer})
+       when (is_binary(note) or is_nil(note)) and
+              (is_nil(producer) or is_struct(producer, Spec)),
+       do: :ok
 
-  def normalize_mutant(%Mutation{note: note}) when not is_binary(note) and not is_nil(note) do
+  defp validate!(%Mutation{note: note}) when not is_binary(note) and not is_nil(note) do
     raise ArgumentError,
           "a Mutare.Mutator.Mutation :note must be a string or nil, got: #{inspect(note)}"
   end
 
-  def normalize_mutant(%Mutation{producer: producer}) do
+  defp validate!(%Mutation{producer: producer}) do
     raise ArgumentError,
           "a Mutare.Mutator.Mutation :producer must be a Mutare.Mutator.Spec or nil, " <>
             "got: #{inspect(producer)}"
   end
 
-  def normalize_mutant(nil) do
+  defp validate!(nil) do
     raise ArgumentError,
           "a mutation list item cannot be bare nil; filter inapplicable entries before returning " <>
             "the list, or return Mutare.AST.literal(nil) to replace with literal nil"
   end
 
-  def normalize_mutant(%{node: _} = map) when not is_struct(map) do
+  defp validate!(%{node: _} = map) when not is_struct(map) do
     raise ArgumentError,
           "a noted mutant must be a %Mutare.Mutator.Mutation{}, not a bare map, got: #{inspect(map)}"
   end
 
-  def normalize_mutant(%_{} = other) do
+  defp validate!(%_{} = other) do
     raise ArgumentError,
           "a noted mutant must be a %Mutare.Mutator.Mutation{}, got a " <>
             "#{inspect(other.__struct__)}: #{inspect(other)}"
   end
 
-  def normalize_mutant(node), do: {node, nil, nil, nil}
+  defp validate!(_node), do: :ok
 
   # A blank note is no note — collapse `""` to `nil` so downstream rendering treats it as absent.
   defp presence(""), do: nil
   defp presence(note), do: note
-
-  # Normalize each mutant to a `{node, note, variant, producer}` quad. The shared front of both
-  # enriched-mutant paths — the `mutate/1`/`mutate/2` return (`tag/2`) and the selector-host
-  # `:mutants` (`normalize_target/3`) — so malformed entries fail loud in one place.
-  defp normalize_mutants(mutants), do: Enum.map(mutants, &normalize_mutant/1)
 
   defp target_wrap(nil), do: &Function.identity/1
   defp target_wrap(wrap) when is_function(wrap, 1), do: wrap

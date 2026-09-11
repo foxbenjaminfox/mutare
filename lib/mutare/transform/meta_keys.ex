@@ -17,9 +17,8 @@ defmodule Mutare.Transform.MetaKeys do
   # stay owned by their modules: runtime-contract identifiers (`:mutare_active`/`:mutare_track`
   # persistent_term keys in `Mutare.Selector`; the `:mutare_cov*` ETS tables in
   # `Mutare.Coverage.Recorder`), generated variable-name bases (`:mutare_piped`/`:mutare_cond`/
-  # `:mutare_super`/`:mutare_capture_arg` in `Mutare.Transform.Names`/`Ctx`), the
-  # `:mutare_unmatched` placeholder var, and the `{:mutare_behaviour, mod}` tagged tuple in
-  # `Mutare.Transform.Uses.Harvest`.
+  # `:mutare_super`/`:mutare_capture_arg` in `Mutare.Transform.Names`/`Ctx`), and the
+  # `:mutare_unmatched` placeholder var.
 
   # Candidate-delivery keys, as `kind: :meta_key` pairs. Each holds a list of
   # `Mutare.Transform.Candidate` structs that an emit path consumes, then strips from the node

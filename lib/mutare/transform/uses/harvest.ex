@@ -44,6 +44,13 @@ defmodule Mutare.Transform.Uses.Harvest do
   alias Mutare.Transform.Aliases
   alias Mutare.UseExpansion.Dispatch
 
+  # A harvest — what one `__using__` body (or one statement of it) yields: the
+  # `import`/`alias`/`require …, as:` directives (standard-quoted until `to_sourceror_directives/1`)
+  # and the `@behaviour` modules (bare atoms). `collect/3` and `expand_and_collect/3` return one
+  # and `merge/2` folds them, so a behaviour never travels disguised as a directive.
+  @typep harvest :: {[Macro.t()], [module()]}
+  @nothing {[], []}
+
   # The recursion context threaded through `collect/3` and `expand_and_collect/3`, so the
   # clauses carry one `ctx` instead of five positional args most of them ignore. `caller`
   # and `handlers` are constant for a whole harvest; `caller_aliases`, `depth` and `seen`
@@ -51,6 +58,13 @@ defmodule Mutare.Transform.Uses.Harvest do
   # and `expand_and_collect` bumps `depth` and records the `{mod, opts}` key in `seen`.
   defmodule Ctx do
     @moduledoc false
+    @type t :: %__MODULE__{
+            caller: module(),
+            caller_aliases: map(),
+            depth: non_neg_integer(),
+            seen: MapSet.t({module(), term()}),
+            handlers: [Mutare.Extension.Spec.t()]
+          }
     @enforce_keys [:caller, :caller_aliases, :depth, :seen, :handlers]
     defstruct [:caller, :caller_aliases, :depth, :seen, :handlers]
   end
@@ -143,14 +157,8 @@ defmodule Mutare.Transform.Uses.Harvest do
             handlers: handlers
           }
 
-          {behaviour_items, directive_items} =
-            mod
-            |> expand_and_collect(opts, ctx)
-            |> Enum.split_with(&match?({:mutare_behaviour, _}, &1))
-
-          directives = to_sourceror_directives(directive_items)
-          behaviours = Enum.map(behaviour_items, fn {:mutare_behaviour, beh} -> beh end)
-          {directives, behaviours, nil}
+          {directives, behaviours} = expand_and_collect(mod, opts, ctx)
+          {to_sourceror_directives(directives), behaviours, nil}
         else
           {[], [], {mod, :not_loadable}}
         end
@@ -163,8 +171,8 @@ defmodule Mutare.Transform.Uses.Harvest do
   # (`Macro.to_string |> Sourceror.parse_string!`) as an in-process harvest, arriving as the
   # Sourceror directives `Resolve.register/2` folds. Behaviours are kept as bare atoms.
   defp from_extension(directives, behaviours) do
-    {directives |> flatten_directives() |> to_sourceror_directives(),
-     normalize_behaviours(behaviours), nil}
+    {directives, behaviours} = extension_harvest(directives, behaviours)
+    {to_sourceror_directives(directives), behaviours, nil}
   end
 
   # Extension behaviours arrive as resolved **module atoms** per the `Mutare.UseExpansion.Expansion`
@@ -185,10 +193,16 @@ defmodule Mutare.Transform.Uses.Harvest do
 
   # Flatten an extension's directive list to one element per directive: `List.wrap` (an extension may hand a
   # single node, though `expand/2` requires a list) then descend any quoted `__block__` into its
-  # component statements (`flatten_directive/1`). The shared front-half of both extension harvests
-  # (`from_extension/2` top-level, `extension_items/2` nested).
+  # component statements (`flatten_directive/1`).
   defp flatten_directives(directives),
     do: directives |> List.wrap() |> Enum.flat_map(&flatten_directive/1)
+
+  # An extension override's `Mutare.UseExpansion.Expansion` as a harvest: its directives
+  # flattened (still standard-quoted — `to_sourceror_directives/1` runs once, at the end of
+  # `run/4`'s path) and its behaviours as concrete atoms (`normalize_behaviours/1`). The one
+  # shape shared by the top-level override (`from_extension/2`) and a nested one (`collect/3`).
+  defp extension_harvest(directives, behaviours),
+    do: {flatten_directives(directives), normalize_behaviours(behaviours)}
 
   # Standard-quoted directives → the Sourceror form `Resolve.register/2` folds (`to_sourceror/1`),
   # dropping any that fail to round-trip. Shared by `from_extension/2` (a top-level extension override) and
@@ -256,20 +270,8 @@ defmodule Mutare.Transform.Uses.Harvest do
          true <- Code.ensure_loaded?(mod) do
       expand_and_collect(mod, opts, ctx)
     else
-      _ -> []
+      _ -> @nothing
     end
-  end
-
-  # An extension override of a *nested* `use` → `collect/3`-shape items, so it merges with the
-  # in-process harvest of its sibling directives. Directives stay standard-quoted (a single quoted
-  # block flattened to its leaves) and are normalized later by `in_process/5` like every collected
-  # directive; behaviours become `{:mutare_behaviour, mod}` tuples (atoms only, via
-  # `normalize_behaviours/1`) — the same shape the in-process `@behaviour` clause produces. Mirrors
-  # the top-level `from_extension/2`, but in the un-normalized collect-item shape its position needs.
-  defp extension_items(directives, behaviours) do
-    directive_items = flatten_directives(directives)
-    behaviour_items = behaviours |> normalize_behaviours() |> Enum.map(&{:mutare_behaviour, &1})
-    directive_items ++ behaviour_items
   end
 
   # `rest` (standard quoted) → `{:ok, opts_literal}` with the static gate, or `:error`. A `use`
@@ -284,20 +286,21 @@ defmodule Mutare.Transform.Uses.Harvest do
   # the `{module, options}` pair, not the module alone: a `__using__` that re-dispatches to the
   # *same* module with different static options (`use Foo, :a` → `use Foo, :b`) is a real
   # option-specific clause Elixir would expand, not a cycle — only an exact `{mod, opts}` repeat
-  # is (and the depth cap backstops a non-repeating chain).
+  # is (and the depth cap backstops a non-repeating chain). Returns a `t:harvest/0`.
   #
   # `caller_aliases` is the **source alias env in scope at the original `use` site** (a
   # `%{name => path | atom}` map), threaded down so the expanded `__using__` sees a faithful
   # `__CALLER__.aliases` — see `expand_using/4`.
+  @spec expand_and_collect(module(), term(), Ctx.t()) :: harvest()
   defp expand_and_collect(mod, opts, %Ctx{} = ctx) do
     key = {mod, opts}
 
     cond do
       ctx.depth > @max_depth ->
-        []
+        @nothing
 
       MapSet.member?(ctx.seen, key) ->
-        []
+        @nothing
 
       # A fresh alias scope (`%{}`) for this `__using__` body — its directives are folded as the
       # block is descended, so an in-body `alias … as: T` resolves a sibling `use T`.
@@ -316,11 +319,11 @@ defmodule Mutare.Transform.Uses.Harvest do
           |> collect(%{ctx | depth: ctx.depth + 1, seen: MapSet.put(ctx.seen, key)}, %{})
         rescue
           # An extension contract violation in a *nested* `use`'s override must stay loud (see `run/4`);
-          # everything else degrades this one `use` to `[]`.
+          # everything else degrades this one `use` to nothing.
           e in UseExpansion.ContractError -> reraise e, __STACKTRACE__
-          _ -> []
+          _ -> @nothing
         catch
-          _, _ -> []
+          _, _ -> @nothing
         end
     end
   end
@@ -360,21 +363,23 @@ defmodule Mutare.Transform.Uses.Harvest do
     Enum.map(env, fn {name, target} -> {Module.concat([name]), Aliases.to_module(target)} end)
   end
 
-  # Gather `import`/`alias`/`require …, as:` from a `__using__` body, descending only blocks
-  # and re-expanding nested `use`s — never `def`/`quote`/`if` bodies (those degrade). An alias
-  # env (`env`) is folded left-to-right over a block so an in-body `alias … as: T` resolves a
-  # sibling `use T` (the way the compiler expands it).
+  # Gather `import`/`alias`/`require …, as:` and `@behaviour`s from a `__using__` body into a
+  # `t:harvest/0`, descending only blocks and re-expanding nested `use`s — never
+  # `def`/`quote`/`if` bodies (those degrade). An alias env (`env`) is folded left-to-right over a
+  # block so an in-body `alias … as: T` resolves a sibling `use T` (the way the compiler expands
+  # it).
+  @spec collect(Macro.t(), Ctx.t(), map()) :: harvest()
   defp collect({:__block__, _, stmts}, %Ctx{} = ctx, env)
        when is_list(stmts) do
     {collected, _env} =
-      Enum.flat_map_reduce(stmts, env, fn stmt, env ->
-        harvested = collect(stmt, ctx, env)
+      Enum.reduce(stmts, {@nothing, env}, fn stmt, {acc, env} ->
+        {directives, _behaviours} = harvested = collect(stmt, ctx, env)
 
         # Advance the env with the directives this statement *yields*, not its literal text — so a
         # nested `use` (or `require …, as:`) that injects an alias resolves a later sibling `use`
         # (`use AliasInjector; use T`), exactly as Elixir expands it. (A direct `alias` yields
         # itself, so its binding is captured too; an `import` yields a no-op for the alias env.)
-        {harvested, Enum.reduce(harvested, env, &register_harvested/2)}
+        {merge(acc, harvested), Enum.reduce(directives, env, &register_harvested/2)}
       end)
 
     collected
@@ -382,15 +387,15 @@ defmodule Mutare.Transform.Uses.Harvest do
 
   defp collect({directive, _, _} = node, _ctx, _env)
        when directive in [:import, :alias],
-       do: [node]
+       do: {[node], []}
 
   # `require Foo, as: Bar` introduces an alias; harvest it as the equivalent `alias` directive
   # (its canonical form) so it folds into resolution like any other harvested binding. A plain
   # `require` doesn't affect name resolution and is dropped.
   defp collect({:require, _, [mod_ast, opts]}, _ctx, _env) when is_list(opts) do
     case as_value(opts) do
-      nil -> []
-      as -> [{:alias, [], [mod_ast, [as: as]]}]
+      nil -> @nothing
+      as -> {[{:alias, [], [mod_ast, [as: as]]}], []}
     end
   end
 
@@ -413,29 +418,33 @@ defmodule Mutare.Transform.Uses.Harvest do
           :decline ->
             nested_in_process(mod, raw_args, nested_ctx)
 
+          # A nested override's directives stay standard-quoted here, normalized later by
+          # `in_process/5` like every collected directive.
           %UseExpansion.Expansion{directives: directives, behaviours: behaviours} ->
-            extension_items(directives, behaviours)
+            extension_harvest(directives, behaviours)
         end
 
       :error ->
-        []
+        @nothing
     end
   end
 
   # `@behaviour Foo` injected by the `__using__` body (e.g. `use GenServer` injects
-  # `@behaviour GenServer`): harvest the behaviour *module*, resolved through the body's
-  # alias env, tagged `{:mutare_behaviour, mod}` so `run/4` separates it from the
-  # name-resolution directives. Only the canonical `@behaviour` is recognised — Elixir
-  # rejects `@behavior`. A non-static / unresolvable module (`Aliases.resolve_node/2` → `nil`) is
-  # dropped, like an un-round-trippable directive.
+  # `@behaviour GenServer`): harvest the behaviour *module*, resolved through the body's alias
+  # env. Only the canonical `@behaviour` is recognised — Elixir rejects `@behavior`. A
+  # non-static / unresolvable module (`Aliases.resolve_node/2` → `nil`) is dropped, like an
+  # un-round-trippable directive.
   defp collect({:@, _, [{:behaviour, _, [mod_ast]}]}, _ctx, env) do
     case Aliases.resolve_node(mod_ast, env) do
-      nil -> []
-      mod -> [{:mutare_behaviour, mod}]
+      nil -> @nothing
+      mod -> {[], [mod]}
     end
   end
 
-  defp collect(_other, _ctx, _env), do: []
+  defp collect(_other, _ctx, _env), do: @nothing
+
+  defp merge({directives_a, behaviours_a}, {directives_b, behaviours_b}),
+    do: {directives_a ++ directives_b, behaviours_a ++ behaviours_b}
 
   defp as_value(opts), do: Keyword.get(opts, :as)
 
@@ -456,10 +465,6 @@ defmodule Mutare.Transform.Uses.Harvest do
   # at the end, turning the atom into an `{:__aliases__, …}` node) makes `alias unquote(target),
   # as: T` actually bind `T`, so a later sibling `use T` in the same expanded body resolves and
   # expands. An un-round-trippable directive (nil) is a no-op.
-  # A harvested `@behaviour` tuple introduces no alias and must never reach `to_sourceror`
-  # (`Macro.to_string` over a `{:mutare_behaviour, mod}` tuple would be garbage) — skip it.
-  defp register_harvested({:mutare_behaviour, _}, env), do: env
-
   defp register_harvested(directive, env) do
     case to_sourceror(directive) do
       nil -> env

@@ -467,26 +467,22 @@ defmodule Mutare.Transform.Candidate do
     # hide theirs), and emits the coverage catch-all (`Mutare.Transform.HostedEmit.emit/5`).
     #
     # `original` is the logical fragment before mutation (rendered in each Site's diff and run by
-    # the wrapped catch-all baseline); `mutants` are the logical mutated fragments as
-    # `{node, note, variant, producer}` quads (one id + Site each, the optional `note` recorded on
-    # the Site for the report; `variant` is *usually* `nil` — a host fragment has foreign semantics
-    # and no variant vocabulary, and `Mutare.Mutator.Dispatch.normalize_mutant/1` quads a bare-node
-    # mutant with `nil, nil, nil` — but a hosting mutator declaring `variants/0` may tag one via
-    # `Mutation.tagged/2`, and that label rides through `HostedEmit` to the Site's `# mutare:ignore`
-    # filter; `producer` is the sub-contract attribution — a mutant the host relayed from a core
-    # family via `Mutare.Analyze.expression_mutations/3` carries that family's spec, and
-    # `HostedEmit` records its Site under it instead of the host); `wrap` maps a logical fragment
-    # to its woven branch value; `splice` weaves the assembled `case` into a copy of the (emitted)
-    # macro node; `range` locates the fragment for the Site; `mutator` is the hosting
-    # `Mutare.Mutator.Spec` (its name on every Site a mutant doesn't re-attribute).
+    # the wrapped catch-all baseline); `mutants` are the logical mutated fragments, each the same
+    # `Mutare.Mutator.Dispatch.Result` the ordinary path records (one id + Site each: `node` the
+    # mutated fragment, the optional `note` recorded on the Site for the report; `variant` is
+    # *usually* `nil` — a host fragment has foreign semantics and no variant vocabulary — but a
+    # hosting mutator declaring `variants/0` may tag one via `Mutation.tagged/2`, and that label
+    # rides through `HostedEmit` to the Site's `# mutare:ignore` filter; `spec` is the recording
+    # family — the sub-contract attribution already resolved: a mutant the host relayed from a core
+    # family via `Mutare.Analyze.expression_mutations/3` carries that family's spec, a host-authored
+    # one the host's); `wrap` maps a logical fragment to its woven branch value; `splice` weaves the
+    # assembled `case` into a copy of the (emitted) macro node; `range` locates the fragment for the
+    # Site; `mutator` is the hosting `Mutare.Mutator.Spec`.
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
             original: Macro.t(),
-            mutants: [
-              {Macro.t(), String.t() | nil, Mutare.Mutator.Mutation.variant(),
-               Mutare.Mutator.Spec.t() | nil}
-            ],
+            mutants: [Mutare.Mutator.Dispatch.Result.t()],
             wrap: (Macro.t() -> Macro.t()),
             splice: (Macro.t(), Macro.t() -> Macro.t()),
             range: Sourceror.Range.t()

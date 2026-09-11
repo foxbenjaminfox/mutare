@@ -1,31 +1,51 @@
 defmodule Mutare.Runner.MutantRun do
   @moduledoc false
-  # One mutant's test run, extracted from `Mutare.Runner`: `classify/3` dispatches a `Mutare.Site`
-  # to the right outcome (a poisoned/ignored short-circuit, a no-coverage skip, or a real run
-  # narrowed to its selected tests), then `run_mutant/*` executes it with the retry/rerun policy —
-  # the general `:harness_retries` budget, the dedicated boot-failure budget, the `:kill_runs`
-  # unanimous-kill reruns, and the never-retried `:sigkilled` case — and maps the typed outcome
+  # One mutant's test run, extracted from `Mutare.Runner`: `run/2` announces the site, checks out
+  # a partition slot, and `classify/3` dispatches the `Mutare.Site` to the right outcome (a
+  # poisoned/ignored short-circuit, a no-coverage skip, or a real run narrowed to its selected
+  # tests), then `run_mutant/*` executes it with the retry/rerun policy — the general
+  # `:harness_retries` budget, the dedicated boot-failure budget, the `:kill_runs` unanimous-kill
+  # reruns, and the never-retried `:sigkilled` case — and maps the typed outcome
   # (`Mutare.Sandbox.Command`, which owns the exit-code contract) onto a `Mutare.Result` status.
-  # Returns a `%Mutare.Result{}`; the streaming pass (`Mutare.Runner.Stream`) calls `classify/3`.
+  # Returns a `%Mutare.Result{}`; the streaming pass (`Mutare.Runner.Stream`) calls `run/2`.
 
   alias Mutare.{Result, Site}
-  alias Mutare.Runner.RunCtx
+  alias Mutare.Runner.{Hydrate, Partitions, RunCtx}
   alias Mutare.Sandbox.Command
 
   require Logger
 
-  def classify(_ctx, %Site{poisoned: true} = site, _partition) do
+  @doc """
+  Run one mutant: announce its start (`on_start`), check out a partition slot for the run and
+  its harness retries (`Mutare.Runner.Partitions`), classify + run it, and fill in a displayed
+  survivor's deferred diff code before it reaches the reporter (a no-op hydrate on the eager
+  path or a killed/no-coverage result — see `Mutare.Runner.Hydrate`). The one sequence both the
+  async stream and the sequential timeout-confirmation pass share.
+  """
+  @spec run(RunCtx.t(), Site.t()) :: Result.t()
+  def run(%RunCtx{} = ctx, %Site{} = site) do
+    ctx.on_start.(site)
+
+    result =
+      Partitions.with_slot(ctx.partitions, fn partition -> classify(ctx, site, partition) end)
+
+    Hydrate.result(ctx.hydrate, result)
+  end
+
+  # `partition` is the per-run partition slot (`[]` when partitioning is off), handed to every
+  # attempt as its `:partition` run option.
+  defp classify(_ctx, %Site{poisoned: true} = site, _partition) do
     %Result{site: site, status: :poisoned, duration_ms: 0, output: nil}
   end
 
-  def classify(_ctx, %Site{ignored: true} = site, _partition) do
+  defp classify(_ctx, %Site{ignored: true} = site, _partition) do
     %Result{site: site, status: :ignored, duration_ms: 0, output: nil}
   end
 
-  def classify(%RunCtx{selection: :run_all} = ctx, site, partition),
+  defp classify(%RunCtx{selection: :run_all} = ctx, site, partition),
     do: run_mutant(ctx, site, broaden([], site, ctx.scopes), partition)
 
-  def classify(%RunCtx{selection: {:selective, outcomes}} = ctx, site, partition) do
+  defp classify(%RunCtx{selection: {:selective, outcomes}} = ctx, site, partition) do
     case Map.fetch(outcomes, site.id) do
       {:ok, {:run, test_args}} ->
         run_mutant(ctx, site, broaden(test_args, site, ctx.scopes), partition)
@@ -99,11 +119,17 @@ defmodule Mutare.Runner.MutantRun do
   # innocent run reaped under someone else's memory pressure, an external kill) is
   # one excluded-from-score harness error; the cost of retrying a real one is the
   # host. Fail toward the host's safety.
-  defp run_mutant(%RunCtx{} = ctx, site, test_args, partition) do
+  defp run_mutant(%RunCtx{options: options} = ctx, site, test_args, partition) do
     result =
       ctx
-      |> run_mutant_attempt(site, test_args, partition, ctx.retries, @boot_failure_retries)
-      |> require_unanimous_kill(ctx, site, test_args, partition, ctx.kill_runs - 1)
+      |> run_mutant_attempt(
+        site,
+        test_args,
+        partition,
+        options.harness_retries,
+        @boot_failure_retries
+      )
+      |> require_unanimous_kill(ctx, site, test_args, partition, options.kill_runs - 1)
 
     if result.outcome in [:harness_error, :boot_failure, :sigkilled],
       do: warn_harness_error(site, result)
@@ -122,7 +148,7 @@ defmodule Mutare.Runner.MutantRun do
     result =
       Command.timed_test(ctx.sandbox, test_args, Mutare.RuntimeId.of(site),
         cap: ctx.cap,
-        max_heap_mb: ctx.max_heap_mb,
+        max_heap_mb: ctx.options.max_heap_mb,
         partition: partition
       )
 
@@ -150,7 +176,14 @@ defmodule Mutare.Runner.MutantRun do
   defp require_unanimous_kill(result, ctx, site, test_args, partition, remaining) do
     if kill_outcome?(result.outcome) do
       next =
-        run_mutant_attempt(ctx, site, test_args, partition, ctx.retries, @boot_failure_retries)
+        run_mutant_attempt(
+          ctx,
+          site,
+          test_args,
+          partition,
+          ctx.options.harness_retries,
+          @boot_failure_retries
+        )
 
       combined = combine_attempts(result, next)
 

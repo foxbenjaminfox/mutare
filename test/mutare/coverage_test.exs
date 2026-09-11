@@ -55,6 +55,10 @@ defmodule Mutare.CoverageTest do
   # higher-volume default mutators (literals) are excluded for determinism/speed.
   @probe [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
 
+  # A well-formed dump with nothing recorded — every key the helper writes, each empty.
+  defp empty_dump,
+    do: %{aggregate: %{}, by_file: %{}, unlabeled: %{}, by_test: %{}, wholefile: %{}}
+
   describe "read_dump/1" do
     @tag :tmp_dir
     test "decodes the aggregate, per-file, unlabeled, per-test, and whole-file data into MapSets",
@@ -91,17 +95,19 @@ defmodule Mutare.CoverageTest do
     end
 
     @tag :tmp_dir
-    test "tolerates a dump without :unlabeled/:by_test/:wholefile keys (all default to empty)",
-         %{tmp_dir: dir} do
-      path = Path.join(dir, "legacy.terms")
-      File.write!(path, :erlang.term_to_binary(%{aggregate: %{nil => [1]}, by_file: %{}}))
+    test "errors (for run-all fallback) on a dump missing any of the five keys", %{tmp_dir: dir} do
+      # The helper always writes all five (`Mutare.Coverage.Recorder`), so a missing key is a
+      # malformed dump — not a partial capture to read as empty, which could mask lost
+      # attribution behind a false survivor.
+      for key <- Map.keys(empty_dump()) do
+        path = Path.join(dir, "missing_#{key}.terms")
+        File.write!(path, :erlang.term_to_binary(Map.delete(empty_dump(), key)))
 
-      assert {:ok, %{unlabeled: unlabeled, by_test: by_test, wholefile: wholefile}} =
-               Coverage.read_dump(path)
-
-      assert unlabeled == MapSet.new([])
-      assert by_test == %{}
-      assert wholefile == MapSet.new([])
+        assert capture_log(fn ->
+                 assert {:error, :bad_shape} = Coverage.read_dump(path),
+                        "expected a dump without #{key} to degrade to :bad_shape"
+               end) =~ "unexpected shape"
+      end
     end
 
     @tag :tmp_dir
@@ -112,7 +118,7 @@ defmodule Mutare.CoverageTest do
             {"wholefile-ungrouped", %{wholefile: [1]}}
           ] do
         path = Path.join(dir, "bad_new_key_#{label}.terms")
-        payload = Map.merge(%{aggregate: %{nil => [1]}, by_file: %{}}, extra)
+        payload = Map.merge(%{empty_dump() | aggregate: %{nil => [1]}}, extra)
         File.write!(path, :erlang.term_to_binary(payload))
 
         assert capture_log(fn ->
@@ -129,32 +135,28 @@ defmodule Mutare.CoverageTest do
       # exception instead of the documented run-all fallback.
       ok = %{nil => [1]}
 
-      for {label, payload} <- [
-            {"aggregate-ungrouped", %{aggregate: [1], by_file: %{}}},
-            {"namespace-empty", %{aggregate: %{"" => [1]}, by_file: %{}}},
-            {"namespace-not-a-string", %{aggregate: %{lib: [1]}, by_file: %{}}},
-            {"group-not-a-list", %{aggregate: %{nil => :not_a_list}, by_file: %{}}},
+      for {label, fields} <- [
+            {"aggregate-ungrouped", %{aggregate: [1]}},
+            {"namespace-empty", %{aggregate: %{"" => [1]}}},
+            {"namespace-not-a-string", %{aggregate: %{lib: [1]}}},
+            {"group-not-a-list", %{aggregate: %{nil => :not_a_list}}},
             {"by_file-value-ungrouped", %{aggregate: ok, by_file: %{"test/a_test.exs" => [1]}}},
-            {"by_test-value-not-a-map", %{aggregate: ok, by_file: %{}, by_test: %{nil => [1]}}},
-            {"by_test-names-not-a-list",
-             %{aggregate: ok, by_file: %{}, by_test: %{nil => %{1 => :nope}}}},
+            {"by_test-value-not-a-map", %{aggregate: ok, by_test: %{nil => [1]}}},
+            {"by_test-names-not-a-list", %{aggregate: ok, by_test: %{nil => %{1 => :nope}}}},
             {"by_file-key-not-a-string", %{aggregate: ok, by_file: %{:atom_key => ok}}},
             {"by_test-name-not-a-string",
-             %{aggregate: ok, by_file: %{}, by_test: %{nil => %{1 => [:atom_name]}}}},
-            {"by_test-key-not-an-id",
-             %{aggregate: ok, by_file: %{}, by_test: %{nil => %{"1" => ["t"]}}}},
-            {"aggregate-element-not-an-id", %{aggregate: %{nil => [:a, {:b}]}, by_file: %{}}},
-            {"id-not-positive", %{aggregate: %{nil => [0]}, by_file: %{}}},
-            {"unlabeled-element-not-an-id",
-             %{aggregate: ok, by_file: %{}, unlabeled: %{nil => ["x"]}}},
-            {"wholefile-element-not-an-id",
-             %{aggregate: ok, by_file: %{}, wholefile: %{nil => [nil]}}},
+             %{aggregate: ok, by_test: %{nil => %{1 => [:atom_name]}}}},
+            {"by_test-key-not-an-id", %{aggregate: ok, by_test: %{nil => %{"1" => ["t"]}}}},
+            {"aggregate-element-not-an-id", %{aggregate: %{nil => [:a, {:b}]}}},
+            {"id-not-positive", %{aggregate: %{nil => [0]}}},
+            {"unlabeled-element-not-an-id", %{aggregate: ok, unlabeled: %{nil => ["x"]}}},
+            {"wholefile-element-not-an-id", %{aggregate: ok, wholefile: %{nil => [nil]}}},
             {"by_file-nested-id-not-an-id",
              %{aggregate: ok, by_file: %{"test/a_test.exs" => %{nil => [1, :two]}}}},
             {"by_file-is-a-struct", %{aggregate: ok, by_file: MapSet.new([1])}}
           ] do
         path = Path.join(dir, "nested_#{label}.terms")
-        File.write!(path, :erlang.term_to_binary(payload))
+        File.write!(path, :erlang.term_to_binary(Map.merge(empty_dump(), fields)))
 
         assert capture_log(fn ->
                  assert {:error, :bad_shape} = Coverage.read_dump(path),
@@ -187,7 +189,7 @@ defmodule Mutare.CoverageTest do
       for {label, term} <- [
             {"atom", :nonsense},
             {"list", [1, 2, 3]},
-            {"map-missing-keys", %{aggregate: [1]}}
+            {"map-missing-keys", %{aggregate: %{nil => [1]}, by_file: %{}}}
           ] do
         path = Path.join(dir, "wrong_shape_#{label}.terms")
         File.write!(path, :erlang.term_to_binary(term))

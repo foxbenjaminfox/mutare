@@ -59,13 +59,11 @@ defmodule Mutare.Transform.SelectorEmit do
   variable. Otherwise they keep the self-contained `:persistent_term` read.
   """
   @spec subject(Ctx.t()) :: Macro.t()
-  def subject(%Ctx{
-        scope: %Scope{active_bound: true, module_depth: 0},
-        config: %Config{active_var: var}
-      }),
-      do: {var, [], nil}
-
-  def subject(%Ctx{config: config}), do: Mutare.Metamutant.subject_ast(config.runtime_namespace)
+  def subject(%Ctx{scope: scope, config: %Config{} = config}) do
+    if Scope.active_var_bound?(scope),
+      do: {config.active_var, [], nil},
+      else: Mutare.Metamutant.subject_ast(config.runtime_namespace)
+  end
 
   @doc "The selector catch-all branch: baseline plus every inactive mutant."
   @spec catch_all_clause([pos_integer()], Macro.t(), atom(), String.t() | nil) :: Macro.t()

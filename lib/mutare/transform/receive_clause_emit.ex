@@ -48,7 +48,16 @@ defmodule Mutare.Transform.ReceiveClauseEmit do
 
   defp deliver(node, [], _ctx), do: node
 
-  defp deliver(node, claimed, %Ctx{scope: %Scope{active_bound: true, module_depth: 0}} = ctx) do
+  # The clause-head candidates are delivered by rewriting the `receive`'s clause lists in place —
+  # which needs the hoisted active-id variable in scope; without it every candidate takes the
+  # whole-node selector.
+  defp deliver(node, claimed, %Ctx{} = ctx) do
+    if Scope.active_var_bound?(ctx.scope),
+      do: rewrite_heads(node, claimed, ctx),
+      else: select(node, claimed, ctx)
+  end
+
+  defp rewrite_heads(node, claimed, ctx) do
     var = ctx.config.active_var
 
     {heads, whole} =
@@ -77,8 +86,6 @@ defmodule Mutare.Transform.ReceiveClauseEmit do
 
     select(default, whole, ctx)
   end
-
-  defp deliver(node, claimed, ctx), do: select(node, claimed, ctx)
 
   defp select(node, [], _ctx), do: node
 

@@ -35,7 +35,7 @@ defmodule Mutare.Transform.RescueEmit do
   @spec emit(Macro.t(), [Delivery.node_candidate()], Ctx.t()) ::
           {Macro.t(), Ctx.t()} | :fallback
   def emit({:try, meta, [blocks]} = node, candidates, %Ctx{} = ctx) do
-    with %Scope{active_bound: true, module_depth: 0} <- ctx.scope,
+    with true <- Scope.active_var_bound?(ctx.scope),
          false <- Enum.any?(candidates, &match?(%Candidate.InPlace{pin?: true}, &1)),
          true <- Enum.any?(candidates, &rescue_candidate?/1),
          {:ok, binding} <- shared_binding(blocks) do

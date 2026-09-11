@@ -10,18 +10,13 @@ defmodule Mutare.Transform.ClaimState do
   #   * `sites` — the recorded `Mutare.Site`s (reversed; the caller flips them once), the input
   #     to the report and the lazily-built manifest. Retained only by the `:render` sink.
   #   * `count` — a running mutant tally, the `:count` sink's cheap stand-in for `length(sites)`.
-  #   * `skip_matches` — the normalized `:skip_lifting` entries any statement sequence in this
-  #     pass matched (`Mutare.Transform.ModulePlan` reports them; `Mutare.Transform` unions them
-  #     in). Read by `count_report/2` so `Mutare.Schema` can surface configured entries that
-  #     matched nothing anywhere — the ineffective-entry diagnostic. Sink-independent.
-  #   * `route_matches` / `mark_matches` — the same diagnostic for configuration: the route keys
-  #     (`Mutare.CallRouting.Spec.key/0`) and mark-declaration keys (`{module_key, fun, arity}`) the
-  #     resolved calls in this pass hit (`Mutare.Transform.ConfigMatches`), so `Mutare.Schema` can
-  #     surface `call_routes:` / `argument_marks:` entries that matched no call anywhere.
-  #   * `degraded_uses` — the module-level `use`s the resolve pre-pass could not expand
-  #     (`Mutare.Transform.Uses.degraded_uses/1`), read off the annotated tree by the count pass
-  #     only, so `mix mutare --check` can warn without re-parsing or re-expanding anything
-  #     (`Mutare.Schema`'s `:degraded_uses`).
+  #   * `emitted` — the artifacts actually delivered into the tree.
+  #   * `selection_lines` / `selected_ids` — under a `--line` selection, the lines asked for and
+  #     the local ids whose site lands on one (`collect_selected_id/4`).
+  #
+  # (The count pass's diagnostic facts — which `:skip_lifting`/route/mark entries the source
+  # reached, and its degraded `use`s — are not claim state; they live on `Mutare.Transform.Ctx`'s
+  # `matches` and `degraded_uses`.)
   #
   # The `sink` selects what each claim *retains* — the one knob that splits a render from the
   # schema's render-free count pass:
@@ -64,11 +59,7 @@ defmodule Mutare.Transform.ClaimState do
           count: non_neg_integer(),
           emitted: non_neg_integer(),
           selection_lines: MapSet.t(pos_integer()) | nil,
-          selected_ids: [pos_integer()],
-          skip_matches: MapSet.t(Mutare.Lifting.skip_entry()),
-          route_matches: MapSet.t(tuple()),
-          mark_matches: MapSet.t(tuple()),
-          degraded_uses: [Mutare.Transform.Uses.degraded_use()]
+          selected_ids: [pos_integer()]
         }
 
   defstruct sink: :render,
@@ -81,11 +72,7 @@ defmodule Mutare.Transform.ClaimState do
             # bytes instead. Distinct from `count`, which tallies every *reserved* id.
             emitted: 0,
             selection_lines: nil,
-            selected_ids: [],
-            skip_matches: MapSet.new(),
-            route_matches: MapSet.new(),
-            mark_matches: MapSet.new(),
-            degraded_uses: []
+            selected_ids: []
 
   @doc """
   Claim the next id for `item`, returning `{artifacts, claim}`.
