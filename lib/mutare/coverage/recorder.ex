@@ -212,9 +212,9 @@ defmodule Mutare.Coverage.Recorder do
       <var> == 0 and :persistent_term.get(<track_key>, false) and <helper>.hit(<ids>)
 
   `<var>` is the file's dispatch variable, possibly salted. The internal
-  `<track_key>` read identifies a real coverage record, so `Mutare.Manifest` can
-  recover the dispatch name from rendered metamutant source without trusting a
-  source-level binding that only looks similar.
+  `<track_key>` read identifies a real coverage record, which is how
+  `Mutare.Metamutant.pattern_subject?/2` tells a generated tupled-case wrapper from
+  a source-level `case` that only looks similar.
 
   The helper call is not part of recognition; that keeps self-hosting helper-name
   overrides from changing the result. Literal `{:__block__, _, [literal]}`

@@ -91,7 +91,7 @@ defmodule Mutare.TransformContextTest do
       # resolved_call_to/3 lets a third-party mutator match through alias and import — keying
       # on the real `String` module, never a hand-built key — and rebuild the swap in the
       # written form (the `S.` alias kept; the bare import kept bare).
-      {ameta, asites, _} =
+      %{metamutant: ameta, sites: asites} =
         Mutare.Transform.transform_string_with_sites(aliased,
           mutators: [Mutare.Test.AliasCallMutator]
         )
@@ -107,7 +107,7 @@ defmodule Mutare.TransformContextTest do
 
       assert_compiles(ameta)
 
-      {imeta, isites, _} =
+      %{metamutant: imeta, sites: isites} =
         Mutare.Transform.transform_string_with_sites(imported,
           mutators: [Mutare.Test.AliasCallMutator]
         )
@@ -130,7 +130,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @atom)
 
       # Syntax sugar no longer hides the key: both the keys (status/a/timeout) and the
@@ -155,7 +155,7 @@ defmodule Mutare.TransformContextTest do
     test "a keyword-list key mutates and renders as a tuple (like [{:a, 1}])" do
       source = "defmodule KW do\n  def f, do: [a: 1, b: 2]\nend\n"
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @atom)
 
       # Both keys mutate; Sourceror renders the spliced selector in tuple form so the
@@ -177,7 +177,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @atom)
 
       # Only the field *values* mutate (:bob, :admin, :guest); no field-name key.
@@ -196,7 +196,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @atom)
 
       # The option/body *values* :acc/:hit mutate; the :into/:do keys do not.
@@ -216,7 +216,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.ReturnValue]
         )
@@ -241,7 +241,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @atom)
 
       # case bodies :done/:baz + if values :yes/:no mutate (4), plus the case-clause
@@ -280,7 +280,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @atom)
 
       # Body atoms always mutate: a:[:done] b:[:a] c:[:hit] d:[:done,:err] e:[:got] = 6.
@@ -301,7 +301,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.MapLiteral, Mutare.Mutators.AtomLiteral]
         )
@@ -315,7 +315,7 @@ defmodule Mutare.TransformContextTest do
     test "a standalone map literal IS emptied" do
       source = "defmodule M do\n  def f, do: %{a: 1}\nend\n"
 
-      {_meta, sites, _next_id} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.MapLiteral]
         )
@@ -338,7 +338,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IntegerLiteral]
         )
@@ -412,7 +412,8 @@ defmodule Mutare.TransformContextTest do
     ]
 
     defp atom_keys(source, opts) do
-      {meta, sites, _} = Mutare.Transform.transform_string_with_sites(source, opts)
+      %{metamutant: meta, sites: sites} =
+        Mutare.Transform.transform_string_with_sites(source, opts)
 
       keys =
         sites
@@ -437,7 +438,7 @@ defmodule Mutare.TransformContextTest do
 
       assert keys == []
       # values still mutate, so the call isn't left untouched
-      {_m, sites, _} = Mutare.Transform.transform_string_with_sites(source, mutators: @kw_off)
+      %{sites: sites} = Mutare.Transform.transform_string_with_sites(source, mutators: @kw_off)
       assert Enum.any?(sites, &(&1.mutator == :integer))
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
@@ -467,7 +468,7 @@ defmodule Mutare.TransformContextTest do
       # Integer keys are IntegerLiteral's; configuring AtomLiteral off leaves them mutating.
       source = "defmodule N do\n  def f(x), do: foo(x, [{1, :a}])\nend\n"
 
-      {_m, sites, _} = Mutare.Transform.transform_string_with_sites(source, mutators: @kw_off)
+      %{sites: sites} = Mutare.Transform.transform_string_with_sites(source, mutators: @kw_off)
       assert Enum.any?(sites, &(&1.mutator == :integer and &1.line == 2))
     end
 
@@ -476,7 +477,7 @@ defmodule Mutare.TransformContextTest do
       # does not declare the policy callback. Its similarly named opt is therefore inert.
       source = "defmodule N do\n  def f(x), do: foo(x, [{1, :a}])\nend\n"
 
-      {_m, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [{Mutare.Mutators.IntegerLiteral, call_option_keys: false}]
         )
@@ -487,12 +488,12 @@ defmodule Mutare.TransformContextTest do
     test "ConventionAtom can own the same positional policy" do
       source = "defmodule C do\n  def f, do: foo(ok: 1)\nend\n"
 
-      {_m, default_sites, _} =
+      %{sites: default_sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.ConventionAtom]
         )
 
-      {_m, gated_sites, _} =
+      %{sites: gated_sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [{Mutare.Mutators.ConventionAtom, call_option_keys: false}]
         )
@@ -504,7 +505,7 @@ defmodule Mutare.TransformContextTest do
     test "gated keys leave no id gap — ids stay contiguous" do
       source = "defmodule C do\n  def f(x), do: foo(x, timeout: 5, retries: 3)\nend\n"
 
-      {_m, sites, next_id} =
+      %{sites: sites, next_id: next_id} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @kw_off)
 
       ids = sites |> Enum.map(& &1.id) |> Enum.sort()
@@ -523,7 +524,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @alias)
 
       # apply(Greeter, …) → Greeter is a value (1 site); Greeter.hello() is a
@@ -541,7 +542,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @alias)
 
       # The `alias` directive and the `%Bar{}` struct name are excluded; only the
@@ -565,7 +566,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @alias)
 
       # The defdelegate `to:`, the protocol name, and the `for:` type are excluded;
@@ -585,7 +586,7 @@ defmodule Mutare.TransformContextTest do
       # function with no guard now lifts solely to carry the head mutant.
       source = "defmodule H do\n  def f(1), do: :ok\nend\n"
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @literal)
 
       assert [
@@ -601,7 +602,7 @@ defmodule Mutare.TransformContextTest do
     test "both the key and the value of a map pattern mutate (%{1 => 2})" do
       source = "defmodule H do\n  def f(%{1 => 2}), do: :ok\nend\n"
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @literal)
 
       # the `1` key → {2, 0}; the `2` value → {3, 1, 0}; both lifted, none in place.
@@ -619,7 +620,7 @@ defmodule Mutare.TransformContextTest do
       # rather than emitting them and relying on poison recovery — the rest survive.
       source = "defmodule H do\n  def f(%{1 => a, 0 => b}), do: {a, b}\nend\n"
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @literal)
 
       pairs = MapSet.new(sites, &{&1.original_code, &1.mutated_code})
@@ -639,7 +640,7 @@ defmodule Mutare.TransformContextTest do
       # / `size`-literal swap risks an illegal specifier that would poison the build.
       source = "defmodule H do\n  def f(<<8::size(8)>>), do: :ok\nend\n"
 
-      {_meta, sites, _next_id} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @literal)
 
       # Only the value `8` (left of `::`) mutates; the spec `size(8)` is untouched.
@@ -654,7 +655,7 @@ defmodule Mutare.TransformContextTest do
     test "a keyword/map key in a head is a label and is not mutated" do
       source = "defmodule H do\n  def f(%{a: 1}), do: :ok\nend\n"
 
-      {_meta, sites, _next_id} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @literal)
 
       # The `:a` key is skipped; only the `1` value lifts.
@@ -669,7 +670,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IntegerLiteral, Mutare.Mutators.Relational]
         )
@@ -691,7 +692,7 @@ defmodule Mutare.TransformContextTest do
       # default value `2` still mutates in place — on the dispatcher.
       source = "defmodule H do\n  def f(1, b \\\\ 2), do: b\nend\n"
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @literal)
 
       assert meta =~ lifted_name(:f, 2, 1)
@@ -714,7 +715,7 @@ defmodule Mutare.TransformContextTest do
       # while still mutating the same literal in a body position.
       source = "defmodule H do\n  def f(1), do: 9\nend\n"
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.TransformTest.PlusOneMutator]
         )
@@ -735,7 +736,7 @@ defmodule Mutare.TransformContextTest do
     end
     """
 
-    {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
+    %{metamutant: meta, sites: sites} = Mutare.Transform.transform_string_with_sites(source)
     by = Enum.frequencies_by(sites, & &1.mutator)
 
     # b + 1 → b - 1
@@ -777,7 +778,7 @@ defmodule Mutare.TransformContextTest do
     """
 
     test "every module (incl. nested and defimpl) carries the no-warn attribute" do
-      {meta, _sites, _next_id} = Mutare.Transform.transform_string_with_sites(@multi_module)
+      %{metamutant: meta} = Mutare.Transform.transform_string_with_sites(@multi_module)
 
       # One per module body: Outer, Inner, and the String.Chars impl.
       occurrences = meta |> String.split(@attr) |> length() |> Kernel.-(1)
@@ -791,7 +792,7 @@ defmodule Mutare.TransformContextTest do
       # return — so assert both reference the same `<helper>.hit(...)`.
       helper = inspect(Mutare.Coverage.Recorder.fixture_module())
 
-      {meta, _sites, _next_id} =
+      %{metamutant: meta} =
         Mutare.Transform.transform_string_with_sites(
           "defmodule M do\n  def f(a, b), do: a + b\nend\n"
         )
@@ -820,7 +821,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.IntegerLiteral]
         )
@@ -842,7 +843,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.List]
         )
@@ -862,7 +863,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Arithmetic]
         )
@@ -893,7 +894,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.AtomLiteral]
         )
@@ -914,7 +915,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
+      %{metamutant: meta, sites: sites} = Mutare.Transform.transform_string_with_sites(source)
 
       # Nothing mutates the `if @enabled` condition; it renders verbatim.
       assert meta =~ "if @enabled do"
@@ -933,7 +934,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
+      %{metamutant: meta, sites: sites} = Mutare.Transform.transform_string_with_sites(source)
 
       # The generator literal survives verbatim — not rewritten into a selector — so
       # no atom/list mutant is offered on it (those would be compile-time-inert).
@@ -961,7 +962,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
+      %{metamutant: meta, sites: sites} = Mutare.Transform.transform_string_with_sites(source)
 
       # The `1..3` generator is compile-time: its endpoints are not mutated.
       assert meta =~ "for n <- 1..3 do"
@@ -989,7 +990,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
+      %{metamutant: meta, sites: sites} = Mutare.Transform.transform_string_with_sites(source)
 
       assert meta =~ "if @enabled do"
       assert meta =~ "for n <- [1, 2] do"
@@ -1015,7 +1016,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.List]
         )
@@ -1037,7 +1038,7 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.IntegerLiteral]
         )
@@ -1069,7 +1070,7 @@ defmodule Mutare.TransformContextTest do
     """
 
     test "the nested module's selector is self-contained and the outer has no prologue" do
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(@runtime_defmodule,
           mutators: [Mutare.Mutators.Arithmetic]
         )
@@ -1083,7 +1084,7 @@ defmodule Mutare.TransformContextTest do
     end
 
     test "the metamutant runs: invoking build/0 compiles the inner module without error" do
-      {meta, _sites, _next_id} =
+      %{metamutant: meta} =
         Mutare.Transform.transform_string_with_sites(@runtime_defmodule,
           mutators: [Mutare.Mutators.Arithmetic]
         )
@@ -1114,7 +1115,7 @@ defmodule Mutare.TransformContextTest do
   defp redundancy_triples(body, mutators) do
     source = "defmodule M do\n  #{String.trim_trailing(body)}\nend\n"
 
-    {meta, sites, _next_id} =
+    %{metamutant: meta, sites: sites} =
       Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
 
     triples = for s <- sites, do: {s.mutator, s.original_code, s.mutated_code}

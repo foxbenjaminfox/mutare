@@ -70,18 +70,18 @@ defmodule Mutare.LiftTest do
   @probe [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational, Mutare.Mutators.ClauseDrop]
 
   setup_all do
-    {metamutant, sites, _next_id} =
+    %{metamutant: metamutant, sites: sites} =
       Mutare.Transform.transform_string_with_sites(@source, file: "lift.ex", mutators: @probe)
 
     [{_module, _binary}] = Mutare.Test.Compile.string(metamutant)
 
     # Compiled once and switched at runtime by the head-pattern describe block.
-    {pattern_meta, pattern_sites, _next_id} =
+    %{metamutant: pattern_meta, sites: pattern_sites} =
       Mutare.Transform.transform_string_with_sites(@pattern_source, file: "pat.ex")
 
     [{_module, _binary}] = Mutare.Test.Compile.string(pattern_meta)
 
-    {default_meta, default_sites, _next_id} =
+    %{metamutant: default_meta, sites: default_sites} =
       Mutare.Transform.transform_string_with_sites(@default_source, file: "default.ex")
 
     [{_module, _binary}] = Mutare.Test.Compile.string(default_meta)
@@ -107,7 +107,7 @@ defmodule Mutare.LiftTest do
 
   describe "structure" do
     test "lifts a guarded group into a dispatcher + one guarded private function", %{sites: sites} do
-      {meta, _, _} = Mutare.Transform.transform_string_with_sites(@source)
+      %{metamutant: meta} = Mutare.Transform.transform_string_with_sites(@source)
 
       assert meta =~ "def classify(mutare_arg1) do"
       assert meta =~ ~r/defp #{lifted_pattern(:classify, 1)}\(/
@@ -123,7 +123,7 @@ defmodule Mutare.LiftTest do
     end
 
     test "lifts an unguarded multi-clause function for clause-drop" do
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           "defmodule M do\n  def g(0), do: :z\n  def g(_), do: :o\nend\n"
         )
@@ -148,7 +148,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
+      %{metamutant: meta, sites: sites} = Mutare.Transform.transform_string_with_sites(source)
 
       refute Enum.any?(sites, &(&1.mutator == :clause_drop))
       assert [{Mutare.BodilessHeadFixture, _}] = Mutare.Test.Compile.string(meta)
@@ -163,7 +163,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
+      %{metamutant: meta, sites: sites} = Mutare.Transform.transform_string_with_sites(source)
 
       # Two body-bearing clauses → two drops; the header (index 0) is never dropped.
       assert Enum.count(sites, &(&1.mutator == :clause_drop)) == 2
@@ -184,7 +184,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {meta, _sites, _next_id} =
+      %{metamutant: meta} =
         Mutare.Transform.transform_string_with_sites(source, file: "collision.ex")
 
       # The pre-existing target definition is left untouched...
@@ -213,7 +213,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, file: "av.ex", mutators: @probe)
 
       # the dispatch variable salts to `mutare_active_0`; the user's `mutare_active`
@@ -246,7 +246,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn -> Mutare.Transform.transform_string_with_sites(source, file: "nc.ex") end)
 
       # Non-consecutive heads fall back to in-place: no dispatcher, no lifted
@@ -277,7 +277,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, _sites, _next_id}, _log} =
+      {%{metamutant: meta}, _log} =
         with_log(fn -> Mutare.Transform.transform_string_with_sites(source) end)
 
       refute meta =~ "__mutare_f"
@@ -306,7 +306,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn -> Mutare.Transform.transform_string_with_sites(source, file: "meta.ex") end)
 
       refute meta =~ "__mutare_code"
@@ -337,7 +337,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn -> Mutare.Transform.transform_string_with_sites(source, file: "dd.ex") end)
 
       refute meta =~ "__mutare_assign"
@@ -375,7 +375,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source, file: "as.ex", mutators: @probe)
         end)
@@ -407,7 +407,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source, file: "dd.ex", mutators: @probe)
         end)
@@ -429,7 +429,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source, file: "qd.ex", mutators: @probe)
         end)
@@ -457,7 +457,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, file: "wh.ex", mutators: @probe)
 
       assert sites == []
@@ -491,7 +491,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source, file: "ub.ex", mutators: @probe)
         end)
@@ -530,7 +530,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source, file: "mb.ex", mutators: @probe)
         end)
@@ -561,7 +561,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn -> Mutare.Transform.transform_string_with_sites(source, file: "sp.ex") end)
 
       refute meta =~ "__mutare_g"
@@ -587,7 +587,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source, file: "dd2.ex", mutators: @probe)
         end)
@@ -616,7 +616,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source,
             file: "skip.ex",
@@ -663,7 +663,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source,
             file: "nested_skip.ex",
@@ -705,7 +705,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source,
             file: "dynamic_nested_skip.ex",
@@ -745,7 +745,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source,
             file: "dynamic_top_skip.ex",
@@ -789,7 +789,7 @@ defmodule Mutare.LiftTest do
       # `alias Mutare.SkipLiftAliasTarget, as: SLAT; defmodule SLAT.Child` defines
       # `Mutare.SkipLiftAliasTarget.Child` — the skip target must name what Elixir defines,
       # not the written `SLAT.Child`.
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source,
             file: "alias_top_skip.ex",
@@ -834,7 +834,7 @@ defmodule Mutare.LiftTest do
 
       # A nested `defmodule SNAT.Inner` ignores the `SNAT` alias: Elixir nests the *written*
       # path under the enclosing module, defining `Mutare.SkipLiftNestedAliasOuter.SNAT.Inner`.
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source,
             file: "alias_nested_skip.ex",
@@ -887,7 +887,7 @@ defmodule Mutare.LiftTest do
       # top-level rules, so neither a bare `Child` entry (aimed at a genuine top-level module)
       # nor the alias-resolved `Mutare.SkipLiftDynAliasTarget.Kid` may match — both functions
       # keep their lifted mutants, and no misleading skip warning is printed.
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source,
             file: "dyn_parent_skip.ex",
@@ -920,7 +920,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source,
             file: "atom_skip.ex",
@@ -968,7 +968,7 @@ defmodule Mutare.LiftTest do
       # one canonical prefix — same rule `Module.concat/1` applies); `defmodule Elixir.X`
       # defines plain `X`. The entries name what Elixir defines; a plain
       # `MutareSkipLiftDoubled` entry would not (and must not) match the doubled module.
-      {{meta, sites, _next_id}, log} =
+      {%{metamutant: meta, sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source,
             file: "prefix_skip.ex",
@@ -1009,7 +1009,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {{_meta, sites, _next_id}, log} =
+      {%{sites: sites}, log} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source,
             file: "quiet_skip.ex",
@@ -1038,7 +1038,7 @@ defmodule Mutare.LiftTest do
       # and the default conditional mutator would rewrite the guard to `when true`
       # (making the catch-all clause unreachable — a benign but noisy generated
       # warning when this metamutant is compiled below).
-      {meta, _sites, _next_id} =
+      %{metamutant: meta} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @probe)
 
       # public dispatcher keeps `ok?`; private copies sanitize the `?`
@@ -1066,7 +1066,7 @@ defmodule Mutare.LiftTest do
 
       probe = [Mutare.Mutators.IntegerCall, Mutare.Mutators.AliasLiteral]
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, file: "intguard.ex", mutators: probe)
 
       # The guard swap is delivered by lifting...
@@ -1089,7 +1089,7 @@ defmodule Mutare.LiftTest do
     end
 
     test "lifts a default-arg function: defaults ride on the dispatcher, base takes full arity" do
-      {defaulted, sites, _} =
+      %{metamutant: defaulted, sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           "defmodule M do\n  def h(a, b \\\\ 1) when a > b, do: a\nend\n"
         )
@@ -1110,7 +1110,7 @@ defmodule Mutare.LiftTest do
     end
 
     test "falls back to in-place (no lift) for operator names" do
-      {operator, _, _} =
+      %{metamutant: operator} =
         Mutare.Transform.transform_string_with_sites(
           "defmodule M do\n  def a ~> b when b > 0, do: a\nend\n"
         )
@@ -1348,7 +1348,7 @@ defmodule Mutare.LiftDefimplTest do
   defp lifted_on(sites, lines), do: Enum.filter(sites, &(&1.kind == :lifted and &1.line in lines))
 
   test "a defimpl body lifts like a defmodule body and dispatches through the impl module" do
-    {meta, sites, _next_id} =
+    %{metamutant: meta, sites: sites} =
       Mutare.Transform.transform_string_with_sites(@source, file: "impl.ex", mutators: @probe)
 
     plain = lifted_on(sites, 6..7)
@@ -1379,7 +1379,7 @@ defmodule Mutare.LiftDefimplTest do
   end
 
   test ":skip_lifting names the impl module P.T" do
-    {{_meta, sites, _next_id}, log} =
+    {%{sites: sites}, log} =
       with_log(fn ->
         Mutare.Transform.transform_string_with_sites(@source,
           file: "impl_skip.ex",
@@ -1415,7 +1415,7 @@ defmodule Mutare.LiftDefimplTest do
     end
     """
 
-    {meta, sites, _next_id} =
+    %{metamutant: meta, sites: sites} =
       Mutare.Transform.transform_string_with_sites(source, file: "inline.ex", mutators: @probe)
 
     assert lifted_on(sites, 6..7) != []
@@ -1438,7 +1438,7 @@ defmodule Mutare.LiftDefimplTest do
     end
     """
 
-    {_meta, sites, _next_id} =
+    %{sites: sites} =
       Mutare.Transform.transform_string_with_sites(source, file: "dsl.ex", mutators: @probe)
 
     assert lifted_on(sites, 6..7) == []

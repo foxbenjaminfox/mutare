@@ -536,10 +536,10 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
     module = Module.concat(__MODULE__, :OnlyBody)
     source = source(module, "def take, do: (receive do 1 -> 100 after 0 -> 200 end)")
     opts = [mutators: [Mutare.Mutators.IntegerLiteral]]
-    {_, sites, next} = Transform.transform_string_with_sites(source, opts)
+    %{sites: sites, next_id: next} = Transform.transform_string_with_sites(source, opts)
     selected = site(sites, "100", "101")
 
-    {metamutant, _, ^next} =
+    %{metamutant: metamutant, next_id: ^next} =
       Transform.transform_string_with_sites(source, opts ++ [emit_ids: MapSet.new([selected.id])])
 
     assert [{[_clause], [_after_clause]}] = receives(metamutant)
@@ -566,11 +566,14 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
     module = Module.concat(__MODULE__, :Filtered)
     source = source(module, body)
     opts = [mutators: [Mutare.Mutators.IntegerLiteral], start_id: 50]
-    {_, original, next} = Transform.transform_string_with_sites(source, opts)
+    %{sites: original, next_id: next} = Transform.transform_string_with_sites(source, opts)
     skipped = site(original, "2", "3").id
     selected = for s <- original, s.original_code != "3", into: MapSet.new(), do: s.id
     filtered = opts ++ [skip_ids: MapSet.new([skipped]), emit_ids: selected]
-    {metamutant, sites, ^next} = Transform.transform_string_with_sites(source, filtered)
+
+    %{metamutant: metamutant, sites: sites, next_id: ^next} =
+      Transform.transform_string_with_sites(source, filtered)
+
     assert Enum.map(sites, &{&1.id, &1.range}) == Enum.map(original, &{&1.id, &1.range})
     assert Transform.count_string(source, filtered) == length(sites)
     live = for s <- sites, not s.ignored and not s.poisoned and s.id in selected, do: s.id
@@ -584,7 +587,7 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
       assert run_mailbox(fn -> apply(module, :take, []) end, [2, 1, 3]) == {{:ok, :two}, [1, 3]}
     end
 
-    {unchanged, _, ^next} =
+    %{metamutant: unchanged, next_id: ^next} =
       Transform.transform_string_with_sites(source, opts ++ [emit_ids: MapSet.new()])
 
     assert unchanged == source
@@ -600,9 +603,12 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
       )
 
     opts = [mutators: [PoisonGuard, Mutare.Mutators.IntegerLiteral]]
-    {metamutant, sites, next} = Transform.transform_string_with_sites(source, opts)
+
+    %{metamutant: metamutant, sites: sites, next_id: next, dispatch_var: var} =
+      Transform.transform_string_with_sites(source, opts)
+
     poison = Enum.find(sites, &(&1.mutator == :poison_receive_guard))
-    manifest = Manifest.from_source(metamutant)
+    manifest = Manifest.from_source(metamutant, var)
     assert Manifest.ids_at_line(manifest, line_of(metamutant, "Map.new(x)")) == [poison.id]
 
     assert Enum.sort(Manifest.ids_at_line(manifest, line_of(metamutant, "receive do"))) ==
@@ -610,7 +616,7 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
 
     assert_compile_error(metamutant)
 
-    {recovered, _, ^next} =
+    %{metamutant: recovered, next_id: ^next} =
       Transform.transform_string_with_sites(source, opts ++ [skip_ids: MapSet.new([poison.id])])
 
     compile_observed(module, recovered, CoverageSink)
@@ -682,7 +688,7 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
   defp compile_fixture(name, body, mutators \\ [Mutare.Mutators.IntegerLiteral]) do
     module = Module.concat(__MODULE__, name)
 
-    {metamutant, sites, _} =
+    %{metamutant: metamutant, sites: sites} =
       Transform.transform_string_with_sites(source(module, body), mutators: mutators)
 
     compile_observed(module, metamutant, CoverageSink)

@@ -298,7 +298,7 @@ defmodule Mutare.SchemaTest do
     schema.metamutants
     |> Enum.flat_map(fn {file, source} ->
       source
-      |> Mutare.Manifest.from_source()
+      |> Mutare.Manifest.from_source(Map.fetch!(schema.dispatch_vars, file))
       |> Map.fetch!(:regions)
       |> Enum.flat_map(& &1.ids)
       |> Enum.map(&Map.fetch!(report_ids, {file, &1}))
@@ -433,7 +433,12 @@ defmodule Mutare.SchemaTest do
 
     # Built lazily from the stored metamutant, every site's id is still mappable
     # (the property Poison's compile-error → id mapping relies on).
-    manifest = Mutare.Manifest.from_source(schema.metamutants["lib/a.ex"])
+    manifest =
+      Mutare.Manifest.from_source(
+        schema.metamutants["lib/a.ex"],
+        schema.dispatch_vars["lib/a.ex"]
+      )
+
     region_ids = manifest.regions |> Enum.flat_map(& &1.ids) |> MapSet.new()
 
     assert Enum.all?(schema.sites, &MapSet.member?(region_ids, &1.id))

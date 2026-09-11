@@ -12,7 +12,7 @@ defmodule Mutare.UsesNoMixTest do
 
     code = ~S"""
     if Process.whereis(Mix.State), do: raise("expected Mix to be unstarted in this subprocess")
-    {_meta, sites, _next} = Mutare.Transform.transform_string_with_sites("defmodule M do\n  def f(a, b), do: a - b\nend")
+    %{sites: sites} = Mutare.Transform.transform_string_with_sites("defmodule M do\n  def f(a, b), do: a - b\nend")
     IO.write("SITES=#{length(sites)}")
     """
 

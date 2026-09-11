@@ -404,11 +404,14 @@ defmodule Mutare.Transform.FnClauseEmitTest do
     module = Module.concat(__MODULE__, :Filtered)
     source = source(module, body)
     opts = [mutators: [Mutare.Mutators.IntegerLiteral], start_id: 50]
-    {_, original_sites, next} = Transform.transform_string_with_sites(source, opts)
+    %{sites: original_sites, next_id: next} = Transform.transform_string_with_sites(source, opts)
     skipped = site(original_sites, "2", "3").id
     selected = for s <- original_sites, s.original_code != "3", into: MapSet.new(), do: s.id
     filtered = opts ++ [skip_ids: MapSet.new([skipped]), emit_ids: selected]
-    {metamutant, sites, ^next} = Transform.transform_string_with_sites(source, filtered)
+
+    %{metamutant: metamutant, sites: sites, next_id: ^next} =
+      Transform.transform_string_with_sites(source, filtered)
+
     assert Enum.map(sites, &{&1.id, &1.range}) == Enum.map(original_sites, &{&1.id, &1.range})
     assert Transform.count_string(source, filtered) == length(sites)
     live = for s <- sites, not s.ignored and not s.poisoned and s.id in selected, do: s.id
@@ -425,7 +428,7 @@ defmodule Mutare.Transform.FnClauseEmitTest do
       assert fun.(3) == :three
     end
 
-    {unchanged, _, ^next} =
+    %{metamutant: unchanged, next_id: ^next} =
       Transform.transform_string_with_sites(source, opts ++ [emit_ids: MapSet.new()])
 
     assert unchanged == source
@@ -435,9 +438,12 @@ defmodule Mutare.Transform.FnClauseEmitTest do
     module = Module.concat(__MODULE__, :Poison)
     source = source(module, "def make(mutare_active), do: fn x when x > 5 -> x; _ -> :other end")
     opts = [mutators: [PoisonGuard, Mutare.Mutators.IntegerLiteral]]
-    {metamutant, sites, next} = Transform.transform_string_with_sites(source, opts)
+
+    %{metamutant: metamutant, sites: sites, next_id: next, dispatch_var: var} =
+      Transform.transform_string_with_sites(source, opts)
+
     poison = Enum.find(sites, &(&1.mutator == :poison_fn_guard))
-    manifest = Manifest.from_source(metamutant)
+    manifest = Manifest.from_source(metamutant, var)
     line = line_of(metamutant, "Map.new(x)")
     assert Manifest.ids_at_line(manifest, line) == [poison.id]
 
@@ -446,7 +452,7 @@ defmodule Mutare.Transform.FnClauseEmitTest do
 
     assert_compile_error(metamutant)
 
-    {recovered, recovered_sites, ^next} =
+    %{metamutant: recovered, sites: recovered_sites, next_id: ^next} =
       Transform.transform_string_with_sites(source, opts ++ [skip_ids: MapSet.new([poison.id])])
 
     assert Enum.find(recovered_sites, &(&1.id == poison.id)).poisoned
@@ -471,7 +477,7 @@ defmodule Mutare.Transform.FnClauseEmitTest do
   defp compile_fixture(name, body, mutators \\ [Mutare.Mutators.IntegerLiteral]) do
     module = Module.concat(__MODULE__, name)
 
-    {metamutant, sites, _} =
+    %{metamutant: metamutant, sites: sites} =
       Transform.transform_string_with_sites(source(module, body), mutators: mutators)
 
     compile_observed(module, metamutant, CoverageSink)

@@ -15,7 +15,7 @@ defmodule Mutare.TransformPipeTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Collection]
         )
@@ -33,7 +33,7 @@ defmodule Mutare.TransformPipeTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Collection]
         )
@@ -53,7 +53,7 @@ defmodule Mutare.TransformPipeTest do
 
       # Collection swaps the trailing `Enum.reject`; ReturnValue additionally wraps
       # the whole tail pipe — so the selector lands in the ReturnValue catch-all.
-      {meta, _sites, _next_id} =
+      %{metamutant: meta} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Collection, Mutare.Mutators.ReturnValue]
         )
@@ -70,7 +70,7 @@ defmodule Mutare.TransformPipeTest do
       end
       """
 
-      {meta, _sites, _next_id} =
+      %{metamutant: meta} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Collection]
         )
@@ -99,12 +99,12 @@ defmodule Mutare.TransformPipeTest do
         "defmodule Deep do\n  def f(xs) do\n    xs\n#{Enum.join(stages, "\n")}\n  end\nend\n"
       end
 
-      {short, short_sites, _} =
+      %{metamutant: short, sites: short_sites} =
         Mutare.Transform.transform_string_with_sites(chain.(8),
           mutators: [Mutare.Mutators.CallRemoval]
         )
 
-      {long, long_sites, _} =
+      %{metamutant: long, sites: long_sites} =
         Mutare.Transform.transform_string_with_sites(chain.(16),
           mutators: [Mutare.Mutators.CallRemoval]
         )
@@ -133,7 +133,7 @@ defmodule Mutare.TransformPipeTest do
       end
       """
 
-      {meta, _sites, _next_id} =
+      %{metamutant: meta} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Collection]
         )

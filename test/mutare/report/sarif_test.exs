@@ -76,7 +76,7 @@ defmodule Mutare.Report.SarifTest do
     end
     """
 
-    {_mm, [site], _next} =
+    %{sites: [site]} =
       Mutare.Transform.transform_string_with_sites(src, mutators: [Mutare.Mutators.Logical])
 
     [run] = decode([%Result{site: site, status: :survived}])["runs"]

@@ -398,13 +398,13 @@ defmodule Mutare.ExtensionsTest do
     @mutators [Mutare.Mutators.StringLiteral, Mutare.Mutators.Arithmetic]
 
     test "the extension skips the msgid literals but keeps the runtime-arg mutations" do
-      {_meta, with_extension, _} =
+      %{sites: with_extension} =
         Mutare.Transform.transform_string_with_sites(@source,
           mutators: @mutators,
           extensions: [GettextLikeExtension]
         )
 
-      {_meta, without_extension, _} =
+      %{sites: without_extension} =
         Mutare.Transform.transform_string_with_sites(@source, mutators: @mutators)
 
       # Without the extension the bare calls don't resolve, so every msgid is mutated as an
@@ -426,13 +426,13 @@ defmodule Mutare.ExtensionsTest do
       end
       """
 
-      {_meta, with_extension, _} =
+      %{sites: with_extension} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.StringLiteral],
           extensions: [DynamicRoutingExtension]
         )
 
-      {_meta, without_extension, _} =
+      %{sites: without_extension} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.StringLiteral]
         )

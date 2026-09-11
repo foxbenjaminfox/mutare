@@ -13,7 +13,7 @@ defmodule Mutare.ClauseGuardTest do
   alias Mutare.{Manifest, Selector, Site}
 
   defp sites(src, opts \\ []) do
-    {meta, sites, _} =
+    %{metamutant: meta, sites: sites} =
       Mutare.Transform.transform_string_with_sites(src, Keyword.merge([file: "cg.ex"], opts))
 
     {meta, sites}
@@ -287,14 +287,16 @@ defmodule Mutare.ClauseGuardTest do
 
   describe "poison attribution" do
     test "a guard alternative's metamutant line maps to exactly its mutant" do
-      {meta, all} =
-        sites("""
-        defmodule M do
-          def f(x), do: with(v when v > 0 <- x, do: v, else: (_ -> 0))
-        end
-        """)
+      source = """
+      defmodule M do
+        def f(x), do: with(v when v > 0 <- x, do: v, else: (_ -> 0))
+      end
+      """
 
-      manifest = Manifest.from_source(meta)
+      %{metamutant: meta, sites: all, dispatch_var: var} =
+        Mutare.Transform.transform_string_with_sites(source, file: "cg.ex")
+
+      manifest = Manifest.from_source(meta, var)
       target = site(all, "v > 0", "v >= 0")
 
       line =

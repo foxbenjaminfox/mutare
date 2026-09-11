@@ -3,7 +3,7 @@ defmodule Mutare.Manifest do
   A per-mutant map of where each mutant lives in its rendered metamutant.
 
   `Mutare.Transform` writes the metamutant; this is what `Mutare.Poison` reads
-  back. It is built **lazily** (`from_source/1`), by `Mutare.Poison` on a failed
+  back. It is built **lazily** (`from_source/2`), by `Mutare.Poison` on a failed
   compile, only for the file(s) the error names — not eagerly during the scan,
   where re-parsing every rendered metamutant was the scan's dominant cost yet is
   read only when a compile actually fails (rare — built-in mutators are
@@ -51,7 +51,13 @@ defmodule Mutare.Manifest do
   Ranges are in **metamutant line space**, which only exists after rendering, so
   the manifest is built by re-parsing the rendered metamutant and ranging its
   generated nodes with `Sourceror.get_range/1`, recognising selectors via
-  `Mutare.Metamutant.subject?/2`.
+  `Mutare.Metamutant.subject?/2`. A selector inside a function body reads the
+  file's **dispatch variable** rather than `:persistent_term` directly, and a
+  lifted or tupled mutant clause is gated on it (`<var> === <id>`) — so the reader
+  must be told that name. It is per file (`:mutare_active`, or a salted variant
+  when the source already uses that identifier), chosen by the transform and
+  handed out with the metamutant (`Mutare.Transform.Result.dispatch_var`,
+  `Mutare.Schema`'s `:dispatch_vars`); `from_source/2` takes it alongside the source.
 
   The re-parse uses Elixir's own `Code.string_to_quoted!` (with `:token_metadata`
   + `:columns`), **not** `Sourceror.parse_string!`. `get_range/1` only needs that
@@ -66,9 +72,7 @@ defmodule Mutare.Manifest do
   """
 
   alias Mutare.AST
-  alias Mutare.Coverage.Recorder
   alias Mutare.Metamutant
-  alias Mutare.Transform.Names
 
   @typedoc "A generated line range and the mutant ids whose code occupies it."
   @type region :: %{ids: [pos_integer()], lo: pos_integer(), hi: pos_integer()}
@@ -86,34 +90,35 @@ defmodule Mutare.Manifest do
   defstruct regions: [], ast: nil
 
   @doc """
-  Build a manifest from one file's rendered metamutant source.
+  Build a manifest from one file's rendered metamutant source and its dispatch variable.
 
   Re-parses (for `Sourceror.get_range/1`) and walks the tree once, attributing
   every selector clause, lifted private definition, and selector `case` to the
-  mutant id(s) it belongs to. The parse is kept on the manifest (`:ast`): one
-  failed compile can need both attributions of the same file, and `Mutare.Poison`
-  holds one manifest per file for the round.
+  mutant id(s) it belongs to. `dispatch_var` is the name the transform chose for this
+  file (`Mutare.Transform.Result.dispatch_var`): the hoisted selectors read it as their
+  subject and the gated mutant clauses compare it, so it is what makes them recognisable.
+  The parse is kept on the manifest (`:ast`): one failed compile can need both
+  attributions of the same file, and `Mutare.Poison` holds one manifest per file for the
+  round.
 
   ## Examples
 
       iex> source = "defmodule Demo do\\n  def add(a, b), do: a + b\\nend\\n"
       iex> result = Mutare.transform_string(source, mutators: [:arithmetic])
-      iex> %Mutare.Manifest{regions: regions} = Mutare.Manifest.from_source(result.metamutant)
+      iex> %Mutare.Manifest{regions: regions} =
+      ...>   Mutare.Manifest.from_source(result.metamutant, result.dispatch_var)
       iex> regions == []
       false
   """
-  @spec from_source(String.t()) :: t()
-  def from_source(metamutant_source) do
+  @spec from_source(String.t(), atom()) :: t()
+  def from_source(metamutant_source, dispatch_var) when is_atom(dispatch_var) do
     ast = parse(metamutant_source)
-    %{build(ast) | ast: ast}
+    %{build(ast, dispatch_var) | ast: ast}
   end
 
-  # Region-build over an already-parsed metamutant AST. The gate clauses read the dispatch
-  # variable by name (`<var> === <id>`), and `Mutare.Transform.Names` *salts* that name
-  # (`mutare_active` → `mutare_active_0`, …) when the source already uses it — so we recover
-  # the actual name from this metamutant rather than assume the canonical one (`active_var/1`).
-  defp build(ast) do
-    var = active_var(ast)
+  # Region-build over an already-parsed metamutant AST, threading the dispatch variable to
+  # the recognisers (a hoisted selector's bare-variable subject, a mutant clause's gate).
+  defp build(ast, var) do
     {_ast, regions} = Macro.traverse(ast, [], &enter(&1, &2, var), &leave/2)
     %__MODULE__{regions: Enum.reverse(regions)}
   end
@@ -121,7 +126,7 @@ defmodule Mutare.Manifest do
   @doc """
   Mutant ids that live inside a call to one of `names`, grouped by that call's function name.
 
-  The **macro-expansion fallback**'s attribution (`Mutare.Poison.macro_poison/2`): when a
+  The **macro-expansion fallback**'s attribution (`Mutare.Poison.macro_poison/4`): when a
   mutation splices a selector `case` into an argument a macro rewrites at compile time, the
   macro raises during expansion and the compiler blames the macro *call* line — which no
   region covers — so `ids_at_line/2` finds nothing. Given the macro name from the compiler's
@@ -133,8 +138,9 @@ defmodule Mutare.Manifest do
   Works in **metamutant space**: the rendered source is what the compiler read, so the ids
   found inside a blamed macro's span are exactly the ones that could have poisoned it — no
   mapping back to original-source coordinates is needed, or possible. Reads the manifest's
-  retained `:ast` (a `from_source/1` manifest), so the file is parsed once for both
-  attributions. Returns `%{fun_atom => MapSet.t()}`, empty when nothing matched.
+  retained `:ast` (a `from_source/2` manifest, whose regions were ranged with the file's
+  dispatch variable), so the file is parsed once for both attributions. Returns
+  `%{fun_atom => MapSet.t()}`, empty when nothing matched.
   """
   @spec ids_in_named_calls(t(), MapSet.t(atom())) :: %{optional(atom()) => MapSet.t()}
   def ids_in_named_calls(%__MODULE__{ast: ast, regions: regions}, names) when not is_nil(ast) do
@@ -306,12 +312,11 @@ defmodule Mutare.Manifest do
   #
   # A selector's subject is either the inline `:persistent_term` read or — once the read
   # is hoisted (a selector inside a function body) — a bare reference to the dispatch
-  # variable. The (per-file, possibly salted) variable name is recovered once from the
-  # metamutant (`active_var/1`) and threaded in, so both the subject recognisers (a
-  # hoisted bare-variable subject) and the tupled-clause gate matcher (`pattern_mutant`)
-  # see it. A user `case some_var do …` is never mistaken for a selector: the dispatch
-  # name is salted away from every identifier the source uses, so it can't equal a user
-  # scrutinee's name.
+  # variable. The (per-file, possibly salted) variable name is the `var` the caller supplied
+  # (`from_source/2`), threaded to both the subject recognisers (a hoisted bare-variable
+  # subject) and the tupled-clause gate matcher (`pattern_mutant`). A user `case some_var do …`
+  # is never mistaken for a selector: the dispatch name is salted away from every identifier
+  # the source uses, so it can't equal a user scrutinee's name.
   defp enter({:case, _meta, [subject, kw]} = node, regions, var) do
     cond do
       Metamutant.subject?(subject, var) ->
@@ -486,7 +491,7 @@ defmodule Mutare.Manifest do
   # dispatcher, and user code. This is how a poison inside a generated guard/head
   # maps back to its mutant now that each lifted mutant is a single gated clause
   # rather than a `_m<id>`-named full copy. `var` is the (possibly salted) dispatch
-  # variable name — see `active_var/1`.
+  # variable name the caller supplied.
   defp mutant_id({:when, _meta, [_call | guards]}, var),
     do: Enum.find_value(guards, &gate_id(&1, var))
 
@@ -515,99 +520,4 @@ defmodule Mutare.Manifest do
   defp literal_int({:__block__, _meta, [id]}) when is_integer(id), do: id
   defp literal_int(id) when is_integer(id), do: id
   defp literal_int(_), do: nil
-
-  # --- dispatch variable ---------------------------------------------------
-
-  # The dispatch variable's name in *this* metamutant. Canonically `mutare_active`,
-  # but `Mutare.Transform.Names` salts it (`mutare_active_0`, …) when the source
-  # already uses that identifier, so the gates read e.g. `mutare_active_0 === <id>`.
-  # The name is one per file, so we recover it from generated code rather than assume
-  # the canonical one.
-  #
-  # The authoritative anchor is a **coverage record** (`Recorder.record_var/1`): every
-  # selector catch-all / lifted dispatcher carries `<var> == 0 and
-  # :persistent_term.get(:mutare_track, false) and …`, whose embedded internal
-  # `:mutare_track` read a target's own source cannot forge — so it names the real
-  # (possibly salted) dispatch variable unambiguously, present wherever a hoisted
-  # selector or gate uses it.
-  #
-  # A `<var> = :persistent_term.get(<key>, 0)` binding is a *weaker* anchor, because a
-  # target file can write that very shape itself: reading the same key into a variable
-  # of its own — even, pathologically, a reserved-family name like `mutare_active` —
-  # which then *masks* the real (now-salted) generated binding. So the binding/tupled
-  # anchors are only a family-filtered fallback for the (theoretical) shape lacking a
-  # record; the canonical name covers a file with neither (then no gate exists, so the
-  # name is never consulted).
-  defp active_var(ast) do
-    first_match(ast, &Recorder.record_var/1) ||
-      first_match(ast, &anchor_var/1) ||
-      Recorder.var_name()
-  end
-
-  # The first non-`nil` `recognize.(node)` over the tree, in prewalk order.
-  defp first_match(ast, recognize) do
-    {_ast, found} =
-      Macro.prewalk(ast, nil, fn
-        node, nil -> {node, recognize.(node)}
-        node, found -> {node, found}
-      end)
-
-    found
-  end
-
-  # A generated construct that binds the dispatch variable, yielding its name:
-  #   * a lifted dispatcher's `<var> = :persistent_term.get(<key>, 0)`
-  #   * a non-lifted function's `:do`-block prologue `<var> = :persistent_term.get(<key>, 0)`
-  #   * a tupled-`case` clause whose pattern is `{<var>, <pat>}`
-  #
-  # The recovered name is kept only when it is in the *generated* dispatch-variable
-  # family (`dispatch_name/1`): `Metamutant.subject?/1` recognises the inline
-  # `:persistent_term` read by shape alone, but a target file may bind that same key
-  # into a variable of its own (`foo = :persistent_term.get(:mutare_active, 0)`), and
-  # that user assignment is shape-identical. Filtering by name lets the prewalk skip
-  # such a binding and keep searching for the real anchor.
-  defp anchor_var({:=, _meta, [lhs, rhs]}) do
-    if Metamutant.subject?(rhs), do: dispatch_name(var_atom(lhs))
-  end
-
-  defp anchor_var({:case, _meta, [subject, kw]}) do
-    if Metamutant.pattern_subject?(subject), do: dispatch_name(tupled_clause_var(do_block(kw)))
-  end
-
-  defp anchor_var(_), do: nil
-
-  # Keep a candidate name only when it is in the generated dispatch-variable family
-  # — the canonical `Recorder.var_name()` (`mutare_active`) or a salted `mutare_active_<n>`
-  # (`Mutare.Transform.Names.salted/2` appends `_0`, `_1`, … only when the source already
-  # binds the canonical name; `Names.salted_name?/2` is its inverse, so the convention lives
-  # in one place). A user variable that merely reads the same `:persistent_term` key
-  # (`foo = …`) carries a name outside this family, so returning `nil` for it makes the
-  # prewalk keep looking rather than lock onto user code — which would recover the wrong name
-  # (`:foo`) and then fail to recognise the real `case mutare_active do …` hoisted selector,
-  # leaving the in-place mutant without a region (a poison there would map to `[]` → recovery
-  # aborts).
-  defp dispatch_name(name) when is_atom(name) do
-    if Names.salted_name?(Recorder.var_name(), name), do: name
-  end
-
-  defp dispatch_name(_), do: nil
-
-  defp tupled_clause_var(clauses) when is_list(clauses),
-    do: Enum.find_value(clauses, &clause_tuple_var/1)
-
-  defp tupled_clause_var(_), do: nil
-
-  defp clause_tuple_var({:->, _, [[{:when, _, [pattern | _]}], _body]}),
-    do: tuple_first_var(pattern)
-
-  defp clause_tuple_var({:->, _, [[pattern], _body]}), do: tuple_first_var(pattern)
-  defp clause_tuple_var(_), do: nil
-
-  defp tuple_first_var({first, _second}), do: var_atom(first)
-  defp tuple_first_var(_), do: nil
-
-  # The variable name of a var node `{name, meta, context}` (context an atom/`nil`),
-  # or `nil` for anything else (a call has a list in the context slot).
-  defp var_atom({name, _meta, ctx}) when is_atom(name) and is_atom(ctx), do: name
-  defp var_atom(_), do: nil
 end

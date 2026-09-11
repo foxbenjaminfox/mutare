@@ -86,7 +86,7 @@ defmodule Mutare.PatternClauseTest do
   @compile {:no_warn_undefined, Mutare.PatternClauseFixture}
 
   setup_all do
-    {metamutant, sites, _next_id} =
+    %{metamutant: metamutant, sites: sites} =
       Mutare.Transform.transform_string_with_sites(@source, file: "cl.ex")
 
     # Broadening a clause's pattern can make a later clause unreachable — a benign "cannot
@@ -237,7 +237,7 @@ defmodule Mutare.PatternClauseTest do
         "defmodule T do\n  def r do\n    receive do\n      x -> x + 1\n    end\n  end\nend\n"
 
       for src <- [fn_src, recv_src] do
-        {_meta, sites, _} =
+        %{sites: sites} =
           Mutare.Transform.transform_string_with_sites(src,
             mutators: [Mutare.Mutators.Arithmetic]
           )
@@ -259,7 +259,7 @@ defmodule Mutare.PatternClauseTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [
             Mutare.Mutators.List,
@@ -298,7 +298,7 @@ defmodule Mutare.PatternClauseTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Test.RawInlineReceiveMutator]
         )
@@ -345,7 +345,7 @@ defmodule Mutare.PatternClauseTest do
       end
       """
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.PatternWildcard]
         )
@@ -374,7 +374,7 @@ defmodule Mutare.PatternClauseTest do
       end
       """
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.PatternWildcard]
         )
@@ -398,7 +398,7 @@ defmodule Mutare.PatternClauseTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.PatternSwap, Mutare.Mutators.Relational]
         )
@@ -441,7 +441,7 @@ defmodule Mutare.PatternClauseTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.PatternSwap]
         )

@@ -26,7 +26,7 @@ defmodule Mutare.PatternLiftTest do
   @compile {:no_warn_undefined, Mutare.PatternStructFixture}
 
   setup_all do
-    {metamutant, sites, _next_id} =
+    %{metamutant: metamutant, sites: sites} =
       Mutare.Transform.transform_string_with_sites(@source, file: "pat.ex")
 
     # Wildcarding a duplicate in a multi-clause function broadens the clause, so the

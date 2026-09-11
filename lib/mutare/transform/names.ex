@@ -17,9 +17,9 @@ defmodule Mutare.Transform.Names do
   # *and* variables).
   #
   # `Mutare.Transform` pins these once (into `Config.prefix`/`Config.active_var`/
-  # `Config.super_var`) before any lifting assigns them; `Mutare.Manifest` recognises a
-  # lifted mutant clause by its `<active_var> === <id>` gate, not the name, so the
-  # salt is invisible to it.
+  # `Config.super_var`) before any lifting assigns them, and hands the chosen dispatch
+  # variable out with the metamutant (`Mutare.Transform.Result.dispatch_var`), so
+  # `Mutare.Manifest` reads a metamutant back under the name that was actually used.
 
   alias Mutare.Coverage.Recorder
 
@@ -141,30 +141,6 @@ defmodule Mutare.Transform.Names do
       |> Enum.find(&(not MapSet.member?(taken, Atom.to_string(&1))))
     else
       canonical
-    end
-  end
-
-  @doc """
-  Whether `name` belongs to the generated-name family `salted/2` produces for `canonical`:
-  `canonical` itself, or `canonical` + `_` + a non-negative integer (the salted variants
-  minted when the source already binds the canonical name). The inverse of `salted/2`, kept
-  beside it so the convention has one owner: `Mutare.Manifest` calls it (with the dispatch
-  variable `Mutare.Coverage.Recorder.var_name/0`) to recover a metamutant's per-file dispatch
-  name rather than re-deriving the suffix shape itself.
-  """
-  @spec salted_name?(atom(), atom()) :: boolean()
-  def salted_name?(canonical, name) when is_atom(canonical) and is_atom(name) do
-    base = Atom.to_string(canonical)
-
-    case Atom.to_string(name) do
-      ^base ->
-        true
-
-      str ->
-        case String.split(str, base <> "_", parts: 2) do
-          ["", suffix] -> match?({_int, ""}, Integer.parse(suffix))
-          _ -> false
-        end
     end
   end
 

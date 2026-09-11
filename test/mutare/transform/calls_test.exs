@@ -216,7 +216,7 @@ defmodule Mutare.Transform.CallsTest do
     end
 
     test "the identity stamp never leaks into the rendered metamutant" do
-      {metamutant, _sites, _next} =
+      %{metamutant: metamutant} =
         Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do

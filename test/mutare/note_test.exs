@@ -43,7 +43,7 @@ defmodule Mutare.NoteTest do
   """
 
   setup_all do
-    {_metamutant, sites, _next_id} =
+    %{sites: sites} =
       Mutare.Transform.transform_string_with_sites(@source,
         file: "note.ex",
         mutators: [Mutare.Test.NotedMutator]

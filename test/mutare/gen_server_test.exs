@@ -212,7 +212,7 @@ defmodule Mutare.GenServerTest do
           def handle_info(_m, s), do: {:stop, :shutdown, s}\
         """)
 
-      {metamutant, sites, _} =
+      %{metamutant: metamutant, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: [GS])
 
       assert Enum.count(sites, &(&1.mutator == :genserver)) == 5

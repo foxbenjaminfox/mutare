@@ -792,7 +792,7 @@ defmodule Mutare.TransformDurationTest do
   defp value_triples(body, mutators \\ @value, opts \\ []) do
     source = "defmodule M do\n  #{String.trim_trailing(body)}\nend\n"
 
-    {meta, sites, _next_id} =
+    %{metamutant: meta, sites: sites} =
       Mutare.Transform.transform_string_with_sites(source, [mutators: mutators] ++ opts)
 
     {meta, for(s <- sites, do: {s.mutator, s.original_code, s.mutated_code})}

@@ -1074,20 +1074,21 @@ depth restoring to 0 after the `defmodule` so the trailing site re-hoists.
 `pattern_subject?/2` now recognise the hoisted bare-variable subject *in addition to*
 the inline `:persistent_term.get` form — but only when the active-id variable name is
 supplied (so a user's `case some_var do …` is never mistaken for a selector). The name is
-per-file (and may be salted), and `Mutare.Manifest` already recovers it once per file:
-`active_var/1` reads it off the first generated construct that binds it — a lifted
-dispatcher's, or now a non-lifted `:do`-block prologue's, `<var> = :persistent_term.get`,
-or a tupled-`case` clause's `{<var>, <pat>}` pattern — and threads it through **both** the
-subject recognisers and the lifted/tupled gate matchers (`mutant_id/2`/`gate_id/2`/
-`pattern_mutant/2`). So a poison inside a hoisted in-place selector maps back to its mutant
-id; a user `case` is safe because the dispatch name is salted away from every identifier
-the source uses, so it can never equal a user scrutinee's name. `PipeEmit.hoist` needs neither
-shape: `Render.selector_case/2` marks every selector it builds (`Meta.put_selector/1`), and the
-hoist recognises a pipe-RHS selector by that marker, so a hoisted pipe-stage selector is
-still lifted out of its illegal `x |> case` position. (This shares one recovered name with
-the salt fix `active_var/1` was introduced for — the `<var> === <id>` gate match — rather
-than re-discovering it per `case`: whenever a hoisted bare-variable subject exists, the
-binding `active_var/1` anchors on does too, so the file-level name is always available.)
+per-file (and may be salted); the transform returns it with the metamutant
+(`Result.dispatch_var`, `Schema.dispatch_vars`) and `Manifest.from_source/2` threads it
+through **both** the subject recognisers and the lifted/tupled gate matchers
+(`mutant_id/2`/`gate_id/2`/`pattern_mutant/2`). So a poison inside a hoisted in-place
+selector maps back to its mutant id; a user `case` is safe because the dispatch name is
+salted away from every identifier the source uses, so it can never equal a user scrutinee's
+name. `PipeEmit.hoist` needs neither shape: `Render.selector_case/2` marks every selector it
+builds (`Meta.put_selector/1`), and the hoist recognises a pipe-RHS selector by that marker,
+so a hoisted pipe-stage selector is still lifted out of its illegal `x |> case` position.
+(The manifest used to *recover* the name from the rendered metamutant instead — first from a
+coverage record's `<var> == 0` read, then from a `<var> = :persistent_term.get` binding or a
+tupled-clause pattern filtered to the salted-name family, else the canonical name — ~95 lines
+of heuristics with a documented failure mode when a target bound the key itself. Carrying the
+name the transform chose removed all of it; see "Emitters carry their state instead of
+recovering it".)
 
 Measured on `analyze.ex` (1431 sites): inline `:persistent_term.get(:mutare_active, 0)`
 reads dropped from ~1,098 to **107** (lifted dispatchers, non-lifted do-block prologues,
@@ -9672,9 +9673,10 @@ report ids from `schema.start_ids`; public DTOs and every reporter keep integer 
 **Poison drops an id its index doesn't know; it never raises on one.** Translating flipped what
 a Manifest finding has to mean: an id read out of a metamutant used to need no site behind it
 (metamutant ⊋ sites), and translating one demands metamutant ⊆ sites. Selection manufactures
-findings that own no site. A file the cap or `--line` leaves nothing to emit renders pristine, so
-no generated code anchors the salted dispatch name, and target source that happens to write a
-selector's own shape (`case mutare_active do 1 -> ...`) reads back as local id 1. That phantom was
+findings that own no site. A file the cap or `--line` leaves nothing to emit renders pristine, and
+target source that happens to write a selector's own shape (a `case` on the inline
+`:persistent_term.get(:mutare_active, 0)` read, which no dispatch name disambiguates — `1 -> ...`)
+reads back as local id 1. That phantom was
 inert while ids passed through raw; under a bare `Map.fetch!` it killed the recovery the compile
 failure had just started — the one moment Poison exists to survive. Dropping it attributes
 nothing, which the caller already handles: the macro fallback, then the abort and its `Hint`.

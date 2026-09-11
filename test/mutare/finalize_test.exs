@@ -122,7 +122,7 @@ defmodule Mutare.FinalizeTest do
 
   describe "the mutate/1–mutate/2 path" do
     test "finalize/2 filters disabled families and attaches the note, end to end" do
-      {_metamutant, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@source,
           mutators: [{FinalizeMutator, families: [:zero]}]
         )
@@ -135,7 +135,7 @@ defmodule Mutare.FinalizeTest do
     end
 
     test "with every family enabled, each mutant arrives enriched" do
-      {_metamutant, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@source, mutators: [FinalizeMutator])
 
       assert Enum.map(sites, &{&1.mutated_code, &1.note, &1.variant}) == [

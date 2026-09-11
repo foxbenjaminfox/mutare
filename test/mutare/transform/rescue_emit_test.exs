@@ -40,7 +40,7 @@ defmodule Mutare.Transform.RescueEmitTest do
   end
 
   test "a variable named try retains ordinary return-value selection with default mutators" do
-    {module, sites, _, _} =
+    {module, sites, _, _, _var} =
       fixture("TryVariable", "def run(try), do: try", Mutare.Mutators.all())
 
     assert Enum.map(sites, &{&1.mutator, &1.mutated_code}) ==
@@ -59,7 +59,7 @@ defmodule Mutare.Transform.RescueEmitTest do
           "def run(_), do: try()\ndefp try(), do: :ok",
           "def run(value), do: try(value, value)\ndefp try(_, _), do: :ok"
         ] do
-      {module, sites, _, _} = fixture("TryCall", body, Mutare.Mutators.all())
+      {module, sites, _, _, _var} = fixture("TryCall", body, Mutare.Mutators.all())
 
       assert Enum.map(sites, &{&1.mutator, &1.mutated_code}) ==
                [{:return_value, "nil"}, {:return_value, ":mutare"}]
@@ -79,7 +79,7 @@ defmodule Mutare.Transform.RescueEmitTest do
       ~w(ArgumentError RuntimeError ArithmeticError KeyError MatchError CaseClauseError FunctionClauseError Protocol.UndefinedError)
 
     for count <- [2, 8] do
-      {module, sites, meta, _} =
+      {module, sites, meta, _, _var} =
         fixture("Growth", """
         def run(x) do
           try do
@@ -106,7 +106,7 @@ defmodule Mutare.Transform.RescueEmitTest do
   end
 
   test "rescue mutants preserve direct and reraised stack frames" do
-    {module, sites, _, _} =
+    {module, sites, _, _, _var} =
       fixture("Stack", """
       def run(x, reraising) do
         try do
@@ -139,7 +139,7 @@ defmodule Mutare.Transform.RescueEmitTest do
   end
 
   test "source macros see no new bindings in do, rescue, else, or after" do
-    {module, sites, meta, _} =
+    {module, sites, meta, _, _var} =
       fixture("Scope", """
       defmacro scope, do: Macro.escape(Macro.Env.vars(__CALLER__))
       def run(failure) do
@@ -179,7 +179,7 @@ defmodule Mutare.Transform.RescueEmitTest do
   end
 
   test "rescue mutants retain raw macro scope inside do, else, and after pipes" do
-    {module, sites, _, _} =
+    {module, sites, _, _, _var} =
       fixture(
         "RawScope",
         """
@@ -221,7 +221,7 @@ defmodule Mutare.Transform.RescueEmitTest do
       blocks = boundary_blocks(unquote(catches?))
       body = if unquote(form) == :explicit, do: "do\ntry #{blocks}\nend", else: blocks
 
-      {module, sites, _, source} =
+      {module, sites, _, source, _var} =
         fixture("Boundary", "def run(action, handler, cleanup) #{body}")
 
       args =
@@ -248,7 +248,7 @@ defmodule Mutare.Transform.RescueEmitTest do
   end
 
   test "default body and handler mutants still match their individual source patches" do
-    {module, sites, _, source} =
+    {module, sites, _, source, _var} =
       fixture(
         "Defaults",
         """
@@ -276,7 +276,7 @@ defmodule Mutare.Transform.RescueEmitTest do
   end
 
   test "coverage records all live rescue ids before successful or raising body evaluation" do
-    {module, sites, meta, _} = fixture("Coverage", simple_body())
+    {module, sites, meta, _, _var} = fixture("Coverage", simple_body())
 
     observed =
       String.replace(
@@ -298,7 +298,7 @@ defmodule Mutare.Transform.RescueEmitTest do
   end
 
   test "selection stays fixed when the protected body changes persistent_term" do
-    {module, sites, _, _} = fixture("Snapshot", simple_body())
+    {module, sites, _, _, _var} = fixture("Snapshot", simple_body())
     catches = Enum.find(sites, &(&1.mutated_code == "e in [ArgumentError]"))
     propagates = Enum.find(sites, &(&1.mutated_code == "e in [RuntimeError]"))
     Selector.put(catches.id)
@@ -312,13 +312,15 @@ defmodule Mutare.Transform.RescueEmitTest do
   end
 
   test "whole-node mutants bypass the body, while skips preserve ids and manifest ownership" do
-    {module, sites, meta, source} = fixture("Selection", simple_body(), [WholeTry, :rescue_type])
+    {module, sites, meta, source, var} =
+      fixture("Selection", simple_body(), [WholeTry, :rescue_type])
+
     [whole | rescues] = sites
     assert whole.mutator == :whole_try
     Selector.put(whole.id)
     assert outcome(module, [fn -> raise "not reached" end]) == {{:returned, :replaced}, []}
 
-    manifest = Manifest.from_source(meta)
+    manifest = Manifest.from_source(meta, var)
 
     for site <- rescues do
       line =
@@ -328,7 +330,7 @@ defmodule Mutare.Transform.RescueEmitTest do
       assert Manifest.ids_at_line(manifest, line + 1) == [site.id]
     end
 
-    {skipped, skipped_sites, next_id} =
+    %{metamutant: skipped, sites: skipped_sites, next_id: next_id} =
       Transform.transform_string_with_sites(source,
         mutators: [WholeTry, :rescue_type],
         skip_ids: Enum.map(rescues, & &1.id)
@@ -345,7 +347,7 @@ defmodule Mutare.Transform.RescueEmitTest do
           "e in ArgumentError -> e; other in RuntimeError -> other",
           "_e in [ArgumentError, RuntimeError] -> :caught"
         ] do
-      {module, sites, meta, _} =
+      {module, sites, meta, _, _var} =
         fixture("Fallback", """
         def run(action) do
           try do
@@ -363,7 +365,7 @@ defmodule Mutare.Transform.RescueEmitTest do
   end
 
   test "an unbound enclosing rescue retains the original macro scope of mutant branches" do
-    {module, sites, meta, _} =
+    {module, sites, meta, _, _var} =
       fixture("Unbound", """
       defmacro scope, do: Macro.escape(Macro.Env.vars(__CALLER__))
       def run(action) do
@@ -388,7 +390,7 @@ defmodule Mutare.Transform.RescueEmitTest do
   end
 
   test "a catch-all rescue with the shared binding preserves narrowing and clause fallthrough" do
-    {module, sites, meta, source} =
+    {module, sites, meta, source, _var} =
       fixture("CatchAll", """
       def run(action) do
         try do
@@ -469,9 +471,12 @@ defmodule Mutare.Transform.RescueEmitTest do
   defp fixture(name, body, mutators \\ [:rescue_type]) do
     module = fresh_module(name)
     source = "defmodule #{inspect(module)} do\n#{body}\nend"
-    {meta, sites, _} = Transform.transform_string_with_sites(source, mutators: mutators)
+
+    %{metamutant: meta, sites: sites, dispatch_var: var} =
+      Transform.transform_string_with_sites(source, mutators: mutators)
+
     compile_purging(module, meta)
-    {module, sites, meta, source}
+    {module, sites, meta, source, var}
   end
 
   defp event_count(source, value) do

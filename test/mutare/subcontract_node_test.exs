@@ -43,7 +43,7 @@ defmodule Mutare.SubcontractNodeTest do
   @mutators [:arithmetic, :integer, Mutare.Test.SubcontractNodeMutator]
 
   setup_all do
-    {metamutant, sites, _next_id} =
+    %{metamutant: metamutant, sites: sites} =
       Mutare.Transform.transform_string_with_sites(@source,
         file: "subcontract_node.ex",
         mutators: @mutators
@@ -125,7 +125,7 @@ defmodule Mutare.SubcontractNodeTest do
     end
 
     test "with no core families enabled, the island mutates to nothing" do
-      {_meta, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@source,
           file: "subcontract_node.ex",
           mutators: [Mutare.Test.SubcontractNodeMutator]
@@ -201,13 +201,13 @@ defmodule Mutare.SubcontractNodeTest do
       end
       """
 
-      {_meta, host_sites, _next} =
+      %{sites: host_sites} =
         Mutare.Transform.transform_string_with_sites(host_source,
           file: "parity_host.ex",
           mutators: [:arithmetic, :integer, Mutare.Test.SubcontractHostMutator]
         )
 
-      {_meta, node_sites, _next} =
+      %{sites: node_sites} =
         Mutare.Transform.transform_string_with_sites(node_source,
           file: "parity_node.ex",
           mutators: [:arithmetic, :integer, Mutare.Test.SubcontractNodeMutator]

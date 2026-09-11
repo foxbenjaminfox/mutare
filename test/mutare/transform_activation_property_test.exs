@@ -66,7 +66,7 @@ defmodule Mutare.TransformActivationPropertyTest do
     forall module_ast <- Gen.module_gen() do
       source = Macro.to_string(module_ast)
 
-      {metamutant, sites, _next_id} =
+      %{metamutant: metamutant, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, file: "prop.ex")
 
       ids = Enum.map(sites, & &1.id)

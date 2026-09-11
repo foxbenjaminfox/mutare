@@ -145,12 +145,12 @@ defmodule Mutare.IfConditionTest do
       end
       """
 
-      {_meta, sites, _} = Mutare.Transform.transform_string_with_sites(src, mutators: @only)
+      %{sites: sites} = Mutare.Transform.transform_string_with_sites(src, mutators: @only)
       assert Enum.filter(sites, &(&1.mutator == :if_condition)) == []
     end
 
     test "coexists with another mutator on the same condition node — one shared selector" do
-      {_meta, sites, _} =
+      %{sites: sites} =
         wrap("def f(s), do: if(String.starts_with?(s, \"x\"), do: 1, else: 2)")
         |> Mutare.Transform.transform_string_with_sites(mutators: [IfCondition, StringCall])
 
@@ -178,7 +178,9 @@ defmodule Mutare.IfConditionTest do
       end
       """
 
-      {metamutant, sites, _} = Mutare.Transform.transform_string_with_sites(src, mutators: @only)
+      %{metamutant: metamutant, sites: sites} =
+        Mutare.Transform.transform_string_with_sites(src, mutators: @only)
+
       [{_module, _binary}] = Mutare.Test.Compile.string(metamutant)
       [sites: Enum.filter(sites, &(&1.mutator == :if_condition))]
     end

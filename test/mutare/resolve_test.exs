@@ -60,7 +60,7 @@ defmodule Mutare.ResolveTest do
     test "nids never leak into the rendered metamutant (stripped before render)" do
       # `:mutare_nid` is internal bookkeeping; like the other `mutare_*` meta keys it must be
       # stripped before Sourceror renders the build artifact.
-      {metamutant, _sites, _next} =
+      %{metamutant: metamutant} =
         Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do

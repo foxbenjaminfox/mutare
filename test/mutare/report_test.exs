@@ -31,7 +31,7 @@ defmodule Mutare.ReportTest do
   end
 
   defp site(op_to) do
-    {_meta, sites, _next_id} =
+    %{sites: sites} =
       Mutare.Transform.transform_string_with_sites(@source, file: "lib/billing.ex")
 
     Enum.find(sites, &(&1.original_form == :>= and &1.mutated_form == op_to))
@@ -54,7 +54,7 @@ defmodule Mutare.ReportTest do
   """
 
   test "diff/2 keeps a long single-line original's mutation on one line (no 98-column re-flow)" do
-    {_meta, sites, _next_id} =
+    %{sites: sites} =
       Mutare.Transform.transform_string_with_sites(@long_source, file: "p.ex")
 
     # The outermost `and → or`, spanning the whole 116-column expression.
@@ -96,7 +96,7 @@ defmodule Mutare.ReportTest do
     """
 
     defp kw_site(mutator, original_code) do
-      {_meta, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@kw_source, mutators: [mutator])
 
       Enum.find(sites, &(&1.original_code == original_code))
@@ -138,7 +138,7 @@ defmodule Mutare.ReportTest do
     """
 
     defp rx_site(mutated_code) do
-      {_meta, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@rx_source,
           mutators: [Mutare.Mutators.RegexLiteral]
         )
@@ -159,7 +159,7 @@ defmodule Mutare.ReportTest do
     end
 
     test "every regex mutant's patch re-parses as valid Elixir" do
-      {_meta, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@rx_source,
           mutators: [Mutare.Mutators.RegexLiteral]
         )
@@ -184,7 +184,7 @@ defmodule Mutare.ReportTest do
     """
 
     defp str_site(mutated_code) do
-      {_meta, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@str_source,
           mutators: [Mutare.Mutators.StringLiteral]
         )
@@ -205,7 +205,7 @@ defmodule Mutare.ReportTest do
     end
 
     test "every string mutant's patch re-parses as valid Elixir" do
-      {_meta, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@str_source,
           mutators: [Mutare.Mutators.StringLiteral]
         )
@@ -230,7 +230,7 @@ defmodule Mutare.ReportTest do
     """
 
     defp ia_sites do
-      {_meta, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@ia_source,
           mutators: [Mutare.Mutators.AtomLiteral, Mutare.Mutators.CharlistLiteral]
         )

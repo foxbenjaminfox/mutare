@@ -37,7 +37,7 @@ defmodule Mutare.ReturnValueTest do
   """
 
   setup_all do
-    {metamutant, sites, _} =
+    %{metamutant: metamutant, sites: sites} =
       Mutare.Transform.transform_string_with_sites(@runtime_source, mutators: @runtime_mutators)
 
     [{_module, _binary}] = Mutare.Test.Compile.string(metamutant)
@@ -150,7 +150,7 @@ defmodule Mutare.ReturnValueTest do
           mutators <- [[AtomLiteral, ReturnValue], [ReturnValue, AtomLiteral]] do
         source = "defmodule T do\n def f(x), do: #{tail}\nend"
 
-        {_meta, sites, next_id} =
+        %{sites: sites, next_id: next_id} =
           Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
 
         assert Enum.map(sites, &{&1.id, &1.mutator, &1.mutated_code}) == [
@@ -169,7 +169,7 @@ defmodule Mutare.ReturnValueTest do
             {[AtomLiteral], [atom: ":mutare"]},
             {[ReturnValue], [return_value: "nil", return_value: ":mutare"]}
           ] do
-        {_meta, sites, _} =
+        %{sites: sites} =
           Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
 
         assert Enum.map(sites, &{&1.mutator, &1.mutated_code}) == expected
@@ -178,7 +178,7 @@ defmodule Mutare.ReturnValueTest do
 
     test "excluded atoms retain their non-duplicate return replacements" do
       for {tail, expected} <- [{":error", ["nil", ":mutare"]}, {":mutare", ["nil"]}] do
-        {_meta, sites, _} =
+        %{sites: sites} =
           Mutare.Transform.transform_string_with_sites(
             "defmodule T do\n def f, do: #{tail}\nend",
             mutators: [AtomLiteral, ReturnValue]
@@ -194,7 +194,7 @@ defmodule Mutare.ReturnValueTest do
             "if x, do: :foo, else: :foo",
             "Enum.map(x, fn true -> :foo; false -> :foo end)"
           ] do
-        {_meta, sites, _} =
+        %{sites: sites} =
           Mutare.Transform.transform_string_with_sites(
             "defmodule T do\n def f(x), do: #{body}\nend",
             mutators: [AtomLiteral, ReturnValue]
@@ -219,7 +219,10 @@ defmodule Mutare.ReturnValueTest do
       opts = [mutators: [AtomLiteral, ReturnValue], start_id: 40]
 
       assert Mutare.Transform.count_string(source, opts) == 2
-      {_meta, sites, next_id} = Mutare.Transform.transform_string_with_sites(source, opts)
+
+      %{sites: sites, next_id: next_id} =
+        Mutare.Transform.transform_string_with_sites(source, opts)
+
       assert Enum.map(sites, & &1.id) == [40, 41]
       assert next_id == 42
 
@@ -227,7 +230,7 @@ defmodule Mutare.ReturnValueTest do
         skipped_opts = Keyword.put(opts, :skip_ids, MapSet.new([skipped_id]))
         assert Mutare.Transform.count_string(source, skipped_opts) == 2
 
-        {_meta, rebuilt, rebuilt_next_id} =
+        %{sites: rebuilt, next_id: rebuilt_next_id} =
           Mutare.Transform.transform_string_with_sites(source, skipped_opts)
 
         assert rebuilt == Enum.map(sites, &%{&1 | poisoned: &1.id == skipped_id})
@@ -237,7 +240,7 @@ defmodule Mutare.ReturnValueTest do
 
     test "the retained family owns ignore matching" do
       for family <- [:atom, :return_value] do
-        {_meta, sites, _} =
+        %{sites: sites} =
           Mutare.Transform.transform_string_with_sites(
             "defmodule T do\n def f, do: :foo # mutare:ignore[#{family}]\nend",
             mutators: [AtomLiteral, ReturnValue]
@@ -283,7 +286,7 @@ defmodule Mutare.ReturnValueTest do
       end
       """
 
-      {_meta, sites, _} = Mutare.Transform.transform_string_with_sites(source, mutators: @only)
+      %{sites: sites} = Mutare.Transform.transform_string_with_sites(source, mutators: @only)
       returns = Enum.filter(sites, &(&1.mutator == :return_value))
 
       # `y = x + 1` (line 3) is not the tail; only `y * 2` (line 4) is — and it
@@ -305,7 +308,7 @@ defmodule Mutare.ReturnValueTest do
       # ClauseDrop is what lifts this group: with return-value alone there is no guard swap,
       # head-literal swap or drop to lift for, so the clauses would stay in place and the test
       # would not exercise the lifted path at all.
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         with_log(fn ->
           Mutare.Transform.transform_string_with_sites(source,
             mutators: @only ++ [Mutare.Mutators.ClauseDrop]
@@ -326,7 +329,7 @@ defmodule Mutare.ReturnValueTest do
     test "an operator swap and the return pair share one selector at the tail node" do
       # `a + b` is both an arithmetic site and a return-value site: one selector
       # `case` hosts all three mutant clauses (a - b, and 0, and 1).
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           "defmodule T do\n  def f(a, b), do: a + b\nend\n",
           mutators: [Mutare.Mutators.Arithmetic, ReturnValue]
@@ -362,7 +365,7 @@ defmodule Mutare.ReturnValueTest do
     """
 
     defp try_returns do
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@try_source, mutators: @only)
 
       Enum.filter(sites, &(&1.mutator == :return_value))
@@ -398,7 +401,7 @@ defmodule Mutare.ReturnValueTest do
       end
       """
 
-      {meta, sites, _} = Mutare.Transform.transform_string_with_sites(source)
+      %{metamutant: meta, sites: sites} = Mutare.Transform.transform_string_with_sites(source)
 
       refute Enum.any?(sites, &(&1.mutator == :conditional))
       assert {:ok, _} = Code.string_to_quoted(meta)
@@ -429,7 +432,7 @@ defmodule Mutare.ReturnValueTest do
       end
       """
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [ReturnValue, Mutare.Mutators.Arithmetic]
         )
@@ -452,7 +455,7 @@ defmodule Mutare.ReturnValueTest do
       end
       """
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: [ReturnValue])
 
       returns = Enum.filter(sites, &(&1.mutator == :return_value))
@@ -614,7 +617,7 @@ defmodule Mutare.ReturnValueTest do
       end
       """
 
-      {meta, _sites, _} = Mutare.Transform.transform_string_with_sites(source)
+      %{metamutant: meta} = Mutare.Transform.transform_string_with_sites(source)
       assert {:ok, _} = Code.string_to_quoted(meta)
 
       assert {[{Mutare.ReturnValueBranchCompile, _}], _log} =
@@ -633,7 +636,8 @@ defmodule Mutare.ReturnValueTest do
     # `{metamutant, %{original_code => [mutated_code]}}` for the return sites of `source`
     # under `@hoisting`.
     defp hoisted_returns(source) do
-      {meta, sites, _} = Mutare.Transform.transform_string_with_sites(source, mutators: @hoisting)
+      %{metamutant: meta, sites: sites} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: @hoisting)
 
       {meta,
        sites
@@ -794,7 +798,7 @@ defmodule Mutare.ReturnValueTest do
       end
       """
 
-      {meta, _sites, _} = Mutare.Transform.transform_string_with_sites(source)
+      %{metamutant: meta} = Mutare.Transform.transform_string_with_sites(source)
       assert {:ok, _} = Code.string_to_quoted(meta)
 
       assert {[{Mutare.ReturnValueWtrCompile, _}], _log} =
@@ -910,7 +914,9 @@ defmodule Mutare.ReturnValueTest do
       end
       """
 
-      {meta, sites, _} = Mutare.Transform.transform_string_with_sites(source, mutators: @only)
+      %{metamutant: meta, sites: sites} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: @only)
+
       [{mod, _bin}] = Mutare.Test.Compile.string(meta)
 
       Selector.put(Selector.baseline())
@@ -947,7 +953,7 @@ defmodule Mutare.ReturnValueTest do
       end
       """
 
-      {meta, sites, _} = Mutare.Transform.transform_string_with_sites(source)
+      %{metamutant: meta, sites: sites} = Mutare.Transform.transform_string_with_sites(source)
       assert Enum.any?(sites, &(&1.mutator == :return_value and &1.original_code == "compute(x)"))
       assert {:ok, _} = Code.string_to_quoted(meta)
 
@@ -961,7 +967,7 @@ defmodule Mutare.ReturnValueTest do
 
   describe "selection and ignore" do
     test "off when not in the :mutators list" do
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           "defmodule T do\n  def f(a, b), do: a + b\nend\n",
           mutators: [Mutare.Mutators.Arithmetic]
@@ -973,7 +979,7 @@ defmodule Mutare.ReturnValueTest do
     test "on by default (part of Mutare.Mutators.all/0)" do
       assert ReturnValue in Mutare.Mutators.all()
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           "defmodule T do\n  def f(a, b), do: a + b\nend\n"
         )
@@ -988,7 +994,7 @@ defmodule Mutare.ReturnValueTest do
       end
       """
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Arithmetic, ReturnValue]
         )

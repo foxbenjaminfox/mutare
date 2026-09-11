@@ -9,12 +9,13 @@ defmodule Mutare.PoisonTest do
 
   describe "transform :skip_ids" do
     test "a skipped id is recorded :poisoned with no selector, so it compiles" do
-      {meta, [site], _next_id} = Mutare.Transform.transform_string_with_sites(@src, @poison)
+      %{metamutant: meta, sites: [site]} =
+        Mutare.Transform.transform_string_with_sites(@src, @poison)
 
       # Without skipping, the poison mutant is in the metamutant (won't compile).
       assert meta =~ "mutare_unbound_xyz"
 
-      {meta2, [site2], _next_id} =
+      %{metamutant: meta2, sites: [site2]} =
         Mutare.Transform.transform_string_with_sites(
           @src,
           Keyword.put(@poison, :skip_ids, MapSet.new([site.id]))
@@ -31,9 +32,10 @@ defmodule Mutare.PoisonTest do
     end
   end
 
-  describe "Poison.ids/2" do
+  describe "Poison.ids/4" do
     test "maps a compile error's file:line to the mutant whose generated code spans it" do
-      {meta, [site], _next_id} = Mutare.Transform.transform_string_with_sites(@src, @poison)
+      %{metamutant: meta, sites: [site], dispatch_var: var} =
+        Mutare.Transform.transform_string_with_sites(@src, @poison)
 
       line =
         meta
@@ -42,21 +44,22 @@ defmodule Mutare.PoisonTest do
         |> Kernel.+(1)
 
       error = "lib/p.ex:#{line}:5: undefined variable \"mutare_unbound_xyz\""
-      # `Poison.ids/2` now takes the metamutant *sources* and builds the manifest
-      # lazily, so the scan never pays for it on a healthy run.
+      # `Poison.ids/4` takes the metamutant *sources* (plus each file's dispatch variable)
+      # and builds the manifest lazily, so the scan never pays for it on a healthy run.
       metamutants = %{"lib/p.ex" => meta}
-      assert Poison.ids(error, metamutants) == MapSet.new([site.id])
+      assert Poison.ids(error, metamutants, %{"lib/p.ex" => var}) == MapSet.new([site.id])
     end
 
     test "returns empty when nothing maps (caller then aborts)" do
-      assert Poison.ids("some unrelated error", %{}) == MapSet.new()
+      assert Poison.ids("some unrelated error", %{}, %{}) == MapSet.new()
     end
 
     test "memoizes the per-file manifest and ignores an error in an untracked file" do
       # Two distinct error lines in the *same* tracked file (the second resolved from the
       # memoized manifest, not a re-parse) plus an error in a file absent from `metamutants`
       # (no manifest → contributes nothing). Exercises the cache-hit and missing-file paths.
-      {meta, [site], _next_id} = Mutare.Transform.transform_string_with_sites(@src, @poison)
+      %{metamutant: meta, sites: [site], dispatch_var: var} =
+        Mutare.Transform.transform_string_with_sites(@src, @poison)
 
       poison_line =
         meta
@@ -69,12 +72,16 @@ defmodule Mutare.PoisonTest do
           "lib/p.ex:9999:1: some other error\n" <>
           "lib/untracked.ex:3:1: undefined variable \"q\"\n"
 
-      assert Poison.ids(error, %{"lib/p.ex" => meta}) == MapSet.new([site.id])
+      assert Poison.ids(error, %{"lib/p.ex" => meta}, %{"lib/p.ex" => var}) ==
+               MapSet.new([site.id])
     end
 
     test "ignores a warning's file:line — only error diagnostics locate poison" do
-      {meta, [site], _next_id} = Mutare.Transform.transform_string_with_sites(@src, @poison)
+      %{metamutant: meta, sites: [site], dispatch_var: var} =
+        Mutare.Transform.transform_string_with_sites(@src, @poison)
+
       metamutants = %{"lib/p.ex" => meta}
+      vars = %{"lib/p.ex" => var}
 
       line =
         meta
@@ -89,30 +96,31 @@ defmodule Mutare.PoisonTest do
         "    warning: variable \"x\" is unused\n" <>
           "    └─ lib/p.ex:#{line}:5: P.f/2\n"
 
-      assert Poison.ids(warning, metamutants) == MapSet.new()
+      assert Poison.ids(warning, metamutants, vars) == MapSet.new()
 
       # The same location inside an `error:` diagnostic *is* the poison.
       error =
         "    error: undefined variable \"mutare_unbound_xyz\"\n" <>
           "    └─ lib/p.ex:#{line}:5: P.f/2\n"
 
-      assert Poison.ids(error, metamutants) == MapSet.new([site.id])
+      assert Poison.ids(error, metamutants, vars) == MapSet.new([site.id])
 
       # A warning sharing the output with the real error neither adds nor hides ids.
-      assert Poison.ids(warning <> error, metamutants) == MapSet.new([site.id])
+      assert Poison.ids(warning <> error, metamutants, vars) == MapSet.new([site.id])
     end
   end
 
-  describe "macro_poison/2 (macro-expansion fallback, metamutant space)" do
-    # Transform a source into `{%{file => metamutant}, sites}` — the real rendered metamutant
-    # the fallback attributes against (not the original), so its manifest carries every id.
+  describe "macro_poison/4 (macro-expansion fallback, metamutant space)" do
+    # Transform a source into `{%{file => metamutant}, %{file => dispatch_var}, sites}` — the
+    # real rendered metamutant the fallback attributes against (not the original), so its
+    # manifest carries every id.
     defp transform(src, mutators), do: transform_at("lib/r.ex", src, mutators)
 
     defp transform_at(file, src, mutators) do
-      {meta, sites, _next} =
+      %{metamutant: meta, sites: sites, dispatch_var: var} =
         Mutare.Transform.transform_string_with_sites(src, file: file, mutators: mutators)
 
-      {%{file => meta}, sites}
+      {%{file => meta}, %{file => var}, sites}
     end
 
     defp frame(output_line),
@@ -129,13 +137,17 @@ defmodule Mutare.PoisonTest do
       end
       """
 
-      {metamutants, sites} = transform(src, [Mutare.Mutators.Relational])
+      {metamutants, vars, sites} = transform(src, [Mutare.Mutators.Relational])
       inside = for s <- sites, s.line == 3, do: s.id
       outside = for s <- sites, s.line == 4, do: s.id
       assert inside != [] and outside != []
 
       assert [{{"MyDsl", :query}, ids}] =
-               Mutare.Poison.macro_poison(frame("expanding macro: MyDsl.query/1"), metamutants)
+               Mutare.Poison.macro_poison(
+                 frame("expanding macro: MyDsl.query/1"),
+                 metamutants,
+                 vars
+               )
 
       assert ids == MapSet.new(inside)
       refute Enum.any?(outside, &MapSet.member?(ids, &1))
@@ -153,12 +165,16 @@ defmodule Mutare.PoisonTest do
       end
       """
 
-      {metamutants, sites} = transform(src, [Mutare.Mutators.Relational])
+      {metamutants, vars, sites} = transform(src, [Mutare.Mutators.Relational])
       assert sites != []
       expected = MapSet.new(sites, & &1.id)
 
       assert [{{"MyDsl", :query}, ^expected}] =
-               Mutare.Poison.macro_poison(frame("expanding macro: MyDsl.query/1"), metamutants)
+               Mutare.Poison.macro_poison(
+                 frame("expanding macro: MyDsl.query/1"),
+                 metamutants,
+                 vars
+               )
     end
 
     test "spans a macro-argument literal on its own line (true call range, not child metadata)" do
@@ -173,31 +189,39 @@ defmodule Mutare.PoisonTest do
       end
       """
 
-      {metamutants, sites} = transform(src, [Mutare.Mutators.IntegerLiteral])
+      {metamutants, vars, sites} = transform(src, [Mutare.Mutators.IntegerLiteral])
       assert sites != []
       expected = MapSet.new(sites, & &1.id)
 
       assert [{{"MyDsl", :query}, ^expected}] =
-               Mutare.Poison.macro_poison(frame("expanding macro: MyDsl.query/1"), metamutants)
+               Mutare.Poison.macro_poison(
+                 frame("expanding macro: MyDsl.query/1"),
+                 metamutants,
+                 vars
+               )
     end
 
     test "returns [] when the blamed macro name matches no call in the metamutant" do
-      {metamutants, _sites} =
+      {metamutants, vars, _sites} =
         transform("defmodule R do\n  def f(a, b), do: query(a > b)\nend\n", [
           Mutare.Mutators.Relational
         ])
 
-      assert Mutare.Poison.macro_poison(frame("expanding macro: Other.absent/2"), metamutants) ==
+      assert Mutare.Poison.macro_poison(
+               frame("expanding macro: Other.absent/2"),
+               metamutants,
+               vars
+             ) ==
                []
     end
 
     test "returns [] when the output names no expanding macro" do
-      {metamutants, _sites} =
+      {metamutants, vars, _sites} =
         transform("defmodule R do\n  def f(a, b), do: query(a > b)\nend\n", [
           Mutare.Mutators.Relational
         ])
 
-      assert Mutare.Poison.macro_poison("just an ordinary error", metamutants) == []
+      assert Mutare.Poison.macro_poison("just an ordinary error", metamutants, vars) == []
     end
 
     test "ignores a definition head that shares the blamed macro's name" do
@@ -215,13 +239,17 @@ defmodule Mutare.PoisonTest do
       end
       """
 
-      {metamutants, sites} = transform(src, [Mutare.Mutators.Relational])
+      {metamutants, vars, sites} = transform(src, [Mutare.Mutators.Relational])
       head_ids = for s <- sites, s.line == 2, do: s.id
       call_ids = for s <- sites, s.line == 7, do: s.id
       assert head_ids != [] and call_ids != []
 
       assert [{{"MyDsl", :query}, ids}] =
-               Mutare.Poison.macro_poison(frame("expanding macro: MyDsl.query/1"), metamutants)
+               Mutare.Poison.macro_poison(
+                 frame("expanding macro: MyDsl.query/1"),
+                 metamutants,
+                 vars
+               )
 
       assert ids == MapSet.new(call_ids)
       refute Enum.any?(head_ids, &MapSet.member?(ids, &1))
@@ -239,12 +267,16 @@ defmodule Mutare.PoisonTest do
       end
       """
 
-      {metamutants, sites} = transform(src, [Mutare.Mutators.IntegerLiteral])
+      {metamutants, vars, sites} = transform(src, [Mutare.Mutators.IntegerLiteral])
       assert sites != []
       expected = MapSet.new(sites, & &1.id)
 
       assert [{{"Size", :megabytes}, ^expected}] =
-               Mutare.Poison.macro_poison(frame("expanding macro: Size.megabytes/1"), metamutants)
+               Mutare.Poison.macro_poison(
+                 frame("expanding macro: Size.megabytes/1"),
+                 metamutants,
+                 vars
+               )
     end
 
     test "scans only the macro's call-site file, not its implementation frames" do
@@ -252,12 +284,12 @@ defmodule Mutare.PoisonTest do
       # stack, BEFORE the `expanding macro:` marker; a same-named call there must not be swept
       # in. Here the only `query(...)` call lives in the impl file — so if it were scanned we'd
       # get its ids, but the call-site file (`lib/r.ex`, post-marker) has none.
-      {%{"lib/r.ex" => call_meta}, _} =
+      {%{"lib/r.ex" => call_meta}, %{"lib/r.ex" => call_var}, _} =
         transform_at("lib/r.ex", "defmodule R do\n  def f(a, b), do: a + b\nend\n", [
           Mutare.Mutators.Arithmetic
         ])
 
-      {%{"lib/my_dsl.ex" => impl_meta}, impl_sites} =
+      {%{"lib/my_dsl.ex" => impl_meta}, %{"lib/my_dsl.ex" => impl_var}, impl_sites} =
         transform_at(
           "lib/my_dsl.ex",
           "defmodule MyDsl do\n  defmacro query(e), do: e\n  def other(c, d), do: query(c > d)\nend\n",
@@ -266,6 +298,7 @@ defmodule Mutare.PoisonTest do
 
       assert impl_sites != []
       metamutants = %{"lib/r.ex" => call_meta, "lib/my_dsl.ex" => impl_meta}
+      vars = %{"lib/r.ex" => call_var, "lib/my_dsl.ex" => impl_var}
 
       # Impl frame (pre-marker) then the call site (`lib/r.ex`, post-marker).
       output =
@@ -274,7 +307,7 @@ defmodule Mutare.PoisonTest do
           "    expanding macro: MyDsl.query/1\n" <>
           "    lib/r.ex:2: R.f/2\n"
 
-      assert Mutare.Poison.macro_poison(output, metamutants) == []
+      assert Mutare.Poison.macro_poison(output, metamutants, vars) == []
     end
   end
 end

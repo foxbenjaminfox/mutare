@@ -13,7 +13,7 @@ defmodule Mutare.TransformCaptureTest do
     test "a remote capture is renamed, kept in capture form (&String.first/1 → &String.last/1)" do
       source = "defmodule Cap do\n  def f(l), do: Enum.map(l, &String.first/1)\nend\n"
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.StringCall]
         )
@@ -37,7 +37,7 @@ defmodule Mutare.TransformCaptureTest do
     test "a transparent-transform capture earns a removal (&String.upcase/1 → &Function.identity/1)" do
       source = "defmodule Cap do\n  def f(l), do: Enum.map(l, &String.upcase/1)\nend\n"
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.CallRemoval]
         )
@@ -55,7 +55,7 @@ defmodule Mutare.TransformCaptureTest do
     test "an arity-N removal becomes the arity-N first-arg projection (no named identity/N)" do
       source = "defmodule Cap do\n  def f(l), do: Enum.map(l, &String.slice/3)\nend\n"
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.CallRemoval]
         )
@@ -68,7 +68,7 @@ defmodule Mutare.TransformCaptureTest do
     test "an Erlang-atom-module capture resolves and mutates (&:string.trim/1)" do
       source = "defmodule Cap do\n  def f(l), do: Enum.map(l, &:string.trim/1)\nend\n"
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.CallRemoval]
         )
@@ -86,7 +86,7 @@ defmodule Mutare.TransformCaptureTest do
       source =
         "defmodule Cap do\n  alias String, as: S\n  def f(l), do: Enum.map(l, &S.first/1)\nend\n"
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.StringCall]
         )
@@ -109,7 +109,7 @@ defmodule Mutare.TransformCaptureTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Collection]
         )
@@ -128,7 +128,7 @@ defmodule Mutare.TransformCaptureTest do
     end
 
     test "a whole-imported bare capture witnesses a renamed bare sibling" do
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites, dispatch_var: var} =
         Mutare.Transform.transform_string_with_sites(
           """
           defmodule HiddenCaptureRejectReplacement do
@@ -170,7 +170,9 @@ defmodule Mutare.TransformCaptureTest do
           "lib/hidden_capture_reject_replacement.ex"
         )
 
-      assert Mutare.Poison.ids(stderr, %{"lib/hidden_capture_reject_replacement.ex" => meta}) ==
+      assert Mutare.Poison.ids(stderr, %{"lib/hidden_capture_reject_replacement.ex" => meta}, %{
+               "lib/hidden_capture_reject_replacement.ex" => var
+             }) ==
                MapSet.new([site.id])
     end
 
@@ -182,7 +184,7 @@ defmodule Mutare.TransformCaptureTest do
       end
       """
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Collection]
         )
@@ -204,7 +206,7 @@ defmodule Mutare.TransformCaptureTest do
       end
       """
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.CallRemoval]
         )
@@ -222,7 +224,7 @@ defmodule Mutare.TransformCaptureTest do
       source =
         "defmodule Cap do\n  def f(l), do: Enum.map(l, &local/1)\n  def local(x), do: x\nend\n"
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: Mutare.Mutators.all())
 
       # No site mutates the capture *itself* (the enclosing `Enum.map(...)` still mutates,
@@ -245,7 +247,7 @@ defmodule Mutare.TransformCaptureTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.StringCall]
         )
@@ -263,7 +265,7 @@ defmodule Mutare.TransformCaptureTest do
       # (`Enum.sort/1` → `Enum.reverse/1`) *is* re-captured, so assert against a drop-only case.
       source = "defmodule Cap do\n  def f(l), do: Enum.map(l, &Enum.take/2)\nend\n"
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.CollectionArity]
         )
@@ -274,7 +276,7 @@ defmodule Mutare.TransformCaptureTest do
     test "runtime: baseline keeps the verbatim capture's identity; the mutant is a real external fun" do
       source = "defmodule Mutare.CaptureRuntimeFixture do\n  def fun, do: &String.first/1\nend\n"
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.StringCall]
         )
@@ -313,7 +315,7 @@ defmodule Mutare.TransformCaptureTest do
       # other body operator.
       source = "defmodule Cap do\n  def both, do: &(&1 && &2)\nend\n"
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.Logical])
 
       assert [
@@ -337,7 +339,7 @@ defmodule Mutare.TransformCaptureTest do
       # `&&` semantics (short-circuit on a falsy LHS) and flipping the mutant swaps to `||`.
       source = "defmodule Mutare.CaptureBodyFixture do\n  def both, do: &(&1 && &2)\nend\n"
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.Logical])
 
       # Bind the module from the compile result (not a literal) so the compiler can't fold a
@@ -375,7 +377,7 @@ defmodule Mutare.TransformCaptureTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -408,7 +410,7 @@ defmodule Mutare.TransformCaptureTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -433,7 +435,7 @@ defmodule Mutare.TransformCaptureTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -449,7 +451,7 @@ defmodule Mutare.TransformCaptureTest do
       # capture from being corrupted into an invalid `&0` or a wrong-position `&2`.
       lit = [Mutare.Mutators.IntegerLiteral]
 
-      {_m, placeholder_only, _} =
+      %{sites: placeholder_only} =
         Mutare.Transform.transform_string_with_sites(
           "defmodule C do\n  def f, do: &(&1 + &2)\nend\n",
           mutators: lit
@@ -457,7 +459,7 @@ defmodule Mutare.TransformCaptureTest do
 
       assert placeholder_only == []
 
-      {_m, with_literal, _} =
+      %{sites: with_literal} =
         Mutare.Transform.transform_string_with_sites(
           "defmodule C do\n  def f, do: &(&1 + 1)\nend\n",
           mutators: lit

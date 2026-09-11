@@ -98,7 +98,7 @@ defmodule Mutare.Transform.TagTest do
   defp transform(body, mutators) do
     source = "defmodule M do\n  #{String.trim_trailing(body)}\nend\n"
 
-    {meta, sites, _next} =
+    %{metamutant: meta, sites: sites} =
       Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
 
     {meta, sites}

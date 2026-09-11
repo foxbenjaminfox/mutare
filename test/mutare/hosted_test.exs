@@ -43,7 +43,7 @@ defmodule Mutare.HostedTest do
   @mutators [:string, :relational, Mutare.Test.HostMutator]
 
   setup_all do
-    {metamutant, sites, _next_id} =
+    %{metamutant: metamutant, sites: sites} =
       Mutare.Transform.transform_string_with_sites(@source,
         file: "hosted.ex",
         mutators: @mutators
@@ -170,7 +170,7 @@ defmodule Mutare.HostedTest do
       end
       """
 
-      {_meta, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           file: "hosted_ignore.ex",
           mutators: @mutators
@@ -230,7 +230,7 @@ defmodule Mutare.HostedTest do
     } do
       target = id(sites, :host_filter, "x >= 1", 5)
 
-      {meta2, sites2, _next} =
+      %{metamutant: meta2, sites: sites2} =
         Mutare.Transform.transform_string_with_sites(@source,
           file: "hosted.ex",
           mutators: @mutators,
@@ -257,7 +257,7 @@ defmodule Mutare.HostedTest do
       # The hosting mutator is a *module*, but two `:as` configs make two distinct families
       # (own name, own opts). The hosted path must run *every* matching spec — exactly as the
       # ordinary mutation path does — not just the first, or the second config silently vanishes.
-      {_meta, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@source,
           file: "hosted.ex",
           mutators: [
@@ -286,7 +286,7 @@ defmodule Mutare.HostedTest do
 
   describe "independent host mutators on one routed macro" do
     test "all subscribed hosts emit candidates without replacing one another" do
-      {meta, sites, _next} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(@source,
           file: "hosted.ex",
           mutators: [Mutare.Test.HostMutator, Mutare.Test.SecondHostMutator]
@@ -310,7 +310,7 @@ defmodule Mutare.HostedTest do
     end
 
     test "a custom report range does not split selector nesting for the same hosted fragment" do
-      {meta, sites, _next} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(@source,
           file: "hosted.ex",
           mutators: [Mutare.Test.HostMutator, Mutare.Test.CustomRangeHostMutator]
@@ -381,7 +381,7 @@ defmodule Mutare.HostedTest do
       # Direct call: argument 0 is a visible argument, so it is hosted normally (no raise).
       # `host/2` returns [] in this fixture, so there are simply no hosted sites — the point
       # is that resolution does not raise.
-      {_meta, _sites, _next} =
+      _ =
         Mutare.Transform.transform_string_with_sites(source,
           file: "d.ex",
           mutators: [Mutare.Test.PipedHostMutator]
@@ -435,7 +435,7 @@ defmodule Mutare.HostedTest do
     @bind_mutators [:pattern_swap, :relational, Mutare.Test.HostMutator]
 
     test "the metamutant compiles and both the binding and the hosted fragment mutate" do
-      {meta, sites, _next} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(@bind_source,
           file: "bind.ex",
           mutators: @bind_mutators
@@ -484,7 +484,7 @@ defmodule Mutare.HostedTest do
     """
 
     setup do
-      {meta, sites, _next} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(@kw_source,
           file: "kw.ex",
           mutators: [:string, :integer, :atom, Mutare.Test.HostMutator]
@@ -527,7 +527,7 @@ defmodule Mutare.HostedTest do
     test "the same recursive treatments are valid in a static code-provided route" do
       # The recursive grammar works statically too — declared by an extension, the code-provider
       # home of the adapter-grade treatments (a dynamic classifier isn't required).
-      {meta, sites, _next} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(@kw_source,
           file: "kw_static.ex",
           mutators: [:string],
@@ -613,7 +613,7 @@ defmodule Mutare.HostedTest do
       assert warning =~ "misrouted.ex:5"
 
       # The transform still succeeds; the mis-routed argument is left raw (no selector on it).
-      assert_received {:transformed, {meta, _sites, _next}}
+      assert_received {:transformed, %{metamutant: meta}}
       assert meta =~ ~r/set\(q, opts\)/
     end
 
@@ -659,7 +659,7 @@ defmodule Mutare.HostedTest do
     """
 
     setup do
-      {meta, sites, _next} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(@nested_source,
           file: "nested_kw.ex",
           mutators: [:string, :integer, :atom, Mutare.Test.HostMutator]
@@ -705,7 +705,7 @@ defmodule Mutare.HostedTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           file: "kwh.ex",
           mutators: [Mutare.Test.KeywordHostedMutator]
@@ -736,7 +736,7 @@ defmodule Mutare.HostedTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           file: "nkwh.ex",
           mutators: [Mutare.Test.KeywordHostedMutator]
@@ -835,7 +835,7 @@ defmodule Mutare.HostedTest do
       end
       """
 
-      {_meta, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           file: "sp.ex",
           mutators: [:string, Mutare.Test.CompoundInterpolatedMutator]
@@ -889,7 +889,7 @@ defmodule Mutare.HostedTest do
       end
       """
 
-      {meta, sites, _next} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           file: "pc.ex",
           mutators: [:relational, :integer, Mutare.Test.CompoundInterpolatedMutator]
@@ -916,7 +916,7 @@ defmodule Mutare.HostedTest do
       end
       """
 
-      {_meta, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           file: "pl.ex",
           mutators: [:integer, Mutare.Test.CompoundInterpolatedMutator]

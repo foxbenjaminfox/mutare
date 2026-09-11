@@ -57,7 +57,7 @@ defmodule Mutare.SiteTest do
       end
       """
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Logical]
         )

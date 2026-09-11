@@ -38,7 +38,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @binding)
 
       # The binding condition yields no site (any selector would trap `name`).
@@ -68,7 +68,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @binding)
 
       assert Enum.filter(sites, &(&1.mutator == :if_condition))
@@ -96,7 +96,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -124,7 +124,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -154,7 +154,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -182,7 +182,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -211,7 +211,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -242,7 +242,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition, Mutare.Mutators.CallRemoval]
         )
@@ -275,7 +275,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -306,7 +306,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -339,7 +339,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, _sites, _} =
+      %{metamutant: meta} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -367,7 +367,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -407,7 +407,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, _sites, _} =
+      %{metamutant: meta} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -434,7 +434,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, _sites, _} =
+      %{metamutant: meta} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -470,7 +470,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.CallRemoval]
         )
@@ -498,7 +498,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Test.ConditionMutator]
         )
@@ -528,7 +528,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition, Mutare.Test.ConditionMutator]
         )
@@ -565,7 +565,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -593,7 +593,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -618,7 +618,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -643,7 +643,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -683,7 +683,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -708,7 +708,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -736,7 +736,7 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition]
         )
@@ -760,7 +760,7 @@ defmodule Mutare.TransformBindingHoistTest do
     end
     """
 
-    {meta, sites, _next_id} =
+    %{metamutant: meta, sites: sites} =
       Mutare.Transform.transform_string_with_sites(source, mutators: @probe)
 
     assert [%Site{mutator: :arithmetic, original_form: :+}] = sites

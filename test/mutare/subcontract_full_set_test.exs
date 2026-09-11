@@ -32,7 +32,7 @@ defmodule Mutare.SubcontractFullSetTest do
   @mutators [:integer, Mutare.Test.HostNodeMutator]
 
   setup_all do
-    {metamutant, sites, _next_id} =
+    %{metamutant: metamutant, sites: sites} =
       Mutare.Transform.transform_string_with_sites(@source,
         file: "subcontract_full_set.ex",
         mutators: @mutators
@@ -104,7 +104,7 @@ defmodule Mutare.SubcontractFullSetTest do
 
   describe "the producer's finalize runs inside the seam" do
     test "a generation-time :skip removes the owner's mutants everywhere, relays included" do
-      {_meta, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@source,
           file: "subcontract_full_set.ex",
           mutators: [:integer, {Mutare.Test.HostNodeMutator, drop_own: true}]
@@ -138,7 +138,7 @@ defmodule Mutare.SubcontractFullSetTest do
     @compile {:no_warn_undefined, Mutare.SubcontractFullSetFixture.Nested}
 
     test "the inner filter's hosted catalog surfaces through the outer weave, attributed and live" do
-      {metamutant, sites, _next} =
+      %{metamutant: metamutant, sites: sites} =
         Mutare.Transform.transform_string_with_sites(@nested_source,
           file: "subcontract_full_set_nested.ex",
           mutators: @mutators
@@ -188,7 +188,7 @@ defmodule Mutare.SubcontractFullSetTest do
       end
       """
 
-      {_metamutant, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           file: "subcontract_full_set_derived_variant.ex",
           mutators: [

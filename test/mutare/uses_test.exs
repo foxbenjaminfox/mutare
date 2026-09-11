@@ -667,7 +667,7 @@ defmodule Mutare.UsesTest do
     """
 
     test "a call relying on a use-injected import now produces mutants" do
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(@controller_source,
           mutators: [Mutare.Mutators.Collection]
         )
@@ -677,7 +677,7 @@ defmodule Mutare.UsesTest do
     end
 
     test "with :expand_uses false, the call is invisible and yields no mutant" do
-      {_meta, sites, _next_id} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@controller_source,
           mutators: [Mutare.Mutators.Collection],
           expand_uses: false
@@ -705,7 +705,7 @@ defmodule Mutare.UsesTest do
     ]
 
     test "the use-injected import makes the registered :skip macro fire" do
-      {meta, sites, _next_id} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(@schema_source,
           mutators: @schema_mutators,
           call_routes: [{Mutare.Test.SchemaDSL, :schema, 1, :raw}]
@@ -718,7 +718,7 @@ defmodule Mutare.UsesTest do
     end
 
     test "with :expand_uses false the import is invisible, so the :skip is dead and core mutates" do
-      {_meta, sites, _next_id} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@schema_source,
           mutators: @schema_mutators,
           call_routes: [{Mutare.Test.SchemaDSL, :schema, 1, :raw}],
@@ -731,7 +731,7 @@ defmodule Mutare.UsesTest do
 
   describe "the stamp never reaches the rendered metamutant" do
     test "directives are stripped before render" do
-      {meta, _sites, _next_id} =
+      %{metamutant: meta} =
         Mutare.Transform.transform_string_with_sites(@controller_source,
           mutators: [Mutare.Mutators.Collection]
         )
@@ -740,7 +740,7 @@ defmodule Mutare.UsesTest do
     end
 
     test "the degraded-use stamp is stripped before render" do
-      {meta, _sites, _next_id} =
+      %{metamutant: meta} =
         Mutare.Transform.transform_string_with_sites(
           "defmodule M do\n  use Definitely.Not.Loaded, :x\n  def f, do: 1 + 1\nend\n",
           mutators: [Mutare.Mutators.Arithmetic]

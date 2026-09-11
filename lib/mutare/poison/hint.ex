@@ -65,7 +65,7 @@ defmodule Mutare.Poison.Hint do
   only the culprit is kept (the frames come from
   `Mutare.Sandbox.Command.Output.macro_expansion_stacks/1`, innermost first). The call site is
   the frame's own — the file whose metamutant holds the poisoning mutant — which is why
-  `Mutare.Poison.macro_poison/3` reads this rather than `expanding_macros/1`.
+  `Mutare.Poison.macro_poison/4` reads this rather than `expanding_macros/1`.
 
       iex> Mutare.Poison.Hint.culprits("expanding macro: Size.megabytes/1\\n    lib/a.ex:8: A.f/0\\n")
       [{{"Size", :megabytes}, {"lib/a.ex", 8}}]
@@ -143,7 +143,7 @@ defmodule Mutare.Poison.Hint do
 
   @doc """
   A copy-pasteable `:call_routes` suggestion for the inline DSL macros a *successful* run
-  had to skip via the macro-expansion fallback (`Mutare.Poison.macro_poison/2`), or `nil`
+  had to skip via the macro-expansion fallback (`Mutare.Poison.macro_poison/4`), or `nil`
   when there were none.
 
   The sibling of `escalation_note/1` for inline macros rather than block macros: a mutation

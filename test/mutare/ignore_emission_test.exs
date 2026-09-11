@@ -33,7 +33,11 @@ defmodule Mutare.IgnoreEmissionTest do
     assert %{mutants: 1, selected_ids: [1]} = Transform.count_report(source, opts)
     refute_received :variant_called
 
-    assert {^source, [%{id: 1, ignored: true, ignore_reason: "intentional"}], 2} =
+    assert %{
+             metamutant: ^source,
+             sites: [%{id: 1, ignored: true, ignore_reason: "intentional"}],
+             next_id: 2
+           } =
              Transform.transform_string_with_sites(source, opts)
 
     assert_received :variant_called
@@ -104,10 +108,12 @@ defmodule Mutare.IgnoreEmissionTest do
       opts = [mutators: @mutators, start_id: 101, summarize_sites: true]
       unsuppressed = String.replace(source, "mutare:ignore", "disabled:ignore")
 
-      {_full_meta, full_sites, full_next} =
+      %{sites: full_sites, next_id: full_next} =
         Transform.transform_string_with_sites(unsuppressed, opts)
 
-      {meta, sites, next_id} = Transform.transform_string_with_sites(source, opts)
+      %{metamutant: meta, sites: sites, next_id: next_id, dispatch_var: var} =
+        Transform.transform_string_with_sites(source, opts)
+
       {ignored, live} = Enum.split_with(sites, & &1.ignored)
 
       assert ignored != []
@@ -116,13 +122,16 @@ defmodule Mutare.IgnoreEmissionTest do
       assert Transform.count_string(source, opts) == length(sites)
       assert Enum.map(sites, &%{&1 | ignored: false, ignore_reason: nil}) == full_sites
       assert Transform.render_sites(source, opts) == sites
-      assert emitted_ids(meta) == MapSet.new(live, & &1.id)
+      assert emitted_ids(meta, var) == MapSet.new(live, & &1.id)
       assert coverage_ids(meta) == MapSet.new(live, & &1.id)
 
       # Turning every candidate off also removes dispatchers, hoists, and DSL scaffolding,
       # and preserves even the source's deliberately unformatted indentation byte for byte.
       all_ignored = "# mutare:ignore-file generated fixture\n" <> unsuppressed
-      {unchanged, all_sites, all_next} = Transform.transform_string_with_sites(all_ignored, opts)
+
+      %{metamutant: unchanged, sites: all_sites, next_id: all_next} =
+        Transform.transform_string_with_sites(all_ignored, opts)
+
       assert unchanged == all_ignored
       assert all_next == next_id
       assert Enum.all?(all_sites, &(&1.ignored and &1.ignore_reason == "generated fixture"))
@@ -156,7 +165,10 @@ defmodule Mutare.IgnoreEmissionTest do
     """
 
     opts = [mutators: [Mutare.Test.PoisonMutator, :arithmetic, :relational]]
-    {meta, sites, _next} = Transform.transform_string_with_sites(source, opts)
+
+    %{metamutant: meta, sites: sites} =
+      Transform.transform_string_with_sites(source, opts)
+
     ignored = Enum.filter(sites, & &1.ignored)
 
     assert Enum.sort(Enum.map(ignored, & &1.kind)) == [:in_place, :lifted]
@@ -179,9 +191,9 @@ defmodule Mutare.IgnoreEmissionTest do
     assert apply(module, :run, [2]) == 0
   end
 
-  defp emitted_ids(source) do
+  defp emitted_ids(source, var) do
     source
-    |> Manifest.from_source()
+    |> Manifest.from_source(var)
     |> Map.fetch!(:regions)
     |> Enum.flat_map(& &1.ids)
     |> MapSet.new()

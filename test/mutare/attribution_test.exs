@@ -34,7 +34,7 @@ defmodule Mutare.AttributionTest do
   @query_line 5
 
   defp sites_for(source, mutators \\ [Mutare.Test.AttributedQueryMutator]) do
-    {_metamutant, sites, _next_id} =
+    %{sites: sites} =
       Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
 
     sites
@@ -121,7 +121,7 @@ defmodule Mutare.AttributionTest do
     end
 
     test "the metamutant still splices the whole rewrite (it compiles)" do
-      {metamutant, _sites, _next} =
+      %{metamutant: metamutant} =
         Mutare.Transform.transform_string_with_sites(@source,
           mutators: [Mutare.Test.AttributedQueryMutator]
         )

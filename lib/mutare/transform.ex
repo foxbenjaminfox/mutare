@@ -242,13 +242,24 @@ defmodule Mutare.Transform do
   """
   @spec transform_string(String.t(), keyword()) :: Result.t()
   def transform_string(source, opts \\ []) when is_binary(source) do
-    {metamutant, sites, next_id} = transform_string_with_sites(source, opts)
-    Result.from_sites(metamutant, sites, next_id)
+    %{metamutant: metamutant, sites: sites, next_id: next_id, dispatch_var: dispatch_var} =
+      transform_string_with_sites(source, opts)
+
+    Result.from_sites(metamutant, sites, next_id, dispatch_var)
   end
 
   @doc false
-  @spec transform_string_with_sites(String.t(), keyword()) ::
-          {String.t(), [Site.t()], pos_integer()}
+  # `transform_string/2` with the internal `Mutare.Site`s instead of the public DTOs — the
+  # entry `Mutare.Schema` renders through. `:dispatch_var` is the per-file dispatch variable the
+  # metamutant's generated code reads (`Mutare.Transform.Names` salts it away from the source's
+  # own identifiers), handed out with the source so a reader of the metamutant
+  # (`Mutare.Manifest.from_source/2`) is told the name rather than re-deriving it.
+  @spec transform_string_with_sites(String.t(), keyword()) :: %{
+          metamutant: String.t(),
+          sites: [Site.t()],
+          next_id: pos_integer(),
+          dispatch_var: atom()
+        }
   def transform_string_with_sites(source, opts \\ []) when is_binary(source) do
     {transformed, ctx} = plan_and_emit(source, opts)
 
@@ -263,7 +274,12 @@ defmodule Mutare.Transform do
         else:
           transformed |> silence_helper_xref(ctx.config.runtime_namespace) |> Render.to_source()
 
-    {metamutant, Enum.reverse(ctx.claim.sites), ctx.claim.next_id}
+    %{
+      metamutant: metamutant,
+      sites: Enum.reverse(ctx.claim.sites),
+      next_id: ctx.claim.next_id,
+      dispatch_var: ctx.config.active_var
+    }
   end
 
   @doc """

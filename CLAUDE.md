@@ -138,10 +138,10 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
 - **`Mutare.Poison`** (+ `Hint`) — on a failed compile, maps the error's `file:line` to mutant
   id(s), drops them via `:skip_ids`, and rebuilds (bounded). When line attribution maps nothing
   (an *inline* DSL macro like `Ecto.Query.from/2` that rejects the spliced selector, where the
-  compiler blames the macro-*call* line), a **fallback** (`macro_poison/3`, via the metamutant +
+  compiler blames the macro-*call* line), a **fallback** (`macro_poison/4`, via the metamutant +
   `Manifest.ids_in_named_calls/2`) attributes by the `expanding macro:` name the compiler emitted
   instead, and drops that macro's mutants wholesale. The runner takes both attributions from one
-  `Poison.attribution/3` (one manifest per file per round), and the `expanding macro:` frames are
+  `Poison.attribution/4` (one manifest per file per round), and the `expanding macro:` frames are
   read once, by `Sandbox.Command.Output.macro_expansion_stacks/1`, for `Hint` and `Poison` alike.
   Only when both fail does the run abort — `Hint` then renders a copy-pasteable `:skip` snippet.
 - **`Mutare.Report`** (+ `Live`, `Json`/`Html`/`Sarif`) — the default human reporter diffs each

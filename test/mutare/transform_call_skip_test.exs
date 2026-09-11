@@ -59,7 +59,7 @@ defmodule Mutare.TransformCallSkipTest do
     """
 
     test "every mutant inside the call is gone, in every written form (qualified, aliased, imported, piped)" do
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(@track_source,
           mutators: @values ++ [Mutare.Mutators.Arithmetic],
           call_routes: [{Mixpanel, :track, 3, :skip}]
@@ -72,7 +72,7 @@ defmodule Mutare.TransformCallSkipTest do
     end
 
     test "without the route the same calls mutate (the :skip is doing the work)" do
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@track_source, mutators: @values)
 
       assert Enum.any?(sites, &(&1.original_code == ~s("signup")))
@@ -80,7 +80,7 @@ defmodule Mutare.TransformCallSkipTest do
     end
 
     test "a whole-module wildcard :skip covers every function of the module" do
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@track_source,
           mutators: @values,
           call_routes: [{Mixpanel, :*, :skip}]
@@ -96,7 +96,7 @@ defmodule Mutare.TransformCallSkipTest do
       end
       """
 
-      {_meta, raw_sites, _} =
+      %{sites: raw_sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [TrackMutator],
           call_routes: [{Mixpanel, :track, 3, :raw}]
@@ -106,7 +106,7 @@ defmodule Mutare.TransformCallSkipTest do
       assert [%{mutator: :track, mutated_code: mutated}] = raw_sites
       assert mutated =~ "untrack"
 
-      {_meta, skip_sites, _} =
+      %{sites: skip_sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [TrackMutator],
           call_routes: [{Mixpanel, :track, 3, :skip}]
@@ -125,7 +125,7 @@ defmodule Mutare.TransformCallSkipTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.IntegerLiteral],
           call_routes: [{Mixpanel, :track, 3, :skip}]
@@ -147,7 +147,7 @@ defmodule Mutare.TransformCallSkipTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: @values ++ [Mutare.Mutators.ReturnValue],
           call_routes: [{Mixpanel, :track, 3, :skip}]
@@ -180,11 +180,13 @@ defmodule Mutare.TransformCallSkipTest do
 
       mutators = [Mutare.Mutators.IfCondition, Mutare.Mutators.Conditional]
 
-      {meta, sites, _} = transform(source, mutators, [{String, :valid?, 1, :skip}])
+      %{metamutant: meta, sites: sites} =
+        transform(source, mutators, [{String, :valid?, 1, :skip}])
+
       assert sites == []
       assert_compiles(meta)
 
-      {_m, plain, _} = transform(source, mutators, [])
+      %{sites: plain} = transform(source, mutators, [])
 
       for line <- [2, 3, 7],
           do:
@@ -203,7 +205,7 @@ defmodule Mutare.TransformCallSkipTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [
             Mutare.Mutators.Arithmetic,
@@ -230,7 +232,7 @@ defmodule Mutare.TransformCallSkipTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.IntegerLiteral],
           call_routes: [{Mutare.Test.SchemaDSL, :schema, 1, :skip}]
@@ -246,7 +248,7 @@ defmodule Mutare.TransformCallSkipTest do
       body = "def f(x) when is_integer(123), do: x"
 
       for route <- [{Kernel, :is_integer, 1, :skip}, {Kernel, :is_integer, 1, [:raw]}] do
-        {_m, sites, _} =
+        %{sites: sites} =
           Mutare.Transform.transform_string_with_sites("defmodule G do\n  #{body}\nend\n",
             mutators: [Mutare.Mutators.IntegerLiteral],
             call_routes: [route]
@@ -256,7 +258,7 @@ defmodule Mutare.TransformCallSkipTest do
       end
 
       # Not vacuous: unrouted, the guard literal mutates.
-      {_m, plain, _} =
+      %{sites: plain} =
         Mutare.Transform.transform_string_with_sites("defmodule G do\n  #{body}\nend\n",
           mutators: [Mutare.Mutators.IntegerLiteral]
         )
@@ -271,11 +273,11 @@ defmodule Mutare.TransformCallSkipTest do
       mutators = [Mutare.Mutators.IntegerLiteral]
 
       for route <- [{Kernel, :.., 2, :skip}, {Kernel, :.., 2, :interior}] do
-        {_m, sites, _} = transform(source, mutators, [route])
+        %{sites: sites} = transform(source, mutators, [route])
         assert sites == [], "expected the endpoints held back under #{inspect(route)}"
       end
 
-      {_m, plain, _} = transform(source, mutators, [])
+      %{sites: plain} = transform(source, mutators, [])
       assert Enum.any?(plain, &(&1.original_code == "5"))
     end
 
@@ -305,7 +307,7 @@ defmodule Mutare.TransformCallSkipTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Test.HostMutator, Mutare.Mutators.Relational],
           call_routes: [{Mutare.Test.HostDSL, :filter, :any, :skip}]
@@ -336,7 +338,7 @@ defmodule Mutare.TransformCallSkipTest do
 
       mutators = [Mutare.Mutators.IntegerLiteral, Mutare.Mutators.Arithmetic]
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         transform(source, mutators, [
           {Kernel, :|>, 2, :skip},
           {Kernel.SpecialForms, :quote, :skip}
@@ -345,7 +347,7 @@ defmodule Mutare.TransformCallSkipTest do
       assert sites == []
       assert_compiles(meta)
 
-      {_m, plain, _} = transform(source, mutators, [])
+      %{sites: plain} = transform(source, mutators, [])
       assert Enum.any?(plain, &(&1.line == 2 and &1.original_code == "2"))
       assert Enum.any?(plain, &(&1.line == 3 and &1.mutator == :arithmetic))
 
@@ -380,13 +382,13 @@ defmodule Mutare.TransformCallSkipTest do
         Mutare.Mutators.PatternSwap
       ]
 
-      {meta, sites, _} = transform(source, mutators, [{Kernel, :<>, 2, :skip}])
+      %{metamutant: meta, sites: sites} = transform(source, mutators, [{Kernel, :<>, 2, :skip}])
       assert sites == []
       assert_compiles(meta)
 
       # Not vacuous: unrouted, the literal mutates in both positions. (A `=` match's LHS is a
       # `:pattern` position the in-place walk never mutates, so it is no control here.)
-      {_m, plain, _} = transform(source, mutators, [])
+      %{sites: plain} = transform(source, mutators, [])
 
       for line <- [2, 6],
           do:
@@ -410,11 +412,11 @@ defmodule Mutare.TransformCallSkipTest do
         {Kernel.SpecialForms, :unquote_splicing, :skip}
       ]
 
-      {meta, sites, _} = transform(source, mutators, routes)
+      %{metamutant: meta, sites: sites} = transform(source, mutators, routes)
       assert sites == []
       assert_compiles(meta)
 
-      {_m, plain, _} = transform(source, mutators, [])
+      %{sites: plain} = transform(source, mutators, [])
       assert Enum.any?(plain, &(&1.line == 2 and &1.mutator == :arithmetic))
       assert Enum.any?(plain, &(&1.line == 3 and &1.original_code == "1"))
     end
@@ -433,11 +435,11 @@ defmodule Mutare.TransformCallSkipTest do
 
       mutators = [Mutare.Mutators.PatternSwap]
 
-      {meta, sites, _} = transform(source, mutators, [{Kernel, :|>, 2, :skip}])
+      %{metamutant: meta, sites: sites} = transform(source, mutators, [{Kernel, :|>, 2, :skip}])
       assert sites == []
       assert_compiles(meta)
 
-      {_m, plain, _} = transform(source, mutators, [])
+      %{sites: plain} = transform(source, mutators, [])
       assert Enum.any?(plain, &(&1.mutator == :pattern_swap))
     end
 
@@ -461,7 +463,7 @@ defmodule Mutare.TransformCallSkipTest do
     ]
 
     test "{Kernel, :if, 2, :skip} leaves nothing inside the if — no branch literals, no condition mutants" do
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(@if_source,
           mutators: @flow_mutators,
           call_routes: [{Kernel, :if, 2, :skip}]
@@ -480,7 +482,7 @@ defmodule Mutare.TransformCallSkipTest do
     end
 
     test "without the route the same ifs mutate inside (the :skip is doing the work)" do
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@if_source, mutators: @flow_mutators)
 
       assert Enum.any?(sites, &(&1.line == 2 and &1.original_code == "1"))
@@ -494,7 +496,7 @@ defmodule Mutare.TransformCallSkipTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [
             Mutare.Mutators.Relational,
@@ -521,7 +523,7 @@ defmodule Mutare.TransformCallSkipTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [
             Mutare.Mutators.IntegerLiteral,
@@ -559,7 +561,7 @@ defmodule Mutare.TransformCallSkipTest do
         Mutare.Mutators.ReturnValue
       ]
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: mutators,
           call_routes: [
@@ -574,7 +576,7 @@ defmodule Mutare.TransformCallSkipTest do
       assert Enum.all?(sites, &(&1.mutator == :return_value))
       assert_compiles(meta)
 
-      {_meta, plain, _} = Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
+      %{sites: plain} = Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
       assert Enum.any?(plain, &(&1.original_code == "3"))
       assert Enum.any?(plain, &(&1.mutator == :arithmetic))
     end
@@ -583,7 +585,7 @@ defmodule Mutare.TransformCallSkipTest do
       source = "defmodule G do\n  def f(x) when x > 1 and x < 9, do: x\nend\n"
       mutators = [Mutare.Mutators.Relational, Mutare.Mutators.IntegerLiteral]
 
-      {_m, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: mutators,
           call_routes: [{Kernel, :and, 2, :skip}]
@@ -591,7 +593,7 @@ defmodule Mutare.TransformCallSkipTest do
 
       assert sites == []
 
-      {_m, plain, _} = Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
+      %{sites: plain} = Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
       assert Enum.any?(plain, &(&1.original_code == "9"))
     end
 
@@ -600,10 +602,10 @@ defmodule Mutare.TransformCallSkipTest do
       source = "defmodule P do\n  def f(\"a\" <> rest), do: rest\nend\n"
       mutators = [Mutare.Mutators.StringLiteral]
 
-      {_m, sites, _} = transform(source, mutators, [{Kernel, :<>, 2, :skip}])
+      %{sites: sites} = transform(source, mutators, [{Kernel, :<>, 2, :skip}])
       assert sites == []
 
-      {_m, plain, _} = transform(source, mutators, [])
+      %{sites: plain} = transform(source, mutators, [])
       assert Enum.any?(plain, &(&1.original_code == ~s("a")))
     end
 
@@ -613,7 +615,7 @@ defmodule Mutare.TransformCallSkipTest do
       # skipped `+`, a leaf) still carries the function's return-value mutants.
       source = "defmodule W do\n  def f(x), do: x + 1\nend\n"
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [
             Mutare.Mutators.Arithmetic,
@@ -635,7 +637,7 @@ defmodule Mutare.TransformCallSkipTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.IntegerLiteral],
           call_routes: [{Kernel, :*, :raw}]
@@ -664,11 +666,13 @@ defmodule Mutare.TransformCallSkipTest do
 
       mutators = [Mutare.Mutators.IntegerLiteral]
 
-      {meta, sites, _} = transform(source, mutators, [{Kernel, :==, 2, :interior}])
+      %{metamutant: meta, sites: sites} =
+        transform(source, mutators, [{Kernel, :==, 2, :interior}])
+
       assert sites == []
       assert_compiles(meta)
 
-      {_m, plain, _} = transform(source, mutators, [])
+      %{sites: plain} = transform(source, mutators, [])
       assert Enum.any?(plain, &(&1.line == 2 and &1.original_code == "2"))
       assert Enum.any?(plain, &(&1.line == 3 and &1.original_code == "2"))
     end
@@ -680,7 +684,7 @@ defmodule Mutare.TransformCallSkipTest do
       source = "defmodule GI do\n  def f(x) when is_tuple({x, 1}), do: x\nend\n"
       mutators = [Mutare.Mutators.TupleLiteral, Mutare.Mutators.IntegerLiteral]
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: mutators,
           call_routes: [{Kernel, :is_tuple, 1, :interior}]
@@ -691,7 +695,7 @@ defmodule Mutare.TransformCallSkipTest do
       assert_compiles(meta)
 
       # Not vacuous: unrouted, the tuple collapses.
-      {_m, plain, _} = Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
+      %{sites: plain} = Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
       assert Enum.any?(plain, &(&1.mutator == :tuple))
     end
 
@@ -702,7 +706,7 @@ defmodule Mutare.TransformCallSkipTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [
             Mutare.Mutators.MapLiteral,
@@ -730,7 +734,7 @@ defmodule Mutare.TransformCallSkipTest do
       end
       """
 
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.MapLiteral],
           call_routes: [{MyApp, :render, 2, [:expression, :expression]}]
@@ -740,7 +744,7 @@ defmodule Mutare.TransformCallSkipTest do
     end
 
     test "an explicit list argument keeps its element mutants but loses its collapse" do
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           "defmodule L do\n  def f(c), do: MyApp.render(c, [1, 2])\nend\n",
           mutators: [Mutare.Mutators.List, Mutare.Mutators.IntegerLiteral],
@@ -754,7 +758,7 @@ defmodule Mutare.TransformCallSkipTest do
     test "an :interior argument that is itself a call keeps the call head but mutates its arguments" do
       # `Enum.sum/1` → `Enum.product/1` is a rewrite of the argument node's *own* head; the `1` inside
       # is a descendant.
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           "defmodule C do\n  def f(c, xs), do: MyApp.render(c, Enum.sum([1 | xs]))\nend\n",
           mutators: [Mutare.Mutators.Collection, Mutare.Mutators.IntegerLiteral],
@@ -847,13 +851,13 @@ defmodule Mutare.TransformCallSkipTest do
         Mutare.Mutators.IntegerLiteral
       ]
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         transform(source, mutators, [{Mutare.Test.WrapDSL, :wrap, 1, [[do: :raw]]}])
 
       assert sites == []
       assert_compiles(meta)
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         transform(source, mutators, [{Mutare.Test.WrapDSL, :wrap, 1, [[do: :expression]]}])
 
       refute Enum.any?(sites, &(&1.mutator == :atom))
@@ -873,7 +877,7 @@ defmodule Mutare.TransformCallSkipTest do
 
       mutators = [Mutare.Mutators.IntegerLiteral]
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         transform(source, mutators, [{Mutare.Test.LiteralBlockDSL, :literal, 1, [[do: :raw]]}])
 
       assert sites == []
@@ -881,7 +885,7 @@ defmodule Mutare.TransformCallSkipTest do
 
       # Not vacuous: unrouted, the body takes the runtime-body guess and mutates — a metamutant
       # this strict macro would refuse to expand, the poison case the route exists for.
-      {_m, plain, _} = transform(source, mutators, [])
+      %{sites: plain} = transform(source, mutators, [])
       assert Enum.any?(plain, &(&1.original_code == "42"))
     end
 
@@ -892,7 +896,7 @@ defmodule Mutare.TransformCallSkipTest do
       end
       """
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [
             KeyedHost,
@@ -919,7 +923,7 @@ defmodule Mutare.TransformCallSkipTest do
       inner = Enum.reduce(1..6, "1", fn _, acc -> "KeyedCountDSL.f(k: #{acc})" end)
       source = "defmodule KeyedNested do\n  def g, do: #{inner}\nend\n"
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [OfferCounter, Mutare.Mutators.IntegerLiteral],
           call_routes: [{KeyedCountDSL, :f, 1, [[k: :expression]]}]
@@ -940,7 +944,7 @@ defmodule Mutare.TransformCallSkipTest do
         Mutare.Mutators.AtomLiteral
       ]
 
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: mutators,
           call_routes: [{Kernel, :is_list, 1, [[timeout: :raw]]}]
@@ -955,7 +959,7 @@ defmodule Mutare.TransformCallSkipTest do
       assert_compiles(meta)
 
       # An `:interior` leading treatment withholds the container only.
-      {_m, interior, _} =
+      %{sites: interior} =
         Mutare.Transform.transform_string_with_sites(source,
           mutators: mutators,
           call_routes: [{Kernel, :is_list, 1, [[:interior, timeout: :raw]]}]
@@ -973,7 +977,7 @@ defmodule Mutare.TransformCallSkipTest do
     ]
 
     defp kw_triples(body, routes, mutators \\ @kw_mutators) do
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites("defmodule K do\n  #{body}\nend\n",
           mutators: mutators,
           call_routes: routes
@@ -1104,12 +1108,12 @@ defmodule Mutare.TransformCallSkipTest do
     test "a skipped macro's piped receiver keeps the displaced route's pattern context" do
       source = "defmodule PipedSkip do\n  def f(x), do: 1 |> match?(x)\nend\n"
 
-      {skipped_meta, skipped, _} =
+      %{metamutant: skipped_meta, sites: skipped} =
         Mutare.Transform.transform_string_with_sites(source,
           call_routes: [{Kernel, :match?, 2, :skip}]
         )
 
-      {_meta, default, _} = Mutare.Transform.transform_string_with_sites(source)
+      %{sites: default} = Mutare.Transform.transform_string_with_sites(source)
 
       # The receiver is a pattern either way: no `integer` selector lands on the `1`.
       refute Enum.any?(skipped, &(&1.mutator == :integer))
@@ -1121,7 +1125,7 @@ defmodule Mutare.TransformCallSkipTest do
     end
 
     test "the same holds for a binding-pattern macro" do
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           "defmodule PipedDestructure do\n  def f(x), do: [1] |> destructure(x)\nend\n",
           call_routes: [{Kernel, :destructure, 2, :skip}]
@@ -1134,12 +1138,12 @@ defmodule Mutare.TransformCallSkipTest do
     test "displacing nothing leaves the receiver ordinary runtime, mutants and all" do
       source = "defmodule PipedPlain do\n  def f(u), do: Enum.reverse(u) |> List.wrap()\nend\n"
 
-      {meta, skipped, _} =
+      %{metamutant: meta, sites: skipped} =
         Mutare.Transform.transform_string_with_sites(source,
           call_routes: [{List, :wrap, 1, :skip}]
         )
 
-      {_meta, unrouted, _} = Mutare.Transform.transform_string_with_sites(source)
+      %{sites: unrouted} = Mutare.Transform.transform_string_with_sites(source)
 
       assert Enum.map(skipped, &{&1.mutator, &1.mutated_code}) ==
                Enum.map(unrouted, &{&1.mutator, &1.mutated_code})
@@ -1161,7 +1165,7 @@ defmodule Mutare.TransformCallSkipTest do
             {"not (x == 1)", "x == 1",
              [conditional: "true", conditional: "false", relational: "x != 1"]}
           ] do
-        {meta, sites, _} =
+        %{metamutant: meta, sites: sites} =
           Mutare.Transform.transform_string_with_sites(
             "defmodule Withheld do\n  def f(x), do: MyApp.render(x, #{body})\nend\n",
             mutators: [
@@ -1180,7 +1184,7 @@ defmodule Mutare.TransformCallSkipTest do
     end
 
     test "an ordering operator under the negation is unaffected — it was never withheld" do
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           "defmodule Ordering do\n  def f(x), do: MyApp.render(x, not (x > 1))\nend\n",
           mutators: [Mutare.Mutators.Relational],
@@ -1194,7 +1198,7 @@ defmodule Mutare.TransformCallSkipTest do
     end
 
     test "a plain argument still loses only its own node's mutants" do
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           "defmodule Plain do\n  def f(x), do: MyApp.render(x, x + 1)\nend\n",
           mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.IntegerLiteral],

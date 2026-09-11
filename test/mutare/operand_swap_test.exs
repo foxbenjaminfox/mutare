@@ -113,7 +113,7 @@ defmodule Mutare.OperandSwapTest do
     end
 
     test "an aliased call still matches (resolution is shared via Calls)" do
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           """
           defmodule T do
@@ -129,7 +129,7 @@ defmodule Mutare.OperandSwapTest do
     end
 
     test "a shadowing alias resolves to the local module and is left alone" do
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           """
           defmodule T do
@@ -216,7 +216,7 @@ defmodule Mutare.OperandSwapTest do
     end
 
     test "a swap inside a when guard is delivered by lifting" do
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           """
           defmodule T do
@@ -249,7 +249,7 @@ defmodule Mutare.OperandSwapTest do
     end
 
     test "an aliased Kernel still matches and reuses the written alias" do
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           """
           defmodule T do
@@ -279,7 +279,7 @@ defmodule Mutare.OperandSwapTest do
       end
       """
 
-      {metamutant, [site], _} =
+      %{metamutant: metamutant, sites: [site]} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @only)
 
       Mutare.Test.Compile.string(metamutant)
@@ -303,7 +303,7 @@ defmodule Mutare.OperandSwapTest do
       end
       """
 
-      {metamutant, [site], _} =
+      %{metamutant: metamutant, sites: [site]} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @only)
 
       Mutare.Test.Compile.string(metamutant)
@@ -327,7 +327,7 @@ defmodule Mutare.OperandSwapTest do
       end
       """
 
-      {metamutant, sites, _} =
+      %{metamutant: metamutant, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @only)
 
       [site] = Enum.filter(sites, &(&1.mutator == :operand_swap))
@@ -355,7 +355,7 @@ defmodule Mutare.OperandSwapTest do
       end
       """
 
-      {metamutant, sites, _} =
+      %{metamutant: metamutant, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @only)
 
       [site] = Enum.filter(sites, &(&1.mutator == :operand_swap))

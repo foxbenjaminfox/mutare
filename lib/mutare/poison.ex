@@ -10,7 +10,9 @@ defmodule Mutare.Poison do
 
   We map each error's `file:line` to the mutant id(s) whose *generated code*
   spans that line, via a `Mutare.Manifest` built on demand from the file's
-  rendered metamutant (see `Manifest.ids_at_line/2`). Only *error* diagnostics are
+  rendered metamutant and the dispatch variable its generated code reads
+  (`Mutare.Schema`'s `:metamutants` and `:dispatch_vars`; see
+  `Manifest.ids_at_line/2`). Only *error* diagnostics are
   scanned, never warnings: a failed compile prints every warning the mutations
   provoke (each footered with the same `file:line` shape), and mistaking those for
   the error's location dropped valid mutants as false poison (see `error_locations/1`).
@@ -32,10 +34,10 @@ defmodule Mutare.Poison do
 
   When line attribution maps nothing — the signature of an *inline* DSL macro that rejects
   the spliced selector, where the compiler blames the macro-*call* line no manifest region
-  covers — the runner falls back to `macro_poison/3`, which attributes by the macro *name*
+  covers — the runner falls back to `macro_poison/4`, which attributes by the macro *name*
   the compiler blamed (via `Mutare.Manifest.ids_in_named_calls/2`) instead of by line. Only
-  when *both* fail does the run abort. The runner asks for both at once (`attribution/3`),
-  which builds each file's manifest once for the round; `ids/3` and `macro_poison/3` are
+  when *both* fail does the run abort. The runner asks for both at once (`attribution/4`),
+  which builds each file's manifest once for the round; `ids/4` and `macro_poison/4` are
   the two halves on their own.
 
   A schema metamutant contains local integer ids. The runner supplies
@@ -56,6 +58,12 @@ defmodule Mutare.Poison do
   @type metamutants :: %{optional(String.t()) => String.t()}
 
   @typedoc """
+  Each rendered file's dispatch variable (`Mutare.Transform.Result.dispatch_var`), by
+  root-relative file. Every file in `t:metamutants/0` must have one.
+  """
+  @type dispatch_vars :: %{optional(String.t()) => atom()}
+
+  @typedoc """
   The macro-expansion fallback's matches: `{{module_string, fun_atom}, ids}` per blamed macro
   that matched at least one mutant, in first-seen order.
   """
@@ -68,18 +76,22 @@ defmodule Mutare.Poison do
 
   @doc """
   Both attributions of one failed compile — `%{line: ids, macro: matches}`, the results of
-  `ids/3` and `macro_poison/3` — from one manifest per file.
+  `ids/4` and `macro_poison/4` — from one manifest per file.
 
   The runner's poison-recovery loop needs both every round (macro attribution takes priority,
   line attribution backs it up), and the file a blamed macro's call site names is normally
   one the error located too. Sharing the memo means each such metamutant is parsed and
   ranged once per round, not once per attribution.
   """
-  @spec attribution(String.t(), metamutants(), map() | nil) ::
+  @spec attribution(String.t(), metamutants(), dispatch_vars(), map() | nil) ::
           %{line: MapSet.t(), macro: macro_matches()}
-  def attribution(compile_output, metamutants, report_ids \\ nil) do
-    {line, manifests} = line_attribution(compile_output, metamutants, report_ids, %{})
-    {macro, _manifests} = macro_attribution(compile_output, metamutants, report_ids, manifests)
+  def attribution(compile_output, metamutants, dispatch_vars, report_ids \\ nil) do
+    {line, manifests} =
+      line_attribution(compile_output, metamutants, dispatch_vars, report_ids, %{})
+
+    {macro, _manifests} =
+      macro_attribution(compile_output, metamutants, dispatch_vars, report_ids, manifests)
+
     %{line: line, macro: macro}
   end
 
@@ -90,7 +102,7 @@ defmodule Mutare.Poison do
   When a mutation splices a runtime selector `case` into an argument that a macro rewrites
   at compile time (an `Ecto.Query.from/2`-style inline DSL, a macro needing a literal), the
   macro raises *while expanding* and the compiler blames the **macro-call line** — one line
-  above the selector `case` the `Mutare.Manifest` knows about — so `ids/3` finds nothing and
+  above the selector `case` the `Mutare.Manifest` knows about — so `ids/4` finds nothing and
   the run would abort. But the failure output names the culprit in an `expanding macro:
   Mod.fun/arity` frame, followed by the location that invoked it (`Hint.culprits/1`). This
   maps that name back to mutant ids through the **metamutant** of that call-site file
@@ -106,7 +118,7 @@ defmodule Mutare.Poison do
   with no location, attributes nothing.
 
   Attributing through the metamutant + manifest (not the schema's `:sites`) is deliberate, and
-  for the same reason as the line-based `ids/3` it backs up: this is positional work in
+  for the same reason as the line-based `ids/4` it backs up: this is positional work in
   **metamutant** space — spans of the rendered source the compiler actually read — which
   `:sites`, recorded in *original*-source coordinates, cannot answer.
 
@@ -114,17 +126,19 @@ defmodule Mutare.Poison do
   one mutant, so the caller can drop the union and name each macro for the narration and the
   `{Module, :fun, :raw}` suggestion.
   """
-  @spec macro_poison(String.t(), metamutants(), map() | nil) :: macro_matches()
-  def macro_poison(compile_output, metamutants, report_ids \\ nil) do
-    {matches, _manifests} = macro_attribution(compile_output, metamutants, report_ids, %{})
+  @spec macro_poison(String.t(), metamutants(), dispatch_vars(), map() | nil) :: macro_matches()
+  def macro_poison(compile_output, metamutants, dispatch_vars, report_ids \\ nil) do
+    {matches, _manifests} =
+      macro_attribution(compile_output, metamutants, dispatch_vars, report_ids, %{})
+
     matches
   end
 
   # Each culprit's name looked up in its own call-site file's manifest (built once, memoized in
   # `manifests`), ids unioned per macro; macros kept in first-seen order.
-  @spec macro_attribution(String.t(), metamutants(), map() | nil, manifests()) ::
+  @spec macro_attribution(String.t(), metamutants(), dispatch_vars(), map() | nil, manifests()) ::
           {macro_matches(), manifests()}
-  defp macro_attribution(output, metamutants, report_ids, manifests) do
+  defp macro_attribution(output, metamutants, dispatch_vars, report_ids, manifests) do
     culprits = Hint.culprits(output)
 
     {ids_by_macro, manifests} =
@@ -133,7 +147,7 @@ defmodule Mutare.Poison do
           acc
 
         {{_module, fun} = macro, {file, _line}}, {ids_by_macro, manifests} ->
-          {manifest, manifests} = manifest_for(file, metamutants, manifests)
+          {manifest, manifests} = manifest_for(file, metamutants, dispatch_vars, manifests)
           ids = MapSet.new(translate(named_call_ids(manifest, fun), file, report_ids))
           {Map.update(ids_by_macro, macro, ids, &MapSet.union(&1, ids)), manifests}
       end)
@@ -160,27 +174,31 @@ defmodule Mutare.Poison do
   end
 
   @doc """
-  Mutant ids implicated by `compile_output`, given `%{file => metamutant_source}`.
+  Mutant ids implicated by `compile_output`, given `%{file => metamutant_source}` and
+  `%{file => dispatch_var}` (the variable each metamutant's generated code reads,
+  `Mutare.Transform.Result.dispatch_var`; every file in `metamutants` must have one).
 
   Builds the per-file `Mutare.Manifest` lazily — only for the file(s) an error
   names — and memoizes it across error locations, so a file faulting on several
   lines is parsed once. Returns an empty set when nothing could be mapped (the
   caller then aborts).
   """
-  @spec ids(String.t(), metamutants(), map() | nil) :: MapSet.t()
-  def ids(compile_output, metamutants, report_ids \\ nil) do
-    {ids, _manifests} = line_attribution(compile_output, metamutants, report_ids, %{})
+  @spec ids(String.t(), metamutants(), dispatch_vars(), map() | nil) :: MapSet.t()
+  def ids(compile_output, metamutants, dispatch_vars, report_ids \\ nil) do
+    {ids, _manifests} =
+      line_attribution(compile_output, metamutants, dispatch_vars, report_ids, %{})
+
     ids
   end
 
-  @spec line_attribution(String.t(), metamutants(), map() | nil, manifests()) ::
+  @spec line_attribution(String.t(), metamutants(), dispatch_vars(), map() | nil, manifests()) ::
           {MapSet.t(), manifests()}
-  defp line_attribution(output, metamutants, report_ids, manifests) do
+  defp line_attribution(output, metamutants, dispatch_vars, report_ids, manifests) do
     {ids, manifests} =
       output
       |> error_locations()
       |> Enum.flat_map_reduce(manifests, fn {file, line}, manifests ->
-        case manifest_for(file, metamutants, manifests) do
+        case manifest_for(file, metamutants, dispatch_vars, manifests) do
           {nil, manifests} ->
             {[], manifests}
 
@@ -211,10 +229,10 @@ defmodule Mutare.Poison do
     end)
   end
 
-  # The manifest for `file`, built once from its stored metamutant source and
-  # memoized in `cache`. A `nil` (file not in the map) is cached too, so a stray
-  # error line in an untracked file isn't re-resolved.
-  defp manifest_for(file, metamutants, cache) do
+  # The manifest for `file`, built once from its stored metamutant source and dispatch
+  # variable and memoized in `cache`. A `nil` (file not in the map) is cached too, so a
+  # stray error line in an untracked file isn't re-resolved.
+  defp manifest_for(file, metamutants, dispatch_vars, cache) do
     case cache do
       %{^file => manifest} ->
         {manifest, cache}
@@ -222,7 +240,7 @@ defmodule Mutare.Poison do
       _ ->
         manifest =
           case Map.fetch(metamutants, file) do
-            {:ok, source} -> Manifest.from_source(source)
+            {:ok, source} -> Manifest.from_source(source, Map.fetch!(dispatch_vars, file))
             :error -> nil
           end
 
@@ -230,7 +248,7 @@ defmodule Mutare.Poison do
         # matches when present), so `Map.put_new/3` inserts identically here; `Map.replace/3`
         # would just skip the insert, forcing every later duplicate-file error to retake this
         # branch and recompute `Manifest.from_source` (a pure, deterministic parse) — a real
-        # efficiency loss, but unobservable in `ids/2`'s returned `MapSet` (the only thing a
+        # efficiency loss, but unobservable in `ids/4`'s returned `MapSet` (the only thing a
         # black-box test can assert on).
         # mutare:ignore[map_keyword] equivalent, per above
         {manifest, Map.put(cache, file, manifest)}
@@ -258,7 +276,7 @@ defmodule Mutare.Poison do
       |> Regex.scan(line)
       |> Enum.map(fn [_match, file, num] -> {file, String.to_integer(num)} end)
     end)
-    # `ids/2` folds this list straight into a `MapSet` (order- and duplicate-insensitive), so
+    # `ids/4` folds this list straight into a `MapSet` (order- and duplicate-insensitive), so
     # deduping here only avoids redundant (but pure, deterministic) `manifest_for`/`ids_at_line`
     # lookups; the returned set is identical either way.
     # mutare:ignore[call_removal] equivalent, per above
@@ -285,7 +303,7 @@ defmodule Mutare.Poison do
     |> elem(1)
     # Same reasoning as the `Enum.uniq()` above: `error_locations/1`'s caller only ever folds
     # the file:line pairs extracted from these lines into a `MapSet` (order-insensitive), so
-    # reversing back to document order here has no observable effect on `ids/2`'s result. Kept
+    # reversing back to document order here has no observable effect on `ids/4`'s result. Kept
     # for the (untested) documentation value of returning lines in source order to any other
     # future caller.
     # mutare:ignore[call_removal, collection_arity] equivalent, per above

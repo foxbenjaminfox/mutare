@@ -129,7 +129,7 @@ defmodule Mutare.BitwiseTest do
       end
       """
 
-      {metamutant, sites, _} =
+      %{metamutant: metamutant, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @only)
 
       [site] = Enum.filter(sites, &(&1.mutator == :bitwise))

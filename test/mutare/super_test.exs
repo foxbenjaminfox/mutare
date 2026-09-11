@@ -49,7 +49,7 @@ defmodule Mutare.SuperTest do
     opts = [file: "child.ex"]
     opts = if mutators, do: Keyword.put(opts, :mutators, mutators), else: opts
 
-    {meta, sites, _next} = Mutare.Transform.transform_string_with_sites(source, opts)
+    %{metamutant: meta, sites: sites} = Mutare.Transform.transform_string_with_sites(source, opts)
     [{module, _binary}] = Mutare.Test.Compile.string(meta)
     {meta, sites, module}
   end

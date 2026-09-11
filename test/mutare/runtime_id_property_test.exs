@@ -31,11 +31,17 @@ defmodule Mutare.RuntimeIdPropertyTest do
     max_size: @max_size do
     forall module_ast <- Gen.module_gen() do
       source = Macro.to_string(module_ast)
-      {full, sites, next} = Transform.transform_string_with_sites(source, @opts)
+
+      %{metamutant: full, sites: sites, next_id: next, dispatch_var: var} =
+        Transform.transform_string_with_sites(source, @opts)
 
       forall skip <- subset(Enum.map(sites, & &1.id)) do
-        {skipped, skipped_sites, skipped_next} =
-          Transform.transform_string_with_sites(source, [skip_ids: skip] ++ @opts)
+        %{
+          metamutant: skipped,
+          sites: skipped_sites,
+          next_id: skipped_next,
+          dispatch_var: skipped_var
+        } = Transform.transform_string_with_sites(source, [skip_ids: skip] ++ @opts)
 
         # A skipped id keeps its site — recorded `poisoned`, so the report can list it — and
         # loses only its generated code.
@@ -46,7 +52,8 @@ defmodule Mutare.RuntimeIdPropertyTest do
 
         skipped_next == next and
           skipped_sites == expected_sites and
-          manifest_ids(skipped) == MapSet.difference(manifest_ids(full), local_ids(skip, sites))
+          manifest_ids(skipped, skipped_var) ==
+            MapSet.difference(manifest_ids(full, var), local_ids(skip, sites))
       end
     end
   end
@@ -56,15 +63,18 @@ defmodule Mutare.RuntimeIdPropertyTest do
     max_size: @max_size do
     forall {module_ast, offset} <- {Gen.module_gen(), integer(0, 10_000)} do
       source = Macro.to_string(module_ast)
-      {_full, sites, _next} = Transform.transform_string_with_sites(source, @opts)
+      %{sites: sites} = Transform.transform_string_with_sites(source, @opts)
 
       forall skip <- subset(Enum.map(sites, & &1.id)) do
         shifted_skip = MapSet.new(skip, &(&1 + offset))
         base = [skip_ids: skip] ++ @opts
         moved = [start_id: 1 + offset, skip_ids: shifted_skip] ++ @opts
 
-        {a, a_sites, a_next} = Transform.transform_string_with_sites(source, base)
-        {b, b_sites, b_next} = Transform.transform_string_with_sites(source, moved)
+        %{metamutant: a, sites: a_sites, next_id: a_next} =
+          Transform.transform_string_with_sites(source, base)
+
+        %{metamutant: b, sites: b_sites, next_id: b_next} =
+          Transform.transform_string_with_sites(source, moved)
 
         a == b and
           b_next == a_next + offset and
@@ -89,8 +99,8 @@ defmodule Mutare.RuntimeIdPropertyTest do
     MapSet.new(for site <- sites, MapSet.member?(report_ids, site.id), do: local_id(site))
   end
 
-  defp manifest_ids(metamutant) do
-    %Manifest{regions: regions} = Manifest.from_source(metamutant)
+  defp manifest_ids(metamutant, dispatch_var) do
+    %Manifest{regions: regions} = Manifest.from_source(metamutant, dispatch_var)
     MapSet.new(Enum.flat_map(regions, & &1.ids))
   end
 end

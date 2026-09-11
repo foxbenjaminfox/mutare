@@ -15,7 +15,7 @@ defmodule Mutare.ConfigurableMutatorTest do
   """
 
   test "opts from a {module, opts} entry reach mutate/2 and drive the mutation" do
-    {metamutant, sites, _next} =
+    %{metamutant: metamutant, sites: sites} =
       Mutare.Transform.transform_string_with_sites(@source,
         mutators: [{ConfigurableMutator, replacement: 99}]
       )
@@ -28,14 +28,14 @@ defmodule Mutare.ConfigurableMutatorTest do
   end
 
   test "a bare module (no opts) produces no mutants — its logic is opts-gated" do
-    {_metamutant, sites, _next} =
+    %{sites: sites} =
       Mutare.Transform.transform_string_with_sites(@source, mutators: [ConfigurableMutator])
 
     assert sites == []
   end
 
   test ":as overrides the recorded family name (the same module, a distinct identity)" do
-    {_metamutant, sites, _next} =
+    %{sites: sites} =
       Mutare.Transform.transform_string_with_sites(@source,
         mutators: [{ConfigurableMutator, as: :tweaked, replacement: 1}]
       )
@@ -45,7 +45,7 @@ defmodule Mutare.ConfigurableMutatorTest do
   end
 
   test "two configurations of one module run independently under distinct names" do
-    {_metamutant, sites, _next} =
+    %{sites: sites} =
       Mutare.Transform.transform_string_with_sites(@source,
         mutators: [
           {ConfigurableMutator, as: :to_one, replacement: 1},

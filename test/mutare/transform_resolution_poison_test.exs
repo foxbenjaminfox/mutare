@@ -1,7 +1,7 @@
 defmodule Mutare.TransformResolutionPoisonTest do
   # Import-resolution *poison attribution*: a hidden import that would mis-resolve a bare call
   # is made to fail the compile instead, and the compiler's own stderr must let
-  # `Mutare.Poison.ids/2` blame the right mutant. That contract is the real compiler output,
+  # `Mutare.Poison.ids/4` blame the right mutant. That contract is the real compiler output,
   # so these capture the global `:stderr` device (`compile_error_output/3`) and stay
   # `async: false`. Split from transform_resolution_test.exs, which is otherwise pure.
   use ExUnit.Case, async: false
@@ -9,7 +9,7 @@ defmodule Mutare.TransformResolutionPoisonTest do
 
   describe "import resolution → poison attribution" do
     test "a hidden except-plus-replacement import poisons instead of silently mis-resolving" do
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites, dispatch_var: var} =
         Mutare.Transform.transform_string_with_sites(
           """
           defmodule HiddenImportReplacement do
@@ -45,12 +45,14 @@ defmodule Mutare.TransformResolutionPoisonTest do
           "lib/hidden_import_replacement.ex"
         )
 
-      assert Mutare.Poison.ids(stderr, %{"lib/hidden_import_replacement.ex" => meta}) ==
+      assert Mutare.Poison.ids(stderr, %{"lib/hidden_import_replacement.ex" => meta}, %{
+               "lib/hidden_import_replacement.ex" => var
+             }) ==
                MapSet.new([site.id])
     end
 
     test "the import witness also protects lifted guard mutants" do
-      {meta, sites, _} =
+      %{metamutant: meta, sites: sites, dispatch_var: var} =
         Mutare.Transform.transform_string_with_sites(
           """
           defmodule HiddenIntegerReplacement do
@@ -89,7 +91,9 @@ defmodule Mutare.TransformResolutionPoisonTest do
           "lib/hidden_integer_replacement.ex"
         )
 
-      assert Mutare.Poison.ids(stderr, %{"lib/hidden_integer_replacement.ex" => meta}) ==
+      assert Mutare.Poison.ids(stderr, %{"lib/hidden_integer_replacement.ex" => meta}, %{
+               "lib/hidden_integer_replacement.ex" => var
+             }) ==
                MapSet.new([site.id])
     end
 
@@ -141,10 +145,13 @@ defmodule Mutare.TransformResolutionPoisonTest do
         end)
 
         opts = [mutators: [Mutare.Mutators.IntegerCall]]
-        {meta, sites, next} = Mutare.Transform.transform_string_with_sites(source, opts)
+
+        %{metamutant: meta, sites: sites, next_id: next, dispatch_var: var} =
+          Mutare.Transform.transform_string_with_sites(source, opts)
+
         assert [%{kind: :in_place, original_code: "is_even(n)"} = site] = sites
 
-        {recovered, _, ^next} =
+        %{metamutant: recovered, next_id: ^next} =
           Mutare.Transform.transform_string_with_sites(
             source,
             opts ++ [skip_ids: MapSet.new([site.id])]
@@ -156,11 +163,11 @@ defmodule Mutare.TransformResolutionPoisonTest do
         stderr =
           compile_error_output(meta, ["#{hidden}/1", "Integer and #{inspect(provider)}"], file)
 
-        assert Mutare.Poison.ids(stderr, %{file => meta}) == MapSet.new([site.id])
+        assert Mutare.Poison.ids(stderr, %{file => meta}, %{file => var}) == MapSet.new([site.id])
 
         assert_compiles(recovered)
 
-        {visible, [_site], _} =
+        %{metamutant: visible, sites: [_site]} =
           source
           |> String.replace("use #{inspect(provider)}", "")
           |> Mutare.Transform.transform_string_with_sites(opts)

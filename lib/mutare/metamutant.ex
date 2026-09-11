@@ -32,8 +32,8 @@ defmodule Mutare.Metamutant do
     * `subject_ast/0` builds the inline subject `Transform` splices in,
     * `subject?/2` recognises *either* shape — the inline read unconditionally, the
       hoisted bare variable only when the active-id variable name is supplied (the
-      predicate `Mutare.Manifest` uses to walk a rendered metamutant, recovering that
-      name once via `Manifest.active_var/1`).
+      predicate `Mutare.Manifest` uses to walk a rendered metamutant, under the name the
+      transform recorded for the file — `Mutare.Transform.Result.dispatch_var`).
 
   `subject?/2` is tolerant of how the subject is *parsed back*: bare ASTs may keep
   `:persistent_term`/`:mutare_active` as atoms, while `Mutare.Manifest`

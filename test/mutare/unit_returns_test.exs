@@ -17,7 +17,7 @@ defmodule Mutare.UnitReturnsTest do
   @families [ReturnValue, ConventionAtom, AtomLiteral]
 
   defp sites(source) do
-    {_meta, sites, _} = Mutare.Transform.transform_string_with_sites(source, mutators: @families)
+    %{sites: sites} = Mutare.Transform.transform_string_with_sites(source, mutators: @families)
     Enum.map(sites, &{&1.mutator, &1.line, &1.original_code, &1.mutated_code})
   end
 
@@ -440,7 +440,7 @@ defmodule Mutare.UnitReturnsTest do
       end
       """
 
-      {metamutant, sites, _} =
+      %{metamutant: metamutant, sites: sites} =
         Mutare.Transform.transform_string_with_sites(src, mutators: @families)
 
       assert sites == []

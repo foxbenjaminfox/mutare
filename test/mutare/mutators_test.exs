@@ -342,7 +342,7 @@ defmodule Mutare.MutatorsTest do
     """
 
     test "every rendered mutant at a position belongs to exactly one family" do
-      {_metamutant, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@contact_points, warnings: false)
 
       # Sanity: the fixture actually exercised the families the splits are between.

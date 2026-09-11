@@ -53,7 +53,7 @@ defmodule Mutare.StrictEqualityTest do
     end
 
     test "a relaxation inside a `when` guard is delivered by lifting (===/== are guard-legal)" do
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           """
           defmodule T do
@@ -77,7 +77,7 @@ defmodule Mutare.StrictEqualityTest do
       end
       """
 
-      {metamutant, [site], _} =
+      %{metamutant: metamutant, sites: [site]} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @only)
 
       Mutare.Test.Compile.string(metamutant)
@@ -105,7 +105,7 @@ defmodule Mutare.StrictEqualityTest do
       end
       """
 
-      {metamutant, sites, _} =
+      %{metamutant: metamutant, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source, mutators: @only)
 
       [site] = Enum.filter(sites, &(&1.mutator == :strict_equality))

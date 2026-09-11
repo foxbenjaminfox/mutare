@@ -28,7 +28,7 @@ defmodule Mutare.Test.Metamutant do
   `Mutare.Transform.transform_string_with_sites/2`.
   """
   def family_sites(source, mutators, name, opts \\ []) do
-    {_meta, sites, _next_id} =
+    %{sites: sites} =
       Transform.transform_string_with_sites(source, Keyword.put(opts, :mutators, mutators))
 
     Enum.filter(sites, &(&1.mutator == name))
@@ -67,7 +67,7 @@ defmodule Mutare.Test.Metamutant do
   a `CompileError`, and that every substring in `message` appears in that output).
 
   This is the one helper here that captures the global `:stderr` device — for tests that hand
-  the compiler's real output to `Mutare.Poison.ids/2`, whose contract *is* that text. The
+  the compiler's real output to `Mutare.Poison.ids/4`, whose contract *is* that text. The
   calling module must be `async: false`. Anything that only needs the messages wants
   `assert_compile_error/3` instead.
   """

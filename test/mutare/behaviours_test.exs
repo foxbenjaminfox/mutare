@@ -244,7 +244,7 @@ defmodule Mutare.BehavioursTest do
       end
       """
 
-      {out, sites, _next} =
+      %{metamutant: out, sites: sites} =
         Transform.transform_string_with_sites(source, mutators: [Mutare.Test.BehaviourMutator])
 
       # both the tuple swap (mutate/2) and the return-tail (return_replacements/2) recorded

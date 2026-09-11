@@ -119,7 +119,12 @@ defmodule Mutare.Runner.Compile do
     # Both attributions of this round's failure from one `Poison` pass (one manifest per
     # implicated file): the line-attributed ids, and the macro-expansion fallback's matches.
     %{line: raw, macro: macro_matches} =
-      Poison.attribution(output, schema.metamutants, Mutare.RuntimeId.file_index(schema.sites))
+      Poison.attribution(
+        output,
+        schema.metamutants,
+        schema.dispatch_vars,
+        Mutare.RuntimeId.file_index(schema.sites)
+      )
 
     # The line-implicated ids, then evidence-based escalation for an unknown module-level
     # block macro: a block is dropped *wholesale* only once a *second, distinct* poison
@@ -189,7 +194,7 @@ defmodule Mutare.Runner.Compile do
   # mutants removed — those recover through `escalate_block_poison/3`, and letting the inline
   # fallback drop a block's body wholesale on the first strike would pre-empt its id-specific vs
   # wholesale distinction. `[]` when nothing inline maps (or all its ids are already skipped),
-  # so line attribution / abort take over. `matches` is `Poison.attribution/3`'s `:macro` half.
+  # so line attribution / abort take over. `matches` is `Poison.attribution/4`'s `:macro` half.
   defp inline_macro_poison(matches, sites, skip_ids) do
     block_ids = block_macro_ids(sites)
 

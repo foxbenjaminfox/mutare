@@ -51,29 +51,31 @@ defmodule Mutare.RuntimeIdTest do
   test "report offsets never enter emitted code, including selection and poison holes" do
     opts = [file: "lib/b.ex", runtime_namespace: "lib/b.ex"]
     src = source("StableB")
-    {full, sites, next} = Transform.transform_string_with_sites(src, opts)
 
-    {shifted, shifted_sites, shifted_next} =
+    %{metamutant: full, sites: sites, next_id: next, dispatch_var: var} =
+      Transform.transform_string_with_sites(src, opts)
+
+    %{metamutant: shifted, sites: shifted_sites, next_id: shifted_next} =
       Transform.transform_string_with_sites(src, [start_id: 501] ++ opts)
 
     assert shifted == full
     assert shifted_next == next + 500
     assert Enum.map(shifted_sites, & &1.id) == Enum.map(sites, &(&1.id + 500))
     assert Enum.map(shifted_sites, & &1.runtime_id) == Enum.map(sites, & &1.runtime_id)
-    {standalone, _, _} = Transform.transform_string_with_sites(src)
+    %{metamutant: standalone} = Transform.transform_string_with_sites(src)
     # A dropped function clause has no mutant body to poison. Preserve the
     # existing manifest's attribution, including inline default selectors.
-    assert manifest_ids(full) == manifest_ids(standalone)
+    assert manifest_ids(full, var) == manifest_ids(standalone, var)
 
     selection = MapSet.new(2..(next - 1)//2)
 
-    {focused, _, _} =
+    %{metamutant: focused} =
       Transform.transform_string_with_sites(
         src,
         [emit_ids: selection, skip_ids: MapSet.new([2])] ++ opts
       )
 
-    {focused_shifted, _, _} =
+    %{metamutant: focused_shifted} =
       Transform.transform_string_with_sites(
         src,
         [start_id: 501, emit_ids: MapSet.new(selection, &(&1 + 500)), skip_ids: MapSet.new([502])] ++
@@ -82,15 +84,15 @@ defmodule Mutare.RuntimeIdTest do
 
     assert focused == focused_shifted
 
-    assert manifest_ids(focused) ==
-             MapSet.intersection(manifest_ids(full), MapSet.delete(selection, 2))
+    assert manifest_ids(focused, var) ==
+             MapSet.intersection(manifest_ids(full, var), MapSet.delete(selection, 2))
   end
 
   test "the same local id activates one file, and switching or resetting clears the old file" do
     opts = [mutators: [:arithmetic], start_id: 30]
 
     for {file, module} <- [{"lib/a.ex", RuntimeA}, {"lib/b.ex", RuntimeB}] do
-      {meta, [site], 31} =
+      %{metamutant: meta, sites: [site], next_id: 31} =
         Transform.transform_string_with_sites(
           "defmodule #{inspect(module)} do\n def f(x), do: x + 2\nend\n",
           [file: file, runtime_namespace: file] ++ opts
@@ -155,7 +157,7 @@ defmodule Mutare.RuntimeIdTest do
       :code.delete(module)
     end)
 
-    {standalone, sites, _} = Transform.transform_string_with_sites(src, opts)
+    %{metamutant: standalone, sites: sites} = Transform.transform_string_with_sites(src, opts)
     Mutare.Test.Compile.string(standalone)
     baseline = observe(module)
 
@@ -168,7 +170,7 @@ defmodule Mutare.RuntimeIdTest do
     :code.purge(module)
     :code.delete(module)
 
-    {namespaced, sites, _} =
+    %{metamutant: namespaced, sites: sites} =
       Transform.transform_string_with_sites(src, [runtime_namespace: "lib/execution.ex"] ++ opts)
 
     Mutare.Test.Compile.string(namespaced)
@@ -256,12 +258,12 @@ defmodule Mutare.RuntimeIdTest do
   end
 
   test "poison translates local ids before combining files, including the macro fallback" do
-    {metas, sites} =
-      Enum.reduce([{"lib/a.ex", 10}, {"lib/b.ex", 20}], {%{}, []}, fn {file, start},
-                                                                      {metas, sites} ->
+    {metas, vars, sites} =
+      Enum.reduce([{"lib/a.ex", 10}, {"lib/b.ex", 20}], {%{}, %{}, []}, fn {file, start},
+                                                                           {metas, vars, sites} ->
         src = "defmodule PoisonIdentity do\n def f(x), do: query(x + 2)\nend\n"
 
-        {meta, [site], _} =
+        %{metamutant: meta, sites: [site], dispatch_var: var} =
           Transform.transform_string_with_sites(src,
             file: file,
             runtime_namespace: file,
@@ -269,7 +271,7 @@ defmodule Mutare.RuntimeIdTest do
             mutators: [:arithmetic]
           )
 
-        {Map.put(metas, file, meta), [site | sites]}
+        {Map.put(metas, file, meta), Map.put(vars, file, var), [site | sites]}
       end)
 
     index = RuntimeId.file_index(sites)
@@ -280,7 +282,7 @@ defmodule Mutare.RuntimeIdTest do
         "#{file}:#{line + 1}: broken mutation"
       end)
 
-    assert Poison.ids(errors, metas, index) == MapSet.new([10, 20])
+    assert Poison.ids(errors, metas, vars, index) == MapSet.new([10, 20])
 
     # One failure per file, as the compiler prints them: each stacktrace's innermost frame is
     # looked up in its own call-site file, and the two files' local ids translate apart.
@@ -289,7 +291,7 @@ defmodule Mutare.RuntimeIdTest do
         "** (RuntimeError) boom\nexpanding macro: MyDsl.query/1\n#{file}:2: PoisonIdentity.f/1"
       end)
 
-    assert [{{"MyDsl", :query}, ids}] = Poison.macro_poison(frames, metas, index)
+    assert [{{"MyDsl", :query}, ids}] = Poison.macro_poison(frames, metas, vars, index)
     assert ids == MapSet.new([10, 20])
   end
 
@@ -299,13 +301,14 @@ defmodule Mutare.RuntimeIdTest do
     File.mkdir_p!(Path.join(root, "lib"))
     File.write!(Path.join(root, "lib/a.ex"), "defmodule PhantomA do\n def f(x), do: x + 2\nend\n")
 
-    # `lib/b.ex` writes a selector's own shape. The cap leaves it nothing to emit, so it
-    # renders pristine — no generated code anchors the salted dispatch name, and the manifest
-    # reads this `1 ->` clause back as local id 1, which no site of this run claims.
+    # `lib/b.ex` writes a selector's own shape — the inline `:persistent_term` read, which no
+    # dispatch name disambiguates. The cap leaves it nothing to emit, so it renders pristine,
+    # and the manifest reads this `1 ->` clause back as local id 1, which no site of this run
+    # claims.
     imitation = """
     defmodule PhantomB do
-      def pick(mutare_active) do
-        case mutare_active do
+      def pick do
+        case :persistent_term.get(#{inspect(Selector.key())}, 0) do
           1 -> :one
           _ -> :other
         end
@@ -320,37 +323,47 @@ defmodule Mutare.RuntimeIdTest do
 
     assert schema.metamutants["lib/b.ex"] == imitation
     assert Enum.filter(schema.sites, &(&1.file == "lib/b.ex")) == []
-    assert manifest_ids(schema.metamutants["lib/b.ex"]) == MapSet.new([1])
+
+    assert manifest_ids(schema.metamutants["lib/b.ex"], schema.dispatch_vars["lib/b.ex"]) ==
+             MapSet.new([1])
 
     phantom = "** (CompileError) lib/b.ex:4: broken\n"
     real = error_at_first_region(schema, "lib/a.ex")
-    real_ids = Poison.ids(real, schema.metamutants, index)
+    real_ids = Poison.ids(real, schema.metamutants, schema.dispatch_vars, index)
 
-    assert Poison.ids(phantom, schema.metamutants, index) == MapSet.new()
+    assert Poison.ids(phantom, schema.metamutants, schema.dispatch_vars, index) == MapSet.new()
     refute Enum.empty?(real_ids)
-    assert Poison.ids(real <> phantom, schema.metamutants, index) == real_ids
+
+    assert Poison.ids(real <> phantom, schema.metamutants, schema.dispatch_vars, index) ==
+             real_ids
 
     frames = "expanding macro: MyDsl.pick/1\nlib/b.ex:3: PhantomB.pick/1\n"
-    assert Poison.macro_poison(frames, schema.metamutants, index) == []
+    assert Poison.macro_poison(frames, schema.metamutants, schema.dispatch_vars, index) == []
   end
 
   # A compile error pointing at the first line of generated code in `file`'s metamutant —
   # a location that really does attribute to a mutant.
   defp error_at_first_region(schema, file) do
     %{lo: line} =
-      schema.metamutants
-      |> Map.fetch!(file)
-      |> Manifest.from_source()
+      schema
+      |> manifest(file)
       |> Map.fetch!(:regions)
       |> hd()
 
     "** (CompileError) #{file}:#{line}: broken\n"
   end
 
-  defp manifest_ids(source),
+  defp manifest(schema, file),
+    do:
+      Manifest.from_source(
+        Map.fetch!(schema.metamutants, file),
+        Map.fetch!(schema.dispatch_vars, file)
+      )
+
+  defp manifest_ids(source, var),
     do:
       source
-      |> Manifest.from_source()
+      |> Manifest.from_source(var)
       |> Map.fetch!(:regions)
       |> Enum.flat_map(& &1.ids)
       |> MapSet.new()

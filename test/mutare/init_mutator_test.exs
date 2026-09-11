@@ -73,7 +73,7 @@ defmodule Mutare.InitMutatorTest do
 
   describe "config delivery" do
     test "init/1's return reaches mutate/2 as context.config and drives the mutation" do
-      {metamutant, sites, _next} =
+      %{metamutant: metamutant, sites: sites} =
         Mutare.Transform.transform_string_with_sites(@source,
           mutators: [{InitMutator, replacement: 99}]
         )
@@ -85,7 +85,7 @@ defmodule Mutare.InitMutatorTest do
     end
 
     test "a bare module gets init/1([]) — parsed defaults, here no mutants" do
-      {_metamutant, sites, _next} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(@source, mutators: [InitMutator])
 
       assert sites == []

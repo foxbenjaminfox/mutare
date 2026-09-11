@@ -24,7 +24,7 @@ defmodule Mutare.OverlapTest do
       # `defp drop?(_other, _covered), do: false` fallback must keep them — and reaching that
       # clause at all proves `:mutare` holds `Return`. (Killing `do: false → do: true`, which
       # would reject them, and the clause_drop, which would FunctionClauseError here.)
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
@@ -47,7 +47,7 @@ defmodule Mutare.OverlapTest do
       # `Date` (`__aliases__`) arg — a *new* covering shape (an alias node, not a `:__block__`
       # literal wrapper). AliasLiteral would also mutate that same `Date` to the sentinel module
       # (an always-raising `UndefinedFunctionError`), so the call rewrite must suppress it.
-      {_meta, sites, _} =
+      %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do

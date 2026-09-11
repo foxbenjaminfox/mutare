@@ -63,7 +63,7 @@ defmodule Mutare.CasePatternTest do
   @compile {:no_warn_undefined, Mutare.CasePatternFixture}
 
   setup_all do
-    {metamutant, sites, _next_id} =
+    %{metamutant: metamutant, sites: sites} =
       Mutare.Transform.transform_string_with_sites(@source, file: "cp.ex")
 
     # Broadening a clause's pattern can make a later clause unreachable — a benign "cannot

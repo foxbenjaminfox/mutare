@@ -29,7 +29,7 @@ defmodule Mutare.Transform.CaseClauseEmitTest do
     clauses = Enum.map_join(1..100, "\n", &"#{&1} -> :matched")
     source = "defmodule ManyCases do\ndef run(n) do\ncase n do\n#{clauses}\nend\nend\nend"
 
-    {metamutant, sites, _} =
+    %{metamutant: metamutant, sites: sites} =
       Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.IntegerLiteral])
 
     assert length(sites) > 100
@@ -204,7 +204,9 @@ defmodule Mutare.Transform.CaseClauseEmitTest do
   defp compile_fixture(name, body, mutators \\ [Mutare.Mutators.IntegerLiteral]) do
     module = Module.concat(__MODULE__, name)
     source = "defmodule #{inspect(module)} do\n#{body}\nend"
-    {metamutant, sites, _} = Transform.transform_string_with_sites(source, mutators: mutators)
+
+    %{metamutant: metamutant, sites: sites} =
+      Transform.transform_string_with_sites(source, mutators: mutators)
 
     # Keep the generated coverage gate, replacing only the sink with a process-local observer.
     compile_observed(module, metamutant, CoverageSink)
