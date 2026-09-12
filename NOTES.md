@@ -9453,7 +9453,9 @@ claim is *reducing* compiler input. Two things save it, and both had to be measu
   with a `badbool` error branch, while in a *guard* it already compiles straight to `andalso`.
   The coverage record carries two body-position `and`s **per generated function**, so the
   unqualified form paid two extra `case`s each; `:erlang.andalso` passes through untouched. The
-  guard fixture is neutral because guards never had the penalty to begin with.
+  guard fixture is neutral because guards never had the penalty to begin with. (The body-position
+  `:erlang.andalso` did not survive Elixir 1.21 — the record is nested `case`s now; see
+  "`:erlang.andalso` is guard-only: the coverage record is a `case`".)
 
 So rendered bytes and pre-expansion node counts are the wrong measure for this decision: they
 count what the *parser* reads, not what survives macro expansion, and here the two point in
@@ -10314,3 +10316,94 @@ The `analysis_mutators` → `analysis_env` rename and the `mutators` → `env` p
 across the analyze tree are mechanical; a list-consuming call (`Spec.find`, `Dispatch.*`,
 `Attach.offer`, `Tag.*`, `PatternStructure.mutators`, `Captures.offer`, `Returns.*`) takes
 `env.mutators`, everything that re-enters the descent takes `env`.
+
+### `:erlang.andalso` is guard-only: the coverage record is a `case` `[done]`
+
+Elixir `main` (1.21.0-dev; elixir-lang/elixir@46c461e6 "Expand defguard per guard and
+expression", 2026-06-24) rewrites `:erlang.andalso/2` and `:erlang.orelse/2` to the Erlang
+operator **only** while translating a guard (`elixir_erl_pass:guard_op_strategy/3` keys on
+`#elixir_erl{context=guard}`). In a body the call is left as a remote call to a function
+`erlang` does not export: the expander warns ":erlang.andalso/2 must only be used inside
+guards" (with a `TODO: Raise on Elixir v2.0`) and the metamutant raises
+`UndefinedFunctionError` at the first selector it reaches. The non-blocking `main` CI entry
+caught it: nine failures, every one the coverage record (`Recorder.record_ast/3`) — the single
+*body-position* use, `:erlang.andalso(:erlang.andalso(:erlang.==(var, 0),
+:persistent_term.get(:mutare_track, false)), helper.hit(ids))`, chosen in "Factor compiler
+input before rendering" for being import-proof *and* cheaper to compile than `Kernel.and/2`'s
+three-clause `case` expansion.
+
+**The guards were never at risk.** `GuardBuild`'s conjunctions are `:erlang.andalso`/`orelse`
+in `when` position — exactly what `Kernel.and/2`/`or/2` expand to in a guard on every supported
+release, and the same upstream commit adds both to `elixir_rewrite`'s `allowed_guard/2`
+allow-list. A stable target. Only `guard_build_test`'s `accepts?/2` had to move: it evaluated an
+exclusion guard as a body expression through `Code.eval_quoted/2`; it now evaluates it where the
+metamutant does, in a `fn`'s `when`.
+
+**The record is now two nested `case`s around the same `:erlang.==` comparison:**
+
+    case :erlang.==(var, 0) do
+      true ->
+        case :persistent_term.get(:mutare_track, false) do
+          true -> helper.hit(ids)
+          _ -> false
+        end
+
+      _ -> false
+    end
+
+Special forms and remote calls only, so nothing in it resolves through the target's imports
+(`recorder_test` asserts that structurally now, so the property no longer rests on an upstream
+rewrite). The alternatives, and why not:
+
+- `Kernel.and/2`, the form before `32a73256`: resolves through the target's imports — the
+  reason it was removed — and expands to a three-clause `case` with a `badbool` branch per
+  conjunction.
+- `:erlang.and/2` (strict; a real BIF): one `case` instead of two, but it evaluates the
+  `:persistent_term` read under every mutant run. The record sits on every selector's
+  baseline path, and "~zero hot-loop cost under a mutant" is the property the gate order
+  exists for.
+- One `case` on `var` with the track check moved into the helper (`hit/2` reading
+  `:mutare_track` itself): the helper would then be *called* at baseline, so every metamutant
+  would need it loadable — the bench fixtures, the in-process unit-test compiles and a kept
+  sandbox run without the probe all rely on the record being inert without it
+  (`test/support/mutare_cov.ex` exists only so the reference resolves).
+- Folding tracking into the *selection* value (the probe run setting a distinguished
+  non-integer active id; the record becoming `case var do :track -> hit; _ -> false end`)
+  would beat even the old form — one two-clause `case`, no second `:persistent_term` read —
+  but it changes the selection contract in `Selector`, the bootstrap reader, the namespace
+  projection (`Metamutant.subject_ast/1` would need a `:track` arm) and the probe, and
+  couples coverage to selection, which the two runtime contracts keep apart on purpose. Not
+  warranted by the numbers below; recorded in case they ever are.
+
+The scrutinee is the comparison, not the bare variable, on purpose. `case var do 0 -> …`
+renders as `case mutare_active do` — byte-for-byte the hoisted-selector signature that
+`Manifest.enter/3` recognises structurally (`Metamutant.subject?/2`'s bare-variable form;
+harmless there, since a `0` clause yields no id, but a needless walk) and that several test
+files count textually. With the comparison as scrutinee the record can never read as a
+selector, and `record_var/1` keeps reading the variable through `AST.erlang_call_args/2`, as
+`Manifest.gate_id/2` reads the gate.
+
+**Measured** (`bench/compile_shapes.exs`, `ignored-arithmetic-0`: 1,000 `def runN(x), do:
+x + 2` functions, `mutators: [:arithmetic]`; Elixir 1.19.5 / OTP 26; `MIX_ENV=test mix
+compile --force --no-verification` in a fresh VM, `ERL_COMPILER_OPTIONS='[no_ssa_opt_alias,time]'`,
+three alternating runs each, medians):
+
+| Record form | generated bytes | AST nodes | wall | peak RSS |
+| --- | ---: | ---: | ---: | ---: |
+| `:erlang.andalso` chain (`HEAD`) | 391,763 | 60,015 | 1.56 s | 281 MB |
+| nested `case` (this change) | 444,763 | 76,015 | 1.51 s | 286 MB |
+
+A wash on time and +1.8% peak memory, from +13.5% rendered bytes and +26.7% pre-expansion
+nodes — the previous entry's lesson from the other direction: source size predicted a cost the
+compiler did not charge. The Erlang compiler lowers `andalso` to a `case` of its own anyway;
+what the `:erlang.andalso` form had saved over `Kernel.and/2` was the macro expansion and the
+`badbool` clause per conjunction, and a hand-built two-clause `case` pays neither. (Not
+comparable with the previous entry's 2,000-function numbers; different fixture.) Verified on
+the target that broke it: Elixir 1.21.0-dev (`b4b5e01`) / OTP 28 runs the full suite green
+apart from `subprocess_lifecycle_test`, which fails in an init-less container for its own
+reason (no reaper, so a SIGKILLed compile stays a zombie `os_alive?/1` can still see) and
+passes once the container has one (`podman run --init`).
+
+The "before" fixture was generated from a `HEAD` worktree. The bench script had drifted from
+`Transform.transform_string_with_sites/2`'s map return (`{meta, sites, _}` against
+`%{metamutant:, sites:, …}`); fixed in passing, one line.

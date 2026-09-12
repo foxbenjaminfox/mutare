@@ -140,9 +140,20 @@ defmodule Mutare.Transform.GuardBuildTest do
     end
   end
 
+  # Evaluate `guard` where the metamutant does — in a `when`. Its `:erlang.andalso`/`orelse`
+  # conjunctions are guard-only forms: as body calls they are undefined functions.
   defp accepts?(guard, active) do
-    {result, _} = Code.eval_quoted(guard, active: active)
-    result
+    {fun, _} =
+      Code.eval_quoted(
+        quote do
+          fn
+            unquote({:active, [], nil}) when unquote(guard) -> true
+            _ -> false
+          end
+        end
+      )
+
+    fun.(active)
   end
 
   defp ast_size(ast) do

@@ -32,19 +32,31 @@ defmodule Mutare.Coverage.Recorder do
 
   ## The gate (why it is inert outside the probe)
 
-  The spliced expression is `mutare_active == 0 and
-  :persistent_term.get(:mutare_track, false) and <helper>.hit([<ids>])`:
+  The spliced expression (`record_ast/3`) is two nested short-circuits:
+
+      case :erlang.==(mutare_active, 0) do
+        true ->
+          case :persistent_term.get(:mutare_track, false) do
+            true -> <helper>.hit([<ids>])
+            _ -> false
+          end
+
+        _ -> false
+      end
 
     * per-mutant runs (a local id in the selected file, `:inactive` elsewhere)
-      short-circuit on the comparison with zero —
-      ~zero hot-loop cost;
+      leave on the comparison with zero — ~zero hot-loop cost;
     * the baseline green run and Mutare's own unit tests (`:mutare_track` unset)
-      short-circuit on the persistent-term read — the helper is never *called*;
+      leave on the persistent-term read — the helper is never *called*;
     * only the probe run (`MUTARE_COVERAGE` set → `:mutare_track` true,
       `mutare_active == 0`) records.
 
-  The helper's `hit/1` returns `true` so the `and` chain stays boolean (an `:ets`
-  call returns an int/`true` and would raise `BadBooleanError` mid-`and`).
+  They are `case`s, not `and`s: the record is spliced into the target's own modules,
+  where a narrowed or replaced `Kernel` import would redefine `and` under it, and
+  `:erlang.andalso` — the form `and` compiles to in a guard — is undefined in a body.
+  A special form is the one thing no import can redirect. The comparison is an explicit
+  `:erlang` call for the same reason, and it keeps the outer `case` from ever reading as a
+  hoisted selector (`case mutare_active do`).
 
   Schema emission supplies a namespace to `record_ast/3`, producing
   `hit(namespace, local_ids)`. The helper keeps a seen-cache per namespace and
@@ -178,20 +190,19 @@ defmodule Mutare.Coverage.Recorder do
 
   `namespace` selects the helper's `hit/2` form; `nil` retains standalone `hit/1`.
 
-  Literal arguments use clean metadata. In particular, the `0` must be wrapped as
-  `{:__block__, [], [0]}`; a bare integer can render badly when this expression is
-  emitted as a statement in a generated function body.
+  Literals use clean metadata (`Mutare.AST.literal/1`); a bare integer can render badly
+  when this expression is emitted as a statement in a generated function body.
 
-  The comparison and the two conjunctions are explicit `:erlang` calls
-  (`Mutare.AST.erlang_call/2`), like the guards `Mutare.Transform.GuardBuild` emits: this
-  expression is spliced into the target's own modules, where a narrowed or replaced `Kernel`
-  import would otherwise redefine `==` and `and` under it. `record_var/1` recognises that
-  form, so the two must move together.
+  The comparison is an explicit `:erlang` call (`Mutare.AST.erlang_call/2`) and the two
+  short-circuits are nested `case`s: special forms and remote calls alone — never a
+  `Kernel` operator, which a narrowed import could redefine, and never `:erlang.andalso`,
+  which Elixir accepts only inside a guard (see the moduledoc). `record_var/1` recognises
+  exactly this shape, so the two must move together.
   """
   @spec record_ast([pos_integer()], atom(), String.t() | nil) :: Macro.t()
   def record_ast(ids, var \\ @var_name, namespace \\ nil) when is_list(ids) do
-    active_zero = AST.erlang_call(:==, [{var, [], nil}, literal(0)])
-    track_read = {{:., [], [:persistent_term, :get]}, [], [literal(@track_key), literal(false)]}
+    track_read =
+      {{:., [], [:persistent_term, :get]}, [], [AST.literal(@track_key), AST.literal(false)]}
 
     args =
       if is_nil(namespace),
@@ -200,16 +211,51 @@ defmodule Mutare.Coverage.Recorder do
 
     hit_call = {{:., [], [fixture_module(), :hit]}, [], args}
 
-    AST.erlang_call(:andalso, [AST.erlang_call(:andalso, [active_zero, track_read]), hit_call])
+    active_zero = AST.erlang_call(:==, [{var, [], nil}, AST.literal(0)])
+    when_true(active_zero, when_true(track_read, hit_call))
   end
+
+  # `case <condition> do true -> <body>; _ -> false end`: the body runs only when the condition
+  # holds. `when_true_args/1` is its inverse.
+  defp when_true(condition, body) do
+    clauses = [
+      {:->, [], [[AST.literal(true)], body]},
+      {:->, [], [[{:_, [], nil}], AST.literal(false)]}
+    ]
+
+    {:case, [], [condition, [do: clauses]]}
+  end
+
+  # `{:ok, condition, body}` for a node `when_true/2` built, seen through the literal wrappers a
+  # reparse adds (the `:do` key, the clause list, the `true`). The `_ -> false` arm is checked
+  # by its head alone.
+  defp when_true_args({:case, _meta, [condition, [{key, clauses}]]}) do
+    with true <- AST.key_atom(key) == :do,
+         [{:->, _, [[on], body]}, {:->, _, [[{:_, _, ctx}], _false]}] when is_atom(ctx) <-
+           AST.unwrap_literal(clauses),
+         true <- AST.unwrap_literal(on) do
+      {:ok, condition, body}
+    else
+      _ -> :error
+    end
+  end
+
+  defp when_true_args(_node), do: :error
 
   @doc """
   Return the dispatch variable read by a coverage record, or `nil`.
 
-  This is the inverse of `record_ast/2`. A coverage record has this shape, with the comparison
-  and conjunctions written as the explicit `:erlang` calls `record_ast/2` emits:
+  This is the inverse of `record_ast/3`. A coverage record has this shape:
 
-      <var> == 0 and :persistent_term.get(<track_key>, false) and <helper>.hit(<ids>)
+      case :erlang.==(<var>, 0) do
+        true ->
+          case :persistent_term.get(<track_key>, false) do
+            true -> <helper>.hit(<ids>)
+            _ -> false
+          end
+
+        _ -> false
+      end
 
   `<var>` is the file's dispatch variable, possibly salted. The internal
   `<track_key>` read identifies a real coverage record, which is how
@@ -222,19 +268,15 @@ defmodule Mutare.Coverage.Recorder do
   """
   @spec record_var(Macro.t()) :: atom() | nil
   def record_var(node) do
-    with {:ok, [conjunction, _hit]} <- andalso_args(node),
-         {:ok, [active_zero, track_read]} <- andalso_args(conjunction),
+    with {:ok, active_zero, tracked} <- when_true_args(node),
+         {:ok, [{var, _, ctx}, zero]} when is_atom(var) and is_atom(ctx) <-
+           AST.erlang_call_args(active_zero, :==),
+         0 <- AST.unwrap_literal(zero),
+         {:ok, track_read, _hit} <- when_true_args(tracked),
          true <- track_read?(track_read) do
-      active_zero_var(active_zero)
+      var
     else
       _ -> nil
-    end
-  end
-
-  defp andalso_args(node) do
-    case AST.erlang_call_args(node, :andalso) do
-      {:ok, [_left, _right] = args} -> {:ok, args}
-      _ -> :error
     end
   end
 
@@ -242,18 +284,6 @@ defmodule Mutare.Coverage.Recorder do
     do: AST.unwrap_literal(mod) == :persistent_term and AST.unwrap_literal(key) == @track_key
 
   defp track_read?(_), do: false
-
-  defp active_zero_var(node) do
-    case AST.erlang_call_args(node, :==) do
-      {:ok, [{var, _, ctx}, zero]} when is_atom(var) and is_atom(ctx) ->
-        if AST.unwrap_literal(zero) == 0, do: var
-
-      _ ->
-        nil
-    end
-  end
-
-  defp literal(value), do: {:__block__, [], [value]}
 
   # Build the ids list AST so `Sourceror.to_string` renders it as a list literal
   # (`[91, 92]`), never a charlist. A *bare* list of small integers triggers the

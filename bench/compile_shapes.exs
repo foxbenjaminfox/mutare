@@ -166,7 +166,7 @@ defmodule Mutare.CompileShapes do
     {metamutants, sites} =
       case {Map.to_list(fixture.sources), fixture.options} do
         {[{rel, source}], []} ->
-          {meta, sites, _} =
+          %{metamutant: meta, sites: sites} =
             Mutare.Transform.transform_string_with_sites(source,
               file: rel,
               mutators: mutators,

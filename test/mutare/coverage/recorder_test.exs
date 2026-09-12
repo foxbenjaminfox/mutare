@@ -1,7 +1,6 @@
 defmodule Mutare.Coverage.RecorderTest do
   use ExUnit.Case, async: true
 
-  alias Mutare.AST
   alias Mutare.Coverage.Recorder
 
   describe "record_var/1 — recovering the dispatch variable from a coverage record" do
@@ -26,26 +25,34 @@ defmodule Mutare.Coverage.RecorderTest do
     end
 
     test "ignores the helper-call arm, so a self-hosting helper-module override is irrelevant" do
-      record = Recorder.record_ast([1], :mutare_active)
-      {:ok, [conj, _hit]} = AST.erlang_call_args(record, :andalso)
-
       forged_helper =
-        AST.erlang_call(:andalso, [conj, {{:., [], [:some_other_helper, :hit]}, [], [42]}])
+        Macro.prewalk(Recorder.record_ast([1], :mutare_active), fn
+          {{:., _, [_helper, :hit]}, _, _} -> {{:., [], [:some_other_helper, :hit]}, [], [42]}
+          node -> node
+        end)
 
       assert Recorder.record_var(forged_helper) == :mutare_active
     end
 
-    test "returns nil for a non-record node — a user `x == 0 and …` without the track read" do
+    test "returns nil for a non-record node — a user `case` of the same shape without the track read" do
+      # `x == 0` here is `Kernel.==`, not the explicit `:erlang` call the builder emits.
       not_a_record =
-        AST.erlang_call(:andalso, [
-          AST.erlang_call(:andalso, [AST.erlang_call(:==, [{:x, [], nil}, 0]), {:foo, [], []}]),
-          {:bar, [], []}
-        ])
+        quote do
+          case x == 0 do
+            true ->
+              case foo() do
+                true -> bar()
+                _ -> false
+              end
+
+            _ ->
+              false
+          end
+        end
 
       assert Recorder.record_var(not_a_record) == nil
 
-      # A source-level `and`/`==` is not the generated record: the builder emits explicit
-      # `:erlang` calls precisely so a target's own operators can never be mistaken for one.
+      # A source-level `and`/`==` chain is not the generated record either.
       assert Recorder.record_var(
                {:and, [],
                 [
@@ -62,19 +69,88 @@ defmodule Mutare.Coverage.RecorderTest do
       assert Recorder.record_var(:not_even_a_tuple) == nil
     end
 
-    test "returns nil when the track read is present but the active-zero conjunct is malformed" do
-      # The outer shape and the `:mutare_track` read match, but the left conjunct is not the
-      # `<var> == 0` gate — so `active_zero_var/1` falls to its `nil` clause.
-      track_read = {{:., [], [:persistent_term, :get]}, [], [Recorder.track_key(), false]}
-      hit = {{:., [], [:mutare_cov, :hit]}, [], [[1]]}
+    test "returns nil when the track read is present but the active-zero condition is malformed" do
+      # The inner shape and the `:mutare_track` read match, but the outer condition is not
+      # `<var>` against `0`: a call, then a comparison with a non-zero literal.
+      key = Recorder.track_key()
 
-      malformed =
-        AST.erlang_call(:andalso, [
-          AST.erlang_call(:andalso, [{:not_a_gate, [], []}, track_read]),
-          hit
-        ])
+      call_condition =
+        quote do
+          case f() do
+            true ->
+              case :persistent_term.get(unquote(key), false) do
+                true -> :mutare_cov.hit([1])
+                _ -> false
+              end
 
-      assert Recorder.record_var(malformed) == nil
+            _ ->
+              false
+          end
+        end
+
+      nonzero_comparison =
+        quote do
+          case :erlang.==(mutare_active, 1) do
+            true ->
+              case :persistent_term.get(unquote(key), false) do
+                true -> :mutare_cov.hit([1])
+                _ -> false
+              end
+
+            _ ->
+              false
+          end
+        end
+
+      assert Recorder.record_var(call_condition) == nil
+      assert Recorder.record_var(nonzero_comparison) == nil
+    end
+  end
+
+  describe "record_ast/3 — the spliced expression" do
+    test "is built from special forms and remote calls only, never a Kernel import" do
+      # It is spliced into the target's modules, so nothing in it may resolve through the
+      # target's imports: no `and`/`==`/`if`, and no `:erlang.andalso/2`, which Elixir
+      # accepts only inside a guard.
+      {_, locals} =
+        Macro.prewalk(Recorder.record_ast([1, 2], :mutare_active, "lib/a.ex"), [], fn
+          {{:., _, [mod, fun]}, _, _} = node, acc ->
+            {node, [{mod, fun} | acc]}
+
+          {name, _, args} = node, acc when is_atom(name) and name != :. and is_list(args) ->
+            {node, [name | acc]}
+
+          node, acc ->
+            {node, acc}
+        end)
+
+      assert Enum.uniq(locals) --
+               [:case, :->, :__block__, {:erlang, :==}, {:persistent_term, :get}] ==
+               [{Recorder.fixture_module(), :hit}]
+    end
+
+    @tag :coverage_tables
+    test "reaches the helper only at baseline with tracking on" do
+      # The value is the helper's `true` only when both short-circuits pass; `false` marks an
+      # early exit. The stand-in helper records nothing, but the tracking flag is shared
+      # with the self-hosted coverage probe, so this test must be excluded from those runs.
+      key = Recorder.track_key()
+      on_exit(fn -> :persistent_term.erase(key) end)
+      record = Recorder.record_ast([1, 2], :mutare_active)
+
+      evaluate = fn active ->
+        {value, _} = Code.eval_quoted(record, mutare_active: active)
+        value
+      end
+
+      :persistent_term.erase(key)
+      assert evaluate.(0) == false
+      assert evaluate.(7) == false
+
+      :persistent_term.put(key, true)
+      assert evaluate.(0) == true
+      assert evaluate.(7) == false
+      assert evaluate.(:inactive) == false
     end
   end
 

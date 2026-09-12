@@ -4,10 +4,10 @@
 # those once per mutant would be catastrophic (a fork bomb of nested suites). The
 # `:property` soaks render/compile/run a stream of generated modules (~2 min each),
 # so running them once per mutant would be just as ruinous. The `:coverage_tables`
-# tests own the process-global `:mutare_cov_*` ETS tables (create/`:ets.delete`
-# them) — the *same* tables the dogfood coverage probe records into across the whole
-# suite; left to run, their teardown wipes the probe's data and the run silently
-# degrades to run-all selection. `MUTARE_ACTIVE_MUTANT` is set on every per-mutant run
+# tests alter the process-global `:mutare_track` flag or `:mutare_cov_*` ETS tables
+# (create/`:ets.delete` them) — the *same* state the dogfood coverage probe uses across
+# the whole suite; left to run, they disable recording or wipe the probe's data,
+# compromising test selection. `MUTARE_ACTIVE_MUTANT` is set on every per-mutant run
 # (and the baseline/probe) but never on a normal `mix test`, so it cleanly marks "we
 # are the suite-under-mutation" without affecting ordinary local/CI runs. (The cost,
 # as for `:runner`, is that code reached only by these excluded tests has no

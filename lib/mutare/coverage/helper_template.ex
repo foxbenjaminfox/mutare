@@ -18,7 +18,8 @@ defmodule Mutare.Coverage.HelperTemplate do
   # un-namespaced ids); `dump/1` (run by `after_suite`) serialises them to the dump file, mapping
   # each test module to its source file. The label read is OTP-version tolerant:
   # `:proc_lib.get_label/1` on OTP 27+, the `:"$process_label"` process-dictionary key on OTP 26 and
-  # earlier. Both `hit` forms return `true` so the spliced `and` chain stays boolean.
+  # earlier. Both `hit` forms return `true`; the spliced record discards the value, so this is a
+  # convention the helper's tests pin, not something the record requires.
   #
   # Attribution is recorded at TWO granularities from the one `{module, name}` label. The module
   # half always maps to a test *file* (`@attr_table`) — the granularity file-level selection

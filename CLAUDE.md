@@ -199,13 +199,15 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   the match sets, `degraded_uses`), never a source or an AST after the scan. The workers' ASTs
   die with them on purpose (heap isolation), so a new diagnostic adds a field there rather than
   re-parsing in `Schema` or the Mix task — NOTES "The count pass is the scan's only parse".
-- **Every operator Mutare *generates* is an explicit `:erlang` call.** The activation gate and
-  exclusion guards (`Mutare.Transform.GuardBuild`) and the coverage record
-  (`Mutare.Coverage.Recorder.record_ast/2`) all build through `Mutare.AST.erlang_call/2`, and
-  their readers (`Manifest.gate_id/2`, `Recorder.record_var/1`) recognise them *only* through
-  `AST.erlang_call_args/2` — builder and reader must move together. Generated code must never
-  depend on the target's imports; it is also faster, since `Kernel.and/2` in a body expands to a
-  `case` — NOTES "Factor compiler input before rendering".
+- **Generated code never resolves through the target's imports.** Every operator Mutare
+  *generates* is an explicit `:erlang` call built by `Mutare.AST.erlang_call/2` and recognised
+  *only* through `AST.erlang_call_args/2` (`Manifest.gate_id/2` for the gate,
+  `Recorder.record_var/1` for the record's comparison) — builder and reader must move together.
+  The two conjunction forms differ by position, and that is not negotiable: in a *guard*
+  (`Mutare.Transform.GuardBuild`) they are `:erlang.andalso`/`orelse`, what `and`/`or` compile
+  to there; in a *body* (the coverage record, `Mutare.Coverage.Recorder.record_ast/3`) they are
+  nested `case`s, because Elixir ≥ 1.21 accepts `:erlang.andalso` only in a guard — NOTES
+  "Factor compiler input before rendering" and NOTES "`:erlang.andalso` is guard-only".
 - **Two renderers, on purpose.** The metamutant is a build artifact (AST rewrite via
   `Sourceror.to_string`, only needs to compile); the report patches the original source. Don't try
   to make one serve both.

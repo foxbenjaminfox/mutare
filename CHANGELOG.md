@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The metamutant compiles and runs on Elixir 1.21 (main).** The coverage record's
+  two short-circuits were `:erlang.andalso` calls; Elixir now accepts those only
+  inside a guard (elixir-lang/elixir@46c461e6 — a body-position call warns at
+  compile time and is an undefined function at runtime), so every generated function
+  crashed at baseline. The record is now two nested `case`s around the same explicit
+  `:erlang.==` comparison: the same import-proof short-circuit, built from special
+  forms alone. Guards were never affected — `:erlang.andalso`/`orelse` remain what
+  `and`/`or` compile to there.
 - **Signature inference stays disabled on Elixir 1.20.** Sandbox Mix projects now
   return `infer_signatures: false` in their effective `elixirc_options`, including
   umbrella children and projects with custom config paths. Mix can no longer

@@ -217,9 +217,12 @@ defmodule Mutare.AST do
   where an `Elixir.Kernel.` qualification still routes through Elixir's rewriter.
   Mutare uses it for the operators it *generates* into the metamutant — the
   activation gate, exclusion guards, and the coverage record — so a target that
-  narrows or replaces `Kernel`'s imports cannot change what they mean. Elixir
-  compiles an `:erlang.andalso` or `:erlang.orelse` call to the short-circuit
-  operator itself, so both stay legal in a guard.
+  narrows or replaces `Kernel`'s imports cannot change what they mean. In a guard,
+  Elixir compiles an `:erlang.andalso` or `:erlang.orelse` call to the short-circuit
+  operator itself — the form `Kernel.and/2` and `or/2` expand to there. Only in a
+  guard: in a body both are undefined functions (Elixir 1.21 warns), so a generated
+  body expression short-circuits with `case` instead
+  (`Mutare.Coverage.Recorder.record_ast/3`).
 
       iex> Mutare.AST.erlang_call(:"=:=", [1, 2])
       {{:., [], [:erlang, :"=:="]}, [], [1, 2]}

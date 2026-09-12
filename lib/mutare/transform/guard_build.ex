@@ -9,7 +9,10 @@ defmodule Mutare.Transform.GuardBuild do
   # Every operator this module generates is an explicit `:erlang` call (`Mutare.AST.erlang_call/2`)
   # — the gate, the exclusions, and the conjunctions that join them — so a target that narrows or
   # replaces `Kernel`'s imports cannot change what a generated guard means. `Mutare.Manifest`
-  # recognises the gate in that form; the two must move together.
+  # recognises the gate in that form; the two must move together. The conjunctions
+  # (`:erlang.andalso`/`orelse`, what `Kernel.and`/`or` expand to in a guard) are legal *only* in
+  # a guard, which every caller of this module emits into; a body-position short-circuit is a
+  # `case` (`Recorder.record_ast/3`).
   #
   # `var` is the (possibly salted) dispatch-variable name; `Recorder.catch_all_pattern/1`
   # renders it as the `mutare_active` node both the gate and the recorder read. Ids are
