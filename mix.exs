@@ -41,8 +41,10 @@ defmodule Mutare.MixProject do
     Mutare.Transform.BindingEscapeEmit
     Mutare.Transform.Config
     Mutare.Transform.ClauseGuardEmit
+    Mutare.Transform.CoverageEmit
     Mutare.Runner.Hydrate
     Mutare.Runner.Compile
+    Mutare.Runner.MutantRun
     Mutare.Sandbox.Seed
     Mutare.Sandbox.Mirror
     Mutare.Options.Registry

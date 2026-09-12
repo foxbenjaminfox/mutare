@@ -15,6 +15,7 @@ defmodule Mutare.Transform.CaseClauseEmit do
 
   alias Mutare.AST
   alias Mutare.Coverage.Recorder
+  alias Mutare.Transform.CoverageEmit
   alias Mutare.Transform.Candidate.Delivery
   alias Mutare.Transform.{Candidate, Ctx, GuardBuild, Meta, SelectorEmit}
 
@@ -61,21 +62,17 @@ defmodule Mutare.Transform.CaseClauseEmit do
             do: rewritten,
             else: rewritten ++ [unmatched_clause()]
 
-        active = Recorder.catch_all_pattern(var)
-        subject_var = {ctx.config.case_var, [], nil}
-        tuple = {active, subject_var}
-
-        # Evaluate both inputs before entering this generated-only clause. Bindings in the
-        # source scrutinee therefore escape just as they did before, while the temporary is
-        # invisible to source clause bodies, subsequent binding/0, and macros inspecting
-        # __CALLER__. The tuple preserves selector-before-scrutinee evaluation in every scope.
-        record_body =
-          {:__block__, [],
-           [Recorder.record_ast(all_ids, var, ctx.config.runtime_namespace), tuple]}
-
-        record_clause = {:->, [], [[tuple], record_body]}
+        {record, ctx} = CoverageEmit.record(all_ids, ctx, :local)
         {read, ctx} = SelectorEmit.subject(ctx)
-        subject = {:case, [], [{read, emitted_subject}, [do: [record_clause]]]}
+
+        subject =
+          Mutare.Metamutant.pattern_subject_ast(
+            read,
+            emitted_subject,
+            var,
+            ctx.config.case_var,
+            record
+          )
 
         {{:case, meta, [subject, [{do_key, new_clauses}]]}, ctx}
     end

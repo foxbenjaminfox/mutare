@@ -3,107 +3,36 @@ defmodule Mutare.Coverage.RecorderTest do
 
   alias Mutare.Coverage.Recorder
 
-  describe "record_var/1 — recovering the dispatch variable from a coverage record" do
-    test "round-trips the variable name `record_ast/2` builds with" do
-      assert Recorder.record_var(Recorder.record_ast([1, 2, 3])) == Recorder.var_name()
-      assert Recorder.record_var(Recorder.record_ast([7], :mutare_active_0)) == :mutare_active_0
+  describe "record?/1 — gate-independent coverage payload recognition" do
+    test "accepts inline and bound gates before and after literal-encoded reparse" do
+      for namespace <- [nil, "lib/example.ex"],
+          gate <- [Recorder.gate_ast(:mutare_active_4), {:mutare_tracking_3, [], nil}] do
+        record = gated(gate, Recorder.hit_ast([1, 92, 1000], namespace))
+        assert Recorder.record?(record)
+        assert Recorder.record?(Sourceror.parse_string!(Sourceror.to_string(record)))
+      end
     end
 
-    test "sees through a literal-encoding re-parse's `:__block__` wrapping" do
-      # `Mutare.Manifest` re-parses with a `:literal_encoder`, so the `0` / track-key
-      # literals arrive `{:__block__, _, [literal]}`-wrapped; recognition must survive it.
-      reparsed =
-        Recorder.record_ast([1], :mutare_active_4)
-        |> Sourceror.to_string()
-        |> Code.string_to_quoted!(
-          columns: true,
-          token_metadata: true,
-          literal_encoder: fn literal, meta -> {:ok, {:__block__, meta, [literal]}} end
-        )
+    test "rejects unrelated calls and malformed coverage payloads" do
+      for {helper, args} <- [
+            {:unrelated, [[1]]},
+            {Recorder.fixture_module(), [42]},
+            {Recorder.fixture_module(), [[]]},
+            {Recorder.fixture_module(), [[0]]},
+            {Recorder.fixture_module(), [[-1]]},
+            {Recorder.fixture_module(), [[{:user_value, [], nil}]]},
+            {Recorder.fixture_module(), ["", [1]]},
+            {Recorder.fixture_module(), [:not_a_namespace, [1]]}
+          ] do
+        record =
+          gated(Recorder.gate_ast(:mutare_active), {{:., [], [helper, :hit]}, [], args})
 
-      assert Recorder.record_var(reparsed) == :mutare_active_4
-    end
+        refute Recorder.record?(record)
+      end
 
-    test "ignores the helper-call arm, so a self-hosting helper-module override is irrelevant" do
-      forged_helper =
-        Macro.prewalk(Recorder.record_ast([1], :mutare_active), fn
-          {{:., _, [_helper, :hit]}, _, _} -> {{:., [], [:some_other_helper, :hit]}, [], [42]}
-          node -> node
-        end)
-
-      assert Recorder.record_var(forged_helper) == :mutare_active
-    end
-
-    test "returns nil for a non-record node — a user `case` of the same shape without the track read" do
-      # `x == 0` here is `Kernel.==`, not the explicit `:erlang` call the builder emits.
-      not_a_record =
-        quote do
-          case x == 0 do
-            true ->
-              case foo() do
-                true -> bar()
-                _ -> false
-              end
-
-            _ ->
-              false
-          end
-        end
-
-      assert Recorder.record_var(not_a_record) == nil
-
-      # A source-level `and`/`==` chain is not the generated record either.
-      assert Recorder.record_var(
-               {:and, [],
-                [
-                  {:and, [],
-                   [
-                     {:==, [], [{:mutare_active, [], nil}, 0]},
-                     {{:., [], [:persistent_term, :get]}, [], [Recorder.track_key(), false]}
-                   ]},
-                  {{:., [], [:mutare_cov, :hit]}, [], [[1]]}
-                ]}
-             ) == nil
-
-      assert Recorder.record_var({:x, [], nil}) == nil
-      assert Recorder.record_var(:not_even_a_tuple) == nil
-    end
-
-    test "returns nil when the track read is present but the active-zero condition is malformed" do
-      # The inner shape and the `:mutare_track` read match, but the outer condition is not
-      # `<var>` against `0`: a call, then a comparison with a non-zero literal.
-      key = Recorder.track_key()
-
-      call_condition =
-        quote do
-          case f() do
-            true ->
-              case :persistent_term.get(unquote(key), false) do
-                true -> :mutare_cov.hit([1])
-                _ -> false
-              end
-
-            _ ->
-              false
-          end
-        end
-
-      nonzero_comparison =
-        quote do
-          case :erlang.==(mutare_active, 1) do
-            true ->
-              case :persistent_term.get(unquote(key), false) do
-                true -> :mutare_cov.hit([1])
-                _ -> false
-              end
-
-            _ ->
-              false
-          end
-        end
-
-      assert Recorder.record_var(call_condition) == nil
-      assert Recorder.record_var(nonzero_comparison) == nil
+      refute Recorder.record?({:and, [], [true, Recorder.hit_ast([1], nil)]})
+      refute Recorder.record?(Recorder.hit_ast([1], nil))
+      refute Recorder.record?(:ordinary_expression)
     end
   end
 
@@ -132,8 +61,7 @@ defmodule Mutare.Coverage.RecorderTest do
     @tag :coverage_tables
     test "reaches the helper only at baseline with tracking on" do
       # The value is the helper's `true` only when both short-circuits pass; `false` marks an
-      # early exit. The stand-in helper records nothing, but the tracking flag is shared
-      # with the self-hosted coverage probe, so this test must be excluded from those runs.
+      # early exit. Under self-hosting, track_key/0 selects the private fixture flag.
       key = Recorder.track_key()
       on_exit(fn -> :persistent_term.erase(key) end)
       record = Recorder.record_ast([1, 2], :mutare_active)
@@ -168,12 +96,21 @@ defmodule Mutare.Coverage.RecorderTest do
       assert source =~ "def dump"
     end
 
-    test "after_suite_ast/0 builds the env-gated after_suite registration" do
+    test "after_suite_ast/0 registers the dump under initialized probe mode" do
       ast = Recorder.after_suite_ast()
       rendered = Macro.to_string(ast)
 
-      assert rendered =~ Recorder.env_var()
+      assert rendered =~ ":persistent_term.get(:mutare_probe, false)"
       assert rendered =~ "after_suite"
+    end
+  end
+
+  defp gated(gate, hit) do
+    quote do
+      case unquote(gate) do
+        true -> unquote(hit)
+        _ -> false
+      end
     end
   end
 end

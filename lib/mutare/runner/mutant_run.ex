@@ -92,6 +92,13 @@ defmodule Mutare.Runner.MutantRun do
   # with a short jittered backoff so the retry doesn't re-collide with the same
   # boot stampede. Sized to the field-proven figure: 4 extra attempts (total 5)
   # cleared it across repeated runs of a contended target.
+  #
+  # `:app_start_failure` draws on the same budget, for the same reason and to the
+  # opposite end: startup contention that *does* manage to reach Mix's
+  # `Could not start application` banner is indistinguishable, on one attempt, from
+  # a mutation that broke configuration or `Application.start/2`. Spending this
+  # budget separates them — contention clears on a retry, the mutation re-detonates every time —
+  # so only a failure that survives all five attempts is charged as a kill.
   @boot_failure_retries 4
   @boot_retry_base_ms 150
   @boot_retry_jitter_ms 350
@@ -103,12 +110,13 @@ defmodule Mutare.Runner.MutantRun do
   # records the harness error as-is; the run-level guard decides if too many
   # persisted.
   #
-  # The two **kill** outcomes `Command.outcome/2` recovers from an otherwise-
+  # Two of the **kill** outcomes `Command.outcome/2` recovers from an otherwise-
   # `:harness_error` exit (`:suite_compile_error`, `:atom_exhausted`) are already
-  # distinct outcomes here, so they record as kills and are never retried. The
-  # third refinement, `:boot_failure`, *is* retried — harder than a generic
-  # harness error, from its own dedicated budget — since it is a known-transient
-  # startup-contention crash; see `@boot_failure_retries`.
+  # distinct outcomes here, so they record as kills and are never retried — neither
+  # can be an infra blip. The third kill, `:app_start_failure`, *is* retried, and so
+  # is `:boot_failure`: both are boot-time shapes a startup stampede can also
+  # produce, so each spends the dedicated budget before it is believed; see
+  # `@boot_failure_retries`.
   #
   # `:sigkilled` (the OS SIGKILLed the run — exit 137) is the refinement that must
   # NOT be retried, ever: its signature cause is the kernel OOM killer reaping a
@@ -131,8 +139,16 @@ defmodule Mutare.Runner.MutantRun do
       )
       |> require_unanimous_kill(ctx, site, test_args, partition, options.kill_runs - 1)
 
-    if result.outcome in [:harness_error, :boot_failure, :sigkilled],
-      do: warn_harness_error(site, result)
+    case result.outcome do
+      outcome when outcome in [:harness_error, :boot_failure, :sigkilled] ->
+        warn_harness_error(site, result)
+
+      :app_start_failure ->
+        warn_app_start_failure(site, result)
+
+      _verdict ->
+        :ok
+    end
 
     record(site, result)
   end
@@ -153,7 +169,7 @@ defmodule Mutare.Runner.MutantRun do
       )
 
     case result.outcome do
-      :boot_failure when boot_retries > 0 ->
+      outcome when outcome in [:boot_failure, :app_start_failure] and boot_retries > 0 ->
         Process.sleep(boot_backoff_ms())
         run_mutant_attempt(ctx, site, test_args, partition, retries, boot_retries - 1)
 
@@ -202,7 +218,7 @@ defmodule Mutare.Runner.MutantRun do
   end
 
   defp kill_outcome?(outcome),
-    do: outcome in [:failed, :timeout, :suite_compile_error, :atom_exhausted]
+    do: outcome in [:failed, :timeout, :suite_compile_error, :atom_exhausted, :app_start_failure]
 
   defp record(%Site{} = site, result) do
     %Result{
@@ -266,7 +282,21 @@ defmodule Mutare.Runner.MutantRun do
     )
   end
 
-  # The `file:line: mutant id` prefix shared by both harness-error warnings.
+  # Not a harness error — a kill — but a *silent* one: no test failed, so the
+  # survivor diff a user would normally read has no failing test behind it. Say what
+  # happened, once, so a startup kill is never mistaken for a mis-scored infra blip.
+  defp warn_app_start_failure(%Site{} = site, result) do
+    Logger.warning(
+      "#{site_ref(site)} — the target's application would not start with this " <>
+        "mutation active (exit #{result.exit_status}), and kept refusing across the " <>
+        "boot-contention retries. `mix test` boots the app before it loads a single test, " <>
+        "so a mutation reachable from runtime configuration or Application.start/2 stops the " <>
+        "run there. The baseline boots the same sandbox green, so this counts as killed, " <>
+        "not as a harness error."
+    )
+  end
+
+  # The `file:line: mutant id` prefix shared by the warnings above.
   defp site_ref(%Site{} = site), do: "#{site.file}:#{site.line}: mutant #{site.id}"
 
   # Map a run's typed outcome (decoded by `Mutare.Sandbox.Command`, which owns the
@@ -300,6 +330,13 @@ defmodule Mutare.Runner.MutantRun do
   # so the report can name the cause. `Command.outcome/2` recovers it from the
   # otherwise-`:harness_error` exit via the VM-abort banner (`Output.atom_exhausted?/1`).
   # Not retried (it is a verdict, not a transient infra blip): only `:harness_error`
-  # and `:boot_failure` re-run (see `run_mutant/7`).
+  # and the two boot-time shapes re-run (see `run_mutant_attempt/6`).
   defp status_for(:atom_exhausted), do: :atom_exhausted
+  # The mutation broke configuration or application startup, so `mix test` never
+  # loaded a test. It was still detected: the baseline (and the coverage probe) boot
+  # the *same* sandbox green, so the mutation is the only thing that changed. A kill,
+  # on the same reasoning as `:suite_compile_error` — and, like every other kill,
+  # only after `run_mutant_attempt/6` has spent the boot-contention budget proving it
+  # is not a startup stampede.
+  defp status_for(:app_start_failure), do: :killed
 end

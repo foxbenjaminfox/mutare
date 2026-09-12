@@ -25,6 +25,13 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
     test "the base env is always present, selector vars included" do
       env = Invocation.environment(Mutare.Selector.baseline())
       assert {"MIX_ENV", "test"} in env
+      assert {Mutare.Coverage.Recorder.env_var(), nil} in env
+      assert {Mutare.Coverage.Recorder.dump_path_env(), nil} in env
+      assert {Mutare.Coverage.Recorder.root_env(), nil} in env
+      # Unarmed caps clear too: the watchers arm from the `mix.exs` prefix on every
+      # invocation, so an inherited value must never leak into one that didn't ask.
+      assert {Invocation.timeout_env(), nil} in env
+      assert {Invocation.compile_timeout_env(), nil} in env
       assert {Invocation.owner_watch_env(), "1"} in env
       assert Mutare.Selector.env_var() in keys(env)
       assert Mutare.Selector.namespace_env() in keys(env)

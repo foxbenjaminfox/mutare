@@ -23,13 +23,9 @@ defmodule Mutare.Coverage.HelperTemplateTest do
   # a regression in the recording/attribution tiers is caught in Mutare's own suite rather than
   # only when a sandbox runs. Named global ETS tables ⇒ `async: false`.
   #
-  # `:coverage_tables` excludes the whole module under self-hosting: its `setup_all`
-  # `:ets.delete`s and recreates the `:mutare_cov_*` tables (and writes small, real-id-range
-  # markers) — under a dogfood run those are the *same* tables the coverage probe records into,
-  # so running it would wipe the probe's data and silently force run-all selection. See
-  # `test/test_helper.exs` and NOTES "Self-hosting".
+  # Fixture tables/caches/dump variables are separate from the outer probe, so
+  # these tests may run during self-hosting without destroying its capture.
   use ExUnit.Case, async: false
-  @moduletag :coverage_tables
 
   alias Mutare.Coverage.HelperTemplate, as: H
   alias Mutare.Coverage.HelperTemplateTest.OnExitFixture
@@ -56,13 +52,19 @@ defmodule Mutare.Coverage.HelperTemplateTest do
   end
 
   describe "contract-constant accessors" do
+    test "fixture capture shares no keys or output destinations with the harness" do
+      harness = H.runtime(:harness) |> Map.values() |> MapSet.new()
+      fixture = H.runtime(:fixture) |> Map.values() |> MapSet.new()
+      assert MapSet.disjoint?(harness, fixture)
+    end
+
     test "expose the table names, dump file, and env-var keys" do
-      assert H.agg_table() == :mutare_cov_agg
-      assert H.attr_table() == :mutare_cov_attr
-      assert H.unlabeled_table() == :mutare_cov_unlabeled
-      assert H.dump_file() == "mutare_cov.terms"
-      assert H.dump_path_env() == "MUTARE_COV_DUMP"
-      assert H.root_env() == "MUTARE_COV_ROOT"
+      assert H.agg_table() == :mutare_cov_agg__fixture
+      assert H.attr_table() == :mutare_cov_attr__fixture
+      assert H.unlabeled_table() == :mutare_cov_unlabeled__fixture
+      assert H.dump_file() == "mutare_cov.fixture.terms"
+      assert H.dump_path_env() == "MUTARE_COV_DUMP_FIXTURE"
+      assert H.root_env() == "MUTARE_COV_ROOT_FIXTURE"
     end
   end
 
@@ -389,8 +391,8 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       H.hit([701, 702])
       H.hit("lib/seen.ex", [701])
 
-      assert {^tid, seen} = Process.get({:mutare_cov_seen, nil})
-      assert {^tid, file_seen} = Process.get({:mutare_cov_seen, "lib/seen.ex"})
+      assert {^tid, seen} = Process.get({H.runtime(:fixture).seen_key, nil})
+      assert {^tid, file_seen} = Process.get({H.runtime(:fixture).seen_key, "lib/seen.ex"})
       assert Enum.sort(Map.keys(seen)) == [701, 702]
       assert Map.keys(file_seen) == [701]
       assert :ets.lookup(H.agg_table(), {"lib/seen.ex", 701}) == [{{"lib/seen.ex", 701}}]
@@ -413,12 +415,12 @@ defmodule Mutare.Coverage.HelperTemplateTest do
           "mutare_cov_test_#{System.unique_integer([:positive])}.terms"
         )
 
-      System.put_env("MUTARE_COV_DUMP", dump)
-      System.put_env("MUTARE_COV_ROOT", File.cwd!())
+      System.put_env(H.dump_path_env(), dump)
+      System.put_env(H.root_env(), File.cwd!())
 
       on_exit(fn ->
-        System.delete_env("MUTARE_COV_DUMP")
-        System.delete_env("MUTARE_COV_ROOT")
+        System.delete_env(H.dump_path_env())
+        System.delete_env(H.root_env())
         File.rm(dump)
       end)
 

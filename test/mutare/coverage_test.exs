@@ -46,6 +46,7 @@ defmodule Mutare.CoverageTest do
 
   alias Mutare.{Coverage, Result}
   alias Mutare.Coverage.Recorder
+  alias Mutare.Coverage.HelperTemplate, as: H
   alias Mutare.Test.Project
 
   @moduletag timeout: 180_000
@@ -224,9 +225,16 @@ defmodule Mutare.CoverageTest do
       # the coverage helper module clashes with its test stand-in".
       System.delete_env(Recorder.fixture_override_env())
       assert Recorder.fixture_module() == Recorder.helper_module()
+      assert Recorder.track_key() == Recorder.runtime(:harness).track_key
 
       System.put_env(Recorder.fixture_override_env(), Recorder.suite_fixture_module())
       assert Recorder.fixture_module() == String.to_atom(Recorder.suite_fixture_module())
+      assert Recorder.track_key() == Recorder.runtime(:fixture).track_key
+      assert Recorder.record?(Recorder.record_ast([1]))
+
+      System.put_env(Recorder.fixture_override_env(), "Elixir.CoverageFixture.Helper")
+      rendered = Recorder.record_ast([1], :mutare_active_1) |> Sourceror.to_string()
+      assert Recorder.record?(Sourceror.parse_string!(rendered))
 
       # Blank is treated as unset (the same empty-string rule the selector key uses).
       System.put_env(Recorder.fixture_override_env(), "")
@@ -234,58 +242,50 @@ defmodule Mutare.CoverageTest do
     end
   end
 
-  describe "setup_ast/0 (umbrella shares one BEAM)" do
+  describe "tables_ast/1 (umbrella shares one BEAM)" do
     test "creating the coverage tables twice is a no-op, not a :badarg" do
-      # These coverage tables, the tracking flag, and the env var are all
-      # process-global, and this very suite runs *under the probe* when dogfooding —
-      # where the bootstrap has already created the tables and set the flag/env, and
-      # the metamutant records into them across the whole suite. Tearing down what we
-      # didn't create would suppress coverage for every later test (a spurious
-      # run-all). So restore exactly the prior state — only undo what this test
-      # introduced — the same discipline as `selector_test`'s key override.
-      saved_env = System.get_env(Recorder.env_var())
-      saved_track = :persistent_term.get(Recorder.track_key(), :unset)
-      agg_existed? = :ets.whereis(:mutare_cov_agg) != :undefined
-      attr_existed? = :ets.whereis(:mutare_cov_attr) != :undefined
-      unlabeled_existed? = :ets.whereis(:mutare_cov_unlabeled) != :undefined
+      # Fixture state stays separate from the outer dogfood probe. Preserve prior
+      # fixture state too, since this test deliberately initializes it twice.
+      saved_env = System.get_env(Recorder.runtime(:fixture).env_var)
+      saved_track = :persistent_term.get(Recorder.runtime(:fixture).track_key, :unset)
+      saved_mode = :persistent_term.get(Recorder.runtime(:fixture).mode_key, :unset)
+      agg_existed? = :ets.whereis(H.agg_table()) != :undefined
+      attr_existed? = :ets.whereis(H.attr_table()) != :undefined
+      unlabeled_existed? = :ets.whereis(H.unlabeled_table()) != :undefined
 
-      System.put_env(Recorder.env_var(), "1")
+      System.put_env(Recorder.runtime(:fixture).env_var, "1")
 
       on_exit(fn ->
-        restore_env(Recorder.env_var(), saved_env)
+        restore_env(Recorder.runtime(:fixture).env_var, saved_env)
         restore_track(saved_track)
-        drop_table_unless(:mutare_cov_agg, agg_existed?)
-        drop_table_unless(:mutare_cov_attr, attr_existed?)
-        drop_table_unless(:mutare_cov_unlabeled, unlabeled_existed?)
+        key = Recorder.runtime(:fixture).mode_key
+
+        if saved_mode == :unset,
+          do: :persistent_term.erase(key),
+          else: :persistent_term.put(key, saved_mode)
+
+        drop_table_unless(H.agg_table(), agg_existed?)
+        drop_table_unless(H.attr_table(), attr_existed?)
+        drop_table_unless(H.unlabeled_table(), unlabeled_existed?)
       end)
 
-      ast = Recorder.setup_ast()
+      :persistent_term.erase(Recorder.runtime(:fixture).mode_key)
+      Code.eval_quoted(Recorder.mode_ast(:fixture))
+      System.delete_env(Recorder.runtime(:fixture).env_var)
+      Code.eval_quoted(Recorder.mode_ast(:fixture))
+      ast = Recorder.tables_ast(:fixture)
 
       # Two apps' test helpers evaluate this in the same VM; without the
       # create-once guard the second :ets.new would raise :badarg.
       assert {_, _} = Code.eval_quoted(ast)
       assert {_, _} = Code.eval_quoted(ast)
-      assert :ets.whereis(:mutare_cov_agg) != :undefined
-      assert :ets.whereis(:mutare_cov_unlabeled) != :undefined
+      assert :ets.whereis(H.agg_table()) != :undefined
+      assert :ets.whereis(H.unlabeled_table()) != :undefined
     end
 
     test "a record is a no-op (not a crash) when the aggregate table is absent" do
-      # The self-hosting trap: mutation-testing Mutare *with Mutare* runs its own coverage
-      # tests (which create and tear down these process-global tables) against a metamutant
-      # of Mutare's lib that records into the *same* names. A test that opens the gate and
-      # then exits — its process-owned table dying with it — would otherwise leave a later
-      # instrumented line (even its own `on_exit`) to `:ets.insert` into a vanished table and
-      # crash, cascading across the suite. `hit/1` must skip when the table is gone.
-      #
-      # Exercise that only when the table is genuinely absent — never tear it down. Under the
-      # probe (and a dogfood self-host) the bootstrap owns it for the whole suite and dropping
-      # it would corrupt coverage selection (NOTES "Self-hosting"). In a normal run nothing
-      # created it, so the guard is exercised here; a probe run skips (its table exists).
-      if table?(:mutare_cov_agg) do
-        :ok
-      else
-        assert Mutare.Coverage.HelperTemplate.hit([123_456]) == true
-      end
+      assert :ets.whereis(H.agg_table()) == :undefined
+      assert Mutare.Coverage.HelperTemplate.hit([123_456]) == true
     end
   end
 
@@ -307,11 +307,11 @@ defmodule Mutare.CoverageTest do
       pre =
         Map.new(
           [
-            :mutare_cov_agg,
-            :mutare_cov_attr,
-            :mutare_cov_unlabeled,
-            :mutare_cov_test,
-            :mutare_cov_wholefile
+            H.agg_table(),
+            H.attr_table(),
+            H.unlabeled_table(),
+            H.test_table(),
+            H.wholefile_table()
           ],
           &{&1, table?(&1)}
         )
@@ -322,12 +322,12 @@ defmodule Mutare.CoverageTest do
         # Drop our probe ids first (they may live in a table the bootstrap owns under dogfooding),
         # then drop only the tables this test created. A concrete-named fixture records @attr_id to
         # the per-test table (module ignored in the match), so clear it by id.
-        delete_key(:mutare_cov_agg, @attr_id)
-        delete_key(:mutare_cov_agg, @unlabeled_id)
-        delete_key(:mutare_cov_unlabeled, @unlabeled_id)
-        delete_key(:mutare_cov_attr, {@fixture, @attr_id})
-        match_delete(:mutare_cov_test, {{:_, :_, @attr_id}})
-        match_delete(:mutare_cov_wholefile, {@attr_id})
+        delete_key(H.agg_table(), @attr_id)
+        delete_key(H.agg_table(), @unlabeled_id)
+        delete_key(H.unlabeled_table(), @unlabeled_id)
+        delete_key(H.attr_table(), {@fixture, @attr_id})
+        match_delete(H.test_table(), {{:_, :_, @attr_id}})
+        match_delete(H.wholefile_table(), {@attr_id})
         Enum.each(pre, fn {table, existed?} -> drop_table_unless(table, existed?) end)
       end)
 
@@ -337,15 +337,15 @@ defmodule Mutare.CoverageTest do
     test "an unlabeled process attributes its hit to the ExUnit test frame on its stack" do
       in_unlabeled_process(fn -> apply(@fixture, :"test runs a body", [[@attr_id]]) end)
 
-      assert :ets.member(:mutare_cov_attr, {@fixture, @attr_id})
-      refute :ets.member(:mutare_cov_unlabeled, @attr_id)
+      assert :ets.member(H.attr_table(), {@fixture, @attr_id})
+      refute :ets.member(H.unlabeled_table(), @attr_id)
     end
 
     test "an unlabeled process attributes a doctest body's hit to its module" do
       in_unlabeled_process(fn -> apply(@fixture, :"doctest Mutare (1)", [[@attr_id]]) end)
 
-      assert :ets.member(:mutare_cov_attr, {@fixture, @attr_id})
-      refute :ets.member(:mutare_cov_unlabeled, @attr_id)
+      assert :ets.member(H.attr_table(), {@fixture, @attr_id})
+      refute :ets.member(H.unlabeled_table(), @attr_id)
     end
 
     test "an unlabeled Task attributes its hit to its awaiting test caller's frame" do
@@ -361,15 +361,15 @@ defmodule Mutare.CoverageTest do
       end)
 
       send(holder, {ref, :release})
-      assert :ets.member(:mutare_cov_attr, {@fixture, @attr_id})
-      refute :ets.member(:mutare_cov_unlabeled, @attr_id)
+      assert :ets.member(H.attr_table(), {@fixture, @attr_id})
+      refute :ets.member(H.unlabeled_table(), @attr_id)
     end
 
     test "an unlabeled process with no ExUnit frame and no callers stays unlabeled" do
       in_unlabeled_process(fn -> apply(@fixture, :plain, [[@unlabeled_id]]) end)
 
-      assert :ets.member(:mutare_cov_unlabeled, @unlabeled_id)
-      refute :ets.member(:mutare_cov_attr, {@fixture, @unlabeled_id})
+      assert :ets.member(H.unlabeled_table(), @unlabeled_id)
+      refute :ets.member(H.attr_table(), {@fixture, @unlabeled_id})
     end
   end
 
@@ -430,8 +430,8 @@ defmodule Mutare.CoverageTest do
   defp restore_env(var, nil), do: System.delete_env(var)
   defp restore_env(var, value), do: System.put_env(var, value)
 
-  defp restore_track(:unset), do: :persistent_term.erase(Recorder.track_key())
-  defp restore_track(value), do: :persistent_term.put(Recorder.track_key(), value)
+  defp restore_track(:unset), do: :persistent_term.erase(Recorder.runtime(:fixture).track_key)
+  defp restore_track(value), do: :persistent_term.put(Recorder.runtime(:fixture).track_key, value)
 
   # Drop a coverage table only if this test created it; leave a pre-existing one
   # (under the probe, the bootstrap owns it and later tests still record into it).

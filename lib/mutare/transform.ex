@@ -148,6 +148,8 @@ defmodule Mutare.Transform do
       fragments.
     * `Mutare.Transform.ImportWitness` — the dead-code import witness spliced
       alongside a mutated bare imported call.
+    * `Mutare.Transform.CoverageEmit` — scope-aware coverage gate emission and
+      binding dependencies; delivery paths retain ownership of recording positions.
     * `Mutare.Transform.SelectorEmit` — the shared id/site claim, selector
       subject, catch-all coverage branch, and ordinary selector-case assembly.
   """
@@ -187,6 +189,7 @@ defmodule Mutare.Transform do
     Resolve,
     Scope,
     SelectorEmit,
+    CoverageEmit,
     UnitReturns,
     Uses
   }
@@ -969,7 +972,17 @@ defmodule Mutare.Transform do
       # active-id parameter. Keep the original function, including super/defaults.
       {orig_clauses, ctx}
     else
-      {LiftedEmit.assemble(plan, orig_clauses, claimed, group, ctx.config), ctx}
+      {records, ctx} =
+        case claimed do
+          [] ->
+            {[], ctx}
+
+          _ ->
+            {record, ctx} = CoverageEmit.record(Enum.map(claimed, &elem(&1, 0)), ctx, :local)
+            {[record], ctx}
+        end
+
+      {LiftedEmit.assemble(plan, orig_clauses, claimed, group, ctx.config, records), ctx}
     end
   end
 

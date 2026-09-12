@@ -7,10 +7,10 @@ defmodule Mutare.Sandbox.Command.Output do
 
     * **Refining a verdict.** Exit `1` is ambiguous — a genuine harness failure or
       a mutation that broke the test suite's own compilation — and a BEAM abort can
-      land on any code. `suite_compile_error?/1`, `atom_exhausted?/1`, and
-      `boot_failure?/1` are the pure discriminators `Mutare.Sandbox.Command.outcome/2`
-      consults to split those cases (see that module's moduledoc for *why* each is
-      the verdict it is).
+      land on any code. `suite_compile_error?/1`, `atom_exhausted?/1`,
+      `app_start_failure?/1`, `config_failure?/1`, and `boot_failure?/1` are the pure
+      discriminators `Mutare.Sandbox.Command.outcome/2` consults to split those cases (see that
+      module's moduledoc for *why* each is the verdict it is).
     * **Locating a failure.** `Mutare.Poison` maps a failed metamutant compile back
       to mutant ids (`source_location_regex/0` + `diagnostic_severity/1`, and the
       `expanding macro:` frames of `macro_expansion_stacks/1` — which `Mutare.Poison.Hint`
@@ -82,6 +82,45 @@ defmodule Mutare.Sandbox.Command.Output do
   # so plainly and treats it as known-transient. Wording stable across OTP.
   @boot_during_startup ~r/terminating during boot/i
   @torn_down_standard_error ~r/put_chars.{0,8}standard_error/
+
+  # The target's own `start/2` callback ran and failed. `mix test` runs `app.start`
+  # *before* it loads `test_helper.exs`, and the sandbox selects the mutant in the
+  # `mix.exs` prefix — earlier still — so a mutation reachable from
+  # `Application.start/2` (or from a child spec it builds) detonates here, before any
+  # test runs. The baseline boots the *same* sandbox green, so the mutation is what
+  # broke the boot: a detection, exactly like a mutation that breaks the suite's own
+  # compilation.
+  #
+  # Mix's banner alone is **not** that signature, and reading it as one charged a
+  # broken sandbox as a kill (`harness_test`: a lib that won't compile leaves no
+  # `.app`, and Mix says `could not find application file: …` under the same banner).
+  # So the marker is the banner *plus* the callback: `Application.format_error/1`
+  # names `<Mod>.start(<args>)` on the banner line for exactly the three reasons that
+  # mean the callback was entered and did not return a supervisor — it exited
+  # (`exited in: Mod.start(…)`), `returned an error:`, or `returned a bad value:`.
+  # Every other reason it can render — a missing/unloadable app file, a bad name, a
+  # bad restart type — never mentions `start(`, and stays a plain `:harness_error`.
+  #
+  # Distinct again from `@boot_during_startup` above, which is the node dying so
+  # early that no Mix error survives at all — that one stays infra too, and outranks
+  # this marker in `Mutare.Sandbox.Command.outcome/2`.
+  @app_start_failure ~r/^\*\* \(Mix\) Could not start application [^\s:]+: .*\.start\(/m
+
+  # Config evaluates user code before Application.start/2, including runtime.exs.
+  # Its exceptions have no Mix banner. The evaluator frame identifies arbitrary
+  # config paths, but Elixir's default stack depth can truncate it when a called
+  # library raises. Both frames can disappear in deep calls, so the sandbox's
+  # runtime-config wrapper emits explicit evidence before re-raising instead.
+  # Require a (file) stack frame, not a path mentioned in an error message: an
+  # unreadable config file fails in Config.Reader before evaluation is entered.
+  @config_eval_frame ~r{^[\t ]+\(elixir [^\r\n)]+\) lib/config\.ex:\d+: Config\.__eval__!/3[\t ]*\r?$}m
+  @runtime_config_frame ~r{^[\t ]+(?:[^\r\n]*/)?runtime\.exs:\d+: \(file\)[\t ]*\r?$}m
+  @config_failure_marker Regex.compile!(
+                           "^" <>
+                             Regex.escape(Mutare.Sandbox.RuntimeConfig.failure_marker()) <>
+                             "\\r?$",
+                           "m"
+                         )
 
   @typedoc "The remediation class of a Mix dependency-check failure."
   @type dependency_issue :: :fetch | :compile | :diverged | :unavailable | :invalid
@@ -195,7 +234,7 @@ defmodule Mutare.Sandbox.Command.Output do
   # indented. Each one starts a fresh expansion stack. Deliberately wider than
   # `@exception_marker`: *any* raised term (`** (exit)`, a dotted `** (Mix.Error)`) heads its
   # own stacktrace, whether or not it is a compiler diagnostic for `diagnostic_severity/1`.
-  @exception_header ~r/^\s*\*\* \(/
+  @exception_header ~r/^\s*\*\* \(/m
 
   @typedoc """
   One `expanding macro:` stacktrace frame: the macro's qualified name and arity as the
@@ -319,6 +358,51 @@ defmodule Mutare.Sandbox.Command.Output do
   @spec atom_exhausted?(String.t()) :: boolean()
   def atom_exhausted?(output) when is_binary(output) do
     Regex.match?(@atom_table_exhausted, output)
+  end
+
+  @doc """
+  Returns whether `output` shows the target's `Application.start/2` running and failing.
+
+  This is the signature of a mutation reachable from application startup: `mix test`
+  starts the app before it loads `test_helper.exs`, and the sandbox has already
+  selected the mutant by then, so such a mutation aborts the boot instead of failing
+  a test. The baseline boots the same sandbox green, so the runner treats a
+  *persistent* one as a kill — see `Mutare.Sandbox.Command.outcome/2` and
+  `Mutare.Runner.MutantRun`, which first spends the boot-contention retry budget so a
+  transient startup collision is never charged as a detection.
+
+  It matches Mix's `Could not start application` banner **only** when the reason names
+  the `start/2` callback — the app exited in it, or it returned an error or a bad
+  value. A banner that reports a missing application file, an unloadable app or a bad
+  name is a broken sandbox, not a detection, and returns `false`.
+
+  This predicate only refines an otherwise-`:harness_error` exit, and `boot_failure?/1`
+  takes precedence over it: a node that died mid-boot with its diagnostic erased is
+  unambiguously infra, whatever Mix managed to print.
+  """
+  @spec app_start_failure?(String.t()) :: boolean()
+  def app_start_failure?(output) when is_binary(output) do
+    Regex.match?(@app_start_failure, output)
+  end
+
+  @doc """
+  Returns whether `output` reports an exception while evaluating configuration.
+
+  Selection precedes configuration, so a mutation called from `runtime.exs` can
+  raise before `Application.start/2`. The sandbox's runtime-config wrapper marks
+  escaping exceptions explicitly, surviving arbitrarily deep library calls.
+  Config's evaluator frame or a `runtime.exs` script frame also identifies that
+  boundary when present. Arbitrary exceptions and
+  missing config files remain infrastructure failures. The baseline configured
+  the same sandbox successfully; `Mutare.Sandbox.Command.outcome/2` treats this
+  as `:app_start_failure`, subject to the same boot-contention retries and
+  `boot_failure?/1` precedence as a failing application callback.
+  """
+  @spec config_failure?(String.t()) :: boolean()
+  def config_failure?(output) when is_binary(output) do
+    Regex.match?(@exception_header, output) and
+      (Regex.match?(@config_failure_marker, output) or
+         Regex.match?(@config_eval_frame, output) or Regex.match?(@runtime_config_frame, output))
   end
 
   @doc """

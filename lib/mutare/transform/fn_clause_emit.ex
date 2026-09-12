@@ -17,7 +17,7 @@ defmodule Mutare.Transform.FnClauseEmit do
   # Whole-node and fallback clause branches share one selector: nesting would expose an
   # outer catch-all's binding to the raw mutant bodies.
 
-  alias Mutare.Coverage.Recorder
+  alias Mutare.Transform.CoverageEmit
 
   alias Mutare.Transform.{
     Candidate,
@@ -71,11 +71,12 @@ defmodule Mutare.Transform.FnClauseEmit do
         [{_, %Candidate.FnClause{raw_fn: {:fn, _, raw_clauses}}} | _] ->
           rewritten = ClauseVariants.interleave(clauses, raw_clauses, heads, var)
           ids = Enum.map(heads, &elem(&1, 0))
-          record = Recorder.record_ast(ids, var, ctx.config.runtime_namespace)
+          {record, ctx} = CoverageEmit.record(ids, ctx, :enclosing)
 
           # The interleaved clauses' gates and the creation-time record read the enclosing
-          # binding directly, not through a selector subject.
-          {{:__block__, [], [record, {:fn, meta, rewritten}]}, SelectorEmit.reference_active(ctx)}
+          # binding directly, not through a selector subject; `CoverageEmit.record/3` has
+          # already recorded that dependency on `ctx`.
+          {{:__block__, [], [record, {:fn, meta, rewritten}]}, ctx}
       end
 
     select(default, whole, ctx)

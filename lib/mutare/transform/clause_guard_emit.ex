@@ -26,7 +26,7 @@ defmodule Mutare.Transform.ClauseGuardEmit do
   # offer) keeps its ordinary selector, wrapped around the rewritten construct.
 
   alias Mutare.AST
-  alias Mutare.Coverage.Recorder
+  alias Mutare.Transform.CoverageEmit
   alias Mutare.Transform.{Candidate, Ctx, GuardBuild, ImportWitness, Meta, Scope, SelectorEmit}
   alias Mutare.Transform.Candidate.Delivery
 
@@ -52,8 +52,8 @@ defmodule Mutare.Transform.ClauseGuardEmit do
 
   defp deliver(node, [], ctx), do: {node, ctx}
 
-  # The gates and the coverage record read the hoisted binding directly, so the delivery records
-  # the reference (`SelectorEmit.reference_active/1`) for the enclosing prologue to bind it.
+  # The gates and the coverage record read the hoisted binding directly. `CoverageEmit.record/3`
+  # records that reference for the enclosing prologue to bind it, so the delivery does not.
   defp deliver(node, guards, ctx) do
     var = ctx.config.active_var
 
@@ -63,8 +63,8 @@ defmodule Mutare.Transform.ClauseGuardEmit do
       |> Enum.reduce(node, fn {locator, variants}, acc -> rewrite(acc, locator, variants, var) end)
 
     ids = Enum.map(guards, &elem(&1, 0))
-    record = Recorder.record_ast(ids, var, ctx.config.runtime_namespace)
-    {{:__block__, [], [record, rewritten]}, SelectorEmit.reference_active(ctx)}
+    {record, ctx} = CoverageEmit.record(ids, ctx, :enclosing)
+    {{:__block__, [], [record, rewritten]}, ctx}
   end
 
   defp select(node, [], ctx), do: {node, ctx}

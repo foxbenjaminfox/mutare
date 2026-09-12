@@ -48,7 +48,7 @@ defmodule Mutare.Sandbox do
   alias Mutare.{Options, Project, Schema}
   alias Mutare.Coverage.Recorder
   alias Mutare.Run.Context
-  alias Mutare.Sandbox.{CompilerOptions, Lock, Mirror, Ownership, Paths, Seed}
+  alias Mutare.Sandbox.{CompilerOptions, Lock, Mirror, Ownership, Paths, RuntimeConfig, Seed}
   alias Mutare.Sandbox.Command.Invocation
 
   # The top-level entries a sandbox never takes from the target: build output, VCS and editor
@@ -78,12 +78,14 @@ defmodule Mutare.Sandbox do
   # owned next to its own constants and is parsed at build time, not assembled
   # here as a string.
   @selector_bootstrap Macro.to_string(Mutare.Selector.bootstrap_ast())
+  @coverage_mode Macro.to_string(Recorder.mode_ast(:harness))
   @timeout_watcher Macro.to_string(Invocation.watcher_ast())
   @owner_watcher Macro.to_string(Invocation.owner_watch_ast())
 
   @bootstrap """
   # ---- injected by Mutare: select the active mutant from the environment ----
   #{@selector_bootstrap}
+  #{@coverage_mode}
 
   # ---- injected by Mutare: per-mutant timeout (self-halt; no external kill) --
   #{@timeout_watcher}
@@ -117,14 +119,14 @@ defmodule Mutare.Sandbox do
   # ---------------------------------------------------------------------------
   """
 
-  # The coverage probe must start tracking before user `test_helper.exs` code,
-  # because helpers often start the app or touch mutated code. `ExUnit.after_suite/1`
-  # is only registerable after `ExUnit.start/0`, though, so coverage is injected
-  # in two pieces around the user's helper.
+  # Project prefixes initialize selection and immutable probe mode before target
+  # code, even with a custom config_path or a declined inference wrap. Test helpers
+  # provide an idempotent fallback, own the capture tables, and enable recording
+  # readiness. Dump registration follows the user's ExUnit.start/0.
   @coverage_helper Recorder.helper_source()
   @coverage_setup """
   # ---- injected by Mutare: coverage setup (inert unless probing) ------------
-  #{Macro.to_string(Recorder.setup_ast())}
+  #{Macro.to_string(Recorder.tables_ast(:harness))}
   # ---------------------------------------------------------------------------
   """
   @coverage_after_suite """
@@ -411,20 +413,28 @@ defmodule Mutare.Sandbox do
       |> Map.merge(coverage_helper_files(root, project))
       |> Map.merge(helper_files(root, project))
       |> Map.merge(config_files(root))
+      |> Map.merge(RuntimeConfig.files(root, @excluded))
       |> Map.merge(project_files(root, project))
 
-    # Wrap in place. Rebuilding the whole map would walk every metamutant entry to reach the
-    # handful of `mix.exs` ones.
+    # Prefix every project with the same bootstrap the test helper gets, so selection
+    # and probe mode are initialized before any of the target's own code — whatever
+    # its `config_path`, and whether or not its inference hook could be attached.
+    # The watchers ride along because they must: activation reaches application
+    # startup now, so a mutation that loops or orphans there needs its guard already
+    # armed. Every piece is idempotent — repeated umbrella projects, and the test
+    # helper's later fallback, preserve the first evaluation rather than reset it.
+    #
+    # Wrap in place; only the handful of mix.exs entries need rewriting.
     overrides
     |> Map.keys()
     |> Enum.filter(&(Path.basename(&1) == "mix.exs"))
     |> Enum.reduce({overrides, MapSet.new(), []}, fn rel, {acc, wrapped, declined} ->
       case CompilerOptions.project_source(Map.fetch!(acc, rel)) do
         {:hooked, source} ->
-          {Map.put(acc, rel, source), MapSet.put(wrapped, rel), declined}
+          {Map.put(acc, rel, @bootstrap <> source), MapSet.put(wrapped, rel), declined}
 
         {:declined, source, reason} ->
-          {Map.put(acc, rel, source), wrapped, [{rel, reason} | declined]}
+          {Map.put(acc, rel, @bootstrap <> source), wrapped, [{rel, reason} | declined]}
       end
     end)
   end

@@ -185,8 +185,14 @@ defmodule Mutare.Sandbox.CompilerOptionsIntegrationTest do
 
     Sandbox.prepare(fixture.umbrella, %Schema{}, sandbox: fixture.sandbox, project: project)
 
-    assert File.read!(Path.join(fixture.sandbox, "apps/template/mix.exs")) ==
+    rewritten = File.read!(Path.join(fixture.sandbox, "apps/template/mix.exs"))
+
+    assert String.ends_with?(
+             rewritten,
              File.read!(Path.join(fixture.umbrella, "apps/template/mix.exs"))
+           )
+
+    assert rewritten =~ "MUTARE_COVERAGE"
 
     compile_and_observe(fixture.sandbox, "apps/inference_child/compiled-options")
   end

@@ -25,7 +25,7 @@ defmodule Mutare.Sandbox.Command do
   side, in `Invocation`) and this module (the decoding side) read from.
 
   `outcome/2` refines `Exit.decode/1`'s ambiguous "anything else" case with the
-  run's output (via the `Mutare.Sandbox.Command.Output` discriminators). Two refinements recover
+  run's output (via the `Mutare.Sandbox.Command.Output` discriminators). Three refinements recover
   *detected*-mutant cases from the otherwise-`:harness_error` bucket:
 
     * a mutation that broke the **test suite's** own compilation (it ran at the
@@ -37,8 +37,16 @@ defmodule Mutare.Sandbox.Command do
       timeout (the suite can never pass with it), so also a kill. The VM aborts
       before the in-process timeout watcher can self-halt, which is why it surfaces
       here rather than as a clean `Exit.timeout/0`.
+    * a mutation reachable from **application startup** stops `mix test` before it
+      loads a single test: the sandbox selects the mutant in the `mix.exs` prefix,
+      runtime configuration raises (`Output.config_failure?/1`), or `app.start`
+      raises and Mix exits `1` with `Could not start application …`
+      (`Output.app_start_failure?/1`). The baseline
+      boots the same sandbox green, so the mutation is what broke it — a kill, on the
+      same reasoning as the suite-compile case. `Mutare.Runner.MutantRun` spends the
+      boot-contention retry budget first, so only a *persistent* one is charged.
 
-  A third refinement does **not** change the verdict — it stays a harness error —
+  A fourth refinement does **not** change the verdict — it stays a harness error —
   but *names a known-transient cause* so the runner can message and retry it
   better (`Output.boot_failure?/1` → `:boot_failure`): the sandbox node died **during
   boot** and its own diagnostic was erased by a secondary `:standard_error`
@@ -108,6 +116,13 @@ defmodule Mutare.Sandbox.Command do
       program mint unbounded atoms and the BEAM aborted when the atom table filled.
       A resource-divergence like a timeout (the suite can never pass with it), so
       the runner counts it as a kill — see `outcome/2` and `Output.atom_exhausted?/1`.
+    * `:app_start_failure` — a refinement of `:harness_error`: Mix refused to start
+      the target's OTP application because the mutation broke configuration
+      (`Output.config_failure?/1`) or code reachable from `Application.start/2`
+      (`Output.app_start_failure?/1`). The suite never ran, but
+      the mutation *was* detected — the app can't even boot with it — so the runner
+      counts it as a kill once the boot-contention retries are spent (see `outcome/2`
+      and `Mutare.Runner.MutantRun`).
     * `:boot_failure` — a refinement of `:harness_error` that is **still not a
       kill**: the sandbox node died during boot and its own diagnostic was erased
       by a secondary `:standard_error` failure (`Output.boot_failure?/1`). A known-
@@ -127,6 +142,7 @@ defmodule Mutare.Sandbox.Command do
           | :harness_error
           | :suite_compile_error
           | :atom_exhausted
+          | :app_start_failure
           | :boot_failure
           | :sigkilled
 
@@ -148,15 +164,27 @@ defmodule Mutare.Sandbox.Command do
   script (`Output.suite_compile_error?/1`), it is `:suite_compile_error`. A second
   refinement recovers `:atom_exhausted` — a VM abort from the mutation minting
   unbounded atoms (`Output.atom_exhausted?/1`), a detected resource-divergence. Both
-  are kills. A third — `:boot_failure` (`Output.boot_failure?/1`) — stays a harness
-  error but names a known-transient boot-time contention crash, so the runner can
-  message and retry it better. Everything else (a lib-file compile error, a missing
-  dep, no marker at all) stays `:harness_error` — fail safe: an ambiguous failure is
-  never a kill.
+  are kills. So is a third — `:app_start_failure` (`Output.app_start_failure?/1`) —
+  where Mix refused to start the application because the mutation broke configuration
+  (`Output.config_failure?/1`) or code reachable from `Application.start/2`;
+  the baseline boots the same sandbox green,
+  so the mutation is what stopped it. A fourth — `:boot_failure`
+  (`Output.boot_failure?/1`) — stays a harness error but names a known-transient
+  boot-time contention crash, so the runner can message and retry it better.
+  Everything else (a lib-file compile error, a missing dep, no marker at all) stays
+  `:harness_error` — fail safe: an ambiguous failure is never a kill.
+
+  The two boot markers are ordered `:boot_failure` first, deliberately. A node that
+  died mid-boot with its own diagnostic erased is unambiguously infrastructure,
+  whatever Mix printed on the way down; a `Could not start application` banner on its
+  own is not. Startup contention that *does* reach Mix therefore still lands on
+  `:app_start_failure` — which is why `Mutare.Runner.MutantRun` spends the dedicated
+  boot-contention retry budget on it before recording the kill, rather than charging
+  the first attempt.
 
   `:sigkilled` (exit `Exit.sigkill/0`) deliberately bypasses the output
   refinements: a SIGKILLed run's output is truncated wherever the kill landed, so
-  matching banners in it would be unreliable — and none of the three markers'
+  matching output markers in it would be unreliable — and none of these markers'
   causes exits via SIGKILL anyway (a compile error exits `1`; atom exhaustion is
   the VM aborting itself).
   """
@@ -165,13 +193,26 @@ defmodule Mutare.Sandbox.Command do
     case Exit.decode(status) do
       :harness_error ->
         cond do
-          # Kills first: a detected mutation must never be masked by a boot banner
-          # (they don't co-occur — a node dead at boot never compiled a test
-          # script nor filled the atom table — but precedence is fail-safe).
-          Output.atom_exhausted?(output) -> :atom_exhausted
-          Output.suite_compile_error?(output) -> :suite_compile_error
-          Output.boot_failure?(output) -> :boot_failure
-          true -> :harness_error
+          # These two kills come first: a detected mutation must never be masked by a
+          # boot banner (they don't co-occur — a node dead at boot never compiled a
+          # test script nor filled the atom table — but precedence is fail-safe).
+          Output.atom_exhausted?(output) ->
+            :atom_exhausted
+
+          Output.suite_compile_error?(output) ->
+            :suite_compile_error
+
+          # The one place an infra marker outranks a kill, and deliberately so: a node
+          # dead mid-boot with its own diagnostic erased is unambiguously infra, and
+          # may well have printed Mix's banner on the way down. See the moduledoc.
+          Output.boot_failure?(output) ->
+            :boot_failure
+
+          Output.app_start_failure?(output) or Output.config_failure?(output) ->
+            :app_start_failure
+
+          true ->
+            :harness_error
         end
 
       decoded ->

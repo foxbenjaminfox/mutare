@@ -1,9 +1,7 @@
 defmodule Mutare.Coverage.DumpTest do
   use ExUnit.Case, async: false
 
-  # These tests own the capture tables; exclude them when this suite is itself
-  # running under a coverage probe, whose tables must remain intact.
-  @moduletag :coverage_tables
+  # These tests own fixture tables, separate from the outer dogfood probe.
   @moduletag :tmp_dir
 
   import ExUnit.CaptureLog, only: [capture_log: 1]

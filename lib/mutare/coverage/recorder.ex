@@ -15,10 +15,26 @@ defmodule Mutare.Coverage.Recorder do
       (`Mutare.Sandbox` writes it into the sandbox) holding the ETS writes and the
       end-of-suite dump, so the per-site code stays a single call and the
       OTP-version-tolerant label read lives in one place.
-    * `setup_ast/0` and `after_suite_ast/0` — injected around the target's
-      `test_helper.exs`; when the probe env var is set, setup creates the tables
-      and flips the tracking flag before user helper code runs, while the
-      after-suite hook is registered after the helper has started ExUnit.
+    * Lifecycle ASTs — `mode_ast/1` initializes probe mode in the `mix.exs`
+      prefix, before target project/config/application code. `tables_ast/1`
+      creates tables and enables recording before user `test_helper.exs` code.
+      `after_suite_ast/0` registers the dump after the helper starts ExUnit. Both
+      scoped ASTs take `:harness` or `:fixture` explicitly — there is no default,
+      because a bootstrap's scope is a property of where it is written, not of the
+      environment of the process that rendered it.
+
+  Probe mode (`:mutare_probe`) is immutable after initialization. Recording
+  readiness (`:mutare_track`) becomes true only after table setup. They have
+  different lifetimes: a function or closure can span table setup, so only mode
+  is a candidate for hoisting. Keeping readiness in the per-site gate also keeps
+  early target code from calling the helper before it is loadable. The helper
+  checks table existence again for direct calls and fixture table replacement.
+
+  The compiled `HelperTemplate` uses private fixture tables, process-dictionary
+  caches and dump variables. Under self-hosting, the existing helper-name override
+  also selects the private recording key for fixture metamutants; generated harness
+  bootstraps always use the harness descriptor. Fixture setup cannot alter the
+  outer probe, and its table-owning tests can run during that probe.
 
   ## Why this, not `:cover`
 
@@ -34,20 +50,19 @@ defmodule Mutare.Coverage.Recorder do
 
   The spliced expression (`record_ast/3`) is two nested short-circuits:
 
-      case :erlang.==(mutare_active, 0) do
-        true ->
-          case :persistent_term.get(:mutare_track, false) do
-            true -> <helper>.hit([<ids>])
-            _ -> false
-          end
-
+      case (case :erlang.==(mutare_active, 0) do
+              true -> :persistent_term.get(:mutare_track, false)
+              _ -> false
+            end) do
+        true -> <helper>.hit([<ids>])
         _ -> false
       end
 
     * per-mutant runs (a local id in the selected file, `:inactive` elsewhere)
-      leave on the comparison with zero — ~zero hot-loop cost;
-    * the baseline green run and Mutare's own unit tests (`:mutare_track` unset)
-      leave on the persistent-term read — the helper is never *called*;
+      short-circuit on the comparison with zero —
+      ~zero hot-loop cost;
+    * the baseline green run and Mutare's own unit tests (recording disabled)
+      short-circuit on the persistent-term read — the helper is never *called*;
     * only the probe run (`MUTARE_COVERAGE` set → `:mutare_track` true,
       `mutare_active == 0`) records.
 
@@ -55,8 +70,8 @@ defmodule Mutare.Coverage.Recorder do
   where a narrowed or replaced `Kernel` import would redefine `and` under it, and
   `:erlang.andalso` — the form `and` compiles to in a guard — is undefined in a body.
   A special form is the one thing no import can redirect. The comparison is an explicit
-  `:erlang` call for the same reason, and it keeps the outer `case` from ever reading as a
-  hoisted selector (`case mutare_active do`).
+  `:erlang` call for the same reason, and neither `case` can read as a hoisted
+  selector (`case mutare_active do`).
 
   Schema emission supplies a namespace to `record_ast/3`, producing
   `hit(namespace, local_ids)`. The helper keeps a seen-cache per namespace and
@@ -69,28 +84,25 @@ defmodule Mutare.Coverage.Recorder do
   alias Mutare.AST
   alias Mutare.Coverage.HelperTemplate
 
-  @env_var "MUTARE_COVERAGE"
-  @track_key :mutare_track
+  @harness_runtime HelperTemplate.runtime(:harness)
+  @fixture_runtime HelperTemplate.runtime(:fixture)
+  @env_var @harness_runtime.env_var
+  @track_key @harness_runtime.track_key
 
   # The table names, dump file, and umbrella-path env vars the dependency-free helper reads/writes
   # are owned by `HelperTemplate` (the helper's source) and sourced from there, so the bootstrap
-  # that *creates* the tables (`setup_ast/0`) and the dump reader (`Mutare.Coverage`) can never
+  # that *creates* the tables (`tables_ast/1`) and the dump reader (`Mutare.Coverage`) can never
   # drift from the helper that *writes* them.
-  @agg_table HelperTemplate.agg_table()
-  @attr_table HelperTemplate.attr_table()
-  @unlabeled_table HelperTemplate.unlabeled_table()
-  @test_table HelperTemplate.test_table()
-  @wholefile_table HelperTemplate.wholefile_table()
-  @dump_file HelperTemplate.dump_file()
-  @helper_module :mutare_cov
+  @dump_file @harness_runtime.dump_file
+  @helper_module HelperTemplate.harness_module()
 
   # An umbrella runs each app's suite with cwd = that app's dir, so the dump must
   # be written to (and the test-file paths normalised against) absolute locations
   # the probe controls, not cwd-relative ones. The probe sets these; the helper
   # reads them, falling back to the cwd-relative behaviour when unset (single app).
   # (Owned by `HelperTemplate`, like the table names above.)
-  @dump_path_env HelperTemplate.dump_path_env()
-  @root_env HelperTemplate.root_env()
+  @dump_path_env @harness_runtime.dump_path_env
+  @root_env @harness_runtime.root_env
 
   # Self-hosting isolation for the helper module name, mirroring
   # `Mutare.Selector`'s private selection key. When the target *is* Mutare, the
@@ -125,9 +137,33 @@ defmodule Mutare.Coverage.Recorder do
   @spec env_var() :: String.t()
   def env_var, do: @env_var
 
-  @doc "The `:persistent_term` flag the spliced record reads (`false` by default)."
+  @doc """
+  The recording-readiness key a *spliced record* reads.
+
+  This one follows `fixture_module/0` rather than taking a scope, because it must
+  track whatever the emitter is emitting: a transform run in the harness bakes the
+  harness key into the metamutant, and a transform run by the suite-under-test (where
+  `fixture_override_env/0` is set) bakes the fixture key into its fixtures. The
+  lifecycle ASTs are the other half of that contract and take their scope
+  **explicitly** (`mode_ast/1`, `tables_ast/1`) — they are written into generated
+  bootstraps, where the ambient override says nothing about which VM will run them.
+  Don't pair this function with a lifecycle AST; reach for `runtime/1` instead, whose
+  scope you have then named.
+  """
   @spec track_key() :: atom()
-  def track_key, do: @track_key
+  def track_key do
+    if fixture_module() == helper_module(), do: @track_key, else: @fixture_runtime.track_key
+  end
+
+  @doc """
+  Capture state for one scope: `:harness` is what a generated sandbox bootstrap and
+  the written `:mutare_cov` helper use; `:fixture` is the disjoint set the compiled
+  `HelperTemplate` and Mutare's own in-process fixtures use, so fixture capture can
+  run inside an outer dogfood probe without touching it.
+  """
+  @spec runtime(:harness | :fixture) :: map()
+  def runtime(:harness), do: @harness_runtime
+  def runtime(:fixture), do: @fixture_runtime
 
   @doc "The file (relative to the sandbox) the end-of-suite dump is written to."
   @spec dump_file() :: String.t()
@@ -193,26 +229,33 @@ defmodule Mutare.Coverage.Recorder do
   Literals use clean metadata (`Mutare.AST.literal/1`); a bare integer can render badly
   when this expression is emitted as a statement in a generated function body.
 
-  The comparison is an explicit `:erlang` call (`Mutare.AST.erlang_call/2`) and the two
-  short-circuits are nested `case`s: special forms and remote calls alone — never a
-  `Kernel` operator, which a narrowed import could redefine, and never `:erlang.andalso`,
-  which Elixir accepts only inside a guard (see the moduledoc). `record_var/1` recognises
-  exactly this shape, so the two must move together.
+  The comparison is an explicit `:erlang` call and both short-circuits use `case`,
+  so target imports cannot redefine them and no guard-only `:erlang.andalso` call
+  appears in a body. `record?/1` recognises the outer case and helper payload
+  without depending on the gate's implementation.
   """
   @spec record_ast([pos_integer()], atom(), String.t() | nil) :: Macro.t()
   def record_ast(ids, var \\ @var_name, namespace \\ nil) when is_list(ids) do
-    track_read =
-      {{:., [], [:persistent_term, :get]}, [], [AST.literal(@track_key), AST.literal(false)]}
+    when_true(gate_ast(var), hit_ast(ids, namespace))
+  end
 
+  @doc "The coverage gate, independent of the helper payload and its recognition."
+  @spec gate_ast(atom()) :: Macro.t()
+  def gate_ast(var) do
+    active_zero = AST.erlang_call(:==, [{var, [], nil}, literal(0)])
+    track_read = {{:., [], [:persistent_term, :get]}, [], [literal(track_key()), literal(false)]}
+    when_true(active_zero, track_read)
+  end
+
+  @doc "The helper call carrying this record's literal runtime ids."
+  @spec hit_ast([pos_integer()], String.t() | nil) :: Macro.t()
+  def hit_ast(ids, namespace) do
     args =
       if is_nil(namespace),
         do: [ids_literal(ids)],
         else: [AST.literal(namespace), ids_literal(ids)]
 
-    hit_call = {{:., [], [fixture_module(), :hit]}, [], args}
-
-    active_zero = AST.erlang_call(:==, [{var, [], nil}, AST.literal(0)])
-    when_true(active_zero, when_true(track_read, hit_call))
+    {{:., [], [fixture_module(), :hit]}, [], args}
   end
 
   # `case <condition> do true -> <body>; _ -> false end`: the body runs only when the condition
@@ -243,47 +286,58 @@ defmodule Mutare.Coverage.Recorder do
   defp when_true_args(_node), do: :error
 
   @doc """
-  Return the dispatch variable read by a coverage record, or `nil`.
+  Recognise a gated coverage payload, independently of how its gate is evaluated.
 
-  This is the inverse of `record_ast/3`. A coverage record has this shape:
-
-      case :erlang.==(<var>, 0) do
-        true ->
-          case :persistent_term.get(<track_key>, false) do
-            true -> <helper>.hit(<ids>)
-            _ -> false
-          end
-
-        _ -> false
-      end
-
-  `<var>` is the file's dispatch variable, possibly salted. The internal
-  `<track_key>` read identifies a real coverage record, which is how
-  `Mutare.Metamutant.pattern_subject?/2` tells a generated tupled-case wrapper from
-  a source-level `case` that only looks similar.
-
-  The helper call is not part of recognition; that keeps self-hosting helper-name
-  overrides from changing the result. Literal `{:__block__, _, [literal]}`
-  wrappers added during reparse are accepted.
+  The outer short-circuit `case` and the helper's literal positive-id payload
+  are the record contract. The condition may read tracking inline or use a bound
+  boolean. The tuple-selector reader separately verifies the selector identity and
+  the input/output variables; a coverage record alone never identifies a selector.
+  Both raw and literal-encoded reparsed ASTs are accepted.
   """
-  @spec record_var(Macro.t()) :: atom() | nil
-  def record_var(node) do
-    with {:ok, active_zero, tracked} <- when_true_args(node),
-         {:ok, [{var, _, ctx}, zero]} when is_atom(var) and is_atom(ctx) <-
-           AST.erlang_call_args(active_zero, :==),
-         0 <- AST.unwrap_literal(zero),
-         {:ok, track_read, _hit} <- when_true_args(tracked),
-         true <- track_read?(track_read) do
-      var
+  @spec record?(Macro.t()) :: boolean()
+  def record?(node) do
+    with {:ok, _gate, {{:., _, [helper, :hit]}, _, args}} <- when_true_args(node),
+         true <- helper_name(helper) in [helper_module(), fixture_module()] do
+      payload?(args)
     else
-      _ -> nil
+      _ -> false
     end
   end
 
-  defp track_read?({{:., _, [mod, :get]}, _, [key | _]}),
-    do: AST.unwrap_literal(mod) == :persistent_term and AST.unwrap_literal(key) == @track_key
+  # Elixir module atoms render as aliases; the fixed Erlang-style helper name
+  # remains an atom. Recognise both representations of an explicitly chosen helper.
+  defp helper_name(node) do
+    case AST.unwrap_literal(node) do
+      {:__aliases__, _, parts} ->
+        if Enum.all?(parts, &is_atom/1), do: Module.concat(parts)
 
-  defp track_read?(_), do: false
+      module when is_atom(module) ->
+        module
+
+      _ ->
+        nil
+    end
+  end
+
+  defp payload?([ids]), do: ids?(AST.unwrap_literal(ids))
+
+  defp payload?([namespace, ids]) do
+    namespace = AST.unwrap_literal(namespace)
+    is_binary(namespace) and namespace != "" and ids?(AST.unwrap_literal(ids))
+  end
+
+  defp payload?(_), do: false
+
+  defp ids?([_ | _] = ids) do
+    Enum.all?(ids, fn id ->
+      id = AST.unwrap_literal(id)
+      is_integer(id) and id > 0
+    end)
+  end
+
+  defp ids?(_), do: false
+
+  defp literal(value), do: {:__block__, [], [value]}
 
   # Build the ids list AST so `Sourceror.to_string` renders it as a list literal
   # (`[91, 92]`), never a charlist. A *bare* list of small integers triggers the
@@ -348,42 +402,49 @@ defmodule Mutare.Coverage.Recorder do
   def helper_source, do: @helper_source
 
   @doc """
-  Setup AST prepended before the target's test helper.
-
-  It is inert unless `env_var/0` is set. During the coverage probe it creates the
-  ETS tables and enables the tracking flag before user helper code runs, so app
-  startup and helper setup can be attributed. The tables are owned by the
-  test-helper process, which outlives the suite run.
+  Initialize immutable probe mode before target project code. Repeated project or
+  umbrella helper evaluation leaves the initialized value intact. Harness code
+  bakes the harness key; in-process fixture code uses its isolated runtime.
+  No helper module or ETS table needs to exist yet.
   """
-  @spec setup_ast() :: Macro.t()
-  def setup_ast do
-    env_var = @env_var
-    track_key = @track_key
-    agg = @agg_table
-    attr = @attr_table
-    unlabeled_table = @unlabeled_table
-    test_table = @test_table
-    wholefile_table = @wholefile_table
+  @spec mode_ast(:harness | :fixture) :: Macro.t()
+  def mode_ast(scope) when scope in [:harness, :fixture] do
+    runtime = runtime(scope)
 
     quote do
-      if System.get_env(unquote(env_var)) not in [nil, ""] do
-        # An umbrella runs every app's `test_helper.exs` in one BEAM, so the tables
-        # must be created once and shared. Guard on the aggregate table's existence
-        # (all are created together) so the second app's setup is a no-op rather
-        # than an `:ets.new` `:badarg`.
-        if :ets.whereis(unquote(agg)) == :undefined do
-          for table <- [
-                unquote(agg),
-                unquote(attr),
-                unquote(unlabeled_table),
-                unquote(test_table),
-                unquote(wholefile_table)
-              ] do
+      if :persistent_term.get(unquote(runtime.mode_key), :mutare_uninitialized) ==
+           :mutare_uninitialized do
+        :persistent_term.put(
+          unquote(runtime.mode_key),
+          System.get_env(unquote(runtime.env_var)) not in [nil, ""]
+        )
+      end
+    end
+  end
+
+  @doc """
+  Create capture tables in the test-helper process, which owns them through the
+  suite. Mode is already initialized; this phase never changes it. Umbrella helpers
+  share one set of tables. Recording readiness is enabled only after creation.
+  The helper also checks table existence dynamically for direct calls.
+  """
+  @spec tables_ast(:harness | :fixture) :: Macro.t()
+  def tables_ast(scope) when scope in [:harness, :fixture] do
+    runtime = runtime(scope)
+
+    tables =
+      for key <- [:agg_table, :attr_table, :unlabeled_table, :test_table, :wholefile_table],
+          do: Map.fetch!(runtime, key)
+
+    quote do
+      if :persistent_term.get(unquote(runtime.mode_key), false) do
+        if :ets.whereis(unquote(runtime.agg_table)) == :undefined do
+          for table <- unquote(tables) do
             :ets.new(table, [:named_table, :public, :set, write_concurrency: true])
           end
         end
 
-        :persistent_term.put(unquote(track_key), true)
+        :persistent_term.put(unquote(runtime.track_key), true)
       end
     end
   end
@@ -397,11 +458,11 @@ defmodule Mutare.Coverage.Recorder do
   """
   @spec after_suite_ast() :: Macro.t()
   def after_suite_ast do
-    env_var = @env_var
+    mode_key = @harness_runtime.mode_key
     helper = @helper_module
 
     quote do
-      if System.get_env(unquote(env_var)) not in [nil, ""] do
+      if :persistent_term.get(unquote(mode_key), false) do
         ExUnit.after_suite(&unquote(helper).dump/1)
       end
     end

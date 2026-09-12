@@ -3,9 +3,10 @@ defmodule Mutare.Selector do
   Runtime selection of the active mutant.
 
   The active mutant is constant for an entire suite run, so it is read once from
-  the environment at boot and stashed in `:persistent_term` (O(1) reads, built
-  for write-once/read-many). Every selector site in the metamutant reads this
-  key, normally hoisted to one read per function activation.
+  the environment in the sandbox mix.exs prefix, before target project code, and
+  stashed in `:persistent_term` (O(1) reads, built for write-once/read-many). Every
+  selector site in the metamutant reads this key, normally hoisted to one read per
+  function activation.
 
   A schema mutant is stored as `{root_relative_file, local_id}` in that single
   slot. `Mutare.Metamutant` projects it to the local integer for the active file,
@@ -18,7 +19,8 @@ defmodule Mutare.Selector do
 
   This module owns both sides of that contract: `Mutare.Metamutant` uses its key
   and baseline when building selectors, while `Mutare.Sandbox` renders
-  `bootstrap_ast/0` into the target project's dependency-free test bootstrap.
+  `bootstrap_ast/0` into the target project's dependency-free project prefix, with
+  an idempotent fallback in the test bootstrap.
 
   ## Self-hosting: a private key for the suite-under-test
 
@@ -96,10 +98,12 @@ defmodule Mutare.Selector do
 
   @doc """
   Dependency-free code that reads the selector environment variables and stores
-  the active runtime identity. Repeated umbrella helpers write the same single slot.
+  the active runtime identity. Initialization precedes target project code; repeated
+  project prefixes and umbrella helpers preserve the first value, even if target
+  code later changes the environment.
 
-  `Mutare.Sandbox` renders this AST directly into the target project's test
-  bootstrap, so the target does not need Mutare as a dependency.
+  `Mutare.Sandbox` renders this AST directly into project prefixes and the test
+  bootstrap fallback, so the target does not need Mutare as a dependency.
   """
   @spec bootstrap_ast() :: Macro.t()
   def bootstrap_ast do
@@ -109,23 +113,25 @@ defmodule Mutare.Selector do
     baseline = @baseline
 
     quote do
-      mutare_id =
-        case System.get_env(unquote(env_var)) do
-          nil -> unquote(baseline)
-          "" -> unquote(baseline)
-          raw -> String.to_integer(raw)
-        end
+      if :persistent_term.get(unquote(key), :mutare_uninitialized) == :mutare_uninitialized do
+        mutare_id =
+          case System.get_env(unquote(env_var)) do
+            nil -> unquote(baseline)
+            "" -> unquote(baseline)
+            raw -> String.to_integer(raw)
+          end
 
-      :persistent_term.put(
-        unquote(key),
-        case System.get_env(unquote(namespace_env)) do
-          namespace when is_binary(namespace) and namespace != "" and mutare_id > 0 ->
-            {namespace, mutare_id}
+        :persistent_term.put(
+          unquote(key),
+          case System.get_env(unquote(namespace_env)) do
+            namespace when is_binary(namespace) and namespace != "" and mutare_id > 0 ->
+              {namespace, mutare_id}
 
-          _ ->
-            mutare_id
-        end
-      )
+            _ ->
+              mutare_id
+          end
+        )
+      end
     end
   end
 

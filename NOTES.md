@@ -6761,13 +6761,19 @@ the tables in the test-helper process, which outlives the whole suite. Guard is
    has no such split: the real `:mutare_cov` helper and the metamutant of `HelperTemplate`
    are byte-identical recording logic in one sandbox BEAM sharing one env, so a runtime name
    resolves identically for both (and a test-local override still diverts the *real* records
-   firing during that test's window). So `helper_template_test` is tagged `:coverage_tables`
-   and excluded under `MUTARE_ACTIVE_MUTANT` alongside `:runner`/`:property` (see
-   `test/test_helper.exs`). The probe's tables then survive the whole suite → a non-empty
-   dump → real per-file selection. Cost (same as `:runner`): `HelperTemplate`'s own
-   recording/attribution mutants, killed only by that module, go uncovered under dogfood and
-   surface as survivors rather than `:no_coverage`. The `dump/1` missing-table guard above
-   stays as the backstop for any other transient absence.
+   firing during that test's window). So `helper_template_test` was tagged `:coverage_tables`
+   and excluded under `MUTARE_ACTIVE_MUTANT` alongside `:runner`/`:property`, at the cost
+   (same as `:runner`) of `HelperTemplate`'s own recording/attribution mutants surviving
+   uncovered under dogfood. The `dump/1` missing-table guard above stays as the backstop for
+   any other transient absence.
+
+   > **Superseded** by "Coverage emission and startup boundaries" below — the exclusion and
+   > the tag are both gone. `HelperTemplate.runtime/1` gives the compiled template a
+   > *disjoint* set of fixture tables, caches, keys and dump file, chosen at compile time by
+   > whether `__MODULE__` is the written `:mutare_cov`. Table-owning tests therefore run
+   > inside the outer probe without touching it. The analysis above still holds for why a
+   > *runtime*-resolved table name could not have worked — the fix was to split the names
+   > at compile time instead.
 
 ### Report diff fidelity for call-final keyword args `[fixed]`
 A `mix mutare --only lib/mutare/ignore.ex` surfaced two *corrupt survivor diffs* on
@@ -9781,6 +9787,174 @@ Grouping undercuts even the pre-namespace dump: local ids stay below 256 and enc
 bytes, where report ids above 255 take five. Test names, repeated once per id in `by_test`, make
 up most of the three-test row.
 
+### Hoist the per-site coverage tracking read `[investigated; lifecycle prerequisite]`
+
+**2026-09-12:** the emitter plumbing is more straightforward after the explicit
+`Scope.active_referenced` handoff and the dispatch-name handoff to Manifest. But the
+tracking flag does **not** have the active selector's run-constant lifetime:
+`Recorder.setup_ast/0` enables it in the injected test-helper prefix. A dependency-free
+temporary `mix test` project confirmed that `Application.start/2` runs before that
+prefix, with the flag still false.
+
+A scratch rewrite of actual Arithmetic metamutants cached the read immediately after
+the existing active-id prologue, guarded by `mutare_active == 0` to preserve the
+per-mutant short-circuit. It left every site's active-id comparison intact. A worker
+entered a `receive` before tracking started, then evaluated `1 + 2` after it started;
+a closure built before tracking started evaluated `x + 2` afterward. Current emission
+recorded both mutant ids; the rewrite recorded neither. Resetting the binding at `fn`
+invocation would fix the closure, but not the already-entered worker function. Simply
+reusing `active_bound` is therefore unsound: it can turn covered mutants into false
+`:no_coverage` results. Self-hosting tests also change/restore the tracking flag.
+
+There is nevertheless a measurable incentive. Elixir 1.19.5 / OTP 26, four schedulers,
+namespaced Arithmetic-only functions containing N sequential `x = x + <integer>`
+statements; real generated coverage helper, warmed seen-cache, nine alternating
+samples of 100,000 calls per variant. Times below are median milliseconds. The probe
+worker was unlabeled; these are mechanism measurements, not application speedups.
+
+| Selectors | Baseline current → hoisted | Probe current → hoisted | Inactive file current → hoisted |
+| --- | ---: | ---: | ---: |
+| 1 | 3.84 → 3.80 | 21.86 → 21.97 | 3.18 → 3.14 |
+| 10 | 14.62 → 4.70 | 196.35 → 185.14 | 3.71 → 3.75 |
+| 100 | 194.48 → 33.01 | 2425.55 → 2373.12 | 30.37 → 31.25 |
+
+Seven alternating in-VM `Code.compile_string/1` samples of the already-generated
+current/read-hoisted sources gave medians of 10.25/11.55 ms (one selector),
+26.64/25.52 ms (ten), and 766.16/659.44 ms (one hundred). Generated source at 100
+selectors shrank from 36,163 to 29,985 bytes. This does not measure cold Mix compilation
+or peak memory. Caching the entire baseline-and-tracking gate saved more in the same
+scratch experiment, but also invalidated the catch-all variable-use contract; that
+variant was not made warnings-clean or integrated with Manifest.
+
+**Assessment:** worth a bounded follow-up, with the startup contract as the first
+experiment. Establish an immutable probe-mode value before target application code
+can capture it, while keeping table readiness and recording attribution dynamic;
+`HelperTemplate.hit/2` already checks whether the aggregate table exists. Prove startup,
+prebuilt closures, waiting workers, and self-hosting before committing to that design.
+Then add a collision-free tracking variable and explicit scope/reference handoffs,
+keeping inline fallbacks wherever its binding cannot reach. `Recorder.record_var/1`
+still recognises a coverage record by its literal tracking-key read, and
+`Metamutant.pattern_subject?/2` uses it to recognise tupled-case selectors: their
+recognition contract must change with emission despite the dispatch-name simplification.
+No production hoist was retained from this investigation.
+
+### Coverage emission and startup boundaries `[done; hoist still pending]`
+
+**2026-09-12 follow-up:** the prerequisites are now explicit, without retaining the
+scratch hoist above. `Transform.CoverageEmit.record/3` is the scope-aware entry point
+for every delivery path. The caller identifies a locally introduced selector binding
+or an enclosing one; using an enclosing binding records its dependency. Delivery still
+owns the recording position. The lifted dispatcher receives prepared coverage ASTs,
+keeping `LiftedEmit` pure. The first refactor preserved generated bytes and site counts
+on 17 fixed sources (bundled examples and emitter/recorder modules).
+
+`Metamutant.pattern_subject_ast/5` now builds the wrapper its `pattern_subject?/2`
+reads. `Recorder.record?/1` recognises the outer short-circuit case and literal
+helper payload, independently of its gate. Tuple flow and the supplied dispatch name
+still disambiguate the wrapper. Bound-gate round trips and Manifest clause attribution
+are tested; no render-only metadata needs to survive reparsing.
+
+The startup investigation found the same late-initialization boundary in the selector.
+Both selection and immutable probe mode now initialize in **project prefixes**, before
+target mix.exs code, with an idempotent test-helper fallback. Config-prefix placement
+was insufficient because custom `config_path` projects never load the default file.
+The prefix is independent of inference-hook success, including declined/template
+projects; the original source remains after it. Repeated umbrella project/helper loads
+preserve the initialized values even if target code changes their environment variables.
+Non-probe invocations explicitly clear inherited coverage environment entries.
+The project prefix arms timeout and owner-death watchers too: activating a startup
+mutation before its watchdog could otherwise introduce an unbounded boot-time loop.
+Each watcher initializes once per VM, preserving its original deadline across later
+project/config/helper evaluations. The compile-specific deadline retains its config
+placement.
+
+**Mode is not readiness.** `:mutare_probe` says this VM is a probe; `:mutare_track`
+still becomes true only after the test-helper process creates the capture tables.
+The per-site readiness gate remains unchanged. This matters even before a hoist:
+early project code must not call a helper that is not loadable yet. A future hoist can
+cache mode while keeping readiness dynamic; it must not cache the late tracking flag.
+This work does not begin recording startup-only execution or claim the scratch
+benchmark's gains for the new implementation.
+
+`HelperTemplate.runtime/1` owns the harness/fixture descriptors. The copied helper
+uses harness table/cache names; the compiled template uses private fixture names,
+resolved at compile time so its hot path gains no lookup. Fixture dump variables,
+mode and readiness keys are separate too. The existing helper-name override selects
+the private readiness key when a self-hosted suite emits fixture metamutants.
+Table-owning tests no longer need `:coverage_tables` exclusions during self-hosting.
+
+Selection now precedes `app.start`, so a mutation reachable from `Application.start/2`
+detonates during boot rather than lying dormant until a test calls it. That is the point —
+startup code is mutated at last — but it also means `mix test` can die before it loads a
+single test, and Mix's `Could not start application` exit is a bare `1`, which the outcome
+decoder read as `:harness_error`. Measured on a fixture whose `Application.start/2` raises
+under one arithmetic mutant: the mutant left the score denominator, drew the generic
+harness-retry budget, warned the user to "fix the sandbox", and tripped
+`--max-harness-error-rate`, aborting the whole run. Without the project prefix the same
+mutant is `:killed`.
+
+So `Output.app_start_failure?/1` recognises that failure and `Command.outcome/2` returns a new
+`:app_start_failure`, which `MutantRun` records as a kill — the same reasoning as
+`:suite_compile_error`, resting on the same evidence: the baseline and the probe boot *this*
+sandbox green, so the mutation is the only thing that changed. Two guards keep it fail-safe.
+`:boot_failure` is checked **first**, because a node that died mid-boot with its diagnostic
+erased is unambiguously infrastructure whatever Mix printed on the way down; and
+`:app_start_failure` draws the dedicated boot-contention retry budget before it is believed,
+so a startup stampede that *does* reach Mix's banner clears on a retry while a mutation
+re-detonates all five times. Those retries are cheap here — a run that cannot start its app
+exits during boot, so each attempt costs a `mix` boot, not a suite.
+
+The marker is **not** Mix's banner. Matching that alone charged a broken sandbox as a kill, and
+`harness_test`'s "a lib that can't compile is a harness error, NOT a kill" caught it: a lib that
+won't compile leaves no `.app`, and Mix reports `could not find application file: …` under the
+very same `Could not start application` line. `Application.format_error/1` settles it — it names
+`<Mod>.start(<args>)` on that line for exactly the three reasons that mean the callback was
+entered and did not return a supervisor (it exited, `returned an error:`, `returned a bad
+value:`), and for no other reason it can render. So the marker is the banner *plus* `.start(`,
+and a missing or unloadable app file stays a plain `:harness_error`.
+
+Runtime configuration is another startup boundary: `config/runtime.exs` can call
+mutated library code and raise before `Application.start/2`, without Mix's banner.
+The `pool_size/0` fixture (`2 - 1` → `2 + 1`, rejected above 2) reproduced a lost kill
+and the harness-error-rate abort. `Output.config_failure?/1` routes configuration
+exceptions through the same `:app_start_failure` outcome, retries, and kill reporting.
+The initial decoder used `Config.__eval__!/3` and `runtime.exs` stack frames, but
+neither is reliable evidence across deep library calls: a bounded stacktrace can
+lose both. `Sandbox.RuntimeConfig` now wraps runtime configuration in a rescue
+that prints explicit phase evidence before re-raising with the original stacktrace.
+The decoder requires the marker and an exception header; it still accepts either
+configuration stack frame when present. An arbitrary `RuntimeError` or an entry
+file that cannot be read before evaluation stays infrastructure.
+
+The runtime config directory follows the effective `config_path`, which project
+code can compute. Rather than evaluate that code during materialisation, the
+wrapper discovers regular files named `runtime.exs` with the mirror's existing
+symlink-safe source walk, excluding dependencies and build/VCS trees. It covers
+default and custom paths in both sandbox modes; symlinks retain the frame-based
+fallback. Only escaping exceptions print a marker, so successful configuration
+cannot leave stale phase evidence that misattributes a later failure. Subprocess
+regressions exercise script exceptions and twenty nested non-tail library calls,
+including a zero-tolerance harness-error guard. Decoder checks also remove all
+configuration frames from that captured output and preserve boot-failure and
+exit-code precedence.
+
+The unarmed cap entries in `Invocation.environment/2` became clears for the same reason the
+coverage entries did. The watchers arm from the `mix.exs` prefix now, which every sandbox
+`mix` evaluates — the one metamutant compile included — and `System.cmd/3` merges `:env`
+over the parent's. An inherited `MUTARE_TIMEOUT` (dogfooding sets it on the suite-under-test)
+would otherwise halt the compile, whose cap is a separate variable precisely so it stays
+inert.
+
+`coverage_startup_runner_test` exercises a closure built and a worker already waiting
+before test-helper setup, through a custom config path: both record coverage and are
+killed when selected. It also shortens the timeout environment during startup to
+prove the later helper prefix cannot replace the original deadline. A startup-loop
+mutant is contained before any test helper executes. Another real sandbox probe
+captures and tears down fixture tables while preserving the outer flag, cache,
+table contents and dump. Capture table
+ownership remains with test helpers; neither the project prefix nor cached mode owns
+or snapshots attribution state.
+
 ### Try/rescue: whole-construct duplication `[benchmarked; eligible shapes factored]`
 
 Include `try`/`rescue` alongside large-body head/guard mutations in the raw-body
@@ -10407,3 +10581,9 @@ passes once the container has one (`podman run --init`).
 The "before" fixture was generated from a `HEAD` worktree. The bench script had drifted from
 `Transform.transform_string_with_sites/2`'s map return (`{meta, sites, _}` against
 `%{metamutant:, sites:, …}`); fixed in passing, one line.
+
+Rebasing startup initialization onto the guard-only `:erlang.andalso` fix keeps
+the two-case short-circuit, with the inline gate as the outer case's scrutinee.
+`Recorder.record?/1` recognises that outer case and its helper payload, so an
+inline gate and a bound boolean share the same recognition contract. The gate
+still reads recording readiness only when the active id is zero.

@@ -7,7 +7,7 @@ defmodule Mutare.Transform.SelectorEmit do
 
   alias Mutare.Coverage.Recorder
   alias Mutare.Site
-  alias Mutare.Transform.{ClaimState, Config, Ctx, Render, Scope}
+  alias Mutare.Transform.{ClaimState, Config, CoverageEmit, Ctx, Render, Scope}
 
   @doc """
   Claim an id per item, record its site, and collect one artifact per live mutant.
@@ -41,9 +41,9 @@ defmodule Mutare.Transform.SelectorEmit do
   with the scope updated (`subject/1`).
   """
   @spec selector_case(Macro.t(), [Macro.t()], Ctx.t()) :: {Macro.t(), Ctx.t()}
-  def selector_case(default_node, mutant_clauses, %Ctx{config: %Config{active_var: var}} = ctx) do
+  def selector_case(default_node, mutant_clauses, %Ctx{} = ctx) do
     ids = ids_from_clauses(mutant_clauses)
-    catch_all = catch_all_clause(ids, default_node, var, ctx.config.runtime_namespace)
+    {catch_all, ctx} = catch_all_clause(ids, default_node, ctx)
     {subject, ctx} = subject(ctx)
     {Render.selector_case(subject, mutant_clauses ++ [catch_all]), ctx}
   end
@@ -82,15 +82,14 @@ defmodule Mutare.Transform.SelectorEmit do
   end
 
   @doc "The selector catch-all branch: baseline plus every inactive mutant."
-  @spec catch_all_clause([pos_integer()], Macro.t(), atom(), String.t() | nil) :: Macro.t()
-  def catch_all_clause(ids, default_node, var, namespace \\ nil)
+  @spec catch_all_clause([pos_integer()], Macro.t(), Ctx.t()) :: {Macro.t(), Ctx.t()}
+  def catch_all_clause([], default_node, ctx),
+    do: {{:->, [], [[{:_, [], nil}], default_node]}, ctx}
 
-  def catch_all_clause([], default_node, _var, _namespace),
-    do: {:->, [], [[{:_, [], nil}], default_node]}
-
-  def catch_all_clause(ids, default_node, var, namespace) do
-    body = {:__block__, [], [Recorder.record_ast(ids, var, namespace), default_node]}
-    {:->, [], [[Recorder.catch_all_pattern(var)], body]}
+  def catch_all_clause(ids, default_node, ctx) do
+    {record, ctx} = CoverageEmit.record(ids, ctx, :local)
+    body = {:__block__, [], [record, default_node]}
+    {{:->, [], [[Recorder.catch_all_pattern(ctx.config.active_var)], body]}, ctx}
   end
 
   # The id/site/sink mechanics live on `Mutare.Transform.ClaimState` (which owns that state);

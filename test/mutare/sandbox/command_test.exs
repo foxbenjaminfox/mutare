@@ -140,6 +140,83 @@ defmodule Mutare.Sandbox.CommandTest do
       assert Command.outcome(158, @boot_crash) == :boot_failure
     end
 
+    # Mix stopping the run because the target's application would not start with the
+    # mutation active. The suite never ran, but the mutation was detected: the
+    # baseline boots the same sandbox green.
+    @app_start_crash """
+    ** (Mix) Could not start application shop: exited in: Shop.Application.start(:normal, [])
+        ** (EXIT) an exception was raised:
+            ** (RuntimeError) pool_size must be positive
+    """
+
+    test "an application that will not start with the mutation active is a kill" do
+      assert Command.outcome(1, @app_start_crash) == :app_start_failure
+    end
+
+    @config_crash """
+    ** (ArithmeticError) bad argument in arithmetic expression
+        (shop 0.1.0) lib/settings.ex:5: Settings.setting/0
+        /tmp/sandbox/config/runtime.exs:2: (file)
+        (stdlib 5.2.3.6) erl_eval.erl:750: :erl_eval.do_apply/7
+        (stdlib 5.2.3.6) erl_eval.erl:1026: :erl_eval.expr_list/7
+        (stdlib 5.2.3.6) erl_eval.erl:292: :erl_eval.expr/6
+        (stdlib 5.2.3.6) erl_eval.erl:282: :erl_eval.expr/6
+    """
+
+    test "a runtime configuration exception receives the startup kill and retry policy" do
+      assert Command.outcome(1, @config_crash) == :app_start_failure
+      assert Command.outcome(1, @config_crash <> @boot_crash) == :boot_failure
+    end
+
+    test "configuration output never overrides an exit-code verdict or SIGKILL" do
+      marked_crash =
+        Mutare.Sandbox.RuntimeConfig.failure_marker() <>
+          "\n** (ArithmeticError) bad argument in arithmetic expression\n"
+
+      for output <- [@config_crash, marked_crash] do
+        assert Command.outcome(1, output) == :app_start_failure
+        assert Command.outcome(1, output <> @boot_crash) == :boot_failure
+        assert Command.outcome(0, output) == :passed
+        assert Command.outcome(Exit.failure(), output) == :failed
+        assert Command.outcome(Exit.timeout(), output) == :timeout
+        assert Command.outcome(Exit.sigkill(), output) == :sigkilled
+      end
+    end
+
+    test "an exception without evidence of configuration evaluation stays infrastructure" do
+      assert Command.outcome(1, "** (RuntimeError) pool_size must be small") == :harness_error
+
+      assert Command.outcome(1, """
+             ** (File.Error) could not read file "config/runtime.exs": permission denied
+                 (elixir 1.19.5) lib/file.ex:385: File.read!/1
+                 (elixir 1.19.5) lib/config/reader.ex:102: Config.Reader.read!/2
+             """) == :harness_error
+    end
+
+    test "a sandbox with no built .app stays a harness error under the same banner" do
+      # `harness_test`'s case: nothing was detected, the sandbox is broken. The banner
+      # is identical up to the reason, so only naming the `start/2` callback separates
+      # them — see `Output.app_start_failure?/1`.
+      missing_app =
+        "** (Mix) Could not start application shop: could not find application " <>
+          "file: shop.app\n"
+
+      assert Command.outcome(1, missing_app) == :harness_error
+    end
+
+    test "the self-erasing boot crash outranks the could-not-start banner" do
+      # A node dead mid-boot with its diagnostic erased is unambiguously infra,
+      # whatever Mix printed on the way down — so the harness-error refinement wins
+      # and `Mutare.Runner.MutantRun` retries instead of charging a kill.
+      assert Command.outcome(1, @app_start_crash <> @boot_crash) == :boot_failure
+    end
+
+    test "the could-not-start banner never overrides a real verdict" do
+      assert Command.outcome(0, @app_start_crash) == :passed
+      assert Command.outcome(Exit.failure(), @app_start_crash) == :failed
+      assert Command.outcome(Exit.timeout(), @app_start_crash) == :timeout
+    end
+
     test "the boot banner never overrides a real verdict (pass/fail/timeout win)" do
       assert Command.outcome(0, @boot_crash) == :passed
       assert Command.outcome(Exit.failure(), @boot_crash) == :failed

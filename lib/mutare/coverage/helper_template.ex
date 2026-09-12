@@ -30,24 +30,53 @@ defmodule Mutare.Coverage.HelperTemplate do
   # (`-test …`) — is recorded to `@wholefile_table` instead: it covers the id but pins to no single
   # test, so `:tests` must run its whole file (never narrowing away the covering context).
 
-  @agg_table :mutare_cov_agg
-  @attr_table :mutare_cov_attr
-  @unlabeled_table :mutare_cov_unlabeled
-  # Per-test-case attribution: `{{mod, name, id}}` for hits whose label is a runnable ExUnit test
-  # name — the finer key `:tests` narrows with. `@wholefile_table` holds ids with a labeled but
-  # NON-narrowable attribution (`setup_all`/`on_exit`), which `:tests` must not narrow.
-  @test_table :mutare_cov_test
-  @wholefile_table :mutare_cov_wholefile
-  @dump_file "mutare_cov.terms"
-  @dump_path_env "MUTARE_COV_DUMP"
-  @root_env "MUTARE_COV_ROOT"
-  @seen_key :mutare_cov_seen
-  @label_key :mutare_cov_label
+  # All process-global capture state has one descriptor. The written helper has
+  # the fixed module name :mutare_cov; this compiled template (and test copies)
+  # use fixture state even inside a metamutant of Mutare itself. Resolve at compile
+  # time: hit/2 still reads literal table/cache names on its hot path.
+  @harness_module :mutare_cov
+  @harness_runtime %{
+    mode_key: :mutare_probe,
+    track_key: :mutare_track,
+    env_var: "MUTARE_COVERAGE",
+    agg_table: :mutare_cov_agg,
+    attr_table: :mutare_cov_attr,
+    unlabeled_table: :mutare_cov_unlabeled,
+    test_table: :mutare_cov_test,
+    wholefile_table: :mutare_cov_wholefile,
+    seen_key: :mutare_cov_seen,
+    label_key: :mutare_cov_label,
+    dump_path_env: "MUTARE_COV_DUMP",
+    root_env: "MUTARE_COV_ROOT",
+    dump_file: "mutare_cov.terms"
+  }
+  @fixture_runtime Map.new(@harness_runtime, fn
+                     {:dump_file, path} ->
+                       {:dump_file, Path.rootname(path) <> ".fixture" <> Path.extname(path)}
 
-  # The contract constants, exposed so `Mutare.Coverage.Recorder` sources them from here — the
-  # single source of truth shared by the table-creation bootstrap and the dump reader. (These
-  # accessors are harmless in the written sandbox helper, where only `hit` and `dump/1` are ever
-  # called.)
+                     {key, value} when is_atom(value) ->
+                       {key, :"#{value}__fixture"}
+
+                     {key, value} ->
+                       {key, value <> "_FIXTURE"}
+                   end)
+  @runtime if(__MODULE__ == @harness_module, do: @harness_runtime, else: @fixture_runtime)
+  @agg_table @runtime.agg_table
+  @attr_table @runtime.attr_table
+  @unlabeled_table @runtime.unlabeled_table
+  @test_table @runtime.test_table
+  @wholefile_table @runtime.wholefile_table
+  @seen_key @runtime.seen_key
+  @label_key @runtime.label_key
+  @dump_path_env @runtime.dump_path_env
+  @root_env @runtime.root_env
+  @dump_file @runtime.dump_file
+
+  # Recorder sources bootstrap constants here. The copied helper remains entirely
+  # dependency-free, and its runtime never consults Mutare's fixture override env.
+  def harness_module, do: @harness_module
+  def runtime(:harness), do: @harness_runtime
+  def runtime(:fixture), do: @fixture_runtime
   def agg_table, do: @agg_table
   def attr_table, do: @attr_table
   def unlabeled_table, do: @unlabeled_table
@@ -62,16 +91,9 @@ defmodule Mutare.Coverage.HelperTemplate do
   def hit(ids), do: hit(nil, ids)
 
   def hit(namespace, ids) do
-    # Best-effort, never crash: a missing aggregate table means there is nowhere to
-    # record, so skip (mirrors the dead-pid label guards below). A real probe run
-    # never hits this — the bootstrap creates the tables in the test-helper process,
-    # which outlives the whole suite. It only arises when Mutare is mutation-tested
-    # *with Mutare*: its own coverage tests create these process-global, named tables
-    # and tear them down, while the metamutant of Mutare's lib records into the *same*
-    # names. A coverage test that sets the tracking flag and then exits (its
-    # process-owned table dying with it) would otherwise leave the gate open over a
-    # vanished table, and the next instrumented line — in that test's own `on_exit`,
-    # or any later test — would crash on the `:ets.insert`. See NOTES "Self-hosting".
+    # Readiness is dynamic. Direct helper calls before table setup, or after a
+    # fixture owner exits, must remain inert. The metamutant gate additionally
+    # keeps early project code from calling a helper that is not loadable yet.
     case :ets.whereis(@agg_table) do
       :undefined ->
         true

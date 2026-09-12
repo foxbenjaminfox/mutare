@@ -162,6 +162,143 @@ defmodule Mutare.Sandbox.Command.OutputTest do
       refute Output.atom_exhausted?("Cannot allocate 1234 bytes of memory")
     end
 
+    # Mix refusing to start the target's OTP application: `mix test` runs `app.start`
+    # before it loads `test_helper.exs`, and the sandbox has already selected the
+    # mutant by then, so a mutation reachable from `Application.start/2` lands here.
+    @app_start_crash """
+    16:04:11.221 [notice] application: shop
+        exited: {bad_return, {{'Elixir.Shop.Application',start,[normal,[]]}, ...}}
+    ** (Mix) Could not start application shop: exited in: Shop.Application.start(:normal, [])
+        ** (EXIT) an exception was raised:
+            ** (RuntimeError) pool_size must be positive
+    """
+
+    test "app_start_failure?/1 wants the banner *and* a failing start/2 callback" do
+      # The three `Application.format_error/1` reasons that mean the callback was
+      # entered and did not return a supervisor.
+      assert Output.app_start_failure?(@app_start_crash)
+
+      assert Output.app_start_failure?(
+               "** (Mix) Could not start application shop: Shop.Application.start(:normal, []) " <>
+                 "returned an error: shutdown: failed to start child: Shop.Repo"
+             )
+
+      assert Output.app_start_failure?(
+               "** (Mix) Could not start application shop: Shop.Application.start(:normal, []) " <>
+                 "returned a bad value: :nope"
+             )
+    end
+
+    test "app_start_failure?/1 leaves a broken sandbox as a plain harness error" do
+      # The regression `harness_test` caught: a lib that won't compile leaves no
+      # `.app`, and Mix reports *that* under the very same banner. Nothing was
+      # detected, so this must never be charged as a kill.
+      refute Output.app_start_failure?(
+               "** (Mix) Could not start application shop: could not find " <>
+                 "application file: shop.app"
+             )
+
+      refute Output.app_start_failure?("** (Mix) Could not start application shop: :bad_return")
+      refute Output.app_start_failure?("** (Mix) Could not start application shop: not loaded")
+
+      # A mid-line mention, a different Mix error, and the other refinements' output.
+      refute Output.app_start_failure?(
+               "docs say ** (Mix) Could not start application x: y.start("
+             )
+
+      refute Output.app_start_failure?("** (Mix) Could not compile dependency :foo")
+      refute Output.app_start_failure?(@boot_crash)
+      refute Output.app_start_failure?(@test_compile_error)
+    end
+
+    @config_crash """
+    ** (RuntimeError) pool_size must be small
+        /tmp/sandbox/config/runtime.exs:2: (file)
+        (stdlib 5.2.3.6) erl_eval.erl:750: :erl_eval.do_apply/7
+        (stdlib 5.2.3.6) erl_eval.erl:136: :erl_eval.exprs/6
+        (elixir 1.19.5) lib/code.ex:629: Code.validated_eval_string/3
+        (elixir 1.19.5) lib/config.ex:326: Config.__eval__!/3
+    """
+
+    test "config_failure?/1 recognizes configuration evaluation under any config path" do
+      assert Output.config_failure?(@config_crash)
+      assert Output.config_failure?("Loading runtime configuration\n" <> @config_crash)
+
+      assert Output.config_failure?(
+               String.replace(@config_crash, "config/runtime.exs", "conf/runtime.exs")
+             )
+
+      # Exceptions can originate in the called library, not just in the script.
+      assert Output.config_failure?(
+               String.replace(
+                 @config_crash,
+                 "/tmp/sandbox/config/runtime.exs:2: (file)",
+                 "(shop 0.1.0) lib/pool.ex:5: Shop.pool_size/0"
+               )
+             )
+    end
+
+    test "config_failure?/1 recognizes a library exception when the evaluator frame is truncated" do
+      # Elixir 1.19.5's default stack depth drops Config.__eval__!/3 here.
+      for path <- ["/tmp/sandbox/config/runtime.exs", "/tmp/custom config/runtime.exs"] do
+        output = """
+        ** (ArithmeticError) bad argument in arithmetic expression
+            (shop 0.1.0) lib/settings.ex:5: Settings.setting/0
+            #{path}:2: (file)
+            (stdlib 5.2.3.6) erl_eval.erl:750: :erl_eval.do_apply/7
+            (stdlib 5.2.3.6) erl_eval.erl:1026: :erl_eval.expr_list/7
+            (stdlib 5.2.3.6) erl_eval.erl:292: :erl_eval.expr/6
+            (stdlib 5.2.3.6) erl_eval.erl:282: :erl_eval.expr/6
+        """
+
+        assert Output.config_failure?(output)
+        assert Output.config_failure?(String.replace(output, "\n", "\r\n"))
+      end
+    end
+
+    test "config_failure?/1 recognizes explicit evidence when all configuration frames are lost" do
+      marker = Mutare.Sandbox.RuntimeConfig.failure_marker()
+      exception = "** (ArithmeticError) bad argument in arithmetic expression\n"
+      output = marker <> "\n" <> exception <> "    lib/settings.ex:5: Settings.setting/0\n"
+
+      assert Output.config_failure?(output)
+      assert Output.config_failure?(String.replace(output, "\n", "\r\n"))
+      refute Output.config_failure?(marker <> "\n")
+      refute Output.config_failure?(exception)
+      refute Output.config_failure?(exception <> "message mentions " <> marker <> "\n")
+      refute Output.config_failure?(exception <> marker <> " mentioned in a message\n")
+    end
+
+    test "config_failure?/1 requires an exception and evidence of configuration evaluation" do
+      refute Output.config_failure?("** (RuntimeError) pool_size must be small")
+      refute Output.config_failure?("** (RuntimeError) see config/runtime.exs")
+      refute Output.config_failure?("** (RuntimeError) Config.__eval__!/3 failed")
+      refute Output.config_failure?("    (elixir 1.19.5) lib/config.ex:326: Config.__eval__!/3\n")
+      refute Output.config_failure?("    /tmp/config/runtime.exs:2: (file)\n")
+
+      for frame <- [
+            "see /tmp/config/runtime.exs:2: (file)",
+            "    /tmp/config/not_runtime.exs:2: (file)",
+            "    /tmp/config/runtime.exs:2: Settings.setting/0",
+            "    /tmp/config/runtime.exs:2: (file) mentioned in a message"
+          ] do
+        refute Output.config_failure?("** (RuntimeError) boom\n" <> frame)
+      end
+
+      refute Output.config_failure?(@test_compile_error)
+      refute Output.config_failure?(@app_start_crash)
+      refute Output.config_failure?(@boot_crash)
+    end
+
+    test "config_failure?/1 leaves an unreadable configuration file as infrastructure" do
+      refute Output.config_failure?("""
+             ** (File.Error) could not read file "/tmp/sandbox/config/runtime.exs": permission denied
+                 (elixir 1.19.5) lib/file.ex:385: File.read!/1
+                 (elixir 1.19.5) lib/config/reader.ex:102: Config.Reader.read!/2
+                 (mix 1.19.5) lib/mix/tasks/loadconfig.ex:70: Mix.Tasks.Loadconfig.load_runtime/1
+             """)
+    end
+
     test "boot_failure?/1 needs both markers (the boot abort and the torn-down device)" do
       assert Output.boot_failure?(@boot_crash)
 

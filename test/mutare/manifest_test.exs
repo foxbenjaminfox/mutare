@@ -263,6 +263,36 @@ defmodule Mutare.ManifestTest do
       assert Manifest.ids_at_line(manifest, line) == [relaxed.id]
     end
 
+    test "tupled clause attribution survives a bound coverage gate" do
+      %{metamutant: source, dispatch_var: var} =
+        Mutare.Transform.transform_string_with_sites(@case_src,
+          mutators: [Mutare.Mutators.IntegerLiteral, Mutare.Mutators.Relational]
+        )
+
+      # Compare attribution under the same renderer on both sides. Only the gate
+      # changes; the payload and tuple input/output flow remain intact.
+      ast = Code.string_to_quoted!(source)
+
+      changed =
+        Macro.postwalk(ast, fn node ->
+          if Mutare.Coverage.Recorder.record?(node) do
+            {:case, meta, [_gate, clauses]} = node
+            {:case, meta, [{:mutare_tracking, [], nil}, clauses]}
+          else
+            node
+          end
+        end)
+
+      before_source = Macro.to_string(ast)
+      after_source = Macro.to_string(changed)
+      before = Manifest.from_source(before_source, var)
+      after_manifest = Manifest.from_source(after_source, var)
+      assert Enum.map(before.regions, & &1.ids) == Enum.map(after_manifest.regions, & &1.ids)
+
+      assert Manifest.ids_at_line(before, line_of(before_source, "x >= 5")) ==
+               Manifest.ids_at_line(after_manifest, line_of(after_source, "x >= 5"))
+    end
+
     test "the whole tupled `case` is the coarse fallback for every clause-mutant id it hosts" do
       %{metamutant: meta, sites: sites, dispatch_var: var} =
         Mutare.Transform.transform_string_with_sites(@case_src,

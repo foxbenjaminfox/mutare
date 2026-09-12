@@ -1,19 +1,8 @@
-# When this suite runs *inside a Mutare sandbox* — i.e. Mutare is being
-# dogfooded on itself — skip the `:runner`, `:property`, and `:coverage_tables`
-# tests. The `:runner` tests shell out to real `mix test` subprocesses; spawning
-# those once per mutant would be catastrophic (a fork bomb of nested suites). The
-# `:property` soaks render/compile/run a stream of generated modules (~2 min each),
-# so running them once per mutant would be just as ruinous. The `:coverage_tables`
-# tests alter the process-global `:mutare_track` flag or `:mutare_cov_*` ETS tables
-# (create/`:ets.delete` them) — the *same* state the dogfood coverage probe uses across
-# the whole suite; left to run, they disable recording or wipe the probe's data,
-# compromising test selection. `MUTARE_ACTIVE_MUTANT` is set on every per-mutant run
-# (and the baseline/probe) but never on a normal `mix test`, so it cleanly marks "we
-# are the suite-under-mutation" without affecting ordinary local/CI runs. (The cost,
-# as for `:runner`, is that code reached only by these excluded tests has no
-# in-process coverage and so survives rather than scoring `:no_coverage`.)
+# Runner tests start nested Mix subprocesses and property soaks compile many
+# fixtures; neither is suitable for running once per dogfood mutant. Coverage
+# helper tests use isolated fixture state and can now run inside the outer probe.
 if System.get_env("MUTARE_ACTIVE_MUTANT"),
-  do: ExUnit.configure(exclude: [:runner, :property, :coverage_tables])
+  do: ExUnit.configure(exclude: [:runner, :property])
 
 # Capture Logger output globally: the lib emits `Logger.warning` on a few
 # analysis decisions (non-consecutive clauses, augmented-by-metaprogramming defs,

@@ -19,7 +19,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   alias Mutare.Coverage.Recorder
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Delivery
-  alias Mutare.Transform.{Ctx, Meta, SelectorEmit}
+  alias Mutare.Transform.{CoverageEmit, Ctx, Meta, SelectorEmit}
 
   # === binding-escaping `=` match: tuple re-export =====================================
 
@@ -36,15 +36,9 @@ defmodule Mutare.Transform.BindingEscapeEmit do
       candidates,
       ctx,
       fn c -> match_inner_case(c.raw_rhs, c.mutated, export) end,
-      fn ids ->
+      fn ids, ctx ->
         inner = match_inner_case(emitted_rhs, original_lhs, export)
-
-        SelectorEmit.catch_all_clause(
-          ids,
-          inner,
-          ctx.config.active_var,
-          ctx.config.runtime_namespace
-        )
+        SelectorEmit.catch_all_clause(ids, inner, ctx)
       end
     )
   end
@@ -108,15 +102,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
       candidates,
       ctx,
       fn c -> macro_pattern_branch(c.mutant_expr, export) end,
-      fn ids ->
-        macro_pattern_catch_all(
-          ids,
-          baseline,
-          export,
-          ctx.config.active_var,
-          ctx.config.runtime_namespace
-        )
-      end
+      fn ids, ctx -> macro_pattern_catch_all(ids, baseline, export, ctx) end
     )
   end
 
@@ -133,23 +119,19 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   The selector catch-all for a rewritten binding-pattern macro: record the hosted ids (inert
   outside the probe), run the baseline (emitted) macro, then yield the export.
   """
-  @spec macro_pattern_catch_all(
-          [non_neg_integer()],
-          Macro.t(),
-          Macro.t(),
-          atom(),
-          String.t() | nil
-        ) :: Macro.t()
-  def macro_pattern_catch_all(ids, baseline, export, var, namespace \\ nil) do
-    body = {:__block__, [], [Recorder.record_ast(ids, var, namespace), baseline, export]}
-    {:->, [], [[Recorder.catch_all_pattern(var)], body]}
+  @spec macro_pattern_catch_all([pos_integer()], Macro.t(), Macro.t(), Ctx.t()) ::
+          {Macro.t(), Ctx.t()}
+  def macro_pattern_catch_all(ids, baseline, export, ctx) do
+    {record, ctx} = CoverageEmit.record(ids, ctx, :local)
+    body = {:__block__, [], [record, baseline, export]}
+    {{:->, [], [[Recorder.catch_all_pattern(ctx.config.active_var)], body]}, ctx}
   end
 
   # Shared skeleton for the tuple-export rewrites. The callers supply only the mutant branch body
   # and the baseline catch-all; id claiming, site recording, selector assembly, and the all-poisoned
   # fallback are common.
   defp binding_site(node, export, candidates, ctx, mutant_body, catch_all)
-       when is_function(mutant_body, 1) and is_function(catch_all, 1) do
+       when is_function(mutant_body, 1) and is_function(catch_all, 2) do
     {clauses, ctx} =
       SelectorEmit.claim_items(candidates, ctx, {&Delivery.site/4, &Delivery.line/1}, fn id,
                                                                                          candidate ->
@@ -162,7 +144,8 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
       _ ->
         ids = SelectorEmit.ids_from_clauses(clauses)
-        {case_node, ctx} = SelectorEmit.raw_case(clauses, catch_all.(ids), ctx)
+        {fallback, ctx} = catch_all.(ids, ctx)
+        {case_node, ctx} = SelectorEmit.raw_case(clauses, fallback, ctx)
         {{:=, [], [export, case_node]}, ctx}
     end
   end

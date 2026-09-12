@@ -170,6 +170,23 @@ defmodule Mutare.Metamutant do
   def subject?(_node, _var), do: false
 
   @doc """
+  Build the tupled selector subject with one recording point after both inputs
+  succeed. The clause-local temporaries never enter source clause scopes, and the
+  original scrutinee's bindings escape unchanged. `pattern_subject?/2` reads this
+  same structure after rendering; coverage gate construction belongs to Recorder.
+
+  `active_var` must be the same variable the `record` was gated on — this function is
+  the one place that pairs them, because the reader no longer can (see
+  `pattern_subject?/2`).
+  """
+  @spec pattern_subject_ast(Macro.t(), Macro.t(), atom(), atom(), Macro.t()) :: Macro.t()
+  def pattern_subject_ast(read, scrutinee, active_var, subject_var, record) do
+    tuple = {{active_var, [], nil}, {subject_var, [], nil}}
+    clause = {:->, [], [[tuple], {:__block__, [], [record, tuple]}]}
+    {:case, [], [{read, scrutinee}, [do: [clause]]]}
+  end
+
+  @doc """
   Returns whether `node` is a tupled selector subject.
 
   The tuple-the-scrutinee path starts with `{<selector_subject>, <scrutinee>}`.
@@ -177,6 +194,13 @@ defmodule Mutare.Metamutant do
   the tuple unchanged; its temporary bindings stay outside source clause scopes. Recognise
   that wrapper only through its coverage record and matching input/output variables.
   The mutant clauses gate on the active id in guards.
+
+  `var` is compared against the variable the *pattern* binds, not against anything inside
+  the record: `Mutare.Coverage.Recorder.record?/1` deliberately ignores the gate, so the
+  gate may later become a hoisted boolean without breaking attribution. That the gate and
+  the pattern name the same variable is therefore an emitter invariant now, held by
+  `pattern_subject_ast/5` and its caller building both from one `Config.active_var`, and
+  not something this reader can re-check.
 
   Both the bare two-tuple and the `{:__block__, _, [{first, scrutinee}]}` wrapper
   produced by literal-encoded reparse are accepted. `var` is passed through so the
@@ -201,11 +225,11 @@ defmodule Mutare.Metamutant do
 
   def pattern_subject?({:case, _, [input, [{key, clauses}]]}, var) do
     with [{:->, _, [[pattern], {:__block__, _, [record, returned]}]}] <- clauses,
-         recorded_var when not is_nil(recorded_var) <- Recorder.record_var(record),
+         true <- Recorder.record?(record),
+         {recorded_var, _} = variables <- tuple_variables(pattern),
          true <- AST.key_atom(key) == :do,
          true <- is_nil(var) or var == recorded_var,
-         true <- pattern_subject?(input, var),
-         {^recorded_var, _} = variables <- tuple_variables(pattern) do
+         true <- pattern_subject?(input, var) do
       tuple_variables(returned) == variables
     else
       _ -> false

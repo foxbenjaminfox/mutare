@@ -18,7 +18,7 @@ defmodule Mutare.Transform.RescueEmit do
   # binding a new variable. Identical raw/emitted ASTs need no body selector.
 
   alias Mutare.AST
-  alias Mutare.Coverage.Recorder
+  alias Mutare.Transform.CoverageEmit
   alias Mutare.Transform.Candidate.Delivery
 
   alias Mutare.Transform.{
@@ -138,10 +138,12 @@ defmodule Mutare.Transform.RescueEmit do
         {key, value}
       end)
 
+    {record, ctx} = CoverageEmit.record(ids, ctx, :enclosing)
+
     {Render.block_wrap(
        {:__block__, [],
         [
-          Recorder.record_ast(ids, ctx.config.active_var, ctx.config.runtime_namespace),
+          record,
           {:try, meta, [shared ++ [catch: [catch_clause]]]}
         ]}
      ), ctx}

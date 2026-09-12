@@ -237,7 +237,7 @@ defmodule Mutare.AST do
   Its inverse, and the one way to recognise a generated operator, so a reader cannot drift
   from the builder. Tolerates the `{:__block__, _, [:erlang]}` wrapper a Sourceror reparse of
   rendered metamutant source puts around the module atom — `Mutare.Manifest` and
-  `Mutare.Coverage.Recorder.record_var/1` both read reparsed source.
+  `Mutare.Coverage.Recorder.record?/1` both read reparsed source.
 
       iex> Mutare.AST.erlang_call_args(Mutare.AST.erlang_call(:andalso, [1, 2]), :andalso)
       {:ok, [1, 2]}

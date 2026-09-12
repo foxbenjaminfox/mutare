@@ -87,6 +87,7 @@ defmodule Mutare.SelectorTest do
 
   test "bootstrap AST reads the env var into the harness (default) key slot" do
     System.put_env(Selector.env_var(), "42")
+    :persistent_term.erase(Selector.default_key())
     Code.eval_quoted(Selector.bootstrap_ast())
     # The bootstrap always targets the harness key — that's the slot the real
     # metamutant reads — regardless of any suite-key override.
@@ -95,14 +96,25 @@ defmodule Mutare.SelectorTest do
 
   test "bootstrap AST falls back to baseline when unset or empty" do
     System.delete_env(Selector.env_var())
-    :persistent_term.put(Selector.default_key(), 7)
+    :persistent_term.erase(Selector.default_key())
     Code.eval_quoted(Selector.bootstrap_ast())
     assert :persistent_term.get(Selector.default_key()) == 0
 
     System.put_env(Selector.env_var(), "")
-    :persistent_term.put(Selector.default_key(), 7)
+    :persistent_term.erase(Selector.default_key())
     Code.eval_quoted(Selector.bootstrap_ast())
     assert :persistent_term.get(Selector.default_key()) == 0
+  end
+
+  test "repeated bootstrap preserves selection after the environment changes" do
+    :persistent_term.erase(Selector.default_key())
+    System.put_env(Selector.env_var(), "7")
+    System.put_env(Selector.namespace_env(), "lib/a.ex")
+    Code.eval_quoted(Selector.bootstrap_ast())
+    System.put_env(Selector.env_var(), "8")
+    System.put_env(Selector.namespace_env(), "lib/b.ex")
+    Code.eval_quoted(Selector.bootstrap_ast())
+    assert :persistent_term.get(Selector.default_key()) == {"lib/a.ex", 7}
   end
 
   test "sandbox renders the canonical bootstrap AST" do
@@ -111,19 +123,23 @@ defmodule Mutare.SelectorTest do
     assert Mutare.Sandbox.bootstrap() =~ rendered
   end
 
-  test "bootstrap selects a file and clears the previous file across repeated helpers" do
+  test "bootstrap selects a file and clears the previous file across fresh runs" do
     System.put_env(Selector.env_var(), "7")
     System.put_env(Selector.namespace_env(), "lib/a.ex")
+    :persistent_term.erase(Selector.default_key())
     Code.eval_quoted(Selector.bootstrap_ast())
     assert :persistent_term.get(Selector.default_key()) == {"lib/a.ex", 7}
 
     System.put_env(Selector.namespace_env(), "lib/b.ex")
+    :persistent_term.erase(Selector.default_key())
     Code.eval_quoted(Selector.bootstrap_ast())
     assert :persistent_term.get(Selector.default_key()) == {"lib/b.ex", 7}
+    :persistent_term.erase(Selector.default_key())
     Code.eval_quoted(Selector.bootstrap_ast())
     assert :persistent_term.get(Selector.default_key()) == {"lib/b.ex", 7}
 
     System.put_env(Selector.env_var(), "0")
+    :persistent_term.erase(Selector.default_key())
     Code.eval_quoted(Selector.bootstrap_ast())
     assert :persistent_term.get(Selector.default_key()) == 0
   end

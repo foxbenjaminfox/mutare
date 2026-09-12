@@ -1070,7 +1070,7 @@ defmodule Mutare.SandboxTest do
 
       # A declined wrap leaves its project compiling with inference on, which can stretch the
       # one compile from seconds to hours, so the runner (for `--verbose`) must be told which
-      # and why, in path order. The root is an unparseable template, kept byte-for-byte;
+      # and why, in path order. The root is an unparseable template;
       # `late` builds its project in a required file; `early` wraps and must not be mentioned.
       root_source = "defmodule <%= @module %>.MixProject, do: :ok\n"
       File.write!(Path.join(project, "mix.exs"), root_source)
@@ -1094,7 +1094,9 @@ defmodule Mutare.SandboxTest do
                {"mix.exs", "it does not parse" <> _}
              ] = declined
 
-      assert File.read!(Path.join(sandbox, "mix.exs")) == root_source
+      rewritten = File.read!(Path.join(sandbox, "mix.exs"))
+      assert String.ends_with?(rewritten, root_source)
+      assert rewritten =~ "MUTARE_COVERAGE"
     end
 
     test "reports :skipped when --no-seed-app-build opts out", context do

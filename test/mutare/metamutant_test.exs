@@ -113,6 +113,31 @@ defmodule Mutare.MetamutantTest do
                :mutare_active_0
              )
 
+      # The gate may become a hoisted boolean without changing poison attribution.
+      bound_record =
+        quote do
+          case mutare_tracking do
+            true -> unquote(Mutare.Coverage.Recorder.hit_ast([1], "lib/example.ex"))
+            _ -> false
+          end
+        end
+
+      bound =
+        Metamutant.pattern_subject_ast(
+          active,
+          {:user_value, [], nil},
+          :mutare_active_0,
+          :mutare_case_subject,
+          bound_record
+        )
+
+      assert Metamutant.pattern_subject?(bound, :mutare_active_0)
+
+      assert Metamutant.pattern_subject?(
+               Sourceror.parse_string!(Macro.to_string(bound)),
+               :mutare_active_0
+             )
+
       refute Metamutant.pattern_subject?(hoisted)
       refute Metamutant.pattern_subject?(hoisted, :mutare_active)
 

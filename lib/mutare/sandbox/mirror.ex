@@ -229,7 +229,9 @@ defmodule Mutare.Sandbox.Mirror do
   # kept sandbox is the default"). A symlink is recorded, never descended, so its subtree is
   # mirrored only where it also lives under `root` in its own right. Anything else (device,
   # socket, unreadable) is skipped.
-  defp source_entries(root, exclude) do
+  @doc false
+  @spec source_entries(Path.t(), [String.t()]) :: [entry()]
+  def source_entries(root, exclude) do
     for entry <- File.ls!(root),
         entry not in exclude,
         source <- walk(root, Path.join(root, entry)) do

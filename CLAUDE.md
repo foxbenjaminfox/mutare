@@ -111,7 +111,8 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   **decoding side of the exit-code contract**: it runs a mutant `mix test` and reads exit code +
   output into a typed outcome
   (`:passed`/`:failed`/`:timeout`/`:sigkilled`/`:harness_error`, refined from output into
-  `:suite_compile_error`/`:atom_exhausted`/`:boot_failure`); the codes themselves are the leaf
+  `:suite_compile_error`/`:atom_exhausted`/`:app_start_failure`/`:boot_failure`); the codes
+  themselves are the leaf
   `Command.Exit`, which the watcher ASTs in `Command.Invocation` also read. `Invocation.environment/2`
   is the one env builder every sandbox `mix` goes through (named run options, no raw env passthrough),
   and `reserved_env_names/0` is *derived* from it.
@@ -128,11 +129,13 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   `:boot_failure` budget, the never-retried `:sigkilled` OOM-kill case + `:max_heap_mb` containment,
   `:kill_runs` unanimous reruns) and maps each outcome to a result status. `RunCtx` is the per-run
   invariant bundle threaded to `Stream`/`MutantRun`.
-- **`Mutare.Coverage` / `Mutare.Coverage.Recorder`** — coverage is **self-recorded** by the
+- **`Mutare.Coverage` / `Mutare.Coverage.Recorder`** (+ `Transform.CoverageEmit`) — coverage is **self-recorded** by the
   metamutant at runtime (not `:cover`), keyed by mutant id and attributed per test process. Drives
   `:no_coverage` and test selection at three granularities (`:test_selection` — `:tests` (default,
   per-test-case via `mix test --only test:<name>`) ⊃ `:coverage` (per-file) ⊃ `:full` (whole
-  suite)). The `{module, name}` label is kept at both file (module→file) and test-case (the
+  suite)). `CoverageEmit` owns scope-aware gate emission; `Recorder` owns the payload and
+  lifecycle ASTs. Run mode initializes in project prefixes, recording starts in test helpers;
+  `HelperTemplate.runtime/1` isolates fixture capture from the outer probe. The `{module, name}` label is kept at both file (module→file) and test-case (the
   runnable `name`) granularity; `setup_all`/`on_exit`-covered ids can't be pinned to a runnable
   test, so `:tests` runs their whole file.
 - **`Mutare.Poison`** (+ `Hint`) — on a failed compile, maps the error's `file:line` to mutant
@@ -185,7 +188,7 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   `MUTARE_MUTANT_NAMESPACE` live in
   `Mutare.Selector`; the timeout and owner-death env vars + watchers in
   `Mutare.Sandbox.Command.Invocation` and their exit codes in `Mutare.Sandbox.Command.Exit`; the
-  coverage contract (`MUTARE_COVERAGE`, `:mutare_track`, the ETS tables, `MutareCov`, the dump
+  coverage contract (`MUTARE_COVERAGE`, immutable probe mode, recording readiness, the ETS tables, `MutareCov`, the dump
   file) in `Mutare.Coverage.Recorder`. `Mutare.Transform` emits the selectors/coverage into the
   metamutant; `Mutare.Sandbox` emits the reader/watchers/helper into the bootstrap (and the
   owner-death watcher into `config/config.exs`, so it guards the one compile too — NOTES
@@ -201,8 +204,9 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   re-parsing in `Schema` or the Mix task — NOTES "The count pass is the scan's only parse".
 - **Generated code never resolves through the target's imports.** Every operator Mutare
   *generates* is an explicit `:erlang` call built by `Mutare.AST.erlang_call/2` and recognised
-  *only* through `AST.erlang_call_args/2` (`Manifest.gate_id/2` for the gate,
-  `Recorder.record_var/1` for the record's comparison) — builder and reader must move together.
+  *only* through `AST.erlang_call_args/2` (`Manifest.gate_id/2` for the gate).
+  `Recorder.record?/1` recognises the coverage record's outer `case` and helper payload
+  independently of its gate — builder and reader must move together.
   The two conjunction forms differ by position, and that is not negotiable: in a *guard*
   (`Mutare.Transform.GuardBuild`) they are `:erlang.andalso`/`orelse`, what `and`/`or` compile
   to there; in a *body* (the coverage record, `Mutare.Coverage.Recorder.record_ast/3`) they are
@@ -274,7 +278,11 @@ rules, the `families:` grammar) are in the
 `:killed` / `:survived` are the verdict (the product is the survivor diffs, not the headline score).
 Four are excluded from the score denominator: `:no_coverage`, `:ignored`, `:poisoned`,
 `:harness_error` (a run that never reached a verdict — infra failure, **not** charged as a kill).
-`:timeout` and `:atom_exhausted` count as kills. Every per-status fact (classification, JSON name,
+`:timeout` and `:atom_exhausted` count as kills, and so does a mutation that stops the target's
+application from booting — selection precedes runtime configuration and `app.start`, so
+`Command`'s `:app_start_failure` records as `:killed` once the boot-contention retries
+rule out a startup stampede (NOTES
+"Coverage emission and startup boundaries"). Every per-status fact (classification, JSON name,
 labels, styling) lives once in the `Mutare.Result.Status` descriptor registry — add a status by
 adding a row plus the type union.
 

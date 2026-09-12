@@ -20,7 +20,7 @@ defmodule Mutare.Transform.ReceiveClauseEmit do
   # cannot introduce a binding into the raw mutant bodies.
 
   alias Mutare.AST
-  alias Mutare.Coverage.Recorder
+  alias Mutare.Transform.CoverageEmit
 
   alias Mutare.Transform.{
     Candidate,
@@ -80,11 +80,12 @@ defmodule Mutare.Transform.ReceiveClauseEmit do
                 ClauseVariants.share_bodies(clauses, block(raw_blocks, :after), ids, var)
             end)
 
-          record = Recorder.record_ast(ids, var, ctx.config.runtime_namespace)
+          {record, ctx} = CoverageEmit.record(ids, ctx, :enclosing)
 
           # The interleaved clauses' gates, the shared after-bodies' guards and the entry-time
-          # record read the enclosing binding directly, not through a selector subject.
-          {{:__block__, [], [record, rewritten]}, SelectorEmit.reference_active(ctx)}
+          # record read the enclosing binding directly, not through a selector subject;
+          # `CoverageEmit.record/3` has already recorded that dependency on `ctx`.
+          {{:__block__, [], [record, rewritten]}, ctx}
       end
 
     select(default, whole, ctx)

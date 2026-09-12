@@ -5,8 +5,9 @@ defmodule Mutare.Transform.LiftedEmit do
   # clauses for a lifted function group, given the already-claimed candidate ids. Pure — no
   # `Ctx`, no id-claiming. `Mutare.Transform.emit_function_plan/2` owns the stateful half
   # (threading `Ctx`, claiming ids via `SelectorEmit.claim_items/4`, emitting in-place body
-  # selectors) and calls `assemble/5` with plain data: the plan, the emitted source clauses, the
-  # `{id, index, clause, witness}` claims, the group number, and the config.
+  # selectors) and calls `assemble/6` with plain data: the plan, the emitted source clauses, the
+  # `{id, index, clause, witness}` claims, the group number, the config, and prepared
+  # coverage expressions.
   #
   # The interleaving scheme: each source clause's mutant clauses (one per candidate overriding
   # it, gated `when <var> === <id>`) precede the source clause itself (gated `when <var> !==
@@ -17,12 +18,12 @@ defmodule Mutare.Transform.LiftedEmit do
   alias Mutare.Metamutant
   alias Mutare.Transform.{ClauseAST, Config, FunctionPlan, GuardBuild, ImportWitness, Super}
 
-  # The fixed facts of one lifted group, derived once in `assemble/5` and read by every clause
+  # The fixed facts of one lifted group, derived once in `assemble/6` and read by every clause
   # builder below: the public signature (`vis`/`name`/`arity` — the dispatcher keeps the real
   # name), the private `base` name the clauses are relocated under, the dispatch variable `var`
-  # (`Config.active_var`) and the file's runtime `namespace` (both for the active-id read and the
-  # coverage record), and `super_var` — the super-forwarding closure variable, non-`nil` only
-  # when a lifted body calls `super` (see `build_dispatcher/3`).
+  # (`Config.active_var`) and the file's runtime `namespace` for the active-id read,
+  # and `super_var` — the super-forwarding closure variable, non-`nil` only when a
+  # lifted body calls `super` (see `build_dispatcher/3`).
   defmodule Group do
     @moduledoc false
     @enforce_keys [:vis, :name, :arity, :base, :var, :namespace, :super_var]
@@ -36,16 +37,20 @@ defmodule Mutare.Transform.LiftedEmit do
   clauses (`build_base_clauses/3`). `orig_clauses` are the source clauses with their in-place
   body selectors already emitted; `claimed` the `{id, clause_index, mutated_clause | :drop,
   witness}` claims; `group_number` the file-wide lifted-group counter (for a collision-free base
-  name).
+  name). `records` are the dispatcher's coverage expressions, prepared by the
+  stateful emitter; assembly does not choose their gate or track scope usage.
   """
-  @spec assemble(FunctionPlan.t(), [Macro.t()], [claim()], non_neg_integer(), Config.t()) ::
+  @spec assemble(FunctionPlan.t(), [Macro.t()], [claim()], non_neg_integer(), Config.t(), [
+          Macro.t()
+        ]) ::
           [Macro.t()]
   def assemble(
         %FunctionPlan{signature: {vis, name, arity}} = plan,
         orig_clauses,
         claimed,
         group_number,
-        %Config{} = config
+        %Config{} = config,
+        records
       ) do
     group = %Group{
       vis: vis,
@@ -65,10 +70,9 @@ defmodule Mutare.Transform.LiftedEmit do
     # taken from the already-emitted clauses, so their in-place selectors ride along and the
     # dispatcher keeps mutating its defaults.
     defaults = clause_defaults(orig_clauses)
-    mut_ids = Enum.map(claimed, fn {id, _index, _clause, _witness} -> id end)
 
     [
-      build_dispatcher(group, mut_ids, defaults)
+      build_dispatcher(group, records, defaults)
       | build_base_clauses(group, orig_clauses, claimed)
     ]
   end
@@ -132,7 +136,7 @@ defmodule Mutare.Transform.LiftedEmit do
   # `<super_var> = &super/arity` bound here — `super` is legal inside the dispatcher (the
   # overriding function), even captured — and threaded to the base as its second argument, so the
   # relocated body can call `super` through it (`Mutare.Transform.Super`).
-  defp build_dispatcher(%Group{} = group, mut_ids, defaults) do
+  defp build_dispatcher(%Group{} = group, records, defaults) do
     call_args = dispatcher_args(group.arity)
     head_args = with_defaults(call_args, defaults)
     var_node = Recorder.catch_all_pattern(group.var)
@@ -141,10 +145,7 @@ defmodule Mutare.Transform.LiftedEmit do
     {super_args, super_stmts} = super_closure_binding(group.super_var, group.arity)
     call = {group.base, [], [var_node | super_args] ++ call_args}
 
-    record =
-      if mut_ids == [], do: [], else: [Recorder.record_ast(mut_ids, group.var, group.namespace)]
-
-    body = {:__block__, [], [read] ++ super_stmts ++ record ++ [call]}
+    body = {:__block__, [], [read] ++ super_stmts ++ records ++ [call]}
 
     {group.vis, [], [{group.name, [], head_args}, [do: body]]}
   end

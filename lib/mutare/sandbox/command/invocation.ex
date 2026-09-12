@@ -113,7 +113,10 @@ defmodule Mutare.Sandbox.Command.Invocation do
     * `:partition` (`[{name, id}]` or `[]`) — the user-named partition entry
       (`Mutare.Runner.Partitions.entry/2`), appended last.
 
-  Every option is optional; an absent or `nil` option emits nothing.
+  Every option is optional. An absent `:cap`, `:compile_cap` or `:coverage` clears
+  its variables explicitly rather than emitting nothing, so a value inherited from
+  Mutare's own environment can never arm a watcher or a probe this invocation did
+  not ask for. The remaining absent options emit nothing.
   """
   @type run_opts :: [
           cap: pos_integer() | nil,
@@ -183,7 +186,13 @@ defmodule Mutare.Sandbox.Command.Invocation do
       Keyword.get(opts, :partition, [])
   end
 
-  defp cap_env(_var, nil), do: []
+  # An unarmed cap *clears* its variable rather than omitting it. `System.cmd/3`
+  # merges `:env` over the parent's environment, and the watchers now arm from the
+  # `mix.exs` prefix — which every sandbox `mix` evaluates, the one metamutant
+  # compile included. Omitting the entry would let a `MUTARE_TIMEOUT` inherited from
+  # Mutare's own environment (dogfooding sets it on the suite-under-test) halt the
+  # compile, whose cap is deliberately a separate variable so it stays inert.
+  defp cap_env(var, nil), do: [{var, nil}]
   defp cap_env(var, ms) when is_integer(ms) and ms > 0, do: [{var, Integer.to_string(ms)}]
 
   defp compile_env(true), do: CompilerOptions.compiler_env()
@@ -192,7 +201,8 @@ defmodule Mutare.Sandbox.Command.Invocation do
   # The dump path and the path-normalisation root travel in env vars so the helper,
   # running with a per-app cwd in an umbrella, writes one union dump with
   # root-relative keys.
-  defp coverage_env(nil), do: []
+  defp coverage_env(nil),
+    do: [{Recorder.env_var(), nil}, {Recorder.dump_path_env(), nil}, {Recorder.root_env(), nil}]
 
   defp coverage_env({dump, root}) when is_binary(dump) and is_binary(root),
     do: [{Recorder.env_var(), "1"}, {Recorder.dump_path_env(), dump}, {Recorder.root_env(), root}]
@@ -291,8 +301,9 @@ defmodule Mutare.Sandbox.Command.Invocation do
   that sleeps for the cap and then `System.halt/1`s the run with
   `Mutare.Sandbox.Command.Exit.timeout/0` — so the run halts *itself* and there is
   no process tree to kill. `Mutare.Sandbox` renders this AST into the target
-  project's test bootstrap, mirroring how it renders `Mutare.Selector.bootstrap_ast/0`,
+  project prefix and test-bootstrap fallback, alongside `Mutare.Selector.bootstrap_ast/0`,
   so the target needs nothing platform-specific and no dependency on Mutare.
+  The first armed evaluation starts the deadline; later prefixes cannot reset it.
   """
   @spec watcher_ast() :: Macro.t()
   def watcher_ast, do: deadline_watcher(@timeout_env)
@@ -327,10 +338,16 @@ defmodule Mutare.Sandbox.Command.Invocation do
           :ok
 
         raw ->
-          spawn(fn ->
-            Process.sleep(String.to_integer(raw))
-            System.halt(unquote(timeout_exit))
-          end)
+          key = {:mutare_deadline, unquote(env_var)}
+
+          unless :persistent_term.get(key, false) do
+            :persistent_term.put(key, true)
+
+            spawn(fn ->
+              Process.sleep(String.to_integer(raw))
+              System.halt(unquote(timeout_exit))
+            end)
+          end
       end
     end
   end
@@ -347,12 +364,12 @@ defmodule Mutare.Sandbox.Command.Invocation do
   pipe hits EOF and the run reaps itself, instead of surviving re-parented (a
   compute-bound `mix` never touches stdout, so it would otherwise run on
   untouched). `Mutare.Sandbox` renders this AST into the sandbox's
-  `config/config.exs` (mix evaluates config before compiling, so the one-time
+  project prefix, `config/config.exs` (mix evaluates config before compiling, so the one-time
   metamutant compile and every run's boot phase are covered) and into the test
   bootstrap alongside `watcher_ast/0` (covering suites under a config layout the
   config injection can't reach). Like the timeout watcher, it needs nothing
   platform-specific and no dependency on Mutare — the same self-halt primitive
-  pointed at a second hazard.
+  pointed at a second hazard. Only the first armed evaluation starts a watcher.
 
   Data on stdin never arrives under `mix/4` (Mutare writes nothing to the pipe),
   so the watcher simply re-blocks on anything that isn't `:eof`; a target suite
@@ -373,19 +390,25 @@ defmodule Mutare.Sandbox.Command.Invocation do
           :ok
 
         _armed ->
-          spawn(fn ->
-            watch = fn watch ->
-              # `:io.get_line/2` (not `IO.read/2`) so the rendered snippet stays
-              # stable across Elixir versions in the target project.
-              case :io.get_line(:standard_io, "") do
-                :eof -> System.halt(unquote(owner_lost_exit))
-                {:error, _} -> System.halt(unquote(owner_lost_exit))
-                _data -> watch.(watch)
-              end
-            end
+          key = {:mutare_owner_watch, unquote(owner_watch_env)}
 
-            watch.(watch)
-          end)
+          unless :persistent_term.get(key, false) do
+            :persistent_term.put(key, true)
+
+            spawn(fn ->
+              watch = fn watch ->
+                # `:io.get_line/2` (not `IO.read/2`) so the rendered snippet stays
+                # stable across Elixir versions in the target project.
+                case :io.get_line(:standard_io, "") do
+                  :eof -> System.halt(unquote(owner_lost_exit))
+                  {:error, _} -> System.halt(unquote(owner_lost_exit))
+                  _data -> watch.(watch)
+                end
+              end
+
+              watch.(watch)
+            end)
+          end
       end
     end
   end
