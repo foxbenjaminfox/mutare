@@ -187,10 +187,7 @@ defmodule Mutare.Sandbox.CompilerOptionsIntegrationTest do
 
     rewritten = File.read!(Path.join(fixture.sandbox, "apps/template/mix.exs"))
 
-    assert String.ends_with?(
-             rewritten,
-             File.read!(Path.join(fixture.umbrella, "apps/template/mix.exs"))
-           )
+    assert rewritten =~ File.read!(Path.join(fixture.umbrella, "apps/template/mix.exs"))
 
     assert rewritten =~ "MUTARE_COVERAGE"
 

@@ -1095,7 +1095,7 @@ defmodule Mutare.SandboxTest do
              ] = declined
 
       rewritten = File.read!(Path.join(sandbox, "mix.exs"))
-      assert String.ends_with?(rewritten, root_source)
+      assert rewritten =~ "try do\n" <> root_source <> "\ncatch\n"
       assert rewritten =~ "MUTARE_COVERAGE"
     end
 

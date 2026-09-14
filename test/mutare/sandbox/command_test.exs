@@ -168,6 +168,30 @@ defmodule Mutare.Sandbox.CommandTest do
       assert Command.outcome(1, @config_crash <> @boot_crash) == :boot_failure
     end
 
+    test "project evaluation evidence receives the startup policy without overriding exit verdicts" do
+      marker = Mutare.Sandbox.ProjectEvaluation.failure_marker()
+
+      for header <- ["** (RuntimeError) rejected", "** (exit) :rejected", "** (throw) :rejected"] do
+        output = marker <> "\n" <> header <> "\n"
+        assert Command.outcome(1, output) == :app_start_failure
+        assert Command.outcome(1, String.replace(output, "\n", "\r\n")) == :app_start_failure
+        assert Command.outcome(1, output <> @boot_crash) == :boot_failure
+        assert Command.outcome(0, output) == :passed
+        assert Command.outcome(Exit.failure(), output) == :failed
+        assert Command.outcome(Exit.timeout(), output) == :timeout
+        assert Command.outcome(Exit.sigkill(), output) == :sigkilled
+
+        assert Command.outcome(1, header) == :harness_error
+        assert Command.outcome(1, header <> " mentions " <> marker) == :harness_error
+
+        assert Command.outcome(1, header <> "\n" <> marker <> " mentioned in a message\n") ==
+                 :harness_error
+      end
+
+      assert Command.outcome(1, marker <> "\n") == :harness_error
+      assert Command.outcome(1, "** (File.Error) could not read mix.exs") == :harness_error
+    end
+
     test "configuration output never overrides an exit-code verdict or SIGKILL" do
       marked_crash =
         Mutare.Sandbox.RuntimeConfig.failure_marker() <>

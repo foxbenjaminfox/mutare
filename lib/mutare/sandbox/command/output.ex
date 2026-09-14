@@ -8,7 +8,7 @@ defmodule Mutare.Sandbox.Command.Output do
     * **Refining a verdict.** Exit `1` is ambiguous — a genuine harness failure or
       a mutation that broke the test suite's own compilation — and a BEAM abort can
       land on any code. `suite_compile_error?/1`, `atom_exhausted?/1`,
-      `app_start_failure?/1`, `config_failure?/1`, and `boot_failure?/1` are the pure
+      `app_start_failure?/1`, `config_failure?/1`, `project_failure?/1`, and `boot_failure?/1` are the pure
       discriminators `Mutare.Sandbox.Command.outcome/2` consults to split those cases (see that
       module's moduledoc for *why* each is the verdict it is).
     * **Locating a failure.** `Mutare.Poison` maps a failed metamutant compile back
@@ -121,6 +121,12 @@ defmodule Mutare.Sandbox.Command.Output do
                              "\\r?$",
                            "m"
                          )
+  @project_failure_marker Regex.compile!(
+                            "^" <>
+                              Regex.escape(Mutare.Sandbox.ProjectEvaluation.failure_marker()) <>
+                              "\\r?$",
+                            "m"
+                          )
 
   @typedoc "The remediation class of a Mix dependency-check failure."
   @type dependency_issue :: :fetch | :compile | :diverged | :unavailable | :invalid
@@ -403,6 +409,20 @@ defmodule Mutare.Sandbox.Command.Output do
     Regex.match?(@exception_header, output) and
       (Regex.match?(@config_failure_marker, output) or
          Regex.match?(@config_eval_frame, output) or Regex.match?(@runtime_config_frame, output))
+  end
+
+  @doc """
+  Returns whether an error, exit, or throw escaped project evaluation.
+
+  The sandbox's `mix.exs` wrapper emits explicit evidence before re-raising,
+  retaining attribution when a deep library call loses every project stack frame.
+  An exception alone, or a message merely mentioning `mix.exs`, is insufficient.
+  `Mutare.Sandbox.Command.outcome/2` applies the same startup-kill policy as for
+  configuration, including boot-contention retries and `boot_failure?/1` precedence.
+  """
+  @spec project_failure?(String.t()) :: boolean()
+  def project_failure?(output) when is_binary(output) do
+    Regex.match?(@exception_header, output) and Regex.match?(@project_failure_marker, output)
   end
 
   @doc """

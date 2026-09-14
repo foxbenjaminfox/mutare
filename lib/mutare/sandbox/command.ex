@@ -39,6 +39,7 @@ defmodule Mutare.Sandbox.Command do
       here rather than as a clean `Exit.timeout/0`.
     * a mutation reachable from **application startup** stops `mix test` before it
       loads a single test: the sandbox selects the mutant in the `mix.exs` prefix,
+      project evaluation fails (`Output.project_failure?/1`),
       runtime configuration raises (`Output.config_failure?/1`), or `app.start`
       raises and Mix exits `1` with `Could not start application …`
       (`Output.app_start_failure?/1`). The baseline
@@ -117,7 +118,8 @@ defmodule Mutare.Sandbox.Command do
       A resource-divergence like a timeout (the suite can never pass with it), so
       the runner counts it as a kill — see `outcome/2` and `Output.atom_exhausted?/1`.
     * `:app_start_failure` — a refinement of `:harness_error`: Mix refused to start
-      the target's OTP application because the mutation broke configuration
+      the target's OTP application because the mutation broke project evaluation
+      (`Output.project_failure?/1`), configuration
       (`Output.config_failure?/1`) or code reachable from `Application.start/2`
       (`Output.app_start_failure?/1`). The suite never ran, but
       the mutation *was* detected — the app can't even boot with it — so the runner
@@ -165,8 +167,9 @@ defmodule Mutare.Sandbox.Command do
   refinement recovers `:atom_exhausted` — a VM abort from the mutation minting
   unbounded atoms (`Output.atom_exhausted?/1`), a detected resource-divergence. Both
   are kills. So is a third — `:app_start_failure` (`Output.app_start_failure?/1`) —
-  where Mix refused to start the application because the mutation broke configuration
-  (`Output.config_failure?/1`) or code reachable from `Application.start/2`;
+  where Mix refused to start the application because the mutation broke project evaluation
+  (`Output.project_failure?/1`), configuration (`Output.config_failure?/1`), or code
+  reachable from `Application.start/2`;
   the baseline boots the same sandbox green,
   so the mutation is what stopped it. A fourth — `:boot_failure`
   (`Output.boot_failure?/1`) — stays a harness error but names a known-transient
@@ -208,7 +211,8 @@ defmodule Mutare.Sandbox.Command do
           Output.boot_failure?(output) ->
             :boot_failure
 
-          Output.app_start_failure?(output) or Output.config_failure?(output) ->
+          Output.app_start_failure?(output) or Output.config_failure?(output) or
+              Output.project_failure?(output) ->
             :app_start_failure
 
           true ->

@@ -9941,6 +9941,18 @@ including a zero-tolerance harness-error guard. Decoder checks also remove all
 configuration frames from that captured output and preserve boot-failure and
 exit-code precedence.
 
+Project evaluation is an earlier instance of the same boundary: `mix.exs` can
+require and call mutated library code, including from `project/0`. The setting
+fixture (`2 - 1` → `2 + 1`, rejected above 2) reproduced the harness-error abort
+there too. `Sandbox.ProjectEvaluation` wraps every sandbox project source after
+the selector/watchers prefix, independently of whether the inference hook landed.
+It marks escaping errors, exits, and throws before re-raising; `Output.project_failure?/1`
+requires that marker plus an exception header and routes it through the existing
+startup retry/kill policy. Wrapping the whole file also covers externally required
+project definitions. Regressions cover `project/0` rejection and deep required-file
+failures after stripping all stack frames, in kept and fresh sandboxes. Successful
+project evaluation emits no marker, so later infrastructure failures keep their verdict.
+
 The unarmed cap entries in `Invocation.environment/2` became clears for the same reason the
 coverage entries did. The watchers arm from the `mix.exs` prefix now, which every sandbox
 `mix` evaluates — the one metamutant compile included — and `System.cmd/3` merges `:env`

@@ -10,6 +10,115 @@ defmodule Mutare.CoverageStartupRunnerTest do
   @moduletag :runner
   @moduletag timeout: 180_000
 
+  test "a mutation rejected during project evaluation is killed" do
+    %{project: root, sandbox: sandbox} =
+      Project.build(:project_refusal, %{
+        "mix.exs" => """
+        Code.require_file("lib/settings.ex", __DIR__)
+        defmodule ProjectRefusal.MixProject do
+          use Mix.Project
+          def project do
+            if Settings.setting() > 2, do: raise("setting must be small")
+            [app: :project_refusal, version: "0.1.0"]
+          end
+        end
+        """,
+        "lib/settings.ex" => """
+        defmodule Settings do
+          def setting, do: 2 - 1
+        end
+        """,
+        "test/settings_test.exs" => """
+        defmodule SettingsTest do
+          use ExUnit.Case
+          test "setting", do: assert Settings.setting() == 1
+        end
+        """
+      })
+
+    log =
+      capture_log(fn ->
+        assert {:ok, run} =
+                 Mutare.run(root,
+                   sandbox: sandbox,
+                   mutators: [:arithmetic],
+                   max_harness_error_rate: 0
+                 )
+
+        assert [%{status: :killed, output: output}] = run.results
+        assert output =~ "** (RuntimeError) setting must be small"
+        refute output =~ "Could not start application"
+      end)
+
+    assert log =~ "project evaluation"
+  end
+
+  for {kind, failure, header} <- [
+        {:error, ~s|raise("setting rejected")|, "** (RuntimeError) setting rejected"},
+        {:exit, "exit(:setting_rejected)", "** (exit) :setting_rejected"},
+        {:throw, "throw(:setting_rejected)", "** (throw) :setting_rejected"}
+      ] do
+    test "a deep #{kind} in a required project retains kill attribution without stack frames" do
+      %{project: root, sandbox: sandbox} =
+        Project.build(:required_project_refusal, %{
+          # No inline module: the inference hook declines, but project evidence
+          # must still cover failures in the externally required definition.
+          "mix.exs" => ~s|Code.require_file("project.exs", __DIR__)\n|,
+          "project.exs" => """
+          Code.require_file("lib/settings.ex", __DIR__)
+          defmodule SettingsCalls do
+            #{Enum.map_join(1..20, "\n", fn n -> "def call_#{n}(), do: call_#{n + 1}() + 1" end)}
+            def call_21() do
+              if Settings.setting() > 2, do: #{unquote(failure)}, else: 1
+            end
+          end
+          defmodule RequiredProjectRefusal.MixProject do
+            use Mix.Project
+            def project, do: [app: :required_project_refusal, version: "0.1.0"]
+          end
+          IO.write("Evaluating project...")
+          SettingsCalls.call_1()
+          """,
+          "lib/settings.ex" => """
+          defmodule Settings do
+            def setting, do: 2 - 1
+          end
+          """,
+          "test/settings_test.exs" => """
+          defmodule SettingsTest do
+            use ExUnit.Case
+            test "setting", do: assert Settings.setting() == 1
+          end
+          """
+        })
+
+      assert {:ok, run} =
+               Mutare.run(root,
+                 sandbox: sandbox,
+                 keep_sandbox: unquote(kind) != :throw,
+                 mutators: [:arithmetic],
+                 max_harness_error_rate: 0
+               )
+
+      assert [%{status: :killed, output: output}] = run.results
+      assert output =~ unquote(header)
+      assert output =~ "SettingsCalls.call_20/0"
+      marker = Mutare.Sandbox.ProjectEvaluation.failure_marker()
+      assert output =~ marker
+
+      without_frames =
+        output
+        |> String.split("\n")
+        |> Enum.reject(&String.starts_with?(&1, "    "))
+        |> Enum.join("\n")
+
+      assert Mutare.Sandbox.Command.outcome(1, without_frames) == :app_start_failure
+
+      assert Mutare.Sandbox.Command.outcome(1, String.replace(without_frames, marker, "")) ==
+               :harness_error
+    end
+  end
+
   test "selection and probe mode precede prebuilt closures and waiting workers" do
     %{project: root, sandbox: sandbox} =
       Project.build(:coverage_startup, %{

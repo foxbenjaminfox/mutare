@@ -15,7 +15,9 @@ defmodule Mutare.Sandbox do
   with no dependency on Mutare, so the sandbox needs nothing added to its deps.
   Sandbox `mix.exs` files also wrap `project/0` to disable signature inference
   in the effective compiler options (`Mutare.Sandbox.CompilerOptions`), including
-  every umbrella child. The target's own project files remain untouched.
+  every umbrella child. `Mutare.Sandbox.ProjectEvaluation` marks escaping project
+  failures so the decoder retains startup-kill attribution even without project
+  stack frames. The target's own project files remain untouched.
 
   One copy serves every concurrent mutant run: they share this sandbox and its
   `_build`, and Mix's build lock serialises only their `--no-compile` boot check —
@@ -49,6 +51,7 @@ defmodule Mutare.Sandbox do
   alias Mutare.Coverage.Recorder
   alias Mutare.Run.Context
   alias Mutare.Sandbox.{CompilerOptions, Lock, Mirror, Ownership, Paths, RuntimeConfig, Seed}
+  alias Mutare.Sandbox.ProjectEvaluation
   alias Mutare.Sandbox.Command.Invocation
 
   # The top-level entries a sandbox never takes from the target: build output, VCS and editor
@@ -424,6 +427,7 @@ defmodule Mutare.Sandbox do
     # armed. Every piece is idempotent — repeated umbrella projects, and the test
     # helper's later fallback, preserve the first evaluation rather than reset it.
     #
+    # Mark escaping project-evaluation failures, including when inference declines.
     # Wrap in place; only the handful of mix.exs entries need rewriting.
     overrides
     |> Map.keys()
@@ -431,10 +435,12 @@ defmodule Mutare.Sandbox do
     |> Enum.reduce({overrides, MapSet.new(), []}, fn rel, {acc, wrapped, declined} ->
       case CompilerOptions.project_source(Map.fetch!(acc, rel)) do
         {:hooked, source} ->
-          {Map.put(acc, rel, @bootstrap <> source), MapSet.put(wrapped, rel), declined}
+          {Map.put(acc, rel, @bootstrap <> ProjectEvaluation.wrap(source)),
+           MapSet.put(wrapped, rel), declined}
 
         {:declined, source, reason} ->
-          {Map.put(acc, rel, @bootstrap <> source), wrapped, [{rel, reason} | declined]}
+          {Map.put(acc, rel, @bootstrap <> ProjectEvaluation.wrap(source)), wrapped,
+           [{rel, reason} | declined]}
       end
     end)
   end

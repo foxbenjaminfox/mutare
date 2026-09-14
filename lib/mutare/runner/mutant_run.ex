@@ -290,7 +290,8 @@ defmodule Mutare.Runner.MutantRun do
       "#{site_ref(site)} — the target's application would not start with this " <>
         "mutation active (exit #{result.exit_status}), and kept refusing across the " <>
         "boot-contention retries. `mix test` boots the app before it loads a single test, " <>
-        "so a mutation reachable from runtime configuration or Application.start/2 stops the " <>
+        "so a mutation reachable from project evaluation, runtime configuration, or " <>
+        "Application.start/2 stops the " <>
         "run there. The baseline boots the same sandbox green, so this counts as killed, " <>
         "not as a harness error."
     )
@@ -332,7 +333,8 @@ defmodule Mutare.Runner.MutantRun do
   # Not retried (it is a verdict, not a transient infra blip): only `:harness_error`
   # and the two boot-time shapes re-run (see `run_mutant_attempt/6`).
   defp status_for(:atom_exhausted), do: :atom_exhausted
-  # The mutation broke configuration or application startup, so `mix test` never
+
+  # The mutation broke project evaluation, configuration, or application startup, so `mix test` never
   # loaded a test. It was still detected: the baseline (and the coverage probe) boot
   # the *same* sandbox green, so the mutation is the only thing that changed. A kill,
   # on the same reasoning as `:suite_compile_error` — and, like every other kill,
