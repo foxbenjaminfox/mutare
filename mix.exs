@@ -1,7 +1,7 @@
 defmodule Mutare.MixProject do
   use Mix.Project
 
-  @version "0.1.2"
+  @version "0.2.0"
   @source_url "https://github.com/foxbenjaminfox/mutare"
 
   # Internal modules deliberately kept `@moduledoc false`: the transform pipeline's

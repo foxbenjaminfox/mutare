@@ -331,7 +331,8 @@ defmodule Mutare.CoverageStartupRunnerTest do
           assert {:ok, run} = Mutare.run(root, sandbox: sandbox, mutators: [:arithmetic])
           assert [%{status: :killed, output: output}] = run.results
           assert output =~ "** (RuntimeError) pool_size must be small"
-          assert output =~ runtime_path
+          # Newer evaluators can omit runtime.exs from the original stacktrace.
+          assert output =~ Mutare.Sandbox.RuntimeConfig.failure_marker()
           refute output =~ "Could not start application"
         end)
 

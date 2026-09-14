@@ -7,86 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **The metamutant compiles and runs on Elixir 1.21 (main).** The coverage record's
-  two short-circuits were `:erlang.andalso` calls; Elixir now accepts those only
-  inside a guard (elixir-lang/elixir@46c461e6 — a body-position call warns at
-  compile time and is an undefined function at runtime), so every generated function
-  crashed at baseline. The record is now two nested `case`s around the same explicit
-  `:erlang.==` comparison: the same import-proof short-circuit, built from special
-  forms alone. Guards were never affected — `:erlang.andalso`/`orelse` remain what
-  `and`/`or` compile to there.
-- **Signature inference stays disabled on Elixir 1.20.** Sandbox Mix projects now
-  return `infer_signatures: false` in their effective `elixirc_options`, including
-  umbrella children and projects with custom config paths. Mix can no longer
-  overwrite the earlier global setting with its default. Other compiler options
-  and the target checkout are preserved; subsequent baseline/probe boots use the
-  same setting.
-- **A seeded app build is no longer discarded when its `mix.exs` could not be
-  wrapped.** The inference cache entry was realigned for every app Mutare *listed*,
-  not every app it actually wrapped. A `mix.exs` that builds its project in an
-  externally required file, that Sourceror cannot round-trip, or that cannot be read
-  is skipped by the rewrite; stamping its manifest anyway left inference on *and*
-  mismatched the compiler cache key, so Mix cold-compiled the whole app while the
-  seed reported its beams as reused. The rewrite now reports whether the wrap landed,
-  and only those apps are realigned.
-- **A `mix.exs` Mutare cannot wrap is reported instead of silently slowing the
-  compile.** When the inference override cannot be applied (the file does not
-  parse, rewriting it would change its meaning, it defines no module of its own, or
-  the rewrite fails), its project compiles with signature inference on, which can
-  stretch the one compile from seconds to hours. `--verbose` now names each such
-  file and the reason; it is also logged at debug level.
-- **The `mix.exs` rewrite is checked for meaning, not just syntax.** It was accepted
-  whenever the rendered file parsed; Elixir must now read it back as the original
-  plus the hook, or the original is kept. A `throw` or `exit` during the rewrite no
-  longer escapes sandbox preparation.
+## [0.2.0] - 2026-09-14
 
 ### Changed
 
-- **Sandbox inference overrides explicit target options.** An explicit
-  `elixirc_options: [infer_signatures: true]` previously took precedence; the
-  sandbox now forces it to `false` so inference cannot stall the metamutant
-  compile. The target checkout and other compiler options remain unchanged.
-- **Smaller metamutants:** tupled cases record hosted coverage once and exclusion
-  guards compress exact runs of mutant IDs. Candidate numbering and reported
-  mutations remain unchanged.
-- **Generated operators no longer depend on the target's imports.** The activation
-  gate, exclusion guards, and the coverage record are emitted as explicit `:erlang`
-  calls, so a module that narrows or replaces `Kernel`'s `and`, `==`, `===`, `!==`,
-  `<`, `>`, `not`, or `is_integer` cannot change what they mean. Function-heavy
-  modules also compile measurably faster and in less memory, because `Kernel.and/2`
-  in a body expands to a `case` and the coverage record carries two per function.
-- **Focused runs emit only selected mutants.** `--line`, `--since`, and
-  `--max-mutants` now reduce generated branches as well as execution. Discovery
-  still reserves every ID and checks ignore directives; poisoned and ignored
-  sites retain their cap positions. Changing selection can require recompiling
-  a retained sandbox.
-- **Ignored mutants emit no code.** Ignore directives now suppress generated
-  branches before rendering, reducing compiler input and preventing ignored
-  replacements from poisoning the build. IDs, diagnostic sites, reasons, and
-  mutant-cap consumption are preserved; wholly withheld files keep their exact
-  original source.
-- **The score and CI gates moved to `Mutare.Score`.** `score/1`, `percent/1`,
-  `passes_gate?/2`, `gate_failures/2`, `harness_error_rate/1`, and
-  `harness_errors_exceed?/2` were defined on `Mutare.Report`, the human-report
-  renderer; they now live on their own module. `Mutare.Report.summary/1` and the
-  renderers are unchanged.
-- **`Mutare.Sandbox.prepare/3` returns `{sandbox, materialized}` and fires no
-  hooks.** The app-build seed outcome and each declined inference wrap come back
-  in the second element; `Mutare.Runner.Compile` relays them on `:on_phase`, so
-  the sandbox no longer reads the run context's live-progress hooks. The kept-mode
-  in-place mirror moved to `Mutare.Sandbox.Mirror`, whose byte-aware, symlink-safe
-  writer now also writes the ownership marker (it was written through a second,
-  symlink-following writer).
-- **`Mutare.Report.Live`'s text rendering moved to `Mutare.Report.Live.Lines`.**
-  `status_block/2`, `detail_line/1`, `seed_line/1`, `poison_round_line/1`,
-  `macro_poison_line/1`, `leave_behind/1`, `verbose_leave/1`, `humanize_secs/1`,
-  `humanize_ms/1`, and `eta_secs/3` are pure and now live there; `Live` keeps the
-  process, the output modes, and the terminal writes. Its `phase_event` type now
-  lists every event `phase/2` accepts. The `{Module, :fun, :raw}` route the live
-  `⚠` line and `Mutare.Poison.Hint`'s snippets print is spelt once, in
-  `Hint.route_tuple/2`.
+- **Breaking: score API moved from `Mutare.Report` to `Mutare.Score`:** `score/1`,
+  `percent/1`, `passes_gate?/2`, `gate_failures/2`, `harness_error_rate/1`, and
+  `harness_errors_exceed?/2`.
+- **Breaking: `Mutare.Sandbox.prepare/3` now returns `{sandbox, materialized}`.**
+  Seed-reuse outcomes and declined inference overrides are returned as data;
+  the runner delivers their progress events.
+- **Breaking: live-report text helpers moved to `Mutare.Report.Live.Lines`.**
+  Callers of the rendering and time-formatting functions previously on
+  `Mutare.Report.Live` should use the new module.
+- **Breaking for manual sandbox selection: runtime mutant IDs are now local
+  to each file.** Manual selection in a generated sandbox needs both
+  `MUTARE_MUTANT_NAMESPACE` (the root-relative file) and `MUTARE_ACTIVE_MUTANT`
+  (its local ID). Changing another file's candidate count no longer changes an
+  otherwise unchanged metamutant, allowing retained builds to survive unrelated
+  changes. Reports still use globally unique IDs; standalone transforms retain
+  integer-only selection.
+
+- **Focused runs and ignore directives produce smaller builds.** `--line`,
+  `--since`, and `--max-mutants` now limit generated branches as well as execution,
+  and ignore directives suppress branches before compilation. IDs, ignore
+  diagnostics, and mutant-cap accounting are preserved. Files with no emitted
+  mutants keep their original bytes, allowing their compiled modules to be reused.
+- **Smaller metamutants and less processing overhead.** Clause mutations share
+  code in eligible `case`, anonymous-function, `receive`, and `try/rescue`
+  constructs, and exclusion guards compress consecutive IDs. Scanning and poison
+  recovery avoid redundant parsing; coverage recording caches hits per file and
+  writes a more compact dump.
+- **Custom string-pattern mutations follow the built-in redundancy rule.** When
+  one mutator offers both empty and non-empty string replacements for an exact
+  pattern, Mutare drops the empty replacement.
+
+### Added
+
+- **Guard mutations in more clause positions:** `with` and `for` generators,
+  `with` and `try` `else` clauses, `try` `catch` clauses, and `for … reduce:`
+  bodies. These are supported inside functions where the runtime selector is
+  bound; module-level and default-argument positions remain excluded.
+
+### Fixed
+
+- **Mutations activate before project evaluation, runtime configuration, and
+  application startup.** Timeouts and owner-death watchers also start before
+  target project code, containing mutations that hang during startup. Closures
+  and workers created before test helpers load retain the correct selection and
+  can record coverage when they run after recording begins; execution confined
+  to startup is still not recorded as coverage.
+- **Mutations that prevent startup count as kills.** Failures during project
+  evaluation, runtime configuration, or `Application.start/2` use the startup
+  retry budget before being scored as killed. Errors, exits, and throws retain
+  the evidence needed for this classification even when deep stacktraces lose
+  the project or configuration frames. Infrastructure failures remain harness
+  errors.
+- **An empty coverage result no longer manufactures survivors.** A successful
+  probe that records no hits marks the selected mutants `:no_coverage`, including
+  runs focused entirely on untested code. Missing or malformed capture data
+  still falls back to running the suite.
+- **Signature inference stays disabled in sandbox Mix projects on Elixir 1.20.**
+  The override now reaches effective compiler options, including umbrella
+  children and custom configuration paths, and overrides an explicit
+  `infer_signatures: true` to prevent pathological metamutant compile times.
+  Other compiler options are preserved. If a project cannot be safely rewritten,
+  `--verbose` reports the file and reason, and its seeded compiler cache is left
+  consistent with the options it actually uses.
+- **Generated operators respect Mutare's semantics under restricted or replaced
+  `Kernel` imports.** Selectors, guards, and coverage code no longer resolve
+  operators through the target's imports. Coverage short-circuits also work on
+  Elixir 1.21 development builds, where `:erlang.andalso` is guard-only.
+- **Protocol implementations receive lifted mutations.** Functions in
+  module-level `defimpl` blocks now receive guard, head-pattern, and clause
+  mutations, with `:skip_lifting` resolving to the implementation module.
+- **Immediately invoked anonymous functions are mutated.** Mutare now analyzes
+  the callee in `callee.(args)`, including the guards, patterns, and bodies of
+  `(fn … end).(args)`.
+- **Binding conditions preserve custom and return-value mutations.** Custom
+  `condition_replacements` callbacks now receive `if`/`unless` conditions whose
+  bindings must escape into the body, even with `IfCondition` disabled. Rewriting
+  those conditions also preserves per-branch return mutations and the exclusion
+  of unit-returning tails.
+- **Bitstring generators no longer produce invalid value mutations.** The
+  generator wrapper in `for <<… <- binary>>` is treated as syntax, avoiding
+  spurious compile-poison recovery.
+- **Macro poison recovery associates each expansion with its own file.** Nested
+  expansion stacks no longer cross-match macro names and unrelated call sites;
+  findings without a corresponding mutant are discarded instead of crashing
+  recovery.
+- **Configuration rejects inconsistent extension and routing declarations.**
+  Mutator modules cannot be registered as non-mutating extensions merely by
+  omitting `@behaviour`; declarative routes reject the internal `{:hosted, hosts}`
+  form; and `:partition_env` cannot overwrite `ERL_COMPILER_OPTIONS` or other
+  environment variables managed by Mutare.
+- **The sandbox ownership-marker writer no longer follows symlinks.**
+- **Self-hosted fixture coverage no longer overwrites the outer probe's state or
+  dump.**
+
+### Security
+
+- Updated locked Igniter and Mint dependencies to 0.8.4 and 1.10.0 respectively
+  to address advisories reported by `mix hex.audit`.
 
 ## [0.1.2] - 2026-09-07
 
@@ -205,7 +227,8 @@ Initial release.
   any label a mutator declares) to your own functions, with the mutators'
   value-aware reaction: `{MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout}`.
 
-[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/foxbenjaminfox/mutare/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/foxbenjaminfox/mutare/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/foxbenjaminfox/mutare/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/foxbenjaminfox/mutare/releases/tag/v0.1.0
