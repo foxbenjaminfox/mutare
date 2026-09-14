@@ -11,11 +11,11 @@ defmodule Mutare.Sandbox.Command.Invocation do
   terminating loop infinite), the compile's own cap and compiler switches, the
   coverage probe's capture vars, the heap cap, and the per-worker partition entry.
 
-  This module owns everything about *how a run is invoked*: the environment it
+  This module implements run invocation: the environment it
   runs under (`environment/2`, the one builder every sandbox `mix` goes through;
   `mix_env/0`; the self-hosting isolation vars), the raw spawn
   (`mix/4`/`timed_mix/4`), and the **timeout enforcement mechanism** — the env var
-  the cap travels in (`timeout_env/0`) and the dependency-free watcher AST
+  used to pass the cap (`timeout_env/0`) and the dependency-free watcher AST
   (`watcher_ast/0`) that `Mutare.Sandbox` renders into the target's test bootstrap.
   The matching half — *decoding* what a run did from its exit code — is
   `Mutare.Sandbox.Command`; the codes both halves share are the leaf
@@ -44,7 +44,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
   — however abruptly — the pipe hits EOF. The owner-death watcher
   (`owner_watch_ast/0`, gated by `owner_watch_env/0`, rendered by `Mutare.Sandbox`
   into the sandbox's config and test bootstrap) blocks reading stdin and halts the
-  run with `Mutare.Sandbox.Command.Exit.owner_lost/0` the moment that EOF arrives,
+  run with `Mutare.Sandbox.Command.Exit.owner_lost/0` as soon as EOF is read,
   so no sandbox `mix` outlives the run that spawned it.
   """
 
@@ -115,8 +115,8 @@ defmodule Mutare.Sandbox.Command.Invocation do
 
   Every option is optional. An absent `:cap`, `:compile_cap` or `:coverage` clears
   its variables explicitly rather than emitting nothing, so a value inherited from
-  Mutare's own environment can never arm a watcher or a probe this invocation did
-  not ask for. The remaining absent options emit nothing.
+  Mutare's own environment cannot enable a watcher or probe omitted from this invocation's
+  options. The remaining absent options emit nothing.
   """
   @type run_opts :: [
           cap: pos_integer() | nil,
@@ -254,7 +254,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
   and the cap appended after it (later emulator flags win), so a user's flags
   survive with the cap applied on top.
 
-  One honest limit: `max_heap_size` counts the process *heap* — lists, tuples,
+  One limitation: `max_heap_size` counts the process *heap* — lists, tuples,
   maps, small binaries (the incident's growth shape, and the common one for
   runaway recursion). Large (refc) binaries live off-heap and are not counted,
   so a pure binary-append runaway is not contained by this cap.
@@ -371,9 +371,9 @@ defmodule Mutare.Sandbox.Command.Invocation do
   platform-specific and no dependency on Mutare — the same self-halt primitive
   pointed at a second hazard. Only the first armed evaluation starts a watcher.
 
-  Data on stdin never arrives under `mix/4` (Mutare writes nothing to the pipe),
+  No data is sent on stdin under `mix/4` (Mutare writes nothing to the pipe),
   so the watcher simply re-blocks on anything that isn't `:eof`; a target suite
-  that reads stdin itself sees exactly what it would without the watcher —
+  that reads stdin receives the same input as without the watcher —
   a silent, open pipe.
   """
   @spec owner_watch_ast() :: Macro.t()

@@ -1,6 +1,6 @@
 defmodule Mutare.Runner.CoverageProbe do
   @moduledoc """
-  Decide, per mutant, which test files to run — coverage-driven test selection.
+  Select the test files to run for each mutant — coverage-driven test selection.
 
   Runs *after* `Mutare.Runner.Baseline` has confirmed the suite green and measured
   the timing; this module is purely about coverage and never green-checks or times
@@ -12,7 +12,7 @@ defmodule Mutare.Runner.CoverageProbe do
   with the coverage-capture flag set, so the metamutant self-records — *in the test
   process, synchronously* — which mutant ids each test file covers, plus a
   process-agnostic aggregate of every id that ran at all (`Mutare.Coverage.Recorder`
-  owns the capture, `Mutare.Coverage` reads the dump). No `:cover`, no per-file
+  implements the capture, `Mutare.Coverage` reads the dump). No `:cover`, no per-file
   subprocess fan-out, and no async-formatter race that loses fast `async: false`
   modules' coverage.
 
@@ -241,7 +241,7 @@ defmodule Mutare.Runner.CoverageProbe do
   end
 
   @doc """
-  Decide the per-mutant `t:selection/0` from an already-decoded coverage dump.
+  Compute the per-mutant `t:selection/0` from an already-decoded coverage dump.
 
   The pure core of `run/5` (no IO): given the `mode`, the `Mutare.Schema` (for the
   total id list), and a valid `Mutare.Coverage.t()`, it returns a **total**

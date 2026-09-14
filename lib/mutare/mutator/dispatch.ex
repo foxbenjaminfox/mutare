@@ -43,22 +43,22 @@ defmodule Mutare.Mutator.Dispatch do
   @doc """
   Run every mutator over `node`, flattening to `Mutare.Mutator.Dispatch.Result` structs.
 
-  The single place a node meets the mutator set. Both the in-place analyzer
+  The shared dispatch function for applying the mutator set to a node. Both the in-place analyzer
   (`Mutare.Transform`) and the lifted-guard planner (`Mutare.Transform.FunctionPlan`)
   call this, so "which mutations does this node admit" has one answer regardless of
   where the node sits — placement is decided afterwards, positionally.
 
   Each entry is a `Mutare.Mutator.Spec` (a bare module is coerced to one). If the
   module exports `mutate/2`, dispatch calls that context-aware callback; otherwise
-  it falls back to `mutate/1`. A mutator that wants both behaviours can call its
-  own `mutate/1` helper from `mutate/2`, making composition explicit instead of
+  it falls back to `mutate/1`. To combine both behaviours, call the
+  module's `mutate/1` helper from `mutate/2`, making composition explicit instead of
   a hidden double-dispatch rule. The per-spec `context` carries the pipe mode
   **and** the spec's `:opts`/`:config`, so pipe-aware/arity-changing and configurable
   mutators both participate here. `context` defaults to `%{pipe_mode: :unpiped}`; the transform passes
   `%{pipe_mode: :piped}` for a `|>` right-hand side. Each result is a `%Result{}`: `spec` the
-  **spec** (not the bare module), so the family name and config travel with it; `node` the
+  **spec** (not the bare module), so the result retains the family name and config; `node` the
   replacement AST; `note` (`nil` unless the mutator returned a `%Mutare.Mutator.Mutation{}` with one),
-  so a per-mutant advisory rides through to the `Mutare.Site`; `variant` (the
+  so a per-mutant advisory is copied to the `Mutare.Site`; `variant` (the
   `%Mutare.Mutator.Mutation{}`'s production-time variant tag, `nil` for a bare node), the carried
   `# mutare:ignore` label(s) that override the derived `variant/2` at `Site` build; and `attribution`
   (the `%Mutare.Mutator.Mutation{}`'s report-location override, `nil` for a bare node).
@@ -172,7 +172,7 @@ defmodule Mutare.Mutator.Dispatch do
 
   The single home for "which enabled mutators opt into this structural hook", used for the
   position-routed structural callbacks (`return_replacements/1`, `condition_replacements/1`,
-  `pattern_mutations/2`) — so the transform asks every implementer rather than hardcoding a
+  `pattern_mutations/2`) — so the transform calls every implementation rather than hardcoding a
   built-in module.
   """
   @spec implementing([Spec.t()], atom(), arity()) :: [Spec.t()]
@@ -520,14 +520,13 @@ defmodule Mutare.Mutator.Dispatch do
   def implemented_by?(_term), do: false
 
   @doc """
-  Whether `spec`'s mutator wants to keep candidates that mutate a call's trailing
+  Whether `spec`'s mutator permits candidates that mutate a call's trailing
   keyword-option keys.
 
   This is opt-in policy: a module without `c:Mutare.Mutator.mutate_call_option_keys?/1`
   keeps the candidate regardless of similarly named opts. A module implementing the
-  callback receives its own configured opts and decides. The transform remains the
-  owner of identifying the position; this dispatcher keeps callback discovery out of
-  emission.
+  callback returns a boolean based on its configured opts. The transform identifies
+  the position; this dispatcher handles callback discovery separately from emission.
   """
   @spec mutate_call_option_keys?(Spec.t()) :: boolean()
   def mutate_call_option_keys?(%Spec{module: module, opts: opts}) do
@@ -537,10 +536,9 @@ defmodule Mutare.Mutator.Dispatch do
 
   @doc """
   The **variant label(s)** recorded for one mutation of `spec`'s module — a deduplicated, downcased
-  label list, or `[]` when the family hasn't opted in or this mutation has no label. The single home
-  for resolving a site's variant, so `Mutare.Site` records the labels without reaching into a mutator
-  module itself. Dispatching on the *producing* spec's module is correct: only the mutator that
-  emitted the mutation knows which kind(s) it is.
+  label list, or `[]` when the family hasn't opted in or this mutation has no label.
+  `Mutare.Site` uses this function to resolve labels, without calling the mutator directly.
+  Dispatch uses the *producing* spec's module because that mutator defines the classification.
 
   Two label sources, in precedence order — a mutator uses whichever is cleaner:
 

@@ -108,7 +108,7 @@ defmodule Mutare.Transform.StructuralForms do
   How a route on the resolved head `module_key`/`name` is treated: an ordinary `:call`, a
   `:structural` expression form (`:skip` only), or one of the classes no route may name — a
   `:declaration`, `:literal` syntax, or an `:internal` compiler form. A `nil` module key (a
-  name-only match whose module the resolver couldn't see) is always a `:call`.
+  name-only match whose module could not be resolved) is always a `:call`.
   """
   @spec classify(Spec.module_key() | nil, atom()) :: class()
   def classify([:Kernel], name) when name in @kernel_structural, do: :structural

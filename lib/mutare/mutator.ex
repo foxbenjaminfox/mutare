@@ -4,7 +4,7 @@ defmodule Mutare.Mutator do
 
   A mutator examines an AST node and returns either `:skip` or a list of mutations to generate at that site. Every mutator defines `name/0` and at least one mutation-producing callback.
 
-  You must define `name/0` to identify the mutator in reports, and at least one mutation-producing callback. The usual producer is `mutate/1` (or the pipe-aware/configurable `mutate/2`), but a `Mutare.Mutator.Structural` hook or a `c:Mutare.Mutator.MacroHost.host/2` selector host counts too — a mutator that produces *only* through one of those needs no `mutate/1`. Optionally, you may implement `variants/0` and `variant/2` to classify your mutations into kinds, `mutate_call_option_keys?/1` to control mutations of call-option names, and `argument_marks/1` to have the transform *mark* specific call-argument positions (e.g. timeout literals) that you then recognise with `marked?/2` in `mutate/2` and decline.
+  You must define `name/0` to identify the mutator in reports, and at least one mutation-producing callback. The usual producer is `mutate/1` (or the pipe-aware/configurable `mutate/2`), but a `Mutare.Mutator.Structural` hook or a `c:Mutare.Mutator.MacroHost.host/2` selector host counts too — a mutator that produces *only* through one of those needs no `mutate/1`. Optionally, you may implement `variants/0` and `variant/2` to classify your mutations into kinds, `mutate_call_option_keys?/1` to control mutations of call-option names, and `argument_marks/1` to have the transform *mark* specific call-argument positions (e.g. timeout literals) that you then recognise with `marked?/2` in `mutate/2` and skip.
 
   When both `mutate/1` and `mutate/2` are exported, Mutare calls `mutate/2`. If a mutator needs both context-free and context-aware production, call the context-free helper explicitly from `mutate/2`.
 
@@ -29,7 +29,7 @@ defmodule Mutare.Mutator do
   Two rules are important:
 
     * Keep every replacement compile-safe. Mutare compiles one shared metamutant containing all emitted mutants.
-    * Do not choose delivery placement. The transform decides whether a mutation is delivered in place or through lifting based on where the node appears.
+    * Do not choose delivery placement. A mutation is delivered in place or through lifting according to where the node appears.
 
   Build literal replacements with `Mutare.AST.literal/1`. Use `Mutare.Calls.resolved_call_to/3` when matching aliased or imported calls.
 
@@ -64,11 +64,11 @@ defmodule Mutare.Mutator do
 
   A mutator with a rich option surface implements `c:init/1` to parse and validate its options once, when the instance is resolved — before any file is read — instead of re-reading `context.opts` at every offered node. The value `init/1` returns reaches every context-aware callback as `context.config`; a typo'd option raises at startup, next to Mutare's own option validation. Without `init/1`, `context.config` is the raw options. For the common "which of my families are enabled" option, see `Mutare.Mutator.Families`.
 
-  A mutator that must post-process everything it produces — typically to apply that family selection and attach per-family report notes — implements `c:finalize/2`, which Mutare applies to every produced mutation on every delivery path (a `mutate/1`/`mutate/2` return and a hosted target's `:mutants`) just before recording, so the funnel cannot miss a delivery site.
+  A mutator that must post-process everything it produces — typically to apply that family selection and attach per-family report notes — implements `c:finalize/2`. Mutare calls it just before recording every produced mutation, including `mutate/1`/`mutate/2` returns and hosted targets' `:mutants`.
 
   Structural mutators use the context-aware structural arity instead: `c:Mutare.Mutator.Structural.return_replacements/2`, `c:Mutare.Mutator.Structural.condition_replacements/2`, or `c:Mutare.Mutator.Structural.pattern_mutations/3`.
 
-  A mutator that changes atom-like keys may implement `c:mutate_call_option_keys?/1` to decide whether to mutate a trailing call-option key such as `timeout:` in `foo(x, timeout: 5)`. This policy belongs to the mutator because a context-free atom replacement may turn an option name into an unknown key, while a call-aware family may replace one legal option key with another.
+  A mutator that changes atom-like keys may implement `c:mutate_call_option_keys?/1` to control mutation of a trailing call-option key such as `timeout:` in `foo(x, timeout: 5)`. This policy belongs to the mutator because a context-free atom replacement may turn an option name into an unknown key, while a call-aware family may replace one legal option key with another.
 
       [mutators: [..., {Mutare.Mutators.AtomLiteral, call_option_keys: false}]]
 
@@ -83,10 +83,10 @@ defmodule Mutare.Mutator do
       keyed refinement (`[:expression, timeout: :raw]`) reaches one option value of a literal keyword
       argument. No mutator is consulted — see `Mutare.CallRouting`.
     * **Marks** (`argument_marks:` in `.mutare.exs`, or `c:argument_marks/1`) are labels the
-      transform stamps on positions and hands to mutators as `context.marks`; each mutator decides
-      what a label means. This is how the built-in timeout table works — `:timeout` positions make
-      `Mutare.Mutators.IntegerLiteral` decline any integer and `Mutare.Mutators.AtomLiteral` decline only
-      `:infinity`, while every other family proceeds — and a user extends the same table for their
+      transform attaches to positions and passes to mutators as `context.marks`. Each mutator
+      implements its own handling of those labels. At `:timeout` positions,
+      `Mutare.Mutators.IntegerLiteral` skips integers and `Mutare.Mutators.AtomLiteral` skips only
+      `:infinity`, while other families still apply — and a user extends the same table for their
       own functions with the same declaration shape:
 
           [argument_marks: [
@@ -94,7 +94,7 @@ defmodule Mutare.Mutator do
             {MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout} # a trailing-option value
           ]]
 
-  A mark's meaning lives entirely in the mutators that read it (`marked?/2`), so a configured label
+  A mark's meaning is defined by the mutators that read it (`marked?/2`), so a configured label
   must be one some enabled mutator declares positions for (`declared_labels/1`) — a typo fails at
   startup. Reach for a route when the position should simply not mutate; reach for a mark when the
   reaction should depend on the value (only a duration-shaped literal held back, a computed
@@ -112,7 +112,7 @@ defmodule Mutare.Mutator do
 
   Some targets are positions rather than individual nodes: a `def`/`defp` return tail, an `if`/`unless`/`cond` condition, or a structural pattern position. Pattern positions include `def`/`defp` heads, clause patterns, destructuring match patterns, and routed `:binding_pattern` macro arguments. Those callbacks live on `Mutare.Mutator.Structural`. A structural mutator declares both behaviours and implements the relevant structural callback.
 
-  The transform identifies the position, asks each enabled mutator that exports the matching callback, and records each emitted mutation under that mutator's name. Built-in examples are `Mutare.Mutators.ReturnValue`, `Mutare.Mutators.IfCondition`, and `Mutare.Mutators.PatternSwap`.
+  The transform identifies the position, calls the matching callback on each enabled mutator that exports it, and records each emitted mutation under that mutator's name. Built-in examples are `Mutare.Mutators.ReturnValue`, `Mutare.Mutators.IfCondition`, and `Mutare.Mutators.PatternSwap`.
 
   ## Behaviour-targeted mutators (`context.behaviours`)
 
@@ -135,7 +135,7 @@ defmodule Mutare.Mutator do
 
   ## Matching aliased or imported calls (`Mutare.Calls`)
 
-  A mutator that targets a standard-library or remote call uses `Mutare.Calls.resolved_call_to/3` with the real module atom (and optionally the function names it owns); it returns `{:ok, function, arguments, rebuild}` for resolved qualified, aliased, imported, and Erlang-atom module calls, and `rebuild` emits the replacement in the same written form as the source. For table-driven matching across modules, `Mutare.Calls.resolved_call/1` returns the raw resolved tuple, keyed by `Mutare.Calls.module_key/1`.
+  A mutator that targets a standard-library or remote call uses `Mutare.Calls.resolved_call_to/3` with the real module atom (and optionally the function names it handles); it returns `{:ok, function, arguments, rebuild}` for resolved qualified, aliased, imported, and Erlang-atom module calls, and `rebuild` emits the replacement in the same written form as the source. For table-driven matching across modules, `Mutare.Calls.resolved_call/1` returns the raw resolved tuple, keyed by `Mutare.Calls.module_key/1`.
   """
 
   alias Mutare.Mutator.Mutation
@@ -374,11 +374,11 @@ defmodule Mutare.Mutator do
   @callback mutate_call_option_keys?(opts :: term()) :: boolean()
 
   @doc """
-  Asks the transform to **mark** certain argument positions of certain calls, so this mutator can
-  recognise them at `c:mutate/2` and decline to mutate there (or mutate differently).
+  Declares call-argument positions to **mark** for special treatment in `c:mutate/2`,
+  such as skipping a literal or applying a different mutation.
 
-  This is the general facility behind Mutare's "don't perturb an opaque literal" behaviour: a
-  mutator, not the transform, owns the knowledge of *which* positions are special. The transform
+  This is the general facility behind Mutare's "don't perturb an opaque literal" behaviour: the
+  special positions are defined in the mutator. The transform
   stays domain-agnostic — it stamps `label` on the resolved position and surfaces it back as
   `context.marks` (a `MapSet` of atoms); `Mutare.Mutator.marked?/2` reads it. For example,
   `Mutare.Mutators.IntegerLiteral` marks the millisecond/`:infinity` timeout arguments of `Process.sleep`,
@@ -405,7 +405,7 @@ defmodule Mutare.Mutator do
   family can react to a label another declared (declare it too if that must survive the declarer
   being disabled). Users extend the same tables from configuration — an `argument_marks:` entry has
   exactly this shape, and its label must be one some enabled mutator declares (`declared_labels/1`).
-  A mutator without this callback asks for no marks. `argument_marks_from/2` turns a
+  No marks are declared for a mutator without this callback. `argument_marks_from/2` turns a
   `{module, function, arity, positions}` list into declarations under a label.
   """
   @callback argument_marks(config :: term()) :: [mark_declaration()]
@@ -525,7 +525,7 @@ defmodule Mutare.Mutator do
   The set of mark labels the given mutators declare positions for (`c:argument_marks/1`) — the
   labels that *mean* something to some enabled family. `Mutare.Options` checks a configured
   `argument_marks:` entry's label against this set, so a typo'd or orphaned label fails at startup
-  instead of marking positions nobody reads.
+  instead of marking positions with an unused label.
 
       iex> Mutare.Mutator.declared_labels([Mutare.Mutators.IntegerLiteral]) |> MapSet.member?(:timeout)
       true

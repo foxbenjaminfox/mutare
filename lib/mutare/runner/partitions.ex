@@ -36,7 +36,7 @@ defmodule Mutare.Runner.Partitions do
   A `nil` env name disables everything: `new/2` returns `:disabled`, `with_slot/2`
   yields `[]` (no extra env), and `entry/2` is `[]` — so the partition feature is
   pure opt-in and inert by default. The pool is a small `Agent` holding the free
-  tokens; `Mutare.Runner` owns its lifecycle (`new/2` … `stop/1`).
+  tokens; `Mutare.Runner` manages its lifecycle (`new/2` … `stop/1`).
   """
 
   @opaque t :: :disabled | {String.t(), pid(), pos_integer()}

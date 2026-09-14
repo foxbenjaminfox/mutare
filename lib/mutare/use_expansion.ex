@@ -21,7 +21,7 @@ defmodule Mutare.UseExpansion do
         def call_routes, do: [{Gettext.Macros, :gettext, 1, [:raw]}]
       end
 
-  Multiple handlers are consulted in `:extensions` order; the first result other than `:decline` wins. Options from a `{module, opts}` entry arrive in `context.opts`.
+  Multiple handlers are called in `:extensions` order; the first result other than `:decline` wins. Options from a `{module, opts}` entry are passed in `context.opts`.
   """
 
   alias Mutare.UseExpansion.{ContractError, Expansion}

@@ -132,13 +132,13 @@ defmodule Mutare.Sandbox.Seed do
   # surface both the speed-up and an otherwise-silent fallback. `project` (a `Mutare.Project` or `nil` for a single-app run) attributes each
   # metamutant to its owning app.
   @typedoc """
-  What the app-build seed did, for `--verbose` narration:
+  App-build seeding results for `--verbose` output:
 
-    * `:seeded` — every seedable app engaged; `reused`/`recompiled` are the summed kept vs
+    * `:seeded` — every seedable app was seeded; `reused`/`recompiled` are the summed kept vs
       deleted (→ recompiling) beam counts.
     * `:partial` — some apps seeded, `fell_back` others cold-compiled (an umbrella per-app
       miss). `reused`/`recompiled` cover the apps that were kept.
-    * `:fallback` — every app that owned a metamutant was torn back down to a cold compile
+    * `:fallback` — every app containing a metamutant was torn back down to a cold compile
       (a metamutant beam couldn't be matched, or the seed raised). The otherwise-*silent*
       case worth surfacing; the sole outcome for a single-app miss.
     * `:skipped` — never attempted: opted out, nothing built to reuse, or too much of the

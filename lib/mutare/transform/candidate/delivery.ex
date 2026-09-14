@@ -65,16 +65,16 @@ defmodule Mutare.Transform.Candidate.Delivery do
   Filter one node's candidates by mutator policy, then drop duplicate return constants.
 
   Run *before* id assignment, so a dropped candidate leaves no id, selector, or site — it simply
-  doesn't exist for this run (unlike a poisoned id, which is recorded). The analyzer owns the
-  positional fact that a candidate targets a call-option key (`call_option_key?`); the mutator
-  owns the policy through `c:Mutare.Mutator.mutate_call_option_keys?/1`. Ids stay stable across a
+  doesn't exist for this run (unlike a poisoned id, which is recorded). The analyzer records
+  whether a candidate targets a call-option key (`call_option_key?`); the mutator
+  defines the policy through `c:Mutare.Mutator.mutate_call_option_keys?/1`. Ids stay stable across a
   run's poison rebuilds because the mutator list — hence each spec's opts and policy — is constant
   within a run. Shared by emission (`Mutare.Transform`) and the collect walk
   (`Mutare.Transform.Analyze.Collect`), so the two can't disagree about which mutants exist.
 
   A `Candidate.Return` is redundant when a surviving `Candidate.InPlace` on this same node
-  already replaces it with the same scalar constant. The node-level candidate owns the site
-  and its ignore matching, regardless of candidate order. Compare literal values strictly,
+  already replaces it with the same scalar constant. The site and its ignore matching use
+  the node-level candidate, regardless of candidate order. Compare literal values strictly,
   ignoring their formatting metadata; other AST shapes are left alone. This uses actual
   candidates, so a disabled or opted-out family never suppresses another family's replacement.
   """
@@ -163,9 +163,9 @@ defmodule Mutare.Transform.Candidate.Delivery do
   The line `site/4` would record, without building the `Mutare.Site`.
 
   `Mutare.Transform.ClaimState` uses it during the **count** pass to test a candidate against a
-  `--line`/`--since` selection. The count sink builds no `Site` by design — and a `Site` also
-  runs the producing mutator's `c:Mutare.Mutator.variant/2` callback, which a mere line test has
-  no business invoking a second time.
+  `--line`/`--since` selection. The count sink builds no `Site`: building one would call the
+  producing mutator's `c:Mutare.Mutator.variant/2` callback a second time just to check a
+  line number.
   """
   @spec line(Candidate.t()) :: pos_integer() | nil
   def line(candidate) do

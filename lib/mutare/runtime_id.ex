@@ -8,7 +8,7 @@ defmodule Mutare.RuntimeId do
   file's generated code. Standalone transforms retain their integer identity.
 
   Sites carry both identities. Coverage translates runtime identities through
-  `index/1`; poison attribution already knows the source file and uses `file_index/1`.
+  `index/1`; the source file is already available during poison attribution, which uses `file_index/1`.
   Both indexes are built from the current run's sites, never persisted across runs.
   """
 

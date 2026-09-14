@@ -6,8 +6,8 @@ defmodule Mutare.Poison.Hint do
   finds the offending mutant, drops it, and rebuilds. One case can't be: a macro
   that requires a **compile-time literal argument** (`Size.megabytes(5)` and the
   like). Mutating the literal turns it into runtime code, the macro rejects it and
-  raises while the compiler is expanding it, and because the compiler blames the
-  macro *call* rather than the mutation inside it, Mutare can't tell which single
+  raises while the compiler is expanding it, and because the compiler reports the error at the
+  macro *call* rather than at the mutation inside it, Mutare cannot identify which single
   mutant to drop. The whole run aborts.
 
   The way out is to leave that macro's arguments as written by routing it `:raw`
@@ -108,7 +108,7 @@ defmodule Mutare.Poison.Hint do
   were none.
 
   Unlike `for_compile_failure/1` — which fires on an *unrecoverable* abort — this is the
-  advice a run prints after it *recovered*: the metamutant compiled, but only because
+  advice printed after a run *recovered*: the metamutant compiled, but only because
   Mutare guessed a DSL body could be mutated, hit poison, and skipped the block at
   runtime. That recovery is rediscovered from scratch on every run (the dropped ids are
   in-memory only), so we hand the user the durable, name-based fix. Each escalated macro

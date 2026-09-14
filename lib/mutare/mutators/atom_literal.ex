@@ -11,7 +11,7 @@ defmodule Mutare.Mutators.AtomLiteral do
 
   Ordinary atom values, data map and keyword keys, and atoms in `case`, `receive`, and `fn` patterns remain eligible. Keys in a trailing call-options list are also mutated by default. Configure `{Mutare.Mutators.AtomLiteral, call_option_keys: false}` to exclude those keys.
 
-  `:infinity` in a known **timeout/duration position** (e.g. the `Task.await/2` or `GenServer.stop/3` timeout) is left unmutated. This family reuses `Mutare.Mutators.IntegerLiteral`'s timeout table (via `c:Mutare.Mutator.argument_marks/1`) so the two value families agree on which positions hold an opaque timeout literal, and declines when the `:timeout` mark is present. A *non-duration* sibling atom in the same call still mutates: `GenServer.stop(s, :normal, :infinity)` mutates the `:normal` reason but not the `:infinity` timeout.
+  `:infinity` in a known **timeout/duration position** (e.g. the `Task.await/2` or `GenServer.stop/3` timeout) is left unmutated. This family reuses `Mutare.Mutators.IntegerLiteral`'s timeout table (via `c:Mutare.Mutator.argument_marks/1`) so both families use the same timeout positions, and skips `:infinity` when the `:timeout` mark is present. A *non-duration* sibling atom in the same call still mutates: `GenServer.stop(s, :normal, :infinity)` mutates the `:normal` reason but not the `:infinity` timeout.
 
   Project-specific timeout positions come from the `argument_marks:` option (declared with the
   `:timeout` label, as documented on `Mutare.Mutators.IntegerLiteral`); `:infinity` at such a

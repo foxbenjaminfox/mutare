@@ -43,7 +43,7 @@ defmodule Mutare.Transform.Super do
   @doc """
   Whether any clause's *body* contains a rewriteable `super` call or capture.
 
-  The decision the dispatcher uses to know whether to build the closure at all —
+  Whether the dispatcher needs to build the closure —
   off by default, so a `super`-free group emits exactly as before. Only the body is
   inspected (head/`when`/default-value positions can't host a base-relocated
   `super`: a default rides on the dispatcher, which may call `super` directly).

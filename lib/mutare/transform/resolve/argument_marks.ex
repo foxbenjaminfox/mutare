@@ -127,7 +127,7 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   by reflection, so a module defined only in the target project (which the Mutare process can't
   load) leaves the bare call unresolved — but the declaration itself asserts the module provides
   `fun/arity`, and the compile-unambiguity rule makes a bare call under a whole import of that
-  module unambiguously it. The resolver consults this so a declared mark still applies to the
+  module unambiguously it. The resolver uses this so a declared mark still applies to the
   imported bare form (same reasoning as its known-macro registry fallback).
   """
   @spec declares?(t(), Aliases.module_key(), atom(), arity()) :: boolean()

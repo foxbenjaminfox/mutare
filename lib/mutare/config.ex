@@ -4,7 +4,7 @@ defmodule Mutare.Config do
 
   CLI flags win over file config. The result is a raw keyword list that
   `Mutare.Options.new/1` normalizes and validates into the `Mutare.Options`
-  struct threaded through the rest of the pipeline. This module owns CLI syntax
+  struct threaded through the rest of the pipeline. This module handles CLI syntax
   and precedence only; it does not resolve runtime option values.
 
   The **1:1 passthrough** flags (whose CLI name is a plain rename of an option
@@ -84,7 +84,7 @@ defmodule Mutare.Config do
   end
 
   @doc """
-  The CLI switches this module owns: the **exceptional**/translated flags whose mapping is *not* a
+  The CLI switches translated by this module: the **exceptional**/translated flags whose mapping is *not* a
   1:1 passthrough (a repeatable accumulator, a renamed/derived key, or a `--no-` toggle handled in
   `merge/2`). The Mix task composes these with `Mutare.Options.Registry.cli_switches/0` (the
   passthrough options) and its own project/inspect flags into `OptionParser`'s strict switch list,

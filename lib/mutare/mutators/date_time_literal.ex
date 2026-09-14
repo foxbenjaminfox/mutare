@@ -11,7 +11,7 @@ defmodule Mutare.Mutators.DateTimeLiteral do
 
   Why a shift, not a sentinel. Calendar sigils are validated at compile time (`~D[2020-13-99]` is a compile error), so a mutation must stay a valid date/time. The literal is parsed, shifted by one unit, and re-serialised, so the result is always a real calendar value.
 
-  At the end of the sigil-supported year range that forward shift would itself be a compile error (`~D[9999-12-31]` renders as `10000-01-01`, which the sigil rejects — ISO 8601 wants four digits), so the nudge runs backwards there instead and the mutant is still a one-unit boundary shift. Each candidate is re-parsed before it is offered, which is the same check the compiler performs; a literal no direction can shift produces no mutant.
+  At the end of the sigil-supported year range that forward shift would itself be a compile error (`~D[9999-12-31]` renders as `10000-01-01`, which the sigil rejects — the sigil requires a four-digit year), so the nudge runs backwards there instead and the mutant is still a one-unit boundary shift. Each candidate is re-parsed before it is offered, which is the same check the compiler performs; a literal no direction can shift produces no mutant.
 
   Only non-interpolated sigils are reached (calendar sigils require literal content).
   """

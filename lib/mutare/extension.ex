@@ -1,6 +1,6 @@
 defmodule Mutare.Extension do
   @moduledoc """
-  Non-mutating extensions that help Mutare understand source code.
+  Non-mutating extensions for call routing and `use` expansion.
 
   An extension implements one or both of these behaviours:
 

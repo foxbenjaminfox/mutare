@@ -14,8 +14,8 @@ defmodule Mutare.Project do
     * `copy_root` — the directory materialised into the sandbox (the umbrella
       root, or the project root for a single app). This is the `root` the rest of
       the pipeline (`Mutare.Schema`, `Mutare.Sandbox`, `Mutare.Runner`) treats as
-      authoritative for every path operation; the struct duplicates it only so the
-      entry points know what to pass.
+      authoritative for every path operation; the struct duplicates it only so it is
+      available to the entry points.
     * `mutate_scope` — the apps whose sources are mutated, as `%{app, dir}` entries
       with `dir` relative to `copy_root` (`"apps/foo"`, or `"."` for a single app).
     * `apps` — every app whose suite runs (all umbrella apps), which the per-app
@@ -196,10 +196,10 @@ defmodule Mutare.Project do
   Root-relative directories that hold a Mix project file Mutare may rewrite in the sandbox.
 
   The root, plus each umbrella child. `Mutare.Sandbox` *attempts* to wrap exactly these
-  `mix.exs` files to force `infer_signatures: false`. It is only the attempt: three paths
-  decline it (an unreadable file, a source Sourceror cannot faithfully round-trip, a
-  `mix.exs` defining no module of its own), so `Mutare.Sandbox.Seed` realigns manifests
-  against the wraps that actually landed — reported back by
+  `mix.exs` files to force `infer_signatures: false`. Wrapping is not possible for an unreadable
+  file, source that Sourceror cannot faithfully round-trip, or a `mix.exs` defining no module
+  of its own. `Mutare.Sandbox.Seed` therefore realigns manifests
+  against the successfully applied wrappers — reported back by
   `CompilerOptions.project_source/1` — not against this list. Realigning an app that
   compiles with inference on invents a cache-key mismatch and cold-compiles it for nothing.
   """
@@ -211,8 +211,8 @@ defmodule Mutare.Project do
   The root-relative `mix.exs` path for a `project_dirs/1` entry.
 
   The one derivation both halves of the inference override share: `Mutare.Sandbox` builds the
-  files it wraps from it, and `Mutare.Sandbox.Seed` rebuilds the same key to ask whether a
-  given app's wrap landed. Two spellings of this join would silently stop matching.
+  files it wraps from it, and `Mutare.Sandbox.Seed` rebuilds the same key to check whether a
+  given app's wrapper was applied. Two spellings of this join would silently stop matching.
   """
   @spec project_file(String.t()) :: String.t()
   def project_file("."), do: "mix.exs"

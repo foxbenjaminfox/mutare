@@ -24,7 +24,7 @@ defmodule Mutare.Result.Status do
   name fails the build rather than silently producing a wrong descriptor.
 
   Per-field defaults are chosen so a row states only what is *unusual* about a
-  status: a status is `scored?`/`ran?` and not a `kill?` unless it says otherwise
+  status: a status is `scored?`/`ran?` and not a `kill?` unless explicitly configured otherwise
   (the common in-the-denominator, reached-a-verdict, didn't-detect shape), and it is
   not pinned into the summary nor surfaced as a live extra/leave-behind unless it
   opts in.

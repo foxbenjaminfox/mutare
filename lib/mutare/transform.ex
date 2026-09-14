@@ -111,12 +111,12 @@ defmodule Mutare.Transform do
   Ranges are captured against the *original* AST, which is what the diff report
   patches against.
 
-  ## Where the work lives
+  ## Implementation modules
 
-  `Mutare.Transform.{ModulePlan,FunctionPlan,Candidate}` own the *vocabulary* —
+  `Mutare.Transform.{ModulePlan,FunctionPlan,Candidate}` define the intermediate representation —
   the plan structs and pure discovery (chunking clauses, finding guard/drop
-  candidates). This module owns the top-level emission walk and the lifted-function
-  orchestrator; focused delivery modules own the smaller specialized paths, with shared
+  candidates). This module implements the top-level emission traversal and coordinates function
+  lifting; focused delivery modules implement the smaller specialized paths, with shared
   selector mechanics factored through `SelectorEmit`.
 
   Focused helper modules keep the pure node-building and the smaller specialized
@@ -240,7 +240,7 @@ defmodule Mutare.Transform do
       `{:keyword, …}` for a non-keyword argument) and the lifting advisories (a
       `:skip_lifting` match, non-consecutive / metaprogrammed / delegated clause groups).
       Callers that re-run the pipeline over a source already scanned pass `false` so each
-      warning prints once — `Mutare.Schema`'s render phase (the count phase warned) and
+      warning is printed once — `Mutare.Schema`'s render phase (the count phase warned) and
       `render_sites/2` (report-time re-derivation).
   """
   @spec transform_string(String.t(), keyword()) :: Result.t()

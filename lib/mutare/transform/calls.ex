@@ -130,7 +130,7 @@ defmodule Mutare.Transform.Calls do
   the module it came from, which may still be `Kernel` (an explicit `Kernel.def`, or an
   `import Kernel, only: …`). `false` for a node that is not a call at all.
 
-  Callers ask this wherever a bare name is about to be read as the `Kernel` construct it looks
+  Call this function wherever a bare name is about to be read as the `Kernel` construct it looks
   like — a return-path `if`/`unless` (`Mutare.Transform.Analyze.Returns`), a scope-boundary
   `defmodule` (`Mutare.Transform.ModulePlan.scope_boundary?/1`).
   """

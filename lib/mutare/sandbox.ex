@@ -31,7 +31,7 @@ defmodule Mutare.Sandbox do
       is *preserved* between runs and re-materialised in place by
       `Mutare.Sandbox.Mirror`: a file is rewritten only when its desired content
       differs (unchanged files keep their mtime, so mix's incremental compiler reuses
-      `_build`), and files Mutare no longer owns are pruned. The mirror carries each
+      `_build`), and files no longer mirrored, generated, or explicitly managed are pruned. The mirror carries each
       source's permission mode and recreates its symlinks (never following them),
       matching what the fresh copy preserves. Without an explicit `:sandbox` it lives at a stable per-project
       temp dir; CI pins `:sandbox` at a cached directory instead. See `NOTES.md`
@@ -40,8 +40,8 @@ defmodule Mutare.Sandbox do
       the metamutant recompiles cold, and the runner removes it afterwards. Always correct, no
       caching — the reset for a kept sandbox that has gone bad.
 
-  Materialising the workspace lives here; running `mix` against it (and the
-  per-mutant timeout cap the bootstrap honours) lives in
+  This module materialises the workspace. Sandbox `mix` invocations and
+  per-mutant timeouts are implemented in
   `Mutare.Sandbox.Command.Invocation`.
   """
 
@@ -146,10 +146,10 @@ defmodule Mutare.Sandbox do
   @coverage_helper_rel "lib/__mutare__/coverage_helper.ex"
 
   @typedoc """
-  What `prepare/3` found out while materialising — the facts `--verbose` narrates, which
+  Results of `prepare/3` for `--verbose` output, which
   `Mutare.Runner.Compile` relays on the `:on_phase` hook: the app-build seed's outcome
   (`t:Mutare.Sandbox.Seed.summary/0`), and each `mix.exs` whose type-signature-inference
-  override did not land, paired with the reason, in path order. Such a project compiles with
+  override was not applied, paired with the reason, in path order. Such a project compiles with
   inference on, which can stretch the one compile from seconds to hours, so a long compile
   should not go unexplained.
   """
@@ -163,7 +163,7 @@ defmodule Mutare.Sandbox do
   list. `:sandbox` selects the target directory; without it Mutare uses a stable
   per-project temp directory (kept mode, the default) or a fresh one (`keep_sandbox:
   false`). The context's project scope controls which umbrella apps are
-  materialized; its hooks are not consulted — the runner narrates the summary.
+  materialized; its hooks are not consulted — the runner reports the summary.
 
   The sandbox must be separate from the project tree: it may not be the project
   root, contain the project, or live inside it. This check is done here because it
@@ -173,7 +173,7 @@ defmodule Mutare.Sandbox do
   Mutare-owned sandbox. Any other existing path is refused without modification.
   An owned directory is reused only for an explicit `:sandbox` path or when
   `:keep_sandbox` is enabled. If a generated fresh-path sandbox already exists,
-  Mutare treats it as a stale leftover and refuses it.
+  Mutare rejects it as a stale leftover.
   """
   @spec prepare(Path.t(), Schema.t(), Context.t() | Options.t() | keyword()) ::
           {Path.t(), materialized()}

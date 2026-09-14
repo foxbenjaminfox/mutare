@@ -18,11 +18,11 @@ defmodule Mutare.Sandbox.CompilerOptions do
       effective `elixirc_options` always disable type-signature *inference*.
       This survives Mix's project cache and applies on every sandbox boot,
       including umbrella children and projects with a custom config path. It
-      reports whether the wrap landed and, when it did not, why: several shapes
-      decline it, and a declined project compiles with inference on.
+      reports whether the wrapper was applied and, when it was not, why. Some source
+      forms cannot be wrapped; those projects compile with inference on.
 
   `seed_manifest/1` reconciles the inference option in a transplanted Elixir
-  compile manifest with that wrapper. Without it, Elixir 1.18/1.19 sees changed
+  compile manifest with that wrapper. Without it, Elixir 1.18/1.19 detects changed
   `elixirc_options` and discards every seeded app beam on the first compile. It
   must run only for an app `project_source/1` reported wrapping: applied to one
   compiling with inference on, it manufactures the very mismatch it exists to
@@ -157,20 +157,20 @@ defmodule Mutare.Sandbox.CompilerOptions do
   Override inference in the sandbox copy of a Mix project's effective options.
 
   Returns `{:hooked, source}` when a hook was attached to a module defined in this file,
-  and `{:declined, source, reason}` otherwise, `reason` being a short phrase that says why.
+  and `{:declined, source, reason}` otherwise, `reason` briefly describing why no hook was attached.
   The caller needs both. `Mutare.Sandbox.Seed` may only realign the compile manifest of an
-  app that really will compile with inference off, and the source alone cannot answer that:
+  app that really will compile with inference off, and the source alone does not establish that:
   a file that defines no module of its own still comes back *changed* (the bootstrap is
   prepended unconditionally), so `!=` is not a proxy for it. And a declined project compiles
   with inference on, which on metamutant-shaped code can stretch the one compile from
-  seconds to hours, so `Mutare.Sandbox` narrates the reason.
+  seconds to hours, so the reason is included in sandbox diagnostics.
 
   A `before_compile` hook wraps `project/0`, preserving its computed configuration
   and every other compiler option. Only sandbox project files are rewritten;
   the target's original options remain untouched. Unsupported Elixir versions
   retain the original configuration. Quoted module definitions are left alone.
 
-  The rewrite declines and returns the original source byte-for-byte when:
+  The function returns `{:declined, source, reason}` with the original source byte-for-byte when:
 
     * the source does not parse;
     * the rewritten file does not parse, or Elixir reads it back as anything other than
@@ -186,7 +186,7 @@ defmodule Mutare.Sandbox.CompilerOptions do
   on, where a `mix.exs` rendered into a different program would break the sandbox or
   change what it builds.
 
-  A `mix.exs` defining no module of its own also declines, but comes back rewritten (the
+  For a `mix.exs` defining no module of its own, the result is also `:declined`, but includes rewritten source (the
   bootstrap is inert there): a project module built entirely in an externally required
   file is outside this source rewrite, and its compiler options must currently disable
   inference themselves.

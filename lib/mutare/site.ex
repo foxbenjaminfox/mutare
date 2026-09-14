@@ -6,7 +6,7 @@ defmodule Mutare.Site do
 
   `id` is the run's report number. Schema builds also record `runtime_id` as
   `{root_relative_file, local_id}`; standalone transforms leave it `nil`, using
-  `id` for selection too. `Mutare.RuntimeId` owns the boundary conversions. The
+  `id` for selection too. `Mutare.RuntimeId` implements the boundary conversions. The
   public `Mutare.MutationSite` DTO and every reporter retain integer report ids.
 
   A runner may defer rendering `original_code` and `mutated_code`, leaving them `nil` until the result needs to be displayed. `summary` may hold a cheaper one-line description for live progress. `Mutare.transform_string/2` renders the code fields by default.

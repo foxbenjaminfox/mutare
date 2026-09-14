@@ -48,7 +48,7 @@ defmodule Mutare.Sandbox.Mirror do
 
   Steps, in an order that matters:
 
-  1. mirror every source entry a generated override does not own — file contents byte-aware,
+  1. mirror every source entry without a generated override — file contents byte-aware,
      symlinks as symlinks (never followed), empty directories as directories;
   2. write every override. Deliberately *after* the mirror, so an override always wins over a
      copied symlink at its own path or at one of its parents, and lands as a real file inside
@@ -56,7 +56,7 @@ defmodule Mutare.Sandbox.Mirror do
   3. mirror permission bits, last: a suite may invoke a project script or native helper, which
      needs its executable bit. Applied to overridden paths too — the metamutant of an executable
      script keeps the script's mode, as it does on the fresh path;
-  4. drop anything left in the sandbox that nothing owns.
+  4. remove entries absent from the source, overrides, and managed paths.
   """
   @spec sync(Path.t(), Path.t(), %{Path.t() => binary()},
           exclude: [String.t()],

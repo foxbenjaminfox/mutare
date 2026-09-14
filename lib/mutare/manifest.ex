@@ -1,6 +1,6 @@
 defmodule Mutare.Manifest do
   @moduledoc """
-  A per-mutant map of where each mutant lives in its rendered metamutant.
+  A map from mutant ids to their generated line ranges in a rendered metamutant.
 
   `Mutare.Transform` writes the metamutant; this is what `Mutare.Poison` reads
   back. It is built **lazily** (`from_source/2`), by `Mutare.Poison` on a failed
@@ -10,11 +10,11 @@ defmodule Mutare.Manifest do
   compile-safe). `Poison` memoizes it within one recovery so a file faulting on
   several lines is walked once.
 
-  **`Mutare.Poison`** wants each mutant's *generated ranges* — the metamutant line
+  **`Mutare.Poison`** uses each mutant's *generated ranges* — the metamutant line
   spans of the code that exists only because of that mutant, so a compile error's
-  line maps back to the mutant id that owns it.
+  line maps back to the corresponding mutant id.
 
-  (Coverage no longer lives here: the metamutant self-records coverage at runtime
+  (Coverage is recorded separately: the metamutant self-records coverage at runtime
   — see `Mutare.Coverage.Recorder` — keyed by mutant id directly, so there is no
   metamutant `{module, line}` location to precompute.)
 
@@ -24,7 +24,7 @@ defmodule Mutare.Manifest do
   a selector clause body* only. That missed every poison whose bad code isn't on
   that exact line:
 
-    * **lifted mutations** — a guard/head-pattern mutant's code lives in a generated
+    * **lifted mutations** — a guard/head-pattern mutant's code appears in a generated
       `defp <base>(mutare_active, …) when mutare_active === <id> …` clause, not in
       the dispatcher (which only forwards). The error points into that gated clause,
       away from the dispatcher;
@@ -38,7 +38,7 @@ defmodule Mutare.Manifest do
     * each selector clause body (`<id> -> <mutated>`) — catches in-place mutants,
       including multiline bodies;
     * each lifted mutant clause (gated `when mutare_active === <id>`) — catches a
-      guard/head-pattern poison, whose code lives away from the dispatcher;
+      guard/head-pattern poison, whose code is outside the dispatcher;
     * the whole selector `case`, attributed to *all* the mutant ids it hosts — the
       coarse fallback for a structural error that points at the `case` itself.
 
@@ -53,8 +53,8 @@ defmodule Mutare.Manifest do
   generated nodes with `Sourceror.get_range/1`, recognising selectors via
   `Mutare.Metamutant.subject?/2`. A selector inside a function body reads the
   file's **dispatch variable** rather than `:persistent_term` directly, and a
-  lifted or tupled mutant clause is gated on it (`<var> === <id>`) — so the reader
-  must be told that name. It is per file (`:mutare_active`, or a salted variant
+  lifted or tupled mutant clause is gated on it (`<var> === <id>`) — so that name
+  must be supplied to the reader. It is per file (`:mutare_active`, or a salted variant
   when the source already uses that identifier), chosen by the transform and
   handed out with the metamutant (`Mutare.Transform.Result.dispatch_var`,
   `Mutare.Schema`'s `:dispatch_vars`); `from_source/2` takes it alongside the source.
@@ -67,7 +67,7 @@ defmodule Mutare.Manifest do
   file re-parses in ~0.6 s here, versus minutes for Sourceror) and that the
   manifest never reads. A `:literal_encoder` reproduces Sourceror's
   `{:__block__, meta, [literal]}` wrapping so the recognisers — already tolerant of
-  both shapes — see exactly what they did before; the two parses yield identical
+  both shapes — accept the resulting nodes; the two parses yield identical
   ranges. (Sourceror is still the *renderer*; only this readback parse changed.)
   """
 
@@ -124,11 +124,11 @@ defmodule Mutare.Manifest do
   end
 
   @doc """
-  Mutant ids that live inside a call to one of `names`, grouped by that call's function name.
+  Mutant ids inside a call to one of `names`, grouped by that call's function name.
 
   The **macro-expansion fallback**'s attribution (`Mutare.Poison.macro_poison/4`): when a
   mutation splices a selector `case` into an argument a macro rewrites at compile time, the
-  macro raises during expansion and the compiler blames the macro *call* line — which no
+  macro raises during expansion and the compiler reports the macro *call* line — which no
   region covers — so `ids_at_line/2` finds nothing. Given the macro name from the compiler's
   `expanding macro:` frame, this instead finds every call of that name in the rendered
   metamutant, takes its **full** line range (`Sourceror.get_range/1`, to the closing

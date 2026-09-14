@@ -39,13 +39,13 @@ defmodule Mutare.Metamutant do
   `:persistent_term`/`:mutare_active` as atoms, while `Mutare.Manifest`
   re-parses with `Code.string_to_quoted!` plus a literal encoder that wraps literals as
   `{:__block__, _, [literal]}` for `Sourceror.get_range/1` compatibility. The
-  predicate has to see through both shapes.
+  predicate must match both shapes.
 
-  `Mutare.Selector` owns the runtime constants (the `:persistent_term` key and
-  the baseline id); this module owns their AST.
+  `Mutare.Selector` defines the runtime constants (the `:persistent_term` key and
+  the baseline id); this module builds their AST.
 
   Schema builds pass a file namespace to `subject_ast/1`. Its read projects the
-  single global selection before any local selector or lifted guard sees it:
+  single global selection before it is used by any local selector or lifted guard:
 
       case :persistent_term.get(:mutare_active, 0) do
         {"lib/example.ex", mutare_local_id} -> mutare_local_id

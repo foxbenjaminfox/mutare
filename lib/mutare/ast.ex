@@ -41,9 +41,9 @@ defmodule Mutare.AST do
   without fits-based line breaks (structural breaks — `do`/`end`, clauses — still apply).
 
   Local calls always render with parentheses (`locals_without_parens: []`), whatever the
-  target project's `.formatter.exs` says. Left to its default, `Sourceror.to_string/2`
+  settings in the target project's `.formatter.exs`. Left to its default, `Sourceror.to_string/2`
   evaluates that file through `Mix.Tasks.Format` on **every** call — its `import_deps`
-  and plugins, inside Mutare's own process — and Mix can refuse it mid-run (see NOTES
+  and plugins, inside Mutare's own process — and Mix can reject that evaluation mid-run (see NOTES
   "Rendering never consults the target's formatter configuration"). Both spellings are
   the same code, and the metamutant only has to compile.
   """
@@ -134,7 +134,7 @@ defmodule Mutare.AST do
   `Mutare.AST.literal(-1)`, and other non-scalar nodes.
 
   Booleans and `nil` are atoms and are returned as values; filter them separately
-  when a mutator does not own them.
+  when a mutator does not handle them.
 
       iex> Mutare.AST.literal_value({:__block__, [], [0]})
       {:ok, 0}
@@ -365,7 +365,7 @@ defmodule Mutare.AST do
   `<<>>` node, distinguished from a true `<<…>>` bitstring literal by a `:delimiter` key cached
   in its metadata. The string- and bitstring-literal families route on it with opposite intent
   — `StringLiteral` mutates these (an interpolated string), `BitstringLiteral`/`BitstringSpec`
-  skip them (they own real bitstrings). A non-`<<>>` node is never a string binary.
+  skip them (they apply to bitstring literals). A non-`<<>>` node is never a string binary.
 
       iex> Mutare.AST.string_binary?({:<<>>, [delimiter: ~s(")], ["hi"]})
       true

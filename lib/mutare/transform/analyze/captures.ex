@@ -67,7 +67,7 @@ defmodule Mutare.Transform.Analyze.Captures do
   @doc """
   Whether `&left/right` is a genuine function-reference capture (`&Mod.fun/N`, `&fun/N`)
   rather than an arithmetic `& &1 / 2`: a function reference (remote *or* local) over an
-  integer arity. `Mutare.Transform.Analyze` reads this to decide whether to offer the node
+  integer arity. `Mutare.Transform.Analyze` uses this to determine whether to pass the node
   here or recurse into the `/` as division. A local ref counts — so its `/` isn't mistaken
   for division — even though `offer/4` only mutates remote or imported refs (a local capture is
   left raw, not recursed).

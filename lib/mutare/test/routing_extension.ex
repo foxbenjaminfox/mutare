@@ -2,7 +2,7 @@ defmodule Mutare.Test.RoutingExtension do
   @moduledoc """
   A shipped routing-only extension for testing composition with foreign macro routing.
 
-  Registering routes for its macros is how a library ships the knowledge its DSL relies on (`Mutare.CallRouting`). Testing that your mutator honours routing from an *independent* module therefore needs a routed macro that module owns — this fixture is that module, so a plugin suite doesn't have to author a no-op routing provider of its own. It defines two inert pass-through macros and registers their argument routing:
+  Libraries define how their macro arguments should be treated through `Mutare.CallRouting`. Use this fixture to test that your mutator respects routes registered by an independent module. It defines two inert pass-through macros and registers their argument routing:
 
   | Macro | Route | Pins |
   | --- | --- | --- |

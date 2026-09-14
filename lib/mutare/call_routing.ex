@@ -2,9 +2,8 @@ defmodule Mutare.CallRouting do
   @moduledoc """
   Behaviour for describing how Mutare should treat particular calls.
 
-  A **call route** names a resolved `{module, function, arity}` — a macro or a plain function; the
-  registry keys on the resolved call and never asks which — and says one of two kinds of thing
-  about it:
+  A **call route** names a resolved `{module, function, arity}` — a macro or a plain function,
+  with the same lookup rules for both — and specifies one of two treatments:
 
     * **skip the whole call** (`:skip`): the call is an inert leaf. Nothing inside its parentheses
       is descended and the call node itself is never offered to a mutator. A piped receiver is the
@@ -18,7 +17,7 @@ defmodule Mutare.CallRouting do
       (`{Kernel.SpecialForms, :case, :skip}`; special-form arities follow the AST, so use the
       any-arity form).
     * **treat each argument** by a *position*: `:expression` (ordinary runtime code, the default),
-      `:raw` (leave the argument exactly as written — a DSL body, a pattern the macro owns, an
+      `:raw` (leave the argument exactly as written — a DSL body, a pattern interpreted by the macro, an
       identifier list), `:interior` (descend into the argument but offer nothing on its own node —
       an assigns map whose emptying is a crash-kill while its values are the signal), `:pattern` /
       `:binding_pattern` (descend as a match pattern), and — for a literal keyword-list argument — a
@@ -59,9 +58,9 @@ defmodule Mutare.CallRouting do
 
   `:skip` is a statement about the *call*, so it is valid only as a route's bare treatment (`{Mixpanel, :track, 3, :skip}`); inside a per-position list it is rejected with a message naming `:raw`. Every other word is a statement about a *position*.
 
-  **Structural heads.** The forms Mutare analyzes structurally rather than as calls — `if`/`unless`, `|>`, the boolean connectives (`and`/`or`/`&&`/`||`) and negations (`!`/`not`), `in`, and the construct special forms (`case`, `cond`, `with`, `for`, `try`, `receive`, `fn`, `quote`, `&`) — have no argument positions in the routing sense: a route on one accepts only `:skip`. An explicit positional route (`{Kernel, :if, 2, [:raw, :expression]}`) is rejected with an `ArgumentError`; a wildcard route's positions (`{Kernel, :*, :raw}`) simply do not apply to them. Definitions and directives (`def`/`defp`, `defmacro`/`defmacrop`, `defmodule`, `defimpl`/`defprotocol`/`defdelegate`, `use`, `@`) are not calls a route can act on at all — nor are the directives (`alias`/`import`/`require`), the compiler-internal forms (`__block__`, `__aliases__`, `.`), or the literal and pattern forms (`{}`, `%{}`, `%`, `<<>>`, `=`, `^`, `::`), which are data syntax the literal families own (`--mutators`, `# mutare:ignore[<family>]`). `# mutare:ignore` is the tool for leaving a definition alone, and `# mutare:ignore[conditional]` (or `--mutators`) for holding back particular mutants inside an `if`.
+  **Structural heads.** The forms Mutare analyzes structurally rather than as calls — `if`/`unless`, `|>`, the boolean connectives (`and`/`or`/`&&`/`||`) and negations (`!`/`not`), `in`, and the construct special forms (`case`, `cond`, `with`, `for`, `try`, `receive`, `fn`, `quote`, `&`) — have no argument positions in the routing sense: a route on one accepts only `:skip`. An explicit positional route (`{Kernel, :if, 2, [:raw, :expression]}`) is rejected with an `ArgumentError`; a wildcard route's positions (`{Kernel, :*, :raw}`) simply do not apply to them. Definitions and directives (`def`/`defp`, `defmacro`/`defmacrop`, `defmodule`, `defimpl`/`defprotocol`/`defdelegate`, `use`, `@`) are not calls a route can act on at all — nor are the directives (`alias`/`import`/`require`), the compiler-internal forms (`__block__`, `__aliases__`, `.`), or the literal and pattern forms (`{}`, `%{}`, `%`, `<<>>`, `=`, `^`, `::`), whose mutations are handled by the literal families (`--mutators`, `# mutare:ignore[<family>]`). `# mutare:ignore` is the tool for leaving a definition alone, and `# mutare:ignore[conditional]` (or `--mutators`) for holding back particular mutants inside an `if`.
 
-  Routes are positional and transform-enforced: no mutator is consulted. The other facility for leaving something alone — **argument marks** (`argument_marks:` / `c:Mutare.Mutator.argument_marks/1`) — labels a position and lets each mutator decide what the label means, which is how the built-in timeout table declines a duration literal but not a computed one. Reach for a route when the position should simply not mutate; reach for a mark when the reaction should depend on the value. See `Mutare.Mutator`.
+  Routes are positional and transform-enforced: no mutator is consulted. The other facility for leaving something alone — **argument marks** (`argument_marks:` / `c:Mutare.Mutator.argument_marks/1`) — labels a position for value-dependent handling by each mutator. The built-in timeout exclusions use these marks to skip duration literals while allowing mutations in computed durations. Reach for a route when the position should simply not mutate; reach for a mark when the reaction should depend on the value. See `Mutare.Mutator`.
 
   ## Which behaviours do I implement?
 
@@ -71,7 +70,7 @@ defmodule Mutare.CallRouting do
   | --- | --- | --- |
   | Library-vocabulary routing, no mutations (a `:extensions` entry) | `Mutare.CallRouting` | `call_routes/0` (+ `route_arguments/2` if any route is `:routing`) |
   | A mutator whose mutation depends on routing | `Mutare.Mutator` + `Mutare.CallRouting` | `name/0`, a producer, `call_routes/0` (+ `route_arguments/2`) |
-  | A mutator that mutates *inside* a DSL fragment (`:hosted`) | `Mutare.Mutator` + `Mutare.Mutator.MacroHost` | `name/0`, `hosted_macros/0`, `host/2`; it may also implement `CallRouting` when it owns the DSL's routes |
+  | A mutator that mutates *inside* a DSL fragment (`:hosted`) | `Mutare.Mutator` + `Mutare.Mutator.MacroHost` | `name/0`, `hosted_macros/0`, `host/2`; it may also implement `CallRouting` when it also defines the DSL's routes |
 
   Always declare the `@behaviour`s you implement. The registry discovers capabilities by exported callbacks, so a typo'd or missing callback would otherwise compile to a silently inert module. Declaring `@behaviour` lets the compiler check the required callbacks, and the registry additionally rejects, at scan time, a module whose `route_arguments/2` or `host/2` no route ever reaches (a forgotten `:routing`/`:hosted` registration).
 

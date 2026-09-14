@@ -10,7 +10,7 @@ defmodule Mutare.Calls do
 
   `resolved_routed_call/1` is the routed-call twin — a call matched by a `call_routes` entry, macro or function. It returns a stable `Mutare.CallRouting.Call` with a natural module atom, visible arguments, pipe information, and a source-preserving rebuild function.
 
-  `routed_treatments/1` reads *how a node's macro is registered* — the resolved per-argument routing the merged registry (built-ins + every mutator's/extension's `call_routes/0` + the declarative `:call_routes` option) assigned it. A macro host uses it in two places: on its own call's `node`, to locate the positions the route marked `:hosted` (including values nested under `{:keyword, …}`); and on a nested macro inside a fragment it walks, to ask whether an argument routes `:raw` (left as written), whether the whole call is skipped (`:skip`), or otherwise specially. In both cases it replaces re-deriving the classification.
+  `routed_treatments/1` reads *how a node's macro is registered* — the resolved per-argument routing the merged registry (built-ins + every mutator's/extension's `call_routes/0` + the declarative `:call_routes` option) assigned it. A macro host uses it in two places: on its own call's `node`, to locate the positions the route marked `:hosted` (including values nested under `{:keyword, …}`); and on a nested macro inside a fragment it walks, to read its argument treatments or determine whether the whole call is skipped (`:skip`). In both cases it replaces re-deriving the classification.
 
   ## Example
 
@@ -35,7 +35,7 @@ defmodule Mutare.Calls do
 
   @typedoc """
   A resolved module: an Elixir-module path (`[:Enum]`, `[:String]`) or an Erlang-module atom
-  (`:binary`, `:string`). A mutator keys its table on whichever shape the function lives in.
+  (`:binary`, `:string`). A mutator keys its table on the function's module-key representation.
   """
   @type module_key :: Transform.Calls.module_key()
 
@@ -135,7 +135,7 @@ defmodule Mutare.Calls do
 
   ## Routing describes arguments; registration identifies ownership
 
-  A route says how to treat a registered macro's *arguments*. It does not stop a mutator's own
+  A route specifies how to treat a registered macro's *arguments*. It does not stop a mutator's own
   catalog from matching the **call**, which the expression walk still offers — so a macro
   registered `:raw` is opaque in its interior and exposed in its name. (The call-level `:skip`
   is the exception: an inert leaf is offered to nobody, and this reader returns `:skip` for it.)
@@ -144,14 +144,14 @@ defmodule Mutare.Calls do
   inside a DSL whose API functions are never imported. A name is not an identity: rewriting
   somebody else's macro to a sibling name emits a call nobody defines, which the library rejects
   while expanding. Having a treatment is exactly what being registered means, so a non-`nil`
-  result is the ownership test — decline the node:
+  result identifies a registered macro — skip the node:
 
       def mutate(node) do
         if Mutare.Calls.routed_treatments(node), do: :skip, else: swap(node)
       end
 
   Test for `nil`, not for a non-empty list: `[]` is a registered macro with no visible
-  arguments, and it is just as much somebody else's. The test recognises a *registered* macro —
+  arguments, whose treatment is also defined by the registered route. The test recognises a *registered* macro —
   including one registered by name only, the route for calls whose module cannot be resolved —
   and nothing beyond that. An unregistered macro is indistinguishable from an ordinary call, so
   a catalog still needs whatever arity and import gating it already applies.

@@ -213,7 +213,7 @@ defmodule Mutare.Transform.Analyze.Returns do
   @doc """
   Map-reduce `fun` over every leaf return tail of a `def`/`defp` clause's body keyword
   (`[do: …, rescue: …, …]`) in **classification** mode — the walk the attach path runs, for a
-  pass that must see *every* return path of a clause rather than the ones a return constant can
+  pass that must inspect *every* return path of a clause rather than the ones a return constant can
   be attached to (`Mutare.Transform.UnitReturns`). `fun.(leaf, acc)` returns `{leaf, acc}`; the
   result is `{body_kw, acc}`, with the body's keyword-form clause blocks normalized
   (`Syntax.normalize_clause_blocks/1` — as the analyzer normalizes its own copy).

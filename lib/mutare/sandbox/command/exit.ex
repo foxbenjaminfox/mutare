@@ -32,8 +32,8 @@ defmodule Mutare.Sandbox.Command.Exit do
       killer reaping a mutant whose mutation made it allocate unboundedly — must
       **not** be retried back-to-back the way a transient harness error is (see
       `Mutare.Runner`).
-    * anything else — the suite never returned a verdict: a `:harness_error`, which
-      says nothing about the mutation and is kept out of the score.
+    * anything else — the suite never returned a verdict: a `:harness_error`,
+      excluded from the score.
 
   `decode/1` is the single, total reading of the code alone. The two predicates exist
   for the sandbox runs that are *not* mutant runs — the one compile, the baseline, the
@@ -48,7 +48,7 @@ defmodule Mutare.Sandbox.Command.Exit do
   @owner_lost 97
   @sigkill 137
 
-  @typedoc "What an exit code alone says about a run (see `decode/1`)."
+  @typedoc "Run outcomes classified by exit code alone (see `decode/1`)."
   @type decoded :: :passed | :failed | :timeout | :sigkilled | :harness_error
 
   @doc """
@@ -86,7 +86,7 @@ defmodule Mutare.Sandbox.Command.Exit do
   Unlike the other codes, nothing of Mutare's *produces* it — it is the kernel's,
   and its signature real-world producer is the OOM killer reaping a mutant whose
   mutation made it allocate without bound. Decoded to `:sigkilled` so the runner
-  can refuse to retry it (a deterministic memory detonation re-detonates) and
+  can skip retries (repeating a deterministic allocation failure would exhaust memory again) and
   point at the mitigation (`:max_heap_mb`).
   """
   @spec sigkill() :: non_neg_integer()

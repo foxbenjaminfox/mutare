@@ -24,7 +24,7 @@ defmodule Mutare.Runner do
 
   ## Early stop: survivor cap (`:max_survivors`) or time budget (`:time_budget`)
 
-  Two conditions can stop the per-mutant loop before every mutant runs, whichever fires first. `:max_survivors` (`--max-survivors`) stops once that many survivors (`:survived` results) have surfaced — an iterate-and-fix workflow that wants a handful of concrete test gaps rather than a full run. `:time_budget` (`--time-budget`, a duration string like `"10m"` parsed by `Mutare.Duration`) stops once that much wall-clock elapses in the per-mutant phase — a "see what I can get in ten minutes" run. The clock starts as the phase begins (compile/baseline/probe are not charged against it) and is checked just before a task announces and launches a real mutant run, so ordered result buffering cannot hide an expired budget and allow more mutants to start.
+  Two conditions can stop the per-mutant loop before every mutant runs, whichever fires first. `:max_survivors` (`--max-survivors`) stops once that many survivors (`:survived` results) have surfaced — useful for finding and fixing a few concrete test gaps at a time. `:time_budget` (`--time-budget`, a duration string like `"10m"` parsed by `Mutare.Duration`) stops once that much wall-clock elapses in the per-mutant phase — a "see what I can get in ten minutes" run. The clock starts as the phase begins (compile/baseline/probe are not charged against it) and is checked just before a task announces and launches a real mutant run, so ordered result buffering cannot hide an expired budget and allow more mutants to start.
 
   Unlike `:max_mutants` (a `Mutare.Schema` cap on candidate *sites*), both leave every mutant compiled in — only the *run* halts early. The per-mutant stream is consumed `ordered: true`, so a survivor stop is deterministic: the Nth survivor in source order, regardless of which worker finished first, and the reported survivors are exactly the first N. (A time-budget stop is not deterministic — it depends on how far the run got.) Runs already in flight when either condition trips are *drained* (not killed), so the sandbox teardown never races a live `mix` subprocess. If the budget elapses after every mutant has already launched, the result set is still complete unless the budget also prevents a provisional timeout from being confirmed. Otherwise the returned run carries `stopped_early`; on an early stop the harness-error abort guard is skipped (the score is already budget-limited or a partial prefix — the Mix task notes it and skips the `--min-score` gate too), since aborting would discard the very survivors the user asked to find.
 
@@ -34,7 +34,7 @@ defmodule Mutare.Runner do
 
   ## Harness errors are kept out of the score
 
-  A mutant run that never reaches a verdict — a compile error, a missing dependency, a filesystem race — says *nothing* about the mutation, so it is recorded as `:harness_error` and kept out of the score's denominator, never silently miscounted as a kill the way a raw "non-zero ⇒ killed" rule would.
+  A mutant run interrupted by a compile error, a missing dependency, or a filesystem race provides no verdict on the mutation. It is recorded as `:harness_error` and excluded from the score's denominator. Treating every non-zero exit as a kill would miscount these failures.
 
   Two knobs harden this against flakiness and systemic breakage:
 
@@ -136,7 +136,7 @@ defmodule Mutare.Runner do
       `:compiling`, once per `mix.exs` whose inference override did not land
       (`Mutare.Sandbox.CompilerOptions.project_source/1`). That project compiles
       with type-signature inference on, which can make the one compile far slower;
-      `reason` says why in a short phrase. `--verbose` renders it.
+      `reason` describes the cause in a short phrase. `--verbose` renders it.
     * `{:poison_round, info}` — one compile-poison recovery round: the compile
       failed, the implicated mutants were dropped, and a rebuild + recompile is
       starting. `info` is `%{dropped: [%{id: id, file: file, line: line,

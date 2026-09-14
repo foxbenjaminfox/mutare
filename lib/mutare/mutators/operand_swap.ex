@@ -40,7 +40,7 @@ defmodule Mutare.Mutators.OperandSwap do
 
   ## Skipped cases
 
-  Identical operands are not swapped (in direct calls — a piped stage cannot see its piped operand, so an identical-operand pipe yields an equivalent transpose). Unary minus has no second operand and is handled by `Mutare.Mutators.Arithmetic`.
+  Identical operands are not swapped (in direct calls — a piped stage's AST does not include its piped operand, so an identical-operand pipe yields an equivalent transpose). Unary minus has no second operand and is handled by `Mutare.Mutators.Arithmetic`.
 
   Guard-safe operators and calls are also mutated in guards.
   """

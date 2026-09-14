@@ -2,10 +2,10 @@ defmodule Mutare.Report.Live.Lines do
   @moduledoc """
   The text of the live display, rendered from the reporter's state.
 
-  `Mutare.Report.Live` owns the process, the output modes, and the terminal; every line it
+  `Mutare.Report.Live` manages the process, output modes, and terminal writes; every line it
   draws or leaves in scrollback is rendered here — the animated status block
   (`status_block/2`), a mutant's leave-behind or `--verbose` line, a phase's label or
-  detail note, and the compile-poison narration. Nothing here touches the terminal, so
+  detail note, and compile-poison diagnostics. Nothing here touches the terminal, so
   each line is testable on its own. Cursor-control sequences are the reporter's, never
   part of a line.
   """

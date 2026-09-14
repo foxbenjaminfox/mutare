@@ -74,8 +74,8 @@ defmodule Mutare.Transform.Scope do
   @doc """
   Whether a selector emitted in this scope can read the hoisted active-id variable directly:
   the variable is bound (`active_bound`) *and* the walk is not inside a runtime nested module
-  (`module_depth == 0`), whose function bodies can't see the outer binding. The one definition
-  every emit path consults before choosing the hoisted form over the self-contained read.
+  (`module_depth == 0`), whose function bodies cannot access the outer binding. The one definition
+  used by every emit path before choosing the hoisted form over the self-contained read.
   Emitted code that reads the variable must record the reference
   (`Mutare.Transform.SelectorEmit.reference_active/1`), or the enclosing clause may not bind it.
   """

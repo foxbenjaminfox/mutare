@@ -1,6 +1,6 @@
 defmodule Mutare.Mutators.TupleLiteral do
   @moduledoc """
-  Tuple-literal mutation: collapse a non-empty tuple literal to the empty tuple `{}`. The tuple sibling of `Mutare.Mutators.List`/`MapLiteral` — it asks "does anything destructure or match this tuple?". A `{:ok, value}` that is built but never pattern-matched (or whose shape no test pins down) lets `{}` survive; anywhere the shape *is* used, the mutant is killed.
+  Tuple-literal mutation: collapse a non-empty tuple literal to the empty tuple `{}`. Like the corresponding list and map mutations, this tests whether the suite depends on the tuple's structure or contents. A `{:ok, value}` that is built but never pattern-matched (or whose shape no test pins down) lets `{}` survive; anywhere the shape *is* used, the mutant is killed.
 
   Two AST shapes, because Elixir represents a 2-element tuple specially: a literal pair `{a, b}` parses as `{:__block__, _, [{a, b}]}` (the value is a raw 2-tuple), while `{}`, `{a}`, and `{a, b, c, …}` parse as `{:{}, _, elements}`. Both non-empty shapes collapse to `{:{}, [], []}` (`{}`); the empty tuple is left alone.
 

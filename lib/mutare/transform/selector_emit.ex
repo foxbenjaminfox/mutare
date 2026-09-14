@@ -61,7 +61,7 @@ defmodule Mutare.Transform.SelectorEmit do
   `subject/1` does this for every selector that reads the variable as its scrutinee; a
   per-clause delivery that reads it directly — a `<var> === <id>` gate in an `fn`/`receive`
   clause, an exclusion guard, a creation-time coverage record — calls this itself.
-  `Mutare.Transform` reads the flag back to decide whether to bind the variable at all.
+  `Mutare.Transform` uses the flag to determine whether to bind the variable at all.
   """
   @spec reference_active(Ctx.t()) :: Ctx.t()
   def reference_active(%Ctx{} = ctx),

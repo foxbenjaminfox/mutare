@@ -9,9 +9,9 @@ defmodule Mutare.Sandbox.ProjectEvaluation do
   and watcher bootstrap stays outside this wrapper so its own failures cannot
   produce project evidence.
 
-  Escaping errors, exits, and throws print a marker before being re-raised with
-  their original class, reason, and stacktrace. Successful evaluation preserves
-  the source's value and prints nothing. `Mutare.Sandbox.Command.Output` requires
+  The wrapper prints a marker for escaping errors, exits, and throws, then re-raises
+  them with their original class, reason, and stacktrace. On success, the wrapper
+  returns the source's value and adds no output. `Mutare.Sandbox.Command.Output` requires
   the marker and an exception header, even when deep calls lose all project frames.
   """
 

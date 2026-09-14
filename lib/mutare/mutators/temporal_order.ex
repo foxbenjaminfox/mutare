@@ -7,7 +7,7 @@ defmodule Mutare.Mutators.TemporalOrder do
     * `DateTime.before?` ↔ `DateTime.after?`
     * `NaiveDateTime.before?` ↔ `NaiveDateTime.after?`
 
-  These calls express the same polarity as `<` and `>` for calendar/time structs. Swapping the predicate asks whether a suite actually covers the ordering direction rather than only equality or same-side examples.
+  These calls express the same polarity as `<` and `>` for calendar/time structs. Swapping the predicate tests whether a suite covers the ordering direction rather than only equality or same-side examples.
 
   Direct, aliased, and imported calls are supported. An alias that resolves to another module does not match. This family is enabled by default.
   """

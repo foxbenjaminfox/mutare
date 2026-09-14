@@ -106,7 +106,7 @@ The 28 survivors span the codebase; a representative handful:
 
 And **5 no-coverage**: `Cart.add/3`'s `{:error, :cart_full}` branch (line 20) is
 never reached — no test fills a cart to its limit — so its mutants can't be
-killed and are left out of the score, exactly like the report says.
+killed and are left out of the score, as shown in the report.
 
 Plenty more is **pinned**: the bitwise masks, `Integer.mod`, the `MapSet` union,
 the GenServer's reply tags, the catalog's bitstrings and calendar math, and the

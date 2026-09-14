@@ -2,7 +2,7 @@ defmodule Mutare.Mutators.RegexLiteral.Flags do
   @moduledoc """
   Positional flag-scope tracking for a regex pattern.
 
-  A regex's *effective* option flags (`i`/`m`/`s`/`x`/`u`/…) are not a single set for the whole pattern: an inline modifier changes them *positionally*, so the same `^` can be multiline in one place and not in another. This module models that, so a mode-aware mutator (anchor swaps today; a dotall-aware `.`, a caseless mutation, … tomorrow) can ask "is flag X active *here*?" rather than reading one global boolean.
+  A regex's *effective* option flags (`i`/`m`/`s`/`x`/`u`/…) are not a single set for the whole pattern: an inline modifier changes them *positionally*, so the same `^` can be multiline in one place and not in another. This module models that, so a mode-aware mutator (anchor swaps today; a dotall-aware `.`, a caseless mutation, … tomorrow) can check the active flags at a particular position rather than use one global boolean.
 
   ## The model — a scope stack
 

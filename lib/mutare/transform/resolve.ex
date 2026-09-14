@@ -57,7 +57,7 @@ defmodule Mutare.Transform.Resolve do
   `opts` carries the pass's diagnostics wiring: `:warnings` (default `true`) gates the
   advisory classifier warnings `RouteStamp` may print, and `:file` labels them. The
   transform's two-phase callers disable warnings on re-runs of the same source so each
-  prints once (see `Mutare.Transform`'s `:warnings` option).
+  is printed once (see `Mutare.Transform`'s `:warnings` option).
   """
   @spec annotate(Macro.t(), Routes.registry(), keyword()) :: Macro.t()
   def annotate(ast, registry, opts \\ []) do

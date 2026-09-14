@@ -189,7 +189,7 @@ defmodule Mutare.Transform.PatternStructure do
   within `ast` — the `n` in `<<n, rest::binary-size(n)>>`, plus bare type atoms like
   `integer` (indistinguishable from a variable in the AST). The structural families
   exclude a value with such a name from swapping / wildcarding; over-collecting type
-  atoms is the safe direction — it can only decline a mutation, never produce an illegal
+  atoms is the safe direction — it can only omit a mutation, never produce an illegal
   one (an `<<v::_>>` specifier) or strand a binding.
   """
   @spec spec_var_names(Macro.t()) :: MapSet.t()

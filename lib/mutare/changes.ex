@@ -23,7 +23,7 @@ defmodule Mutare.Changes do
   reports working-tree changes (committed and uncommitted) since `ref`, scoped
   to and relative to `root`. The diff command disables presentation/user hooks
   and pins prefixes because the output is parsed, and turns off `core.quotePath`
-  so a non-ASCII pathname arrives verbatim rather than octal-escaped. `-U0` drops context lines so
+  so a non-ASCII pathname is returned verbatim rather than octal-escaped. `-U0` drops context lines so
   only genuinely-added lines land in the set; pure deletions contribute nothing
   (their file drops out entirely if it has no other changes). Returns
   `{:error, detail}` if git fails (no repo, bad ref, git missing).

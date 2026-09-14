@@ -10,8 +10,8 @@ defmodule Mutare.Sandbox.RuntimeConfig do
   The wrapper prints a marker only when a failure escapes evaluation, then
   re-raises it with its original class, reason, and stacktrace. This covers imported
   configuration and deep library calls even when the stacktrace has lost every Config frame.
-  Successful configuration prints nothing; an unreadable entry file never enters
-  the wrapper. `Mutare.Sandbox.Command.Output` reads the marker alongside the
+  The wrapper adds no output when configuration succeeds and is not executed if the
+  entry file cannot be read. `Mutare.Sandbox.Command.Output` reads the marker alongside the
   exception header.
   """
 

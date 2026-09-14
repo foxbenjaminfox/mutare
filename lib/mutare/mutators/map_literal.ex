@@ -1,6 +1,6 @@
 defmodule Mutare.Mutators.MapLiteral do
   @moduledoc """
-  Map-literal mutation: collapse a non-empty map literal `%{…}` to the empty map `%{}`. The map counterpart of `Mutare.Mutators.List`'s non-empty-list collapse — it asks "does anything depend on this map's contents?". A weak suite that builds a map but never reads a key it carries lets the empty map survive.
+  Map-literal mutation: collapse a non-empty map literal `%{…}` to the empty map `%{}`. Like the non-empty-list collapse in `Mutare.Mutators.List`, this tests whether the map's contents affect the test results. A weak suite that builds a map but never reads a key it carries lets the empty map survive.
 
   ## What is *not* mutated
 

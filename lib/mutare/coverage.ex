@@ -3,7 +3,7 @@ defmodule Mutare.Coverage do
   Read back the coverage the metamutant recorded during the probe run.
 
   The metamutant self-records coverage **synchronously, in the test process**, as
-  the suite runs (`Mutare.Coverage.Recorder` owns the generated side); at suite end
+  the suite runs (`Mutare.Coverage.Recorder` generates the recording code); at suite end
   an `ExUnit.after_suite/1` hook dumps it to a file. This module reads that dump.
 
   The dump is three things, all keyed by **mutant id** (no metamutant↔original line
@@ -24,7 +24,7 @@ defmodule Mutare.Coverage do
       closure, or the rare `setup_all` whose work happened off-stack in a `Task` it
       spawned (an `on_exit` registered in a test body *is* recovered, via its
       closure frame in ExUnit's per-test runner process). An id here
-      was covered, but *which* test owns it is unknown, so the caller runs the
+      was covered, but cannot be attributed to a specific test, so the caller runs the
       **whole suite** for it — even if `:by_file` *also* attributes it to some file,
       since that partial attribution would otherwise mask the unlabeled coverage and
       manufacture a false survivor.

@@ -59,7 +59,7 @@ defmodule Mutare.Transform.Analyze.Syntax do
   Unwrap every **keyword-form** clause tail in a construct's block keyword — the parse of
   `case x, do: (p -> b)` / `cond(do: (c -> b))` / `try(…, rescue: (p -> b))` /
   `receive(do: (p -> b), after: (t -> b))` / `def f, do: …, rescue: (p -> b)` — so downstream
-  consumers see one shape, the bare clause list the block form always carries. The wrapper —
+  consumers receive one shape, the bare clause list the block form always carries. The wrapper —
   `{key, {:__block__, _, [clauses]}}` — is otherwise indistinguishable from a *list literal*
   in that keyword's value, so shape-based clause routing misses it: the clause machinery
   (`cond` condition analysis, `case` per-clause tupling, `rescue` narrowing, receive-clause

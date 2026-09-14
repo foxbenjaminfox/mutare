@@ -6,7 +6,7 @@ defmodule Mutare.Report.Live do
 
   `--verbose` prints a line for every mutant and timing details for each phase. `--quiet` suppresses live progress entirely and takes precedence over `--verbose`.
 
-  This module owns the process, the output modes, and the terminal; the text of every line it draws is rendered by `Mutare.Report.Live.Lines`.
+  This module manages the process, output modes, and terminal writes; the text of every line it draws is rendered by `Mutare.Report.Live.Lines`.
   """
 
   use GenServer
@@ -88,7 +88,7 @@ defmodule Mutare.Report.Live do
   `{:seed_app_build, summary}`, and `{:inference_override_declined, info}`.
   `{:poison_round, info}` (a compile-poison recovery round) and `{:macro_poison, info}`
   (the macro-expansion fallback skipping an inline DSL macro) each leave a permanent
-  line in every mode, not just verbose. An event this reporter doesn't know is ignored.
+  line in every mode, not just verbose. Unrecognised events are ignored.
   """
   @spec phase(GenServer.server(), phase_event()) :: :ok
   def phase(server, phase), do: GenServer.cast(server, {:phase, phase})

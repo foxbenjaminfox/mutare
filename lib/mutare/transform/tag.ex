@@ -65,7 +65,7 @@ defmodule Mutare.Transform.Tag do
   Expand a clause's accumulated `{tag, original, [%Mutare.Mutator.Dispatch.Result{}]}` targets into
   candidates, one per `Result`.
 
-  Targets arrive in reverse post-order (`guard_targets/3` / `pattern_literal_targets/3`
+  Targets are returned in reverse post-order (`guard_targets/3` / `pattern_literal_targets/3`
   accumulate that way); they are reversed to source order so ids land in source order.
   `build.(tag, original, mutator, mutated, note, variant, range)` constructs each candidate — `tag`
   to `replace_tag/3` the tagged copy, `original` for the diff, `note` the producing mutator's

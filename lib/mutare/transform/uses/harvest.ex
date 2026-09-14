@@ -82,7 +82,7 @@ defmodule Mutare.Transform.Uses.Harvest do
   After the `use` target is alias-resolved, they are consulted **first**: an extension that does
   not `:decline` supplies the directives directly, bypassing in-process expansion entirely —
   so a `use` whose `__using__` can't run in the scan process (Gettext mutates its caller and
-  raises) still surfaces its directives. When every extension declines, the `use` is expanded
+  raises) still surfaces its directives. When every extension returns `:decline`, the `use` is expanded
   in-process as before. The extension path skips both the static-literal opts gate (Gettext's
   `backend:` is a module alias, not a literal) and the `Code.ensure_loaded?` check (the extension
   asserts the directives), since it never invokes `__using__`.

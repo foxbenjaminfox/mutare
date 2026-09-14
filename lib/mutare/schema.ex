@@ -36,7 +36,7 @@ defmodule Mutare.Schema do
        is drift-proof: it comes from the *same* id-claiming path emission uses, so
        it equals the matching render's `next_id - start_id` by construction.
     2. **Render** (`render_files/3`) — prefix-sum the counts so each sited file
-       knows its globally-unique `:start_id` up front, then
+       is given its globally-unique `:start_id` up front, then
        `Mutare.Transform.transform_string/2` each file (with that `:start_id` and
        the file's `:runtime_namespace`, and the run's report-space `:skip_ids` and
        statically selected `:emit_ids`) in parallel. Every
@@ -220,7 +220,7 @@ defmodule Mutare.Schema do
   Build a schema from an explicit list of files (paths recorded relative to `root`).
 
   Duplicate file entries are collapsed by root-relative path so each source file
-  owns one stable id range.
+  has one stable id range.
 
   `skip_ids` is poison-recovery state: ids to leave out of the emitted
   metamutant while still advancing the id counter. It is passed separately from

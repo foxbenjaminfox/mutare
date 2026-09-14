@@ -190,7 +190,7 @@ Initial release.
   `json` (Stryker / mutation-testing-elements schema), `html` (interactive
   viewer), and `sarif` (GitHub code scanning) via `--report FORMAT[:PATH]`
   (repeatable) or `:reporters`.
-- **Live progress** on stderr; the detailed report and score print to stdout.
+- **Live progress** on stderr; the detailed report and score are printed to stdout.
 - **CI integration** — `--since <ref>` to scope to the lines changed against a
   git ref, `--min-score` to gate, `--line` to target lines, and a kept sandbox
   (the default) so the

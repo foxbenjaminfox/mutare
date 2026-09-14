@@ -9,7 +9,7 @@ defmodule Mutare.Sandbox.Command.Output do
       a mutation that broke the test suite's own compilation — and a BEAM abort can
       land on any code. `suite_compile_error?/1`, `atom_exhausted?/1`,
       `app_start_failure?/1`, `config_failure?/1`, `project_failure?/1`, and `boot_failure?/1` are the pure
-      discriminators `Mutare.Sandbox.Command.outcome/2` consults to split those cases (see that
+      discriminators `Mutare.Sandbox.Command.outcome/2` uses to split those cases (see that
       module's moduledoc for *why* each is the verdict it is).
     * **Locating a failure.** `Mutare.Poison` maps a failed metamutant compile back
       to mutant ids (`source_location_regex/0` + `diagnostic_severity/1`, and the

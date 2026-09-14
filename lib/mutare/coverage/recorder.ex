@@ -4,13 +4,13 @@ defmodule Mutare.Coverage.Recorder do
   the test bootstrap share to record coverage **synchronously, in the test
   process**, with no race.
 
-  `Mutare.Coverage` reads what this produces; this module owns *how it is
+  `Mutare.Coverage` reads what this produces; this module defines *how it is
   produced*. There are three pieces, all emitted into generated code:
 
     * `record_ast/1` — spliced by `Mutare.Transform` into every selector
       catch-all. At baseline, under a tracking flag, it records the site's mutant
       ids into shared ETS — in whatever process runs the line, including the test
-      process. (`Mutare.Selector` owns the *selection* contract the same way.)
+      process. (`Mutare.Selector` defines the *selection* contract the same way.)
     * `helper_source/0` — a dependency-free helper module
       (`Mutare.Sandbox` writes it into the sandbox) holding the ETS writes and the
       end-of-suite dump, so the per-site code stays a single call and the
@@ -146,7 +146,7 @@ defmodule Mutare.Coverage.Recorder do
   `fixture_override_env/0` is set) bakes the fixture key into its fixtures. The
   lifecycle ASTs are the other half of that contract and take their scope
   **explicitly** (`mode_ast/1`, `tables_ast/1`) — they are written into generated
-  bootstraps, where the ambient override says nothing about which VM will run them.
+  bootstraps, where the ambient override need not match the VM that will run them.
   Don't pair this function with a lifecycle AST; reach for `runtime/1` instead, whose
   scope you have then named.
   """

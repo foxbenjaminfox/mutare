@@ -34,7 +34,7 @@ It inspects your dependencies and, for each framework it finds, adds the matchin
 | `:gettext`                                        | `mutare_gettext`           | `:extensions` — `Mutare.Gettext`                                       |
 
 
-A mutator package extends the `:mutators` list; a non-mutating extension like `mutare_gettext` (which teaches mutare a library's compile-time vocabulary so the built-in mutators can deal with it) joins the `:extensions` list; `mutare_phoenix` does both, since its front module also routes Phoenix's compile-time macros. The Ecto repo is detected automatically (pass `--repo MyApp.Repo` to override). If you already have a `.mutare.exs`, it is left untouched and the recommended keys are printed for you to merge in.
+A mutator package extends the `:mutators` list; a non-mutating extension like `mutare_gettext` (which defines how the built-in mutators handle a library's compile-time syntax) joins the `:extensions` list; `mutare_phoenix` does both, since its front module also routes Phoenix's compile-time macros. The Ecto repo is detected automatically (pass `--repo MyApp.Repo` to override). If you already have a `.mutare.exs`, it is left untouched and the recommended keys are printed for you to merge in.
 
 You can install igniter globally, with `mix archive.install hex igniter_new`, or add it to your project's `mix.exs`:
 
@@ -65,7 +65,7 @@ Then run `mix mutare`.
 
 1. Transform. Every in-scope source file is rewritten into a *metamutant* that embeds all of its mutants. Mutare transforms the code you write, before macro expansion—so any macros that don't accept arbitrary expressions will probably need their arguments routed `:raw` in your config (see "Routing calls" below).
 2. Compile once. The metamutant compiles a single time. The source code doesn't change between runs, so there is no per-mutant recompilation.
-3. Run the suite per mutant. A baseline test run must pass; a coverage probe then maps each mutant to the test files that exercise it. Each mutant runs in a fresh `mix test` OS process, `:workers` at a time, each capped by a wall-clock timeout. The process learns which mutant to activate from `MUTARE_MUTANT_NAMESPACE` (its file) and `MUTARE_ACTIVE_MUTANT` (its id within that file).
+3. Run the suite per mutant. A baseline test run must pass; a coverage probe then maps each mutant to the test files that exercise it. Each mutant runs in a fresh `mix test` OS process, `:workers` at a time, each capped by a wall-clock timeout. The active mutant is selected using `MUTARE_MUTANT_NAMESPACE` (its file) and `MUTARE_ACTIVE_MUTANT` (its id within that file).
 4. Report. Surviving mutants are listed in an abbreviated format as the run progresses, and you get a full report, with diffs and a mutation score, at the end. You can also enable JSON, HTML, or SARIF format output.
 
 Nevertheless, note that a suite that is green under plain `mix test` can fail during Mutare's baseline run when a test asserts exact `FunctionClauseError` fields or stacktrace frames, because Mutare's function *lifting* renames those internals. See "Troubleshooting baseline-only failures" in the [`mix mutare` task docs](https://hexdocs.pm/mutare/Mix.Tasks.Mutare.html) (`mix help mutare`) for the mechanics and the `skip_lifting` escape hatch.
@@ -141,7 +141,7 @@ mix mutare --max-heap-mb 4096          # per-process heap cap: a mutant that
 mix mutare --report json:mutare.json   # write a machine-readable report
 ```
 
-Most projects can start without configuration. Add `.mutare.exs` when you want to scope the run, tune CI gates, teach Mutare about a project macro, or add an application-specific mutator:
+Most projects can start without configuration. Add `.mutare.exs` when you want to scope the run, tune CI gates, configure routing for a project macro, or add an application-specific mutator:
 
 ```elixir
 [
@@ -188,7 +188,7 @@ These are the common keys. `mix help mutare` documents the full option set, incl
 
 ### Live progress
 
-While a run is in flight, Mutare writes progress to stderr: the current phase, each survivor as soon as it appears, timeouts, harness errors, and — in a terminal — a live status block with the active mutant and an ETA. The final report still prints to stdout, so `mix mutare > report.txt` captures the report while progress stays visible in the terminal.
+While a run is in flight, Mutare writes progress to stderr: the current phase, each survivor as soon as it appears, timeouts, harness errors, and — in a terminal — a live status block with the active mutant and an ETA. Mutare still prints the final report to stdout, so `mix mutare > report.txt` captures the report while progress stays visible in the terminal.
 
 ### Machine-readable output
 
@@ -202,13 +202,13 @@ mix mutare --report json:mutare.json --report sarif:mutare.sarif
 - `html` — the same JSON embedded in a single interactive HTML report.
 - `sarif` — surviving mutants as SARIF 2.1.0 findings for GitHub code scanning.
 
-When every machine format is written to a file, the human report still prints to the console; when any report takes stdout (no `:PATH`), the human report is suppressed to avoid a collision. Only one report may take stdout, and no two may share a path — a second document on the same destination would corrupt or overwrite the first, so `--report json --report sarif` is rejected rather than run.
+When every machine format is written to a file, Mutare still prints the human report to the console; when any report is directed to stdout (no `:PATH`), the human report is suppressed to avoid a collision. Only one report may be directed to stdout, and no two may share a path — a second document on the same destination would corrupt or overwrite the first, so `--report json --report sarif` is rejected rather than run.
 
 ### Routing calls: skipping calls and arguments
 
-Two kinds of call want leaving alone. Some are **not worth testing** — an analytics emitter, a logger, a metrics call — and every mutant inside them is noise. Some macros take **arguments that are not ordinary runtime code** — a query DSL body, a pattern, a schema definition — and mutating inside those is noise too, and sometimes breaks the single metamutant compile.
+There are two common reasons to exclude a call from mutation. Some are **not worth testing** — an analytics emitter, a logger, a metrics call — and every mutant inside them is noise. Some macros take **arguments that are not ordinary runtime code** — a query DSL body, a pattern, a schema definition — and mutating inside those is noise too, and sometimes breaks the single metamutant compile.
 
-Both are `call_routes:` entries. An entry names a call by module, function, and arity (macros and functions alike; Mutare matches it however it is written — directly, aliased, imported, or piped) and says how to treat it:
+Both are `call_routes:` entries. An entry names a call by module, function, and arity (macros and functions alike; Mutare matches it however it is written — directly, aliased, imported, or piped) and specifies how to treat it:
 
 ```elixir
 call_routes: [
@@ -264,7 +264,7 @@ A route that matches no call anywhere in a full scan is reported as a warning, s
 
 #### Argument marks: extending the timeout table
 
-Routes are blunt on purpose: `:raw` holds a position back from every mutator whatever its value. The built-in timeout handling is finer than that. A duration position (`Process.sleep/1`, `GenServer.call/3`'s third argument, `Task.async_stream`'s `timeout:` option, …) is *marked* `:timeout`, and each mutator decides what the mark means: the integer family declines any integer there, the atom family declines only `:infinity`, and every other family proceeds — so a computed duration like `base * 2` still mutates its `2`.
+Routes are blunt on purpose: `:raw` holds a position back from every mutator whatever its value. The built-in timeout handling is finer than that. A duration position (`Process.sleep/1`, `GenServer.call/3`'s third argument, `Task.async_stream`'s `timeout:` option, …) is *marked* `:timeout`, and each mutator handles the mark according to its mutation rules: the integer family skips integers there, the atom family skips only `:infinity`, and other families still apply — so a computed duration like `base * 2` still mutates its `2`.
 
 `argument_marks:` extends those tables to your own functions, in the exact shape the mutators declare them:
 
@@ -275,7 +275,7 @@ argument_marks: [
 ]
 ```
 
-An entry is `{Module, :function, arity, positions, label}`; `positions` lists effective argument indices (a piped receiver is index 0) and `{:keyword, key}` option keys. The label must be one some enabled mutator understands — `:timeout` is built in, and a companion package documents its own — so a typo fails at startup. Reach for a route when a position should simply not mutate; reach for a mark when the reaction should depend on the value.
+An entry is `{Module, :function, arity, positions, label}`; `positions` lists effective argument indices (a piped receiver is index 0) and `{:keyword, key}` option keys. The label must be one an enabled mutator declares — `:timeout` is built in, and a companion package documents its own — so a typo fails at startup. Reach for a route when a position should simply not mutate; reach for a mark when the reaction should depend on the value.
 
 ### Choosing which mutators run
 
@@ -311,7 +311,7 @@ On the CLI, `--mutators` takes a CSV of built-in family atoms (`--mutators built
 
 ### Custom mutators
 
-A custom mutator is useful when your application has a meaningful alternative that a general-purpose tool cannot know. Suppose editing requires stricter permission than viewing: replacing `Permissions.can_edit?/2` with `Permissions.can_view?/2` checks whether the tests prevent a view-only user from editing.
+A custom mutator is useful when your application has a meaningful alternative outside the built-in mutation set. Suppose editing requires stricter permission than viewing: replacing `Permissions.can_edit?/2` with `Permissions.can_view?/2` checks whether the tests prevent a view-only user from editing.
 
 A mutator implements `Mutare.Mutator`: `name/0` supplies the report name, and `mutate/1` returns either `:skip` or a list of replacement AST nodes. `resolved_call/1` recognizes the call even when `MyApp.Permissions` is aliased, and its `rebuild` function preserves the form used by the source:
 
@@ -354,7 +354,7 @@ lib/calc.ex:3  [relational, in-place]  SURVIVED
 mutation score: 66.7%  (2 killed, 1 survived, 3 total)
 ```
 
-That survivor says: nothing in the suite distinguishes `>` from `>=` at the boundary — a missing boundary test.
+That survivor indicates that nothing in the suite distinguishes `>` from `>=` at the boundary — a missing boundary test.
 
 ## Development
 

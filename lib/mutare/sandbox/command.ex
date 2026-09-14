@@ -3,10 +3,10 @@ defmodule Mutare.Sandbox.Command do
   Decode what a `mix test` mutant run *did*, and orchestrate one typed run.
 
   Every mutant is exercised by its own `mix test` process (spawned by
-  `Mutare.Sandbox.Command.Invocation`). This module owns the *decoding side* of the
+  `Mutare.Sandbox.Command.Invocation`). This module implements the *decoding side* of the
   **exit-code contract** — reading a run's exit code and output into a mutant
   verdict — plus the one entry point that runs a mutant and hands back a typed
-  `Mutare.Sandbox.Command.Result`. The neighbouring modules own the rest of what was
+  `Mutare.Sandbox.Command.Result`. The neighbouring modules implement the rest of what was
   once one file:
 
     * `Mutare.Sandbox.Command.Exit` — the exit codes themselves and their by-code
@@ -15,7 +15,7 @@ defmodule Mutare.Sandbox.Command do
       gets (one builder per run option, from which the reserved variable set derives),
       and the watcher ASTs (the *producing* side of the timeout and owner-death codes).
     * `Mutare.Sandbox.Command.Output` — every pattern that reads `mix`'s human-readable
-      output, including the discriminators `outcome/2` consults below.
+      output, including the discriminators used by `outcome/2` below.
     * `Mutare.Sandbox.CompilerOptions` — the env that speeds the one metamutant compile.
 
   ## The exit-code contract
@@ -51,8 +51,8 @@ defmodule Mutare.Sandbox.Command do
   but *names a known-transient cause* so the runner can message and retry it
   better (`Output.boot_failure?/1` → `:boot_failure`): the sandbox node died **during
   boot** and its own diagnostic was erased by a secondary `:standard_error`
-  failure (a torn-down IO device). The mutation says nothing — it is concurrent
-  workers contending on shared singletons at startup — so it is kept out of the
+  failure (a torn-down IO device). This provides no verdict on the mutation: concurrent
+  workers are contending on shared singletons at startup — so it is kept out of the
   score like any harness error, but it is recognised here so the engine stops
   pointing at output that can't help (the real cause is unrecoverable) and retries
   it harder (see `Mutare.Runner`).

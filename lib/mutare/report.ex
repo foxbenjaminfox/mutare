@@ -4,7 +4,7 @@ defmodule Mutare.Report do
 
   Diffs are patched against the original source via `Sourceror.patch_string` at the site's recorded range, so untouched source stays byte-identical and a survivor reads as a precise source-range change.
 
-  The numbers the report prints — the mutation score and its tallies — come from `Mutare.Score`, which also owns the CI gates; this module only renders.
+  The mutation score and tallies in the report come from `Mutare.Score`, which also implements the CI gates; this module only renders.
   """
 
   alias Mutare.{Result, Score, Site}

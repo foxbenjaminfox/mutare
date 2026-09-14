@@ -4,7 +4,7 @@ defmodule Mutare.Mutators.CharlistLiteral do
 
   Interpolated charlists are mutated as a whole too, and both replacements always apply (their runtime value can never statically be either); the expressions inside the interpolation stay eligible for their own mutations. That covers the sigil form `~c"a\#{x}b"` *and* the legacy single-quoted form `'a\#{x}b'` — the latter parses as a `List.to_charlist/1` call, and its replacements are rendered in the modern `~c` syntax.
 
-  The *non-interpolated* legacy form `'…'` parses as an ordinary list literal (`{:__block__, _, [charlist]}` carrying the `'` delimiter), so its mutations are split by ownership: `Mutare.Mutators.List` owns the *empty* collapse (the node is a list literal to it; emitting `~c""` here too would duplicate that mutant), while this family owns the *sentinel* — `'abc'` → `~c"mutare"` — so legacy charlist content is challenged exactly like `~c` content. An already-sentinel `'mutare'` is skipped.
+  The *non-interpolated* legacy form `'…'` parses as an ordinary list literal (`{:__block__, _, [charlist]}` carrying the `'` delimiter), so `Mutare.Mutators.List` produces the *empty* collapse (emitting `~c""` here too would duplicate that mutant), while this family produces the *sentinel* replacement — `'abc'` → `~c"mutare"` — so legacy charlists receive the same mutations as `~c` charlists. An already-sentinel `'mutare'` is skipped.
 
   Not mutated: on the RHS of a guard `in` (`when x in ~c"ab"`) the *empty* variant `~c""` is dropped — it is `x in []` ≡ `false`, which `Mutare.Mutators.Conditional` already produces — but the non-empty sentinel `~c"mutare"` is kept. Body `in` expressions keep the empty variant because left-side evaluation is observable.
 

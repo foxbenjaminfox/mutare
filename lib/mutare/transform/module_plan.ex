@@ -45,7 +45,7 @@ defmodule Mutare.Transform.ModulePlan do
   `config` supplies the `file` (attributing the advisory warnings), the
   `skip_lifting` entry set, and the `warnings` gate — the scan/count pass warns;
   the render pass, report-time re-derivation, and poison rebuilds re-run the same
-  pipeline and pass `warnings: false` so each advisory prints once.
+  pipeline and pass `warnings: false` so each advisory is printed once.
 
   `skip_lifting_matches` records the normalized entries this sequence matched, so
   `Mutare.Schema` can union them across the count pass and surface configured

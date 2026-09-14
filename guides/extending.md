@@ -4,12 +4,12 @@ Mutare has two extension points, matching two keys in `.mutare.exs`:
 
 - **`:mutators`** — modules that *produce mutations*. A custom mutator adds new
   kinds of mutants alongside (or instead of) the built-in families.
-- **`:extensions`** — non-mutating modules that *teach Mutare a library's
-  compile-time vocabulary*, so the built-in mutators can work in and around its
+- **`:extensions`** — non-mutating modules that define how to handle a library's
+  compile-time syntax, so the built-in mutators can work in and around its
   macros. Extensions never appear in reports.
 
-This guide helps you pick the piece you need and points to the module docs that
-carry the full contract. Every kind listed here has a small working example
+This guide helps you pick the piece you need and links to the full contracts in
+the module docs. Every kind listed here has a small working example
 under `test/support/` in the Mutare repository.
 
 ## Which piece do you want?
@@ -71,9 +71,8 @@ Three rules keep you out of trouble; the *why* is in the `Mutare.Mutator` docs:
 
 ### Emitting AST
 
-Sourceror nodes carry rendering metadata with sharp edges, and every one of
-them is core's problem, not yours. Each invariant has a `Mutare.AST` helper
-that discharges it — reach for the helper instead of re-deriving the rule:
+Sourceror requires specific rendering metadata on AST nodes. Use the
+`Mutare.AST` helpers to construct nodes with the required metadata:
 
 | Invariant | Helper |
 | --- | --- |
@@ -201,8 +200,8 @@ def call_routes do
 end
 ```
 
-A route names a resolved call — macro or function, the registry never asks
-which. Its treatment is either `:skip` (the whole call is an inert leaf: never
+A route names a resolved call, with the same routing rules for macros and
+functions. Its treatment is either `:skip` (the whole call is an inert leaf: never
 offered to a mutator, nothing inside it descended) or one *position* per
 argument: `:expression` (mutate normally), `:raw` (leave as written),
 `:interior` (mutate the argument's contents but never its own node),
@@ -238,8 +237,8 @@ vocabulary, never data — the treatment list must name exactly one treatment
 per pair (a mismatch is an error at transform time), and a non-keyword
 argument is left raw with no mutants: silently for a static route (another
 call shape may be a legal form of the macro), with a printed warning when a
-`:routing` classifier misrouted it (the classifier saw the concrete argument,
-so the mismatch is its bug). `:hosted` is a delivery contract, not a hint: it leaves the position
+`:routing` classifier misrouted it (the classifier was called with the concrete argument,
+so the mismatch is a classifier bug). `:hosted` is a delivery contract, not a hint: it leaves the position
 raw and requires an enabled mutator subscribed via `Mutare.Mutator.MacroHost`,
 and the run aborts at scan time if none is. That is why these treatments can
 only come from here — an adapter written and tested against the library it
@@ -251,8 +250,8 @@ for adapters are in the `Mutare.CallRouting` docs.
 
 ### Hosting mutations inside a DSL
 
-Routing says what core may touch; a **macro host** goes further and emits
-mutations *inside* fragments core must leave raw, in whatever form that DSL
+Routing determines which positions core may mutate. A **macro host** emits
+mutations *inside* fragments core must leave raw, in whatever form the DSL
 accepts. A host is a mutator (it produces mutations, so it's a `:mutators`
 entry) implementing `Mutare.Mutator.MacroHost`: `hosted_macros/0` names the
 macros it can mutate, and `host/2` receives each resolved call and returns
@@ -263,10 +262,10 @@ mutants inside it.
 
 ### `use` expansion
 
-Mutare expands `use` calls to learn what they inject — the imports and aliases
-that make call resolution work, and the behaviours that behaviour-gated
+Mutare expands `use` calls to recover their injected directives: the imports and
+aliases used in call resolution, and the behaviours that behaviour-gated
 mutators check. Some `__using__` macros can't be expanded from the outside;
-`Mutare.UseExpansion` lets an extension supply the answer directly:
+`Mutare.UseExpansion` lets an extension supply those directives directly:
 
 ```elixir
 @impl Mutare.UseExpansion

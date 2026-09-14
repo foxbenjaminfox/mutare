@@ -6,9 +6,9 @@ defmodule Mutare.Report.HarnessDiagnostic do
   need a short, stable summary rather than an entire suite log. This module is the
   shared presentation layer for human, JSON, live, and abort messages.
 
-  It only formats. Picking the output line to show and recognising the known boot
-  crash both read mix's output format, which `Mutare.Sandbox.Command.Output` owns
-  (`salient_line/1`, `boot_failure?/1`).
+  This module formats the diagnostic. `Mutare.Sandbox.Command.Output` parses
+  Mix's output: `salient_line/1` selects the line to show, and `boot_failure?/1`
+  identifies the known boot crash.
   """
 
   alias Mutare.Result

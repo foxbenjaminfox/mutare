@@ -50,7 +50,7 @@ defmodule Mutare.Ignore.Directive do
   its own resolved line; a `:file` directive covers every line; a region covers the inclusive
   `first..last` span of its delimiter comments (so a trailing `# mutare:ignore-start` or `-end`
   on a code line covers that line's mutants too). A site with no recorded line (`nil`) is
-  covered only by a `:file` directive — the one scope that needs no line to decide.
+  covered only by a `:file` directive — the only scope that matches without a line number.
   """
   @spec covers?(t(), pos_integer() | nil) :: boolean()
   def covers?(%__MODULE__{scope: :file}, _line), do: true
@@ -115,9 +115,9 @@ defmodule Mutare.Ignore.Directive do
   unknown family, an unknown label, or an empty filter admits nothing
   (filtering fails safe toward *running* the mutant).
 
-  Pass `target: :any` to ask the **family-level** question — does this directive
-  involve `mutator` for *some* result? — used where a concrete result is not in
-  hand. It admits a bare *and* a qualified entry of the family alike.
+  Pass `target: :any` to check whether the directive applies to *any* result from
+  `mutator`, without supplying a concrete result. Both bare and qualified entries
+  for that family match.
   """
   @spec applies_to?(t(), atom(), query()) :: boolean()
   def applies_to?(directive, mutator, target \\ :any)

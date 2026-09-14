@@ -22,7 +22,7 @@ defmodule Mix.Tasks.Mutare do
       score = killed / (total − no_coverage − ignored − poisoned − harness_error)
 
     * `killed`      — a test failed on the mutant. Your suite caught the change.
-    * `survived`    — every test still passed: no test tells the mutated code apart from the original. Survivors are the point of the tool, and print as a one-line diff so you can see exactly what slipped through.
+    * `survived`    — every test still passed: no test distinguishes the mutated code from the original. Each survivor is reported as a one-line diff so you can see exactly what slipped through.
     * `timeout`     — the mutant ran past the per-mutant time cap (e.g. it created an infinite loop). Counts as killed. (So does a mutant that exhausts the atom table and crashes the VM.)
     * `no_coverage` — no test runs that line at all, so nothing could catch it. Excluded from the score; fix it by covering the line.
     * `ignored`     — suppressed by a `# mutare:ignore` comment (below). Excluded.
@@ -53,7 +53,7 @@ defmodule Mix.Tasks.Mutare do
       # mutare:ignore[relational:>]              suppress one kind: the `i > j` swap
       # mutare:ignore[integer] off-by-one is ok  a filter and a reason together
 
-  The names inside `[...]` are mutator families (see below). A family may be qualified with `:label` to suppress only one *kind* of its mutants — `relational` declares `> >= < <= == != === !==`, `return_value` declares `empty`/`sentinel`, `integer` declares `zero`/`succ`/`pred`, `boolean` declares `negate`. Run `--list-mutators` to see every built-in family's labels. Filtering fails safe: an unknown family, an empty `[]`, or a malformed `[…` (no closing bracket) matches nothing, so the mutant runs rather than hides — but a qualified label a known built-in (or active custom) doesn't declare is a hard error (with a "did you mean"), so a typo can't silently fail to match. An ignore that suppresses no mutant (a typo'd family, a line that has no mutant) is reported as a warning — and with `--strict-ignores`, exits the run 1.
+  The names inside `[...]` are mutator families (see below). A family may be qualified with `:label` to suppress only one *kind* of its mutants — `relational` declares `> >= < <= == != === !==`, `return_value` declares `empty`/`sentinel`, `integer` declares `zero`/`succ`/`pred`, `boolean` declares `negate`. Run `--list-mutators` to see every built-in family's labels. Filtering fails safe: an unknown family, an empty `[]`, or a malformed `[…` (no closing bracket) matches nothing, so the mutant is run rather than hidden — but a qualified label a known built-in (or active custom) doesn't declare is a hard error (with a "did you mean"), so a typo can't silently fail to match. An ignore that suppresses no mutant (a typo'd family, a line that has no mutant) is reported as a warning — and with `--strict-ignores`, exits the run 1.
 
   For a span that isn't worth annotating line by line — a literal lookup table, a generated module — two scoped verbs take the same filter and reason:
 
@@ -78,11 +78,11 @@ defmodule Mix.Tasks.Mutare do
     * Structural — `return_value`, `if_condition`, `pattern_swap`, `pattern_wildcard`, `rescue_type`, `guard_drop`
     * Behaviour-aware — `genserver` (swaps an OTP callback's return tuple; fires only inside a `@behaviour GenServer` module)
 
-  Each family's exact swap table lives in its own module's docs — print one with `mix mutare --explain relational`. You can also list your own module implementing `Mutare.Mutator` under `:mutators` to add a custom mutator.
+  Each family's module docs list its exact swap table — print one with `mix mutare --explain relational`. You can also list your own module implementing `Mutare.Mutator` under `:mutators` to add a custom mutator.
 
   ## Inspecting without running
 
-  These flags print information and exit, touching neither the sandbox nor the suite — for discovery, scripting, and debugging configuration:
+  With these flags, the command prints information and exits without preparing a sandbox or running the suite — for discovery, scripting, and debugging configuration:
 
       mix mutare --version                # the installed mutare version
       mix mutare --list-mutators          # the built-in mutator catalog (see above)
@@ -114,7 +114,7 @@ defmodule Mix.Tasks.Mutare do
                                           # only the mutants on that file:line — a
                                           #   narrow rerun, e.g. to recheck one
                                           #   survivor (repeatable; FILE:LINE is the
-                                          #   exact prefix the report prints)
+                                          #   exact prefix shown in the report)
       mix mutare --mutators relational,arithmetic   # only some families (see above)
       mix mutare --skip-lifting MyApp.Mod.fun/2
                                           # keep one function in-place; no guard,
@@ -178,7 +178,7 @@ defmodule Mix.Tasks.Mutare do
                                           #   than the time cap can catch), and a capped
                                           #   runaway dies as an ordinary test failure
                                           #   instead of OOMing the machine. Size it well
-                                          #   above the suite's biggest honest process;
+                                          #   above the suite's largest unmutated process;
                                           #   the baseline runs under the same cap, so a
                                           #   too-small value fails fast, up front
                                           #   (default: no cap)
@@ -213,7 +213,7 @@ defmodule Mix.Tasks.Mutare do
                                           #   "see what I can get in 10 minutes"; like
                                           #   --max-survivors the result set is partial, so
                                           #   CI gates are skipped
-      mix mutare --verbose                # narrate what's happening at each step: a
+      mix mutare --verbose                # print details at each step: a
                                           #   line per mutant (with its duration) plus
                                           #   per-phase detail — compile time, baseline
                                           #   timing, coverage breakdown, timeout cap,
@@ -259,7 +259,7 @@ defmodule Mix.Tasks.Mutare do
 
       mix mutare --report json:mutare.json
                                           # write a machine report to a file; the
-                                          #   human report still prints to the console
+                                          #   human report is still printed to the console
       mix mutare --report sarif           # emit SARIF to stdout (this suppresses the
                                           #   human report, so the two don't collide)
       mix mutare --report json:mutare.json --report sarif:mutare.sarif
@@ -272,7 +272,7 @@ defmodule Mix.Tasks.Mutare do
 
   ## Configuration file (`.mutare.exs`)
 
-  Configuration may also live in `.mutare.exs` (a keyword list); a CLI flag overrides the matching key. Every option is optional — the block below lists all the file-settable keys with their defaults:
+  Configuration may also be placed in `.mutare.exs` (a keyword list); a CLI flag overrides the matching key. Every option is optional — the block below lists all the file-settable keys with their defaults:
 
       # .mutare.exs
       [
@@ -376,7 +376,7 @@ defmodule Mix.Tasks.Mutare do
         strict_ignores: false,
         # suppress the live stderr progress (for CI / piped use)
         quiet: false,
-        # narrate each step in detail: a line per mutant + per-phase numbers
+        # print each step in detail: a line per mutant + per-phase numbers
         # (compile/baseline timing, coverage breakdown, cap, workers). `quiet` wins
         verbose: false,
         # emit several reports at once (default is [:human]; the file path is optional and if omitted the report is printed to stdout.)

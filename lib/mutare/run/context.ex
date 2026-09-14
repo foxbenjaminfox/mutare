@@ -13,7 +13,7 @@ defmodule Mutare.Run.Context do
   summary}` and `{:inference_override_declined, info}` (what `Mutare.Sandbox` reports
   back from materialising, relayed by the runner during `:compiling`: what the app-build
   `_build` seed did and each `mix.exs` whose inference override did not land) — carrying
-  the behind-the-scenes detail `--verbose` renders. A custom hook should ignore events it doesn't know (the in-tree consumer,
+  the behind-the-scenes detail `--verbose` renders. A custom hook should ignore unrecognised events (the in-tree consumer,
   `Mutare.Report.Live`, has a catch-all).
 
   Splitting these off `Mutare.Options` keeps that struct pure configuration. The

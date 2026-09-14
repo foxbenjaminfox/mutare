@@ -8,7 +8,7 @@ defmodule Mutare.Runner.AppGraph do
   Mix: one `mix eval` in the sandbox (no compile, no deps check) merges
   `Mix.Project.deps_tree/0` from the umbrella root with sibling applications named
   by each child's `application/0`. Every child's `deps/0` and `application/0` are
-  evaluated under `MIX_ENV=test` exactly as the test runs see them. Consequently,
+  evaluated under `MIX_ENV=test` with the same settings as the test runs. Consequently,
   a `runtime: false` sibling and one named only through `:extra_applications` or
   explicit `:applications` all count as dependencies, while an `only:` that
   excludes the test env does not. Why the graph is read this way rather than only

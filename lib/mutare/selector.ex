@@ -17,7 +17,7 @@ defmodule Mutare.Selector do
   `MUTARE_MUTANT_NAMESPACE` (the file); the runner translates report ids before
   setting these. An absent namespace retains standalone integer selection.
 
-  This module owns both sides of that contract: `Mutare.Metamutant` uses its key
+  This module defines both sides of that contract: `Mutare.Metamutant` uses its key
   and baseline when building selectors, while `Mutare.Sandbox` renders
   `bootstrap_ast/0` into the target project's dependency-free project prefix, with
   an idempotent fallback in the test bootstrap.

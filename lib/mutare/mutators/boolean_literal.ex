@@ -6,8 +6,8 @@ defmodule Mutare.Mutators.BooleanLiteral do
   reproduce the original value is impossible, so every eligible boolean yields exactly one mutant.
 
   This is the boolean flip that used to be the second arm of the old `literal` family (whose integer
-  arm is now `Mutare.Mutators.IntegerLiteral`). It owns `true`/`false` the way
-  `Mutare.Mutators.AtomLiteral` defers them here rather than treating them as ordinary atoms. Distinct
+  arm is now `Mutare.Mutators.IntegerLiteral`). `true` and `false` are handled here and excluded from
+  `Mutare.Mutators.AtomLiteral`. Distinct
   from `Mutare.Mutators.Conditional`, which forces boolean-valued *operator* expressions (`a > b`,
   `a and b`) to a constant — it never fires on a bare literal.
 

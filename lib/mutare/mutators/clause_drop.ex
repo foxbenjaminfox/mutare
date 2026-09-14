@@ -5,7 +5,7 @@ defmodule Mutare.Mutators.ClauseDrop do
       def f(0), do: :zero      →      def f(n), do: n + 1
       def f(n), do: n + 1
 
-  Each body-bearing clause of a `def`/`defp` group is offered in turn. It asks directly whether any test pins the clause's own behaviour, rather than the behaviour of whatever it shadows.
+  Each body-bearing clause of a `def`/`defp` group is offered in turn. This tests whether the suite depends on that clause's behaviour rather than the behaviour of a later matching clause.
 
   Two conditions narrow it:
 

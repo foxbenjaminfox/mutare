@@ -2,24 +2,24 @@ defmodule Mutare.Poison do
   @moduledoc """
   Identify compile-poisoning mutants from a failed metamutant compile.
 
-  Every mutated branch lives in the one build, so a single mutation that won't
-  compile would sink the whole run. Built-in mutators are compile-safe by
+  Every mutated branch is included in one build, so a single mutation that won't
+  compile would prevent the whole run. Built-in mutators are compile-safe by
   construction, but a custom mutator can emit something that doesn't (an unbound
-  variable, an undefined local call, …). Rather than abort, the runner asks this
-  module which mutant ids the compile error points at, drops them, and rebuilds.
+  variable, an undefined local call, …). The runner uses this module to identify
+  the mutant ids at the error location, then drops them and rebuilds.
 
   We map each error's `file:line` to the mutant id(s) whose *generated code*
   spans that line, via a `Mutare.Manifest` built on demand from the file's
   rendered metamutant and the dispatch variable its generated code reads
   (`Mutare.Schema`'s `:metamutants` and `:dispatch_vars`; see
   `Manifest.ids_at_line/2`). Only *error* diagnostics are
-  scanned, never warnings: a failed compile prints every warning the mutations
-  provoke (each footered with the same `file:line` shape), and mistaking those for
+  scanned, never warnings: compiler output also includes warnings caused by mutations
+  (each with a footer in the same `file:line` format), and mistaking those for
   the error's location dropped valid mutants as false poison (see `error_locations/1`).
   The manifest records the
   full line range of every mutant's generated code — its selector clause body,
   and for a lifted mutant the gated clause (`when mutare_active === <id>`) where its
-  guard/head-pattern code actually lives — so a poison is found whether the error
+  guard/head-pattern code appears — so a poison is found whether the error
   points at the clause, a later line of a multiline body, a lifted mutant clause, or
   (as a coarse fallback) the surrounding `case`. Matching only the selector clause's
   *start line*, as we used to, missed all but the first of those.
@@ -33,10 +33,10 @@ defmodule Mutare.Poison do
   poison path removes that cost from every healthy run.
 
   When line attribution maps nothing — the signature of an *inline* DSL macro that rejects
-  the spliced selector, where the compiler blames the macro-*call* line no manifest region
+  the spliced selector, where the compiler reports an error on the macro-*call* line no manifest region
   covers — the runner falls back to `macro_poison/4`, which attributes by the macro *name*
-  the compiler blamed (via `Mutare.Manifest.ids_in_named_calls/2`) instead of by line. Only
-  when *both* fail does the run abort. The runner asks for both at once (`attribution/4`),
+  in the compiler output (via `Mutare.Manifest.ids_in_named_calls/2`) instead of by line. Only
+  when *both* fail does the run abort. The runner obtains both results through `attribution/4`,
   which builds each file's manifest once for the round; `ids/4` and `macro_poison/4` are
   the two halves on their own.
 
@@ -45,7 +45,7 @@ defmodule Mutare.Poison do
   to report ids before merging files. Without an index these APIs return the integers read
   from the metamutant, as used by standalone transforms. The macro fallback retains the
   call-site file through that conversion; two files' local id 1 must never collapse together.
-  An id the index doesn't know names no mutant in this run — a file the selection left with
+  An id absent from the index corresponds to no mutant in this run — a file the selection left with
   nothing to emit renders pristine, and pristine source can imitate a selector — so it is
   dropped, degrading to "mapped nothing" rather than crashing a run mid-recovery.
   """
@@ -64,7 +64,7 @@ defmodule Mutare.Poison do
   @type dispatch_vars :: %{optional(String.t()) => atom()}
 
   @typedoc """
-  The macro-expansion fallback's matches: `{{module_string, fun_atom}, ids}` per blamed macro
+  The macro-expansion fallback's matches: `{{module_string, fun_atom}, ids}` per implicated macro
   that matched at least one mutant, in first-seen order.
   """
   @type macro_matches :: [{{String.t(), atom()}, MapSet.t()}]
@@ -78,9 +78,9 @@ defmodule Mutare.Poison do
   Both attributions of one failed compile — `%{line: ids, macro: matches}`, the results of
   `ids/4` and `macro_poison/4` — from one manifest per file.
 
-  The runner's poison-recovery loop needs both every round (macro attribution takes priority,
-  line attribution backs it up), and the file a blamed macro's call site names is normally
-  one the error located too. Sharing the memo means each such metamutant is parsed and
+  The runner's poison-recovery loop uses both every round (macro attribution takes priority,
+  with line attribution as a fallback). The macro's call-site file is normally also listed
+  in the error's source locations. With a shared cache, each such metamutant is parsed and
   ranged once per round, not once per attribution.
   """
   @spec attribution(String.t(), metamutants(), dispatch_vars(), map() | nil) ::
@@ -96,14 +96,14 @@ defmodule Mutare.Poison do
   end
 
   @doc """
-  The **macro-expansion fallback** attribution: mutant ids that live inside a call to a
-  macro the compiler blamed, grouped by that macro.
+  The **macro-expansion fallback** attribution: mutant ids inside calls to macros
+  listed in the compiler's expansion stack, grouped by macro.
 
   When a mutation splices a runtime selector `case` into an argument that a macro rewrites
   at compile time (an `Ecto.Query.from/2`-style inline DSL, a macro needing a literal), the
-  macro raises *while expanding* and the compiler blames the **macro-call line** — one line
-  above the selector `case` the `Mutare.Manifest` knows about — so `ids/4` finds nothing and
-  the run would abort. But the failure output names the culprit in an `expanding macro:
+  macro raises *while expanding* and the compiler reports the **macro-call line** — one line
+  above the selector `case` recorded in `Mutare.Manifest` — so `ids/4` finds nothing and
+  the run would abort. The failure output identifies the macro in an `expanding macro:
   Mod.fun/arity` frame, followed by the location that invoked it (`Hint.culprits/1`). This
   maps that name back to mutant ids through the **metamutant** of that call-site file
   (`Manifest.ids_in_named_calls/2`): find every call of the name in the rendered source and
@@ -122,8 +122,8 @@ defmodule Mutare.Poison do
   **metamutant** space — spans of the rendered source the compiler actually read — which
   `:sites`, recorded in *original*-source coordinates, cannot answer.
 
-  Returns one `{{module_string, fun_atom}, ids}` entry per blamed macro that matched at least
-  one mutant, so the caller can drop the union and name each macro for the narration and the
+  Returns one `{{module_string, fun_atom}, ids}` entry per implicated macro that matched at least
+  one mutant, so the caller can drop the union and name each macro in the diagnostic and the
   `{Module, :fun, :raw}` suggestion.
   """
   @spec macro_poison(String.t(), metamutants(), dispatch_vars(), map() | nil) :: macro_matches()
