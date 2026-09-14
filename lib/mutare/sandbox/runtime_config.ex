@@ -1,15 +1,15 @@
 defmodule Mutare.Sandbox.RuntimeConfig do
   @moduledoc """
-  Preserve evidence of exceptions raised during runtime configuration.
+  Preserve evidence of errors, exits, and throws during runtime configuration.
 
   Mix evaluates `runtime.exs` beside the effective `config_path`. That path can
   be computed by project code, so sandbox materialisation wraps regular files
   named `runtime.exs` throughout the project, without evaluating `mix.exs` or
   following symlinks. Dependencies and excluded build/VCS trees are left alone.
 
-  The wrapper prints a marker only when an exception escapes evaluation, then
-  re-raises it with its original stacktrace. This covers imported configuration
-  and deep library calls even when the stacktrace has lost every Config frame.
+  The wrapper prints a marker only when a failure escapes evaluation, then
+  re-raises it with its original class, reason, and stacktrace. This covers imported
+  configuration and deep library calls even when the stacktrace has lost every Config frame.
   Successful configuration prints nothing; an unreadable entry file never enters
   the wrapper. `Mutare.Sandbox.Command.Output` reads the marker alongside the
   exception header.
@@ -38,10 +38,10 @@ defmodule Mutare.Sandbox.RuntimeConfig do
     """
     try do
     #{source}
-    rescue
-      mutare_config_error ->
+    catch
+      mutare_config_kind, mutare_config_reason ->
         Elixir.IO.puts(:stderr, #{inspect("\n" <> @failure_marker)})
-        :erlang.raise(:error, mutare_config_error, __STACKTRACE__)
+        :erlang.raise(mutare_config_kind, mutare_config_reason, __STACKTRACE__)
     end
     """
   end

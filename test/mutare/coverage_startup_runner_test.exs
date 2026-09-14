@@ -307,6 +307,63 @@ defmodule Mutare.CoverageStartupRunnerTest do
     end
   end
 
+  for {kind, failure, reason} <- [
+        {:exit, "GenServer.call(:missing_config_server, :read)",
+         "GenServer.call(:missing_config_server, :read, 5000)"},
+        {:throw, "throw(:configuration_rejected)", ":configuration_rejected"}
+      ] do
+    test "a deep #{kind} during runtime configuration counts as a kill" do
+      %{project: root, sandbox: sandbox} =
+        Project.build(:runtime_config_nonerror, %{
+          "config/config.exs" => "import Config\n",
+          "config/runtime.exs" => "import Config\nSettingsCalls.call_1()\n",
+          "lib/settings.ex" => """
+          defmodule Settings do
+            def setting, do: 2 - 1
+          end
+          """,
+          "lib/settings_calls.ex" => """
+          defmodule SettingsCalls do
+            #{Enum.map_join(1..20, "\n", fn n -> "def call_#{n}(), do: call_#{n + 1}() + 1" end)}
+            def call_21() do
+              if Settings.setting() > 2, do: #{unquote(failure)}, else: 1
+            end
+          end
+          """,
+          "test/settings_test.exs" => """
+          defmodule SettingsTest do
+            use ExUnit.Case
+            test "setting", do: assert Settings.setting() == 1
+          end
+          """
+        })
+
+      assert {:ok, run} =
+               Mutare.run(root,
+                 sandbox: sandbox,
+                 paths: ["lib/settings.ex"],
+                 mutators: [:arithmetic],
+                 max_harness_error_rate: 0
+               )
+
+      assert [%{status: :killed, output: output}] = run.results
+      assert output =~ "** (#{unquote(kind)})"
+      assert output =~ unquote(reason)
+      assert output =~ "SettingsCalls.call_20/0"
+      assert output =~ Mutare.Sandbox.RuntimeConfig.failure_marker()
+
+      # The marker must retain the phase even when the deep call stack loses
+      # Config's evaluator and the script frame appended by some Elixir versions.
+      without_frames =
+        output
+        |> String.split("\n")
+        |> Enum.reject(&String.contains?(&1, ["runtime.exs", "Config.__eval__!/3"]))
+        |> Enum.join("\n")
+
+      assert Mutare.Sandbox.Command.outcome(1, without_frames) == :app_start_failure
+    end
+  end
+
   test "fixture capture and teardown leave the outer probe's state and dump intact" do
     fixture = Recorder.runtime(:fixture)
     template = File.read!(Path.expand("../../lib/mutare/coverage/helper_template.ex", __DIR__))

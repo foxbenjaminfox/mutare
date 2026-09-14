@@ -386,11 +386,11 @@ defmodule Mutare.Sandbox.Command.Output do
   end
 
   @doc """
-  Returns whether `output` reports an exception while evaluating configuration.
+  Returns whether `output` reports an error, exit, or throw while evaluating configuration.
 
   Selection precedes configuration, so a mutation called from `runtime.exs` can
   raise before `Application.start/2`. The sandbox's runtime-config wrapper marks
-  escaping exceptions explicitly, surviving arbitrarily deep library calls.
+  escaping errors, exits, and throws explicitly, surviving arbitrarily deep library calls.
   Config's evaluator frame or a `runtime.exs` script frame also identifies that
   boundary when present. Arbitrary exceptions and
   missing config files remain infrastructure failures. The baseline configured

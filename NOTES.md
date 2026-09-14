@@ -9920,8 +9920,11 @@ and the harness-error-rate abort. `Output.config_failure?/1` routes configuratio
 exceptions through the same `:app_start_failure` outcome, retries, and kill reporting.
 The initial decoder used `Config.__eval__!/3` and `runtime.exs` stack frames, but
 neither is reliable evidence across deep library calls: a bounded stacktrace can
-lose both. `Sandbox.RuntimeConfig` now wraps runtime configuration in a rescue
-that prints explicit phase evidence before re-raising with the original stacktrace.
+lose both. `Sandbox.RuntimeConfig` now wraps runtime configuration in a catch
+that prints explicit phase evidence before re-raising with the original class,
+reason, and stacktrace. A rescue alone missed exits (such as a failing
+`GenServer.call/3`) and throws; deep-call subprocess regressions cover both,
+including decoding after configuration frames are removed from the output.
 The decoder requires the marker and an exception header; it still accepts either
 configuration stack frame when present. An arbitrary `RuntimeError` or an entry
 file that cannot be read before evaluation stays infrastructure.
