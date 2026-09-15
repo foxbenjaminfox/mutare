@@ -208,7 +208,7 @@ When every machine format is written to a file, Mutare still prints the human re
 
 There are two common reasons to exclude a call from mutation. Some are **not worth testing** — an analytics emitter, a logger, a metrics call — and every mutant inside them is noise. Some macros take **arguments that are not ordinary runtime code** — a query DSL body, a pattern, a schema definition — and mutating inside those is noise too, and sometimes breaks the single metamutant compile.
 
-Both are `call_routes:` entries. An entry names a call by module, function, and arity (macros and functions alike; Mutare matches it however it is written — directly, aliased, imported, or piped) and specifies how to treat it:
+Both are `call_routes:` entries. An entry names a call by module, function, and arity (macros and functions alike; Mutare matches remote calls, including aliases, and imports it can resolve, with or without a pipe) and specifies how to treat it:
 
 ```elixir
 call_routes: [
@@ -257,6 +257,10 @@ call_routes: [
   {MyApp.Sql, :select, 2, [:expression, :raw]}
 ]
 ```
+
+**Local-call limitation:** module-specific routes do not match unqualified calls to functions defined in the calling module. For example, `{SomeModule, :foobar, 0, :skip}` does not skip `foobar()` inside `SomeModule`. It does skip `SomeModule.foobar()`, including inside `SomeModule`, and `foobar()` in another module that imports `SomeModule` when Mutare can resolve the import. Mutare does not resolve a local call to its defining module.
+
+The module wildcard bypasses that limitation: `{:*, :foobar, 0, :skip}` matches by name and arity, so it also skips local `foobar()` calls inside modules that define `foobar/0`. It applies across modules, subject to the precedence of more specific routes described above.
 
 That is the whole vocabulary `.mutare.exs` accepts. Richer DSL support belongs in a library adapter: use an extension for shape-aware routing, and host mutators for mutations inside DSL fragments. The [Extending Mutare](https://hexdocs.pm/mutare/extending.html) guide covers that path.
 

@@ -80,7 +80,23 @@ defmodule Mutare.CallRouting do
 
   Identical declarations from multiple code providers coalesce. Conflicting code-provided routes raise `Mutare.CallRouting.ContractError` instead of depending on configuration order. A declarative `call_routes:` entry is an explicit final override for its key, restricted to the user-tier vocabulary above; a configured `:skip` that displaces an adapter's hosted route is honoured (the user turned the call off), not reported as the adapter's contract violation. The `--skip-call Module.fun/arity` flag is the CLI spelling of a `:skip` entry.
 
-  Mutare matches a route however the call is written — qualified, aliased, imported, or piped — through the same resolution the call-matching mutator families use. A configured route (or mark) that matched no call anywhere in a full scan is reported as a warning, so a typo'd module or a wrong arity never sits silently inert.
+  Mutare matches module-specific routes against remote calls (including aliases) and imports it
+  can resolve, with or without a pipe, through the same resolution the call-matching mutator
+  families use.
+
+  **Local-call limitation.** Mutare does not resolve an unqualified call to a function defined in
+  the calling module to that module. Thus `{SomeModule, :foobar, 0, :skip}` does not skip
+  `foobar()` inside `SomeModule`. It does skip `SomeModule.foobar()`, whether called inside or
+  outside `SomeModule`, and `foobar()` in another module that imports `SomeModule` when Mutare
+  can resolve the import. This limitation applies to module-specific routes regardless of their
+  treatment.
+
+  A module wildcard bypasses that limitation: `{:*, :foobar, 0, :skip}` matches by name and arity,
+  including local `foobar()` calls inside modules that define `foobar/0`. It applies across
+  modules, subject to the precedence of more specific routes above.
+
+  A configured route (or mark) that matched no call anywhere in a full scan is reported as a
+  warning, so a typo'd module or a wrong arity never sits silently inert.
 
   ## The committed surface
 

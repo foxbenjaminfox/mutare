@@ -44,6 +44,70 @@ defmodule Mutare.TransformCallSkipTest do
     Mutare.Mutators.List
   ]
 
+  describe "local calls and module-specific versus name-only :skip routes" do
+    # Conditions give even a zero-argument call observable mutants. Only IfCondition runs,
+    # so neither the function definitions nor return-value mutations obscure the routing.
+    @local_call_source """
+    defmodule CallRouteLocal do
+      def foobar(), do: true
+      def foobar(value), do: value
+      def other(), do: true
+      def local(), do: if(foobar(), do: :yes, else: :no)
+      def remote(), do: if(CallRouteLocal.foobar(), do: :yes, else: :no)
+      def different_arity(), do: if(foobar(true), do: :yes, else: :no)
+      def different_name(), do: if(other(), do: :yes, else: :no)
+    end
+
+    defmodule CallRouteImported do
+      import CallRouteLocal, only: [foobar: 0]
+      def imported(), do: if(foobar(), do: :yes, else: :no)
+      def remote(), do: if(CallRouteLocal.foobar(), do: :yes, else: :no)
+    end
+
+    defmodule CallRouteOtherLocal do
+      def foobar(), do: true
+      def local(), do: if(foobar(), do: :yes, else: :no)
+      def remote(), do: if(CallRouteOtherLocal.foobar(), do: :yes, else: :no)
+    end
+    """
+
+    test "without routes every call produces condition mutants" do
+      %{metamutant: meta, sites: sites} =
+        transform(@local_call_source, [Mutare.Mutators.IfCondition], [])
+
+      assert Enum.frequencies_by(sites, & &1.line) ==
+               Map.new([5, 6, 7, 8, 13, 14, 19, 20], &{&1, 2})
+
+      assert_compiles(meta)
+    end
+
+    test "a module-specific :skip misses local calls but skips remote calls inside and outside the module and resolved imports" do
+      %{metamutant: meta, sites: sites} =
+        transform(@local_call_source, [Mutare.Mutators.IfCondition], [
+          {CallRouteLocal, :foobar, 0, :skip}
+        ])
+
+      # Only the two CallRouteLocal.foobar() calls and the imported foobar() are skipped.
+      # Local calls and calls to another module's foobar/0 still mutate.
+      assert Enum.frequencies_by(sites, & &1.line) ==
+               Map.new([5, 7, 8, 19, 20], &{&1, 2})
+
+      assert_compiles(meta)
+    end
+
+    test "a name-only :skip covers local definitions across modules while respecting name and arity" do
+      %{metamutant: meta, sites: sites} =
+        transform(@local_call_source, [Mutare.Mutators.IfCondition], [
+          {:*, :foobar, 0, :skip}
+        ])
+
+      # Every foobar/0 call is skipped, including both defining modules' local calls.
+      # foobar/1 and other/0 remain mutable.
+      assert Enum.frequencies_by(sites, & &1.line) == %{7 => 2, 8 => 2}
+      assert_compiles(meta)
+    end
+  end
+
   describe "the call-level :skip — an inert leaf" do
     @track_source """
     defmodule Demo do
