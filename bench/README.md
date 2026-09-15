@@ -1,5 +1,26 @@
 # Metamutant compilation
 
+## Coverage cache
+
+`coverage_cache.exs` compares the current dependency-free helper with a saved reference
+source, using identical compiler options in one VM:
+
+```sh
+git show 937cb7f1:lib/mutare/coverage/helper_template.ex > /tmp/mutare-reference-helper.ex
+elixir --erl '+S 2:2' bench/coverage_cache.exs /tmp/mutare-reference-helper.ex labeled
+elixir --erl '+S 2:2' bench/coverage_cache.exs /tmp/mutare-reference-helper.ex unlabeled
+```
+
+It generates callers with literal ID payloads, warms their caches, and measures seven
+alternating samples in fresh workers. The matrix varies IDs per hit and co-recording
+groups in one namespace; output reports median time, reductions per hit, and minor GCs
+from that sample. `unlabeled` includes memoized attribution recovery. These measurements
+cover repeated probe hits; they exclude cold-cache writes, full-suite startup and ordinary
+mutant runs, which do not call the helper. Exact-list comparisons may cost more for callers
+that allocate new ID lists dynamically than for these generated literal payloads.
+
+## Compile fixtures
+
 `compile_shapes.exs` generates dependency-free Mix projects. Generate each
 revision's fixtures first, then time compilation in fresh processes with the same
 Elixir/OTP, scheduler count, and compiler options:
@@ -141,6 +162,79 @@ project. Restore `:compiled` for the comparison. This changes module-definition
 execution during compilation, not the resulting application's execution model.
 It is intentionally not enabled by Mutare.
 
+## Runtime and alias-analysis comparisons
+
+`alias_analysis.exs` freezes generated source, then compiles the identical bytes
+with SSA alias analysis enabled and disabled, leaving signature inference and
+verification disabled in both builds. It also compiles an original-source control.
+It needs no additional dependencies. Run with a quiet machine and a fixed scheduler
+count; the final argument defaults to five alternating rounds:
+
+```sh
+ERL_FLAGS='+S 2:2' mix run bench/alias_analysis.exs /tmp/mutare-alias 5
+```
+
+The optional `clean` experiment compares original source, the metamutant with
+clean function copies disabled, and the metamutant with them enabled, holding
+alias analysis **disabled** throughout:
+
+```sh
+ERL_FLAGS='+S 2:2' mix run bench/alias_analysis.exs /tmp/mutare-clean 5 clean
+```
+
+Both experiments exercise tuple updates, binary appending, many body selectors,
+recursive clause dispatch, case dispatch, and pipelines with callbacks. The alias
+experiment uses arithmetic/relational mutations; the clean experiment also uses
+integer mutations so literal function heads require lifting. Clean emission must
+retain exactly the same site metadata as ordinary emission; the script checks this.
+Conservative eligibility may leave individual kernels unchanged, which makes them
+useful controls.
+
+Each build runs in a fresh VM, measuring baseline, probe, an active mutant elsewhere
+in the same file, an active mutant in another file, and a safe body mutant inside
+the measured recursive function. Before timing, the worker compares results with
+separately compiled original and single-mutant source. Selected mutations preserve
+termination. Each measured sample has a fresh process, a stable test attribution
+label, and a warm code path. The probe uses the real generated coverage helper.
+
+The output directory contains `compile.tsv` (whole Mix compile wall time, BEAM
+bytes, and Code chunk bytes), `runtime.tsv` (kernel execution time, reductions,
+minor-GC count, and VM-wide reclaimed words), `environment.exs` (runtime versions,
+revision, source hashes, and inherited options), original/generated sources,
+compiler logs, and disassembly. Reclaimed words measure garbage collection, not
+total allocation, and can include incidental VM activity. Runtime excludes VM
+startup; compile timing includes it. Microsecond-scale kernels and small timing
+differences need more repetitions or larger inputs. This is a kernel benchmark,
+not an end-to-end suite benchmark.
+
+The experiment preserves inherited Erlang compiler options and refuses inherited
+`no_ssa_opt`/`no_ssa_opt_alias`, since they would invalidate the on/off comparison.
+Run on each relevant OTP version: OTP 26 can expose `private_append`, while
+destructive tuple updates require OTP 27 or later. Source appearance alone cannot
+establish whether either optimization survived compilation; inspect the saved BEAM.
+
 **Measurements live in [NOTES.md](../NOTES.md), not here.** Record dated results and
 the decisions they inform there; keep raw output local rather than checking in a
 second table that becomes stale when generation changes.
+
+## Inspecting dispatch instructions
+
+`dispatch_shapes.exs` compares current ID-equality guards with literal-ID patterns
+in lifted function heads and tupled case clauses, preserving clause order. It also
+compiles three instrumented pipeline stages for inspection of their immediately
+invoked closures:
+
+```sh
+mix run bench/dispatch_shapes.exs /tmp/mutare-dispatch
+```
+
+Each fixture writes its original source, both generated sources, both BEAM files,
+disassemblies, and a summary of instruction counts and BEAM sizes. The root records
+the compiler environment, including inherited `ERL_COMPILER_OPTIONS`. Signature
+inference is disabled where supported; clean function copies are disabled to isolate
+the dispatch comparison. Equality of instruction lists ignores line markers.
+
+This is a compiler-output experiment, not a runtime benchmark or semantic validation
+of a new emitter. Check whether `make_fun`, `call_fun`, or `put_tuple` instructions
+actually remain before optimizing presumed closure or tuple allocations. A smaller
+BEAM or a different comparison instruction alone does not establish faster execution.

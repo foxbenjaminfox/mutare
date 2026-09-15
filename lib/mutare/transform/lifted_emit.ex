@@ -5,20 +5,32 @@ defmodule Mutare.Transform.LiftedEmit do
   # clauses for a lifted function group, given the already-claimed candidate ids. Pure — no
   # `Ctx`, no id-claiming. `Mutare.Transform.emit_function_plan/2` owns the stateful half
   # (threading `Ctx`, claiming ids via `SelectorEmit.claim_items/4`, emitting in-place body
-  # selectors) and calls `assemble/6` with plain data: the plan, the emitted source clauses, the
+  # selectors) and calls `assemble/7` with plain data: the plan, the emitted source clauses, the
   # `{id, index, clause, witness}` claims, the group number, the config, and prepared
-  # coverage expressions.
+  # coverage expressions, and an optional complete function id interval for a clean path.
   #
   # The interleaving scheme: each source clause's mutant clauses (one per candidate overriding
   # it, gated `when <var> === <id>`) precede the source clause itself (gated `when <var> !==
   # <those ids>`), so exactly one wins per `(id, args)` — the per-clause `C+M` lifting (see
   # `Mutare.Transform.FunctionPlan` and NOTES "lifting blowup").
+  # An eligible clean path adds C raw original clauses, for 2C+M total; it never
+  # duplicates a whole group per mutant. Pure self-recursion can remain in that copy.
 
+  alias Mutare.AST
   alias Mutare.Coverage.Recorder
   alias Mutare.Metamutant
-  alias Mutare.Transform.{ClauseAST, Config, FunctionPlan, GuardBuild, ImportWitness, Super}
 
-  # The fixed facts of one lifted group, derived once in `assemble/6` and read by every clause
+  alias Mutare.Transform.{
+    CleanPath,
+    ClauseAST,
+    Config,
+    FunctionPlan,
+    GuardBuild,
+    ImportWitness,
+    Super
+  }
+
+  # The fixed facts of one lifted group, derived once in `assemble/7` and read by every clause
   # builder below: the public signature (`vis`/`name`/`arity` — the dispatcher keeps the real
   # name), the private `base` name the clauses are relocated under, the dispatch variable `var`
   # (`Config.active_var`) and the file's runtime `namespace` for the active-id read,
@@ -39,10 +51,21 @@ defmodule Mutare.Transform.LiftedEmit do
   witness}` claims; `group_number` the file-wide lifted-group counter (for a collision-free base
   name). `records` are the dispatcher's coverage expressions, prepared by the
   stateful emitter; assembly does not choose their gate or track scope usage.
+
+  A non-nil `active_range` adds one raw original clause group and routes mutations
+  outside that interval to it. The caller must include **all** function ids, including
+  body mutations, and establish `CleanPath.eligible?/1` before supplying the range.
+  Baseline keeps the instrumented path so coverage positions remain unchanged.
   """
-  @spec assemble(FunctionPlan.t(), [Macro.t()], [claim()], non_neg_integer(), Config.t(), [
-          Macro.t()
-        ]) ::
+  @spec assemble(
+          FunctionPlan.t(),
+          [Macro.t()],
+          [claim()],
+          non_neg_integer(),
+          Config.t(),
+          [Macro.t()],
+          {pos_integer(), pos_integer()} | nil
+        ) ::
           [Macro.t()]
   def assemble(
         %FunctionPlan{signature: {vis, name, arity}} = plan,
@@ -50,7 +73,8 @@ defmodule Mutare.Transform.LiftedEmit do
         claimed,
         group_number,
         %Config{} = config,
-        records
+        records,
+        active_range \\ nil
       ) do
     group = %Group{
       vis: vis,
@@ -71,10 +95,9 @@ defmodule Mutare.Transform.LiftedEmit do
     # dispatcher keeps mutating its defaults.
     defaults = clause_defaults(orig_clauses)
 
-    [
-      build_dispatcher(group, records, defaults)
-      | build_base_clauses(group, orig_clauses, claimed)
-    ]
+    [build_dispatcher(group, records, defaults, active_range)] ++
+      build_base_clauses(group, orig_clauses, claimed) ++
+      clean_clauses(group, plan, active_range)
   end
 
   @doc """
@@ -136,7 +159,7 @@ defmodule Mutare.Transform.LiftedEmit do
   # `<super_var> = &super/arity` bound here — `super` is legal inside the dispatcher (the
   # overriding function), even captured — and threaded to the base as its second argument, so the
   # relocated body can call `super` through it (`Mutare.Transform.Super`).
-  defp build_dispatcher(%Group{} = group, records, defaults) do
+  defp build_dispatcher(%Group{} = group, records, defaults, active_range) do
     call_args = dispatcher_args(group.arity)
     head_args = with_defaults(call_args, defaults)
     var_node = Recorder.catch_all_pattern(group.var)
@@ -145,10 +168,72 @@ defmodule Mutare.Transform.LiftedEmit do
     {super_args, super_stmts} = super_closure_binding(group.super_var, group.arity)
     call = {group.base, [], [var_node | super_args] ++ call_args}
 
-    body = {:__block__, [], [read] ++ super_stmts ++ records ++ [call]}
+    statements = super_stmts ++ records ++ [call]
+
+    body =
+      if active_range do
+        instrumented = {:__block__, [], statements}
+        dispatch = clean_dispatch(group, call_args, instrumented, active_range)
+        {:__block__, [], [read, dispatch]}
+      else
+        {:__block__, [], [read | statements]}
+      end
 
     {group.vis, [], [{group.name, [], head_args}, [do: body]]}
   end
+
+  # Baseline/probe and this group's complete id interval retain the existing path.
+  # Other ids (including another file's :inactive projection) call raw clauses.
+  # The range is deliberately conservative: exclusions need exact sets; choosing
+  # a slower implementation does not. Use only special forms and remote guard BIFs.
+  defp clean_dispatch(group, args, instrumented, {first, last}) do
+    active = Recorder.catch_all_pattern(group.var)
+
+    in_range =
+      AST.erlang_call(:andalso, [
+        AST.erlang_call(:is_integer, [active]),
+        AST.erlang_call(:andalso, [
+          AST.erlang_call(:>=, [active, AST.literal(first)]),
+          AST.erlang_call(:"=<", [active, AST.literal(last)])
+        ])
+      ])
+
+    guard = AST.erlang_call(:orelse, [GuardBuild.gate(0, group.var), in_range])
+
+    {:case, [],
+     [
+       active,
+       [
+         do: [
+           {:->, [], [[{:when, [], [{:_, [], nil}, guard]}], instrumented]},
+           {:->, [], [[{:_, [], nil}], {clean_name(group), [], args}]}
+         ]
+       ]
+     ]}
+  end
+
+  defp clean_clauses(_group, _plan, nil), do: []
+
+  defp clean_clauses(group, plan, _range) do
+    direct_recursion? = CleanPath.pure_self_recursive?(plan)
+
+    for clause <- plan.clauses, not ClauseAST.bodiless_header?(clause) do
+      {meta, call_meta, args, guards, body} = clause_parts(clause)
+
+      body =
+        if direct_recursion?,
+          do:
+            CleanPath.redirect_self_calls(body, {group.name, group.arity}, clean_name(group), []),
+          else: body
+
+      call = {clean_name(group), call_meta, args}
+      guard = GuardBuild.combine(guards)
+      head = if guard, do: {:when, [], [call, guard]}, else: call
+      {:defp, meta, [head | body]}
+    end
+  end
+
+  defp clean_name(group), do: :"#{group.base}_original"
 
   # The default-argument expressions of a lifted group, keyed by 0-based head position. They live
   # on exactly one source clause — a bodiless header in a multi-clause group, or the lone clause

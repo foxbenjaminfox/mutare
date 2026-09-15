@@ -48,6 +48,11 @@ defmodule Mutare.Transform do
        `FunctionPlan` becomes one private function (threading the active id as an
        extra arg) behind a dispatcher, each mutant a single guarded clause. Ignored,
        unselected, and poisoned mutants retain their sites but emit no code.
+       Eligible lifted groups with at least eight executable variants also receive
+       an original clause copy: a mutation elsewhere enters that uninstrumented
+       implementation. Baseline/probe and the group's full body/head id interval
+       retain the instrumented path. `CleanPath` defines the conservative relocation
+       boundary; ordinary callees still enter through their own dispatchers.
     5. **Render** — annotations are stripped and the tree is rendered to source
        (with a Sourceror keyword-block workaround).
 
@@ -475,6 +480,7 @@ defmodule Mutare.Transform do
       mutators: opts |> Keyword.get(:mutators, @default_mutators) |> Mutare.Mutators.resolve(),
       skip_ids: Keyword.get(opts, :skip_ids, MapSet.new()),
       emit_ids: Keyword.get(opts, :emit_ids),
+      clean_functions: Keyword.get(opts, :clean_functions, true),
       ignore_directives: directives,
       skip_lifting:
         opts |> Keyword.get(:skip_lifting, MapSet.new()) |> Lifting.validate_skip_lifting!(),
@@ -941,6 +947,8 @@ defmodule Mutare.Transform do
   # (`emit_clauses/3` over the source clauses), then the lifted candidates in
   # `candidates/1` order — so the scheme is invisible to ids, Sites, and coverage.
   defp emit_function_plan(%FunctionPlan{} = plan, ctx) do
+    first_id = ctx.claim.next_id
+    emitted_before = ctx.claim.emitted
     group = ctx.claim.group + 1
     ctx = Ctx.update_claim(ctx, &%{&1 | group: group})
 
@@ -982,7 +990,18 @@ defmodule Mutare.Transform do
             {[record], ctx}
         end
 
-      {LiftedEmit.assemble(plan, orig_clauses, claimed, group, ctx.config, records), ctx}
+      # Include body/default ids as well as lifted ids. Holes from static selection or
+      # poison may take the slower path, but must never hide an executable mutation.
+      active_range =
+        if ctx.config.clean_functions and ctx.claim.sink == :render and
+             ctx.claim.emitted - emitted_before >= 8 and
+             Mutare.Transform.CleanPath.eligible?(plan) do
+          offset = if ctx.config.runtime_namespace, do: ctx.config.id_origin - 1, else: 0
+          {first_id - offset, ctx.claim.next_id - 1 - offset}
+        end
+
+      {LiftedEmit.assemble(plan, orig_clauses, claimed, group, ctx.config, records, active_range),
+       ctx}
     end
   end
 

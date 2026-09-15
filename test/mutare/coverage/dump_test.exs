@@ -66,6 +66,23 @@ defmodule Mutare.Coverage.DumpTest do
     assert coverage.by_test == Map.new(ids, &{&1, MapSet.new([Atom.to_string(test)])})
   end
 
+  test "recreated tables invalidate cached groups before the next dump", %{path: path} do
+    hit = fn -> H.hit("lib/recreated.ex", [1, 2, 3]) end
+    assert hit.()
+    assert hit.()
+
+    for table <- @tables do
+      :ets.delete(table)
+      :ets.new(table, [:named_table, :public, :set])
+    end
+
+    assert hit.()
+    assert :ok = H.dump(:ignored_suite_result)
+    assert {:ok, coverage} = Coverage.read_dump(path)
+    assert coverage.aggregate == MapSet.new(for id <- 1..3, do: {"lib/recreated.ex", id})
+    assert map_size(coverage.by_test) == 3
+  end
+
   for table <- @tables do
     @tag missing_table: table
     test "missing #{table} invalidates coverage and replaces any earlier dump", %{

@@ -120,13 +120,22 @@ defmodule Mutare.Coverage.HelperTemplate do
   #
   # The cache is consulted on every instrumented execution, and in a hot loop nearly every call finds
   # all its ids cached — so that path must stay cheap. Each namespace has its own process-dictionary
-  # entry, `{@seen_key, namespace} => {tid, %{id => %{key => true}}}`, which costs one hashed lookup
+  # entry, `{@seen_key, namespace} => {tid, seen}`, which costs one hashed lookup
   # per call however many files the process has run and whatever their paths' lengths. (One map
   # keyed by namespace stays flat up to 32 keys, and a flat map compares its binary keys one at a
-  # time — NOTES "Stable per-file runtime identities".) An entry is written back only when one of
-  # its ids is new, and an id is qualified as `{namespace, id}` — the identity ETS and the dump
+  # time — NOTES "Stable per-file runtime identities".) An id is stored as `id => %{key => true}`
+  # and qualified as `{namespace, id}` — the identity ETS and the dump
   # carry, which keeps local id 1 in two files as two hits even within one process — only once it
   # is to be recorded.
+  #
+  # Each group also caches its exact co-recording list under `-first`; emitted ids are positive,
+  # so negative keys cannot collide with per-id entries and need no tuple allocation per hit.
+  # A repeated group can skip the per-id map walk. The head only indexes the cache: the complete
+  # list and last raw attribution label must match, so overlapping groups with the same head cannot
+  # hide a new id and cache hits need not classify the label again. Equality of a
+  # generated literal with the same literal is cheap; separately allocated equal lists may still
+  # need a linear comparison. The per-id cache remains the cold path for overlapping groups and
+  # changed labels; each group retains only its last label, not every application label it sees.
   defp unrecorded_ids(tid, namespace, ids, label) do
     cache_key = {@seen_key, namespace}
 
@@ -136,22 +145,47 @@ defmodule Mutare.Coverage.HelperTemplate do
         _ -> %{}
       end
 
-    key = attribution_key(label)
+    if cached_group?(ids, file_seen, label) do
+      []
+    else
+      key = attribution_key(label)
 
-    case uncached(ids, file_seen, key) do
-      [] ->
-        []
+      case uncached(ids, file_seen, key) do
+        [] ->
+          updated = cache_group(file_seen, ids, label)
+          if updated != file_seen, do: Process.put(cache_key, {tid, updated})
+          []
 
-      new ->
-        file_seen =
-          Enum.reduce(new, file_seen, fn id, file_seen ->
-            Map.update(file_seen, id, %{key => true}, &Map.put(&1, key, true))
-          end)
+        new ->
+          updated =
+            Enum.reduce(new, file_seen, fn id, file_seen ->
+              Map.update(file_seen, id, %{key => true}, &Map.put(&1, key, true))
+            end)
+            |> cache_group(ids, label)
 
-        Process.put(cache_key, {tid, file_seen})
-        Enum.map(new, &qualify(namespace, &1))
+          Process.put(cache_key, {tid, updated})
+          Enum.map(new, &qualify(namespace, &1))
+      end
     end
   end
+
+  defp cached_group?([first | _] = ids, file_seen, label) do
+    group_key = -first
+
+    case file_seen do
+      %{^group_key => {^ids, nil}} -> true
+      %{^group_key => {^ids, ^label}} -> true
+      _ -> false
+    end
+  end
+
+  defp cached_group?(_ids, _file_seen, _label), do: false
+
+  defp cache_group(file_seen, [first | _] = ids, label) do
+    Map.put(file_seen, -first, {ids, label})
+  end
+
+  defp cache_group(file_seen, _ids, _label), do: file_seen
 
   # The ids not yet recorded under `key`; an unlabeled record dominates every key. Matching the map
   # in place, rather than folding an accumulator, allocates nothing when every id is cached.

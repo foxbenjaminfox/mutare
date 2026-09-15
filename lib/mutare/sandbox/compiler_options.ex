@@ -5,8 +5,10 @@ defmodule Mutare.Sandbox.CompilerOptions do
   Mutare compiles the metamutant exactly once before any mutant runs. Inference
   and verification feed diagnostics, so disabling them changes no runtime
   behavior. The SSA alias optimization does affect generated code; measurements
-  found its compile cost bought no meaningful runtime benefit for the mutant
-  workload. Three switches, one home (this module), three delivery routes:
+  found its compile cost bought no meaningful runtime benefit for the measured
+  AST-rewriting suite, but binary-building loops do benefit. The default keeps the
+  measured compilation saving; see NOTES "Rechecking SSA alias analysis" for the
+  workload-dependent tradeoff. Three switches, one home (this module), three delivery routes:
 
     * `compiler_env/0` — the `ERL_COMPILER_OPTIONS` entry `Mutare.Runner`
       applies to the single `mix compile` (the SSA alias pass off).
@@ -54,8 +56,10 @@ defmodule Mutare.Sandbox.CompilerOptions do
   # term uniqueness to enable destructive in-place updates) on the one metamutant
   # compile. It is the dominant cost when compiling the metamutant's tuple-heavy
   # generated selectors (~45% of `beam_ssa_opt` on a tuple-heavy module), yet
-  # measurably free at runtime — the metamutant runs the suite, not a tight
-  # in-place-update loop, so the optimisation buys nothing there. (Contrast
+  # had no measurable runtime cost in the original AST-rewriting suite sample.
+  # This does change generated code: binary-building loops can lose private_append
+  # and become slower. Retain the default pending broader suite measurements; see
+  # NOTES "Rechecking SSA alias analysis" and bench/alias_analysis.exs. (Contrast
   # `no_ssa_opt`, all SSA optimisation off: a bigger compile win but ~5% slower per
   # mutant run, paid N times — net-negative, like disabling protocol consolidation.)
   # Safe on every OTP: an unknown compiler option is silently ignored, so this is a

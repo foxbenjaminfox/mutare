@@ -393,8 +393,8 @@ defmodule Mutare.Coverage.HelperTemplateTest do
 
       assert {^tid, seen} = Process.get({H.runtime(:fixture).seen_key, nil})
       assert {^tid, file_seen} = Process.get({H.runtime(:fixture).seen_key, "lib/seen.ex"})
-      assert Enum.sort(Map.keys(seen)) == [701, 702]
-      assert Map.keys(file_seen) == [701]
+      assert seen |> Map.keys() |> Enum.filter(&(&1 > 0)) |> Enum.sort() == [701, 702]
+      assert file_seen |> Map.keys() |> Enum.filter(&(&1 > 0)) == [701]
       assert :ets.lookup(H.agg_table(), {"lib/seen.ex", 701}) == [{{"lib/seen.ex", 701}}]
       # This runs in the test process, which carries a runnable test name (a `$process_label` on
       # 1.19+, a `:"test …"` stack frame on 1.18) — so the per-process seen-key is the *per-test*
@@ -404,6 +404,88 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       assert Enum.any?(Map.keys(seen[702]), &match?({:test, __MODULE__, _}, &1))
       assert :ets.lookup(H.agg_table(), 701) == [{701}]
       assert :ets.lookup(H.agg_table(), 702) == [{702}]
+    end
+
+    test "overlapping groups sharing their first id preserve every new id and namespace" do
+      run_in(
+        fn ->
+          for ids <- [[1101, 1102, 1103], [1101, 1104, 1103], [1101, 1102, 1103, 1105]] do
+            H.hit("lib/groups.ex", ids)
+            H.hit("lib/groups.ex", ids)
+          end
+
+          H.hit("lib/other_groups.ex", [1101, 1102, 1103])
+        end,
+        label: {GroupMod, :"test overlapping groups"}
+      )
+
+      for id <- 1101..1105 do
+        qualified = {"lib/groups.ex", id}
+        assert :ets.lookup(H.agg_table(), qualified) == [{qualified}]
+
+        assert :ets.lookup(H.test_table(), {GroupMod, :"test overlapping groups", qualified}) ==
+                 [{{GroupMod, :"test overlapping groups", qualified}}]
+      end
+
+      for id <- 1101..1103 do
+        qualified = {"lib/other_groups.ex", id}
+        assert :ets.lookup(H.agg_table(), qualified) == [{qualified}]
+      end
+
+      assert :ets.lookup(H.agg_table(), {"lib/other_groups.ex", 1104}) == []
+    end
+
+    test "one cached group records sibling test labels and whole-file contexts independently" do
+      run_in(
+        fn ->
+          for name <- [:"test first", :"test second", :setup_all] do
+            Process.set_label({GroupRelabelMod, name})
+            H.hit([1201, 1202, 1203])
+            H.hit([1201, 1202, 1203])
+          end
+        end,
+        label: nil
+      )
+
+      for id <- 1201..1203 do
+        for name <- [:"test first", :"test second"] do
+          assert :ets.lookup(H.test_table(), {GroupRelabelMod, name, id}) ==
+                   [{{GroupRelabelMod, name, id}}]
+        end
+
+        assert :ets.lookup(H.wholefile_table(), id) == [{id}]
+        assert :ets.lookup(H.unlabeled_table(), id) == []
+      end
+    end
+
+    test "a cached group becomes unlabeled when the attribution witness dies" do
+      holder = labeled_holder({GroupWitnessMod, :"test spawning task"})
+      holder_ref = Process.monitor(holder)
+      parent = self()
+
+      {worker, worker_ref} =
+        spawn_monitor(fn ->
+          Process.put(:"$callers", [holder])
+          H.hit([1301, 1302, 1303])
+          H.hit([1301, 1302, 1303])
+          send(parent, :group_recorded)
+
+          receive do
+            :witness_exited ->
+              H.hit([1301, 1302, 1303])
+          end
+        end)
+
+      assert_receive :group_recorded
+      assert :ets.lookup(H.unlabeled_table(), 1301) == []
+      Process.exit(holder, :kill)
+      assert_receive {:DOWN, ^holder_ref, :process, ^holder, _}
+      send(worker, :witness_exited)
+      assert_receive {:DOWN, ^worker_ref, :process, ^worker, :normal}
+
+      for id <- 1301..1303 do
+        assert :ets.lookup(H.unlabeled_table(), id) == [{id}]
+      end
     end
   end
 

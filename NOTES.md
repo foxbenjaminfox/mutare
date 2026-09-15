@@ -10602,3 +10602,224 @@ the two-case short-circuit, with the inline gate as the outer case's scrutinee.
 `Recorder.record?/1` recognises that outer case and its helper payload, so an
 inline gate and a bound boolean share the same recognition contract. The gate
 still reads recording readiness only when the active id is zero.
+
+### Metamutant runtime experiments (2026-09-15)
+
+**Already implemented before this investigation:** ignored and statically unselected
+variants are withheld during emission; IDs and diagnostic sites remain stable, and
+files with no executable variants retain their original bytes. The cap deliberately
+retains selected poisoned/ignored positions rather than refilling them. The report's
+refill premise does not describe this implementation. Exact contiguous exclusion
+ranges, with holes preserved, are also already present in `GuardBuild`.
+
+The earlier source-level runtime report was rechecked against the current tree
+(starting at `937cb7f`, with the changes below). `bench/alias_analysis.exs` freezes
+each generated program before compiling it, records hashes/runtime versions, saves
+BEAM disassembly, and keeps generation outside compilation timing. Elixir **1.19.5**,
+OTP **26**, ERTS **14.2.5.15**, JIT, **two schedulers** throughout. Five alternating
+rounds per comparison; each sample executes in a fresh process in a separate runtime
+VM from compilation. Inference and verification stay disabled in every build.
+
+The kernels cover tuple updates, binary appending, many body selectors, recursive
+clause dispatch, cases, and pipelines with callbacks. Execution states are baseline,
+probe, a mutant elsewhere in the same file, a mutant in another file, and a safe
+body mutant inside the measured function. Each build checks the first 31 iterations
+against separately compiled original/single-mutant source before timing; a changed
+termination condition is never selected. The clean comparisons also require identical
+site metadata before/after cloning. These are **kernel measurements**, not end-to-end
+suite speedups: runtime excludes VM startup and test selection. GC reports reclaimed
+words and minor collection counts, not a direct measurement of all allocations.
+
+Reproduce the two comparisons independently, in fresh output directories:
+
+```sh
+ERL_FLAGS='+S 2:2' mix run bench/alias_analysis.exs /tmp/mutare-alias 5
+ERL_FLAGS='+S 2:2' mix run bench/alias_analysis.exs /tmp/mutare-clean 5 clean
+```
+
+#### Rechecking SSA alias analysis
+
+The flag changes generated code and has a measurable runtime cost on an appropriate
+workload. The 78-site arithmetic/relational metamutant compiled with alias analysis
+enabled emits **`private_append`** for the binary-building loop; the identical source
+with `no_ssa_opt_alias` emits **`append`**. For **500,000 byte appends**, medians:
+
+| Measurement | Alias enabled | Alias disabled (current default) |
+| --- | ---: | ---: |
+| Whole metamutant Mix compile | 597.3 ms | 534.8 ms |
+| Binary loop, baseline | 19.214 ms | 24.633 ms |
+| Binary loop, mutant elsewhere in file | 10.294 ms | 14.935 ms |
+| Binary loop, mutant inside loop | 10.542 ms | 15.312 ms |
+| Binary loop, probe | 270.304 ms | 275.107 ms |
+| Binary loop, mutant elsewhere: reductions | 1,000,084 | 1,019,826 |
+| Binary loop, mutant elsewhere: reclaimed words | 36 | 2,499,881 |
+| Metamutant Code chunk | 7,250 bytes | 7,234 bytes |
+
+The original-source binary loop also improves (baseline **2.763 vs 6.999 ms**), so
+this is an ordinary compiler optimization that survives current instrumentation.
+At these sizes the extra **62.5 ms** compile cost pays back after about **14**
+mutant runs each performing that many appends. This calculation belongs to this
+fixture; it does not establish a crossover for arbitrary suites. Other kernels did
+not show a consistent important alias-pass win here. In particular, OTP 26 emits
+`update_record` with `reuse` in both tuple variants; this runtime cannot assess
+OTP 27's destructive tuple updates. The distinction is documented by the
+[OTP optimization article](https://www.erlang.org/blog/optimizations/).
+
+**Decision:** retain the current default pending broader suite measurements, and
+narrow `CompilerOptions`'s previous runtime-free wording to the AST-rewriting suite
+that was actually measured. Its moduledoc already distinguished the optimization
+from diagnostic passes; the comments and older note overstated the generality of
+the runtime finding. The older **2253 vs 2258 ms** AST-suite result remains evidence
+for that workload, not evidence that disabling alias analysis is universally free.
+Neither inference nor verification is proposed for restoration.
+
+#### Clean inactive-function copies and pure self-recursion
+
+**Implementation boundary.** This first version reuses existing lifted dispatchers.
+It adds one raw clause group, so C+M becomes 2C+M, only after at least eight variants
+were actually emitted and `CleanPath` accepts the source. Eight is a conservative
+size floor, not a measured universal crossover. Body-only functions are not newly
+lifted for this optimization. The interval starts before body claims and ends after
+lifted claims; namespaced builds translate both bounds to local IDs. Ignored,
+out-of-scope, or poisoned holes can only select the slower implementation. ID zero
+always keeps the existing coverage behavior. An internal transform-only
+`clean_functions: false` switch supplies the benchmark control; it is not a new
+`.mutare.exs` option.
+
+Eligibility recognizes ordinary syntax and resolved runtime functions positively.
+Unknown macros, defaults, `super`, closures/captures, lexical directives, binary
+type specifiers, and explicit function-environment/stack reflection retain their
+existing path. For now, variable names must already occur in the function head;
+this avoids misclassifying a bare zero-arity macro as a variable without introducing
+another lexical resolver. New local bindings therefore conservatively prevent a
+clean copy. Definition callbacks still see generated private functions, as they do
+under existing lifting, and generated stack-frame names are not source names.
+
+Every ordinary callee retains its original entry point. Direct self-calls bypass
+dispatch only inside a clean body certified to use approved pure operations. No
+active ID or baseline ID is passed down the call graph. The source's purity cannot
+certify arbitrary custom-mutator replacements, so instrumented self-calls still
+select afresh. Effectful clean recursion also re-enters normally: a regression test
+switches the selector inside one recursive step and observes the newly selected
+body mutation on the next. Pure clean recursion relies on the runner's selection
+remaining stable throughout the computation; ordinary entries still support
+in-process selector changes between calls.
+
+Recursion detection and redirection share a pipe-aware walk: a pipe stage's arity
+includes its receiver, while calls nested in its arguments retain their own arity.
+Without that distinction, `n |> min(10)` inside `min/1` was mistaken for recursion
+and redirected to a nonexistent clean `min/2`. Matched self-call stages become
+ordinary calls before redirection, keeping any generated leading arguments ahead
+of the receiver. Regression tests compile the same-name/different-arity case and
+compare every mutant with clean functions disabled, and exercise deep piped recursion.
+
+`in` is specifically excluded from that purity check: a variable right-hand side
+can call a user-defined `Enumerable.member?/2`. A runtime regression uses such an
+implementation to change selection and verifies that the next recursive step sees
+it. The syntax still qualifies for a clean copy; only recursion bypass is withheld.
+
+Runtime tests compare every selected body/lifted mutant in the integration fixture
+with its separately patched source, including side effects and exceptions. They also
+cover callee selection, precise coverage, namespaced/offset IDs, poison omission,
+small statically selected groups, and deep pure recursion. The helper tests cover
+the separate group-cache attribution and lifetime contracts.
+
+The clean experiment adds integer mutations to exercise literal heads: **365 sites**,
+identical before/after clean emission. It compares the ordinary metamutant with the
+clean-copy implementation, holding alias analysis **disabled** in both. Eligible
+tuple, selector, and clause kernels also qualify for direct recursion inside their
+clean copy. Median runtime with an active mutant elsewhere in the same file:
+
+| Kernel | Iterations | Original | Metamutant | Clean copy + direct recursion |
+| --- | ---: | ---: | ---: | ---: |
+| 16-element tuple update | 500,000 | 8.494 ms | 22.169 ms | 8.450 ms |
+| 16 arithmetic body selectors | 100,000 | 0.880 ms | 6.072 ms | 0.870 ms |
+| Eight-clause recursive dispatch | 500,000 | 1.795 ms | 18.931 ms | 1.663 ms |
+
+The selector and clause gains are roughly **7×** and **11×** in these loops.
+Reductions corroborate that the instrumentation disappeared: **300,092 → 100,017**
+for selectors (original **100,015**), **1,500,392 → 500,018** for clauses (original
+**500,015**), and **2,008,123 → 545,475** for tuple updates (original **545,472**).
+An active mutation in another file also takes the clean path: selector **5.518 →
+0.873 ms**, clause **17.228 → 1.628 ms**, tuple **21.819 → 10.473 ms**. Absolute
+tuple timings vary with GC/scheduling; the reduction counts are stable.
+
+The binary, case, and callback-pipeline kernels fail this first prototype's
+conservative relocation rules and remain controls. Baseline/probe still traverse
+the instrumented implementation, with the same reduction counts. The selected
+inside-function mutation still executes and matches its single-mutant source.
+All **450** build/state/kernel samples in the final clean comparison passed the
+semantic checks. The earlier clean-copy-only run also passed, but still re-entered
+dispatch on recursion and recovered a smaller fraction of the loop overhead.
+
+The kernel module grows **54,896 → 58,256 BEAM bytes** (**6.1%**) and its Code
+chunk **18,314 → 19,546 bytes** (**6.7%**). Compilation was too variable to assign
+a reliable penalty: metamutant median **723 ms** (range **691–793**), clean median
+**715 ms** (range **685–863**). Small runtime differences in the unchanged controls
+also sit within the noise. These results justify the narrow implementation; they
+do not justify cloning every function or bypassing arbitrary recursive calls.
+
+#### Coverage co-recording cache
+
+`bench/coverage_cache.exs` compares the helper from `937cb7f` with the new exact-group
+cache, using generated literal callers, fresh warmed workers, **seven alternating
+samples of 300,000 hits** per case, and one or 64 distinct groups. Same Elixir/OTP
+and scheduler settings as above. With one group and a runnable test label:
+
+| IDs in one co-recording group | Previous ns/hit | Cached ns/hit |
+| --- | ---: | ---: |
+| 1 | 168.9 | 128.6 |
+| 3 | 196.8 | 129.5 |
+| 8 | 287.0 | 130.4 |
+| 32 | 763.9 | 132.3 |
+| 128 | 3111.0 | 129.9 |
+
+With **64 groups × 128 IDs**, labeled hits improve **4188.4 → 145.1 ns**, and
+reductions **150.02 → 15.02 per hit**. These final-code timings cover runnable-test
+labels only. The benchmark also supports unlabeled callers; correctness tests cover
+unlabeled attribution, but timings of earlier cache representations are not evidence
+for the final representation's unlabeled performance.
+
+The cache retains exact co-recording sets, namespaces, table lifetime, and the last
+raw attribution label, with the existing per-ID map handling misses, label changes,
+and overlapping sets. Each group stores `{exact_ids, last_raw_label}`, avoiding a
+redundant map that could grow with arbitrary application labels. A negative first-ID
+key avoids allocating a tuple on every lookup; runtime
+IDs are positive, and full-list equality prevents key collisions from hiding a
+different set. Attribution recovery and witness-liveness checks still precede the
+cache; table recreation invalidates it. Existing emission, helper API, and dump
+format remain unchanged. Literal payloads measured nearly flat with group size;
+separately allocated equal lists can still require linear equality checks. This is
+a **warmed coverage-probe bookkeeping** improvement, not a speedup to ordinary
+mutant runs, which already bypass the helper.
+
+#### Inspecting dispatch, pipe closures, and tupled cases
+
+`bench/dispatch_shapes.exs` preserves the small compiled-code investigation. On the
+same Elixir/OTP versions, inference off, default alias settings, and clean functions
+disabled, changing ID-equality guards to literal-ID patterns while preserving clause
+order produced mixed BEAM sizes for 25-clause fixtures:
+
+| Fixture | Current BEAM | Literal-ID candidate |
+| --- | ---: | ---: |
+| Tupled case | 13,912 bytes | 13,864 bytes |
+| Lifted head | 14,196 bytes | 14,508 bytes |
+| Lifted guard | 7,240 bytes | 6,452 bytes |
+
+The guard fixture trades two tests for a `select_val`, but these code-size differences
+do not establish a runtime improvement. Leave emitter syntax and Manifest recognition
+unchanged pending executed-work measurements.
+
+The actual three-stage `Enum.filter(&is_integer/1) |> Enum.take(10) |> Enum.sum()`
+metamutant contains three immediately applied closures in source, but **no `make_fun`
+or `call_fun` instructions** in its BEAM. The tupled-case fixture likewise contains
+**no `put_tuple` instruction**. These examples provide no allocation/call overhead
+to remove; source-level syntax alone would have led to unnecessary rewrites.
+
+#### Validation
+
+`mix compile --warnings-as-errors` and `mix check` (format, Credo, Dialyzer) pass.
+The full suite completed in 659 seconds: **91 doctests, 19 properties, 3228 tests,
+0 failures, 1 skipped**. After the final `in` purity refinement and its runtime
+protocol regression, the focused clean-path/recorder/helper/dump run passed
+**57 tests**. Benchmark semantic checks and their narrower scope are recorded above.

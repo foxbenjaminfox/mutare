@@ -23,6 +23,7 @@ defmodule Mutare.Transform.Config do
           mutators: [Mutare.Mutator.Spec.t()],
           skip_ids: MapSet.t(),
           emit_ids: MapSet.t(pos_integer()) | nil,
+          clean_functions: boolean(),
           ignore_directives: Mutare.Ignore.Directives.t(),
           skip_lifting: MapSet.t(Mutare.Lifting.skip_entry()),
           warnings: boolean(),
@@ -44,6 +45,8 @@ defmodule Mutare.Transform.Config do
             # Static run selection: reserve every id/site, but emit only these ids.
             # nil retains the unrestricted metamutant; distinct from poison skip_ids.
             emit_ids: nil,
+            # Internal experiment control; normal builds use clean inactive lifted functions.
+            clean_functions: true,
             # Match after Site construction so custom attribution and variant labels apply.
             ignore_directives: %Mutare.Ignore.Directives{},
             skip_lifting: MapSet.new(),
