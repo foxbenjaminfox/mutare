@@ -240,6 +240,38 @@ establish whether either optimization survived compilation; inspect the saved BE
 the decisions they inform there; keep raw output local rather than checking in a
 second table that becomes stale when generation changes.
 
+## Comparing revisions
+
+`alias_analysis.exs` runs each build in its own OS process for about a minute. That is
+sound for builds compared within one invocation on a quiet machine, and unsound for
+comparing two revisions' outputs on a shared one: background load drifts by more than the
+effect, and it has shown two builds with byte-identical code 30–70% apart. `kernel_ab.exs`
+takes the projects `alias_analysis.exs` wrote — by this revision or another — loads them
+into **one VM**, each under its own module name and selection key, and alternates them
+sample by sample:
+
+```sh
+# The reference revision, in a worktree; it needs this revision's kernels to compare like
+# with like, so copy the script over before generating.
+git worktree add --detach /tmp/mutare-ref <revision>
+cp bench/alias_analysis.exs /tmp/mutare-ref/bench/
+(cd /tmp/mutare-ref && ln -s "$OLDPWD/deps" deps &&
+  MIX_BUILD_PATH=/tmp/mutare-ref-build mix run bench/alias_analysis.exs /tmp/ref-out 1 clean)
+
+mix run bench/alias_analysis.exs /tmp/new-out 1 clean
+ERL_FLAGS='+S 2:2' elixir bench/kernel_ab.exs /tmp/mutare-ab 15 \
+  original=/tmp/new-out/original previous=/tmp/ref-out/clean new=/tmp/new-out/clean
+```
+
+The last build named is the one under test; ratio columns divide its minimum by each
+earlier build's. It reads each project's mutant ids and iteration counts from its
+`worker.exs`, and whether that revision stored file namespaces as strings or atoms from
+its generated code. States are baseline, a mutant elsewhere in the file, in another file,
+and inside the kernel; the probe is left to `alias_analysis.exs`.
+Every state but the last checks that all builds compute the same result before timing.
+Rows whose builds hold identical code show the noise floor of the session: read every
+other ratio against it.
+
 ## Clean-path eligibility
 
 `clean_eligibility.exs` answers why functions miss the clean path. It transforms every

@@ -50,7 +50,7 @@ defmodule Mutare.Coverage.Recorder do
 
   The spliced expression (`record_ast/3`) is two nested short-circuits:
 
-      case (case :erlang.==(mutare_active, 0) do
+      case (case :erlang."=:="(mutare_active, 0) do
               true -> :persistent_term.get(:mutare_track, false)
               _ -> false
             end) do
@@ -242,7 +242,7 @@ defmodule Mutare.Coverage.Recorder do
   @doc "The coverage gate, independent of the helper payload and its recognition."
   @spec gate_ast(atom()) :: Macro.t()
   def gate_ast(var) do
-    active_zero = AST.erlang_call(:==, [{var, [], nil}, literal(0)])
+    active_zero = AST.erlang_call(:"=:=", [{var, [], nil}, literal(0)])
     track_read = {{:., [], [:persistent_term, :get]}, [], [literal(track_key()), literal(false)]}
     when_true(active_zero, track_read)
   end

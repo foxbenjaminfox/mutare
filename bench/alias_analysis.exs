@@ -280,6 +280,18 @@ defmodule Mutare.AliasAnalysisBench do
   defp worker(ids, elsewhere, expected) do
     setup = Mutare.Coverage.Recorder.tables_ast(:harness) |> Macro.to_string()
 
+    # The worker runs without Mutare, so the stored form of a namespace is written out —
+    # asked of this revision's `Mutare.Selector`, so the script also runs in a worktree of
+    # a revision that stored the path string itself (`bench/kernel_ab.exs`).
+    Code.ensure_loaded!(Mutare.Selector)
+
+    [this_file, other_file] =
+      for namespace <- ["lib/kernel.ex", "lib/other.ex"] do
+        if function_exported?(Mutare.Selector, :namespace_key, 1),
+          do: inspect(apply(Mutare.Selector, :namespace_key, [namespace])),
+          else: inspect(namespace)
+      end
+
     """
     defmodule AliasBench.Worker do
       def run do
@@ -292,9 +304,9 @@ defmodule Mutare.AliasAnalysisBench do
           #{setup}
           for {kernel, iterations} <- #{inspect(@counts)} do
             active = case state do
-              :inside -> {"lib/kernel.ex", Map.fetch!(ids, kernel)}
-              :elsewhere -> {"lib/kernel.ex", #{elsewhere}}
-              :other_file -> {"lib/other.ex", 1}
+              :inside -> {#{this_file}, Map.fetch!(ids, kernel)}
+              :elsewhere -> {#{this_file}, #{elsewhere}}
+              :other_file -> {#{other_file}, 1}
               _ -> 0
             end
             :persistent_term.put(:mutare_active, active)

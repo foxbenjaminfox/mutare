@@ -114,7 +114,7 @@ defmodule Mutare.SelectorTest do
     System.put_env(Selector.env_var(), "8")
     System.put_env(Selector.namespace_env(), "lib/b.ex")
     Code.eval_quoted(Selector.bootstrap_ast())
-    assert :persistent_term.get(Selector.default_key()) == {"lib/a.ex", 7}
+    assert :persistent_term.get(Selector.default_key()) == {:"lib/a.ex", 7}
   end
 
   test "sandbox renders the canonical bootstrap AST" do
@@ -128,20 +128,42 @@ defmodule Mutare.SelectorTest do
     System.put_env(Selector.namespace_env(), "lib/a.ex")
     :persistent_term.erase(Selector.default_key())
     Code.eval_quoted(Selector.bootstrap_ast())
-    assert :persistent_term.get(Selector.default_key()) == {"lib/a.ex", 7}
+    assert :persistent_term.get(Selector.default_key()) == {:"lib/a.ex", 7}
 
     System.put_env(Selector.namespace_env(), "lib/b.ex")
     :persistent_term.erase(Selector.default_key())
     Code.eval_quoted(Selector.bootstrap_ast())
-    assert :persistent_term.get(Selector.default_key()) == {"lib/b.ex", 7}
+    assert :persistent_term.get(Selector.default_key()) == {:"lib/b.ex", 7}
     :persistent_term.erase(Selector.default_key())
     Code.eval_quoted(Selector.bootstrap_ast())
-    assert :persistent_term.get(Selector.default_key()) == {"lib/b.ex", 7}
+    assert :persistent_term.get(Selector.default_key()) == {:"lib/b.ex", 7}
 
     System.put_env(Selector.env_var(), "0")
     :persistent_term.erase(Selector.default_key())
     Code.eval_quoted(Selector.bootstrap_ast())
     assert :persistent_term.get(Selector.default_key()) == 0
+  end
+
+  test "the bootstrap and put/1 store one form, which active/0 reads back as the string" do
+    long = String.duplicate("deeply/nested/", 20) <> "file.ex"
+    assert byte_size(long) > 255
+
+    for namespace <- ["lib/a.ex", long] do
+      System.put_env(Selector.env_var(), "7")
+      System.put_env(Selector.namespace_env(), namespace)
+      :persistent_term.erase(Selector.default_key())
+      Code.eval_quoted(Selector.bootstrap_ast())
+      booted = :persistent_term.get(Selector.default_key())
+
+      Selector.put({namespace, 7})
+      assert :persistent_term.get(Selector.key()) == booted
+      assert booted == {Selector.namespace_key(namespace), 7}
+      assert Selector.active() == {namespace, 7}
+    end
+
+    Selector.put(Selector.baseline())
+    assert Selector.namespace_key("lib/a.ex") == :"lib/a.ex"
+    assert Selector.namespace_key(long) == long
   end
 
   test "integer invocations clear an inherited namespace and namespaces are reserved" do

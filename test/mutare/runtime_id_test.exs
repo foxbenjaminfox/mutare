@@ -118,6 +118,21 @@ defmodule Mutare.RuntimeIdTest do
     assert observe.() == [7, 7]
   end
 
+  test "a namespace too long for an atom keeps its string form and still selects" do
+    namespace = String.duplicate("deeply/nested/", 20) <> "a.ex"
+    assert Selector.namespace_key(namespace) == namespace
+    subject = Metamutant.subject_ast(namespace)
+    assert Metamutant.subject?(subject)
+    Selector.put({namespace, 4})
+    assert Code.eval_quoted(subject) |> elem(0) == 4
+    Selector.put({"lib/a.ex", 4})
+    assert Code.eval_quoted(subject) |> elem(0) == :inactive
+    # A non-integer id under the right namespace is no selection at all.
+    :persistent_term.put(Selector.key(), {namespace, 4.0})
+    assert Code.eval_quoted(subject) |> elem(0) == :inactive
+    Selector.put(0)
+  end
+
   test "namespace selector recognition survives literal-encoded parsing and key isolation" do
     namespace = "apps/core/lib/a.ex"
     subject = Metamutant.subject_ast(namespace)

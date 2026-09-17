@@ -9661,7 +9661,9 @@ its own candidate sequence can change its runtime identities. This is not a pers
 identity for reusing historical verdicts, nor a promise that Mix will ignore real compile-time
 dependencies on A.
 
-One persistent-term slot holds `{namespace, local_id}`. A generated projection yields the
+One persistent-term slot holds `{namespace, local_id}` (the namespace as an atom since
+2026-09-17; "Clean regions", "The entry costs more than the selectors"). A generated
+projection yields the
 local integer for the active file, `0` at baseline, and `:inactive` for other files. Function
 bodies hoist that projection with their existing selector read; inline/default positions
 keep it self-contained. Gates and interval exclusions still use local integers, and inactive
@@ -10828,7 +10830,7 @@ The full suite completed in 659 seconds: **91 doctests, 19 properties, 3228 test
 protocol regression, the focused clean-path/recorder/helper/dump run passed
 **57 tests**. Benchmark semantic checks and their narrower scope are recorded above.
 
-### Clean regions: scope-tracked eligibility and in-place bodies (2026-09-17)
+### Clean regions: scope-tracked eligibility, in-place bodies, a cheaper entry (2026-09-17)
 
 The first clean path (above) reached little code. A diagnostic, not intuition, said why,
 so it came first: `bench/clean_eligibility.exs` transforms a source tree with the policy
@@ -10921,6 +10923,79 @@ sandbox, three alternating rounds, CPU seconds because wall time swung 24–50 s
 
 The metamutant compiled on the first attempt, which with 2,300 regions is the evidence
 that matters for the contract.
+
+#### Kernel results, and how they had to be measured
+
+`bench/alias_analysis.exs` gained the kernels the report asked for: fresh and
+`case`-local bindings, a function no family lifts, a closure invoked per element, and
+leaves of one to four sites behind an ignored driver. Comparing **revisions** with it
+failed, though. It runs each build in its own OS process for about a minute, and on a
+machine shared with other jobs (load 5–16 throughout) background load moved by more than
+the effect: one A/B showed the new baseline 15–20% slower, a second showed two builds with
+*byte-identical* instrumented code 30–70% apart. `bench/kernel_ab.exs` fixes the method,
+not the statistics: it loads every build into one VM under its own module name and
+selection key and alternates them sample by sample, so drifting load falls on all alike.
+Identical-code rows then agree within ~5% (14% at worst), and the baseline regression
+disappeared (0.94–1.15×, centered on 1.0). 15 alternating samples, minimum, two
+schedulers, Elixir 1.19.5 / OTP 26; the previous commit's default build against this one,
+active mutant **elsewhere in the same file**:
+
+| Kernel | Original | Previous | Now | Now / previous |
+| --- | ---: | ---: | ---: | ---: |
+| binary append | 15.5 ms | 41.4 ms | 15.0 ms | 0.36× |
+| case dispatch | 1.73 ms | 13.8 ms | 1.58 ms | 0.11× |
+| bindings | 5.05 ms | 16.6 ms | 4.39 ms | 0.26× |
+| callback per element | 6.67 ms | 10.0 ms | 6.72 ms | 0.67× |
+| pipeline with callback | 4.18 ms | 6.23 ms | 4.74 ms | 0.76× |
+| in-place recursive body | 4.18 ms | 14.3 ms | 9.36 ms | 0.66× |
+| leaf, 1–4 sites | 3.0–5.1 ms | 20.3–26.4 ms | 15.0–18.0 ms | 0.66–0.75× |
+| tuple / selectors / clauses (already clean) | — | — | — | 0.83–1.03× |
+
+With the mutant in another file the same kernels run at 0.14–0.76× (leaves 0.89–0.96×),
+and with the mutant **inside** the measured function at 0.68–1.01×. Absolute times are
+inflated by the load; read the ratios. These are kernels, not suites.
+
+#### The entry costs more than the selectors
+
+The leaves and the in-place loop stop well short of the original, and the clean body is
+not why. A microbenchmark of the prologue alone (`persistent_term` read, projection,
+region decision; interleaved in one VM, minimum of 25):
+
+| Per call | ns |
+| --- | ---: |
+| plain call | 5 |
+| + `:persistent_term.get/2` | 23 |
+| + string-namespace projection + region decision, path compared in full | 43 |
+| + the same, paths of different length | 34 |
+| + atom-namespace projection + region decision | 34 |
+
+One selector site costs 1.5–3.6 ns. So a function of a few sites pays more to *arrive*
+than to answer, and no amount of clean body recovers it. Two changes came out of this,
+both inside the existing contract:
+
+- **The stored namespace is an atom** (`Selector.namespace_key/1`). Every instrumented
+  activation compares it; an atom compares in one instruction (`is_tagged_tuple`), a path
+  string byte by byte whenever the lengths match — always, in the file under test, which
+  is where a mutant's selected tests spend their time. A path over 255 bytes keeps its
+  string form, the bootstrap restating the rule where Mutare is not loaded. `put/1` and
+  `active/0` still speak strings. One atom per mutated file is no pressure on the table.
+- **The projection guards `is_integer`** and the coverage gate compares with `=:=`. The
+  compiler then types every later reader of the id as integer-or-`:inactive`: `select_val`
+  loses its type test and the gate's generic `==` becomes exact. Worth 2–9% on an
+  instrumented eight-site body — small, free, and universal (ineligible functions, the
+  active function, baseline). A first reading of this effect as 25–40% was machine drift
+  between separate runs; the in-VM benchmark corrected it. Lifted groups with a clean copy
+  already had the narrowing by accident, through the region guard's `is_integer`.
+
+What remains is the read itself, 18 ns, and it is a question of contract rather than of
+code. A clean caller knows the active mutant is not in *its* region, not that it is absent
+from its callee, so it must enter the callee's dispatcher, which reads again. Threading
+"this whole file is inactive" down local calls would remove most reads in a mutant run
+(selection is fixed per VM there) but would make an in-process `Selector.put/1` during a
+computation invisible to it, which `clean_function_test.exs` pins deliberately ("an
+effectful recursive body keeps fresh selection"). A constant in a module compiled at boot
+would make the read ~3 ns and turn every `put/1` into a compile and a purge. Neither was
+attempted; both are the next lever if a suite of small hot functions ever matters.
 
 #### Coverage first hits
 

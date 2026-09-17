@@ -48,9 +48,14 @@ defmodule Mutare.Metamutant do
   single global selection before it is used by any local selector or lifted guard:
 
       case :persistent_term.get(:mutare_active, 0) do
-        {"lib/example.ex", mutare_local_id} -> mutare_local_id
-        0 -> 0
-        _ -> :inactive
+        {:"lib/example.ex", mutare_local_id} when :erlang.is_integer(mutare_local_id) ->
+          mutare_local_id
+
+        0 ->
+          0
+
+        _ ->
+          :inactive
       end
 
   This projection is hoisted with the read in function bodies; default arguments
@@ -101,8 +106,14 @@ defmodule Mutare.Metamutant do
     # cannot capture a source variable or escape into the surrounding scope.
     local = {:mutare_local_id, [], nil}
 
+    # The guard costs one tag test and tells the compiler what every later reader of the
+    # projection holds: an integer or `:inactive`, never a float. Selectors then switch on
+    # it without a type test, and the coverage gate's comparison with zero is exact.
+    key = AST.literal(Mutare.Selector.namespace_key(namespace))
+    selected = {:when, [], [{key, local}, AST.erlang_call(:is_integer, [local])]}
+
     clauses = [
-      {:->, [], [[{AST.literal(namespace), local}], local]},
+      {:->, [], [[selected], local]},
       {:->, [], [[AST.literal(@baseline)], AST.literal(@baseline)]},
       {:->, [], [[{:_, [], nil}], AST.literal(:inactive)]}
     ]
@@ -148,12 +159,14 @@ defmodule Mutare.Metamutant do
   def subject?({:case, _, [read, [{key, clauses}]]}, _var) do
     with true <- AST.key_atom(key) == :do,
          [
-           {:->, _, [[pair], returned]},
+           {:->, _, [[{:when, _, [pair, guard]}], returned]},
            {:->, _, [[baseline_pattern], baseline_value]},
            {:->, _, [[{:_, _, _}], inactive]}
          ] <- clauses,
          {namespace, {name, _, context}} <- AST.unwrap_literal(pair),
-         true <- is_binary(AST.unwrap_literal(namespace)) and is_atom(name) and is_atom(context),
+         true <-
+           namespace_key?(AST.unwrap_literal(namespace)) and is_atom(name) and is_atom(context),
+         {:ok, [{^name, _, ^context}]} <- AST.erlang_call_args(guard, :is_integer),
          {^name, _, ^context} <- returned do
       subject?(read) and AST.unwrap_literal(baseline_pattern) == @baseline and
         AST.unwrap_literal(baseline_value) == @baseline and
@@ -168,6 +181,9 @@ defmodule Mutare.Metamutant do
       do: name == var
 
   def subject?(_node, _var), do: false
+
+  # `Mutare.Selector.namespace_key/1`'s two forms.
+  defp namespace_key?(key), do: is_binary(key) or (is_atom(key) and not is_nil(key))
 
   @doc """
   Build the tupled selector subject with one recording point after both inputs

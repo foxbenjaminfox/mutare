@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of generated mutants in the projects measured, up from under 10%. Benchmark kernels that
   previously missed it run at 0.11–0.76× their former time while another mutant is active.
   The one metamutant compile costs about 8% more CPU and 17% more BEAM size.
+- **Cheaper entry into every instrumented function.** The active file is stored and
+  compared as an atom instead of a path string, and the id projection tells the compiler
+  it holds an integer. `Mutare.Selector.put/1` and `active/0` are unchanged; manual
+  selection in a generated sandbox still uses `MUTARE_MUTANT_NAMESPACE` and
+  `MUTARE_ACTIVE_MUTANT`.
 
 ## [0.2.0] - 2026-09-14
 

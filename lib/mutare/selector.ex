@@ -17,9 +17,12 @@ defmodule Mutare.Selector do
   `put/1` can select another mutant between in-process calls.
 
   A schema mutant is stored as `{root_relative_file, local_id}` in that single
-  slot. `Mutare.Metamutant` projects it to the local integer for the active file,
-  `0` at baseline, or `:inactive` for other files. Thus only one file can be active
-  and inactive files still short-circuit coverage before its tracking-flag read.
+  slot, the file as an **atom** (`namespace_key/1`): every instrumented function
+  compares it on entry, and an atom compares in one instruction where a path string
+  of equal length is read byte by byte. `Mutare.Metamutant` projects the slot to the
+  local integer for the active file, `0` at baseline, or `:inactive` for other files.
+  Thus only one file can be active and inactive files still short-circuit coverage
+  before its tracking-flag read. `put/1` and `active/0` speak the string form.
   Standalone transforms continue to select by plain integer, including `:start_id`.
   The bootstrap combines `MUTARE_ACTIVE_MUTANT` (the local integer) with
   `MUTARE_MUTANT_NAMESPACE` (the file); the runner translates report ids before
@@ -55,6 +58,8 @@ defmodule Mutare.Selector do
   @env_var "MUTARE_ACTIVE_MUTANT"
   @namespace_env "MUTARE_MUTANT_NAMESPACE"
   @baseline 0
+  # An atom holds at most 255 characters; a longer path keeps its string form.
+  @atom_limit 255
   # The env var that lets a sandbox suite-under-test select on a private key (see
   # the moduledoc). Set by `Mutare.Sandbox.Command` on every sandbox `mix`; unset
   # in the harness process, so harness-side site/bootstrap baking keeps `@key`.
@@ -105,6 +110,17 @@ defmodule Mutare.Selector do
   def baseline, do: @baseline
 
   @doc """
+  The form a file namespace takes in the stored selection and in the projection generated
+  code matches it against (`Mutare.Metamutant.subject_ast/1`): an atom, or the string itself
+  when it is too long to be one. `bootstrap_ast/0` applies the same rule inside the target.
+  """
+  @spec namespace_key(String.t()) :: atom() | String.t()
+  def namespace_key(namespace) when is_binary(namespace) and byte_size(namespace) <= @atom_limit,
+    do: String.to_atom(namespace)
+
+  def namespace_key(namespace) when is_binary(namespace), do: namespace
+
+  @doc """
   Dependency-free code that reads the selector environment variables and stores
   the active runtime identity. Initialization precedes target project code; repeated
   project prefixes and umbrella helpers preserve the first value, even if target
@@ -119,6 +135,7 @@ defmodule Mutare.Selector do
     env_var = @env_var
     namespace_env = @namespace_env
     baseline = @baseline
+    atom_limit = @atom_limit
 
     quote do
       if :persistent_term.get(unquote(key), :mutare_uninitialized) == :mutare_uninitialized do
@@ -132,6 +149,12 @@ defmodule Mutare.Selector do
         :persistent_term.put(
           unquote(key),
           case System.get_env(unquote(namespace_env)) do
+            # `Mutare.Selector.namespace_key/1`, restated where Mutare is not loaded.
+            namespace
+            when is_binary(namespace) and namespace != "" and mutare_id > 0 and
+                   byte_size(namespace) <= unquote(atom_limit) ->
+              {String.to_atom(namespace), mutare_id}
+
             namespace when is_binary(namespace) and namespace != "" and mutare_id > 0 ->
               {namespace, mutare_id}
 
@@ -156,10 +179,15 @@ defmodule Mutare.Selector do
 
   def put({namespace, id})
       when is_binary(namespace) and namespace != "" and is_integer(id) and id > 0 do
-    :persistent_term.put(key(), {namespace, id})
+    :persistent_term.put(key(), {namespace_key(namespace), id})
   end
 
   @doc "The active mutant id for in-process execution (`0` if unset)."
   @spec active() :: Mutare.RuntimeId.t()
-  def active, do: :persistent_term.get(key(), @baseline)
+  def active do
+    case :persistent_term.get(key(), @baseline) do
+      {namespace, id} when is_atom(namespace) -> {Atom.to_string(namespace), id}
+      selection -> selection
+    end
+  end
 end

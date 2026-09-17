@@ -54,7 +54,7 @@ defmodule Mutare.Coverage.RecorderTest do
         end)
 
       assert Enum.uniq(locals) --
-               [:case, :->, :__block__, {:erlang, :==}, {:persistent_term, :get}] ==
+               [:case, :->, :__block__, {:erlang, :"=:="}, {:persistent_term, :get}] ==
                [{Recorder.fixture_module(), :hit}]
     end
 
