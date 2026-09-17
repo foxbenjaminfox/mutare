@@ -8,11 +8,13 @@ defmodule Mutare.Selector do
   selector site in the metamutant reads this key, normally hoisted to one read per
   function activation.
 
-  Eligible lifted functions use uninstrumented original clauses when the active
-  mutation belongs elsewhere. Pure direct self-recursion may stay in that clean
-  implementation without rereading the selector; it relies on selection remaining
-  stable during the computation. Ordinary entries and effectful recursion still
-  read afresh, so `put/1` can select another mutant between in-process calls.
+  Eligible functions run their uninstrumented source when the active mutation
+  belongs elsewhere: a lifted function through a copy of its original clauses, a
+  function that stays in place through a second body chosen after its one read.
+  Pure direct self-recursion may stay in a lifted function's clean clauses without
+  rereading the selector; it relies on selection remaining stable during the
+  computation. Ordinary entries and effectful recursion still read afresh, so
+  `put/1` can select another mutant between in-process calls.
 
   A schema mutant is stored as `{root_relative_file, local_id}` in that single
   slot. `Mutare.Metamutant` projects it to the local integer for the active file,

@@ -19,6 +19,10 @@ defmodule Mutare.Transform.Ctx do
   # --check`). The count sink reads it off the annotated tree once, before the walk; it never
   # changes after that and rides here only to reach `count_report/2` (`[]` under `:render`).
   #
+  # `clean_decisions` likewise belongs to no stage: the emitter appends what it decided for
+  # each candidate clean region (`Mutare.Transform.CleanRegion.Decision`, reversed), and only
+  # the eligibility diagnostic reads it back.
+  #
   # Still threaded as **one** value (never destructured into loose args), so the shape stays
   # uniform and a stray field name fails loudly; the split is by ownership, not by threading.
   # `update_scope/2`/`update_claim/2`/`update_matches/2` keep the nested updates terse.
@@ -30,14 +34,16 @@ defmodule Mutare.Transform.Ctx do
           scope: Scope.t(),
           claim: ClaimState.t(),
           matches: ConfigMatches.t(),
-          degraded_uses: [Uses.degraded_use()]
+          degraded_uses: [Uses.degraded_use()],
+          clean_decisions: [Mutare.Transform.CleanRegion.Decision.t()]
         }
 
   defstruct config: %Config{},
             scope: %Scope{},
             claim: %ClaimState{},
             matches: %ConfigMatches{},
-            degraded_uses: []
+            degraded_uses: [],
+            clean_decisions: []
 
   @doc "Apply `fun` to the `scope` sub-struct, leaving the rest untouched."
   @spec update_scope(t(), (Scope.t() -> Scope.t())) :: t()

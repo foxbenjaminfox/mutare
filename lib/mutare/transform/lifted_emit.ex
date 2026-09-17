@@ -16,12 +16,12 @@ defmodule Mutare.Transform.LiftedEmit do
   # An eligible clean path adds C raw original clauses, for 2C+M total; it never
   # duplicates a whole group per mutant. Pure self-recursion can remain in that copy.
 
-  alias Mutare.AST
   alias Mutare.Coverage.Recorder
   alias Mutare.Metamutant
 
   alias Mutare.Transform.{
     CleanPath,
+    CleanRegion,
     ClauseAST,
     Config,
     FunctionPlan,
@@ -172,44 +172,16 @@ defmodule Mutare.Transform.LiftedEmit do
 
     body =
       if active_range do
+        # Ids outside the group's interval (and another file's `:inactive` projection)
+        # call the raw clauses; see `Mutare.Transform.CleanRegion`.
         instrumented = {:__block__, [], statements}
-        dispatch = clean_dispatch(group, call_args, instrumented, active_range)
-        {:__block__, [], [read, dispatch]}
+        clean = {clean_name(group), [], call_args}
+        {:__block__, [], [read, CleanRegion.select(group.var, active_range, instrumented, clean)]}
       else
         {:__block__, [], [read | statements]}
       end
 
     {group.vis, [], [{group.name, [], head_args}, [do: body]]}
-  end
-
-  # Baseline/probe and this group's complete id interval retain the existing path.
-  # Other ids (including another file's :inactive projection) call raw clauses.
-  # The range is deliberately conservative: exclusions need exact sets; choosing
-  # a slower implementation does not. Use only special forms and remote guard BIFs.
-  defp clean_dispatch(group, args, instrumented, {first, last}) do
-    active = Recorder.catch_all_pattern(group.var)
-
-    in_range =
-      AST.erlang_call(:andalso, [
-        AST.erlang_call(:is_integer, [active]),
-        AST.erlang_call(:andalso, [
-          AST.erlang_call(:>=, [active, AST.literal(first)]),
-          AST.erlang_call(:"=<", [active, AST.literal(last)])
-        ])
-      ])
-
-    guard = AST.erlang_call(:orelse, [GuardBuild.gate(0, group.var), in_range])
-
-    {:case, [],
-     [
-       active,
-       [
-         do: [
-           {:->, [], [[{:when, [], [{:_, [], nil}, guard]}], instrumented]},
-           {:->, [], [[{:_, [], nil}], {clean_name(group), [], args}]}
-         ]
-       ]
-     ]}
   end
 
   defp clean_clauses(_group, _plan, nil), do: []

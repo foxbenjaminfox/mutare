@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Mutant runs execute far more of the target at its original speed.** A function
+  holding two or more mutation sites now keeps its own source beside the instrumented
+  code, and a mutant elsewhere runs that source. This previously reached only lifted
+  functions of eight or more variants written in a narrow subset of Elixir; it now covers
+  functions that stay in place and ordinary code — local bindings, sibling calls, closures,
+  comprehensions, bitstrings and interpolation, structs, `raise`, `Logger` — about 89–97%
+  of generated mutants in the projects measured, up from under 10%. Benchmark kernels that
+  previously missed it run at 0.11–0.76× their former time while another mutant is active.
+  The one metamutant compile costs about 8% more CPU and 17% more BEAM size.
+
 ## [0.2.0] - 2026-09-14
 
 ### Changed

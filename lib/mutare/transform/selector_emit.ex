@@ -56,7 +56,7 @@ defmodule Mutare.Transform.SelectorEmit do
   end
 
   @doc """
-  Record that the emitted code references the hoisted binding (`Scope.active_referenced`).
+  Record that the emitted code references the hoisted binding (`Scope.active_references`).
 
   `subject/1` does this for every selector that reads the variable as its scrutinee; a
   per-clause delivery that reads it directly — a `<var> === <id>` gate in an `fn`/`receive`
@@ -65,7 +65,7 @@ defmodule Mutare.Transform.SelectorEmit do
   """
   @spec reference_active(Ctx.t()) :: Ctx.t()
   def reference_active(%Ctx{} = ctx),
-    do: Ctx.update_scope(ctx, &%{&1 | active_referenced: true})
+    do: Ctx.update_scope(ctx, &%{&1 | active_references: &1.active_references + 1})
 
   @doc """
   The selector `case` scrutinee for the current emit scope, with the scope updated.

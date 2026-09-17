@@ -290,8 +290,271 @@ defmodule Mutare.Transform.CleanFunctionTest do
     assert apply(@fixture, :sum, [2, %SwitchingEnumerable{id: site.id}, 0]) == 36
   end
 
+  describe "an in-place clean body" do
+    # `total/2` stays in place (no head or guard mutant under these families) and exercises
+    # what the first contract refused: fresh bindings, a closure, interpolation, a bitstring,
+    # a sibling call, a default, and a `rescue` block beside the region. `scale/1` is lifted,
+    # so a mutant inside it must still be reached through the clean caller.
+    @in_place """
+    defmodule Mutare.CleanFunctionFixture do
+      def total(items, bonus \\\\ 1 + 1) do
+        Mutare.Transform.CleanFunctionTest.observe(bonus)
+        base = Enum.reduce(items, 0, fn item, acc -> acc + item * 2 end)
+        scaled = scale(base + bonus)
+        label = "total: \#{scaled - 1}"
+        {scaled, label, <<scaled + 3>>}
+      rescue
+        ArithmeticError -> {:error, bonus - 100}
+      end
+
+      defp scale(n) when n > 10, do: n * 3
+      defp scale(n), do: n + 4
+
+      def other(n), do: n + 7
+    end
+    """
+
+    test "holds the source itself, once, and changes no site" do
+      result = transform_in_place()
+      control = transform_in_place(clean_functions: false)
+      assert result.sites == control.sites
+      assert result.next_id == control.next_id
+      assert manifest_ids(result) == manifest_ids(control)
+
+      assert [
+               %{verdict: :clean, function: {:total, 2}, delivery: :in_place},
+               %{verdict: :clean, function: {:scale, 1}, delivery: :lifted},
+               %{verdict: :clean, function: {:other, 1}, delivery: :in_place}
+             ] = result.clean_decisions
+
+      assert [_other, clean] = clean_bodies(result.metamutant)
+      text = Macro.to_string(clean)
+      refute text =~ "persistent_term"
+      refute text =~ "mutare_active"
+      refute text =~ "mutare_cov"
+      assert text =~ "fn item, acc -> acc + item * 2 end"
+      assert clean_bodies(control.metamutant) == []
+    end
+
+    test "preserves every mutant, in the region, beside it, and in its callee" do
+      result = transform_in_place()
+      assert Enum.any?(result.sites, &(&1.line == 9)), "the rescue block carries a mutant"
+      assert Enum.any?(result.sites, &(&1.line == 2)), "the default carries a mutant"
+      compile_purging(@fixture, result.metamutant)
+
+      selections = [0, result.next_id + 1 | Enum.map(result.sites, & &1.id)]
+
+      actual =
+        for id <- selections, into: %{} do
+          Selector.put(id)
+          {id, total_outcomes()}
+        end
+
+      Selector.put(0)
+      Mutare.Test.Compile.string(@in_place)
+      original = total_outcomes()
+      assert actual[0] == original
+      assert actual[result.next_id + 1] == original
+
+      for site <- result.sites do
+        Mutare.Test.Compile.string(Report.patch(site, @in_place))
+        assert actual[site.id] == total_outcomes(), "mutant #{site.id}: #{site.mutated_code}"
+      end
+    end
+
+    test "records baseline coverage exactly as without it, and nothing on the clean path" do
+      for opts <- [[], [clean_functions: false]] do
+        result = transform_in_place(opts)
+        compile_observed(@fixture, result.metamutant, Sink)
+        :persistent_term.put(Recorder.track_key(), true)
+        Process.put(:clean_coverage, [])
+        apply(@fixture, :total, [[1, 2]])
+        Process.put({:baseline_coverage, opts}, Enum.sort(Process.get(:clean_coverage)))
+
+        Process.put(:clean_coverage, [])
+        elsewhere = Enum.find(result.sites, &(&1.line == 15))
+        Selector.put(elsewhere.id)
+        apply(@fixture, :total, [[1, 2]])
+        assert Process.get(:clean_coverage) == []
+        Selector.put(0)
+        :persistent_term.put(Recorder.track_key(), false)
+      end
+
+      assert Process.get({:baseline_coverage, []}) ==
+               Process.get({:baseline_coverage, [clean_functions: false]})
+
+      assert Process.get({:baseline_coverage, []}) != []
+    end
+
+    test "selects by file-local id under a namespace, and another file runs clean" do
+      opts = [runtime_namespace: "lib/clean.ex", start_id: 300]
+      result = transform_in_place(opts)
+      control = transform_in_place(Keyword.put(opts, :clean_functions, false))
+      assert result.sites == control.sites
+      assert [_other, _total] = clean_bodies(result.metamutant)
+      compile_purging(@fixture, result.metamutant)
+
+      selections = [0, {"lib/elsewhere.ex", 1} | Enum.map(result.sites, & &1.runtime_id)]
+
+      expected =
+        for id <- selections, into: %{} do
+          Selector.put(id)
+          {id, total_outcomes()}
+        end
+
+      Mutare.Test.Compile.string(control.metamutant)
+
+      for id <- selections do
+        Selector.put(id)
+        assert total_outcomes() == expected[id], "selection #{inspect(id)}"
+      end
+    end
+
+    test "a region of one selector site has nothing to win" do
+      source = """
+      defmodule Mutare.CleanFunctionFixture do
+        def one(x, y), do: x + y
+        def two(x, y), do: x + y - y
+      end
+      """
+
+      result = Transform.transform_string_with_sites(source, mutators: [:arithmetic])
+
+      assert [
+               %{function: {:one, 2}, sites: 1, verdict: :below_threshold},
+               %{function: {:two, 2}, sites: 2, verdict: :clean}
+             ] =
+               result.clean_decisions
+
+      every =
+        Transform.transform_string_with_sites(source, mutators: [:arithmetic], clean_threshold: 1)
+
+      assert Enum.map(every.clean_decisions, & &1.verdict) == [:clean, :clean]
+    end
+
+    test "a body outside the contract keeps its selectors" do
+      source = """
+      defmodule Mutare.CleanFunctionFixture do
+        def f(x) do
+          y = x + 2
+          z = y * 3
+          binding() |> Keyword.fetch!(:z)
+        end
+      end
+      """
+
+      result = Transform.transform_string_with_sites(source, mutators: [:arithmetic])
+      assert [%{verdict: {:ineligible, {:call, {:binding, 0}}}}] = result.clean_decisions
+      assert clean_bodies(result.metamutant) == []
+    end
+  end
+
+  describe "a relocated clean copy" do
+    test "keeps defaults on the dispatcher and sibling calls at their ordinary entries" do
+      source = """
+      defmodule Mutare.CleanFunctionFixture do
+        def run(n, step \\\\ 1 + 1)
+        def run(n, step) when n > 0 do
+          doubled = helper(n) + step
+          tripled = doubled * 3
+          tripled - helper(step)
+        end
+        def run(_n, step), do: step - 1
+
+        defp helper(n) when n > 2, do: n * 2
+        defp helper(n), do: n + 1
+      end
+      """
+
+      result = Transform.transform_string_with_sites(source, mutators: @mutators)
+
+      control =
+        Transform.transform_string_with_sites(source, mutators: @mutators, clean_functions: false)
+
+      assert result.sites == control.sites
+      assert result.metamutant =~ "_original(n, step)"
+      compile_purging(@fixture, result.metamutant)
+
+      inputs = [[0], [1], [3], [5, 4], [-1, 0]]
+      selections = [0, result.next_id + 1 | Enum.map(result.sites, & &1.id)]
+
+      run = fn ->
+        Enum.map(inputs, fn args ->
+          try do
+            {:returned, apply(@fixture, :run, args)}
+          rescue
+            error -> {:raised, error.__struct__}
+          end
+        end)
+      end
+
+      expected =
+        for id <- selections, into: %{} do
+          Selector.put(id)
+          {id, run.()}
+        end
+
+      Selector.put(0)
+      Mutare.Test.Compile.string(source)
+      assert expected[0] == run.()
+
+      for site <- result.sites do
+        Mutare.Test.Compile.string(Report.patch(site, source))
+        assert expected[site.id] == run.(), "mutant #{site.id}: #{site.mutated_code}"
+      end
+    end
+  end
+
   defp transform(opts \\ []),
     do: Transform.transform_string_with_sites(@source, Keyword.put(opts, :mutators, @mutators))
+
+  defp transform_in_place(opts \\ []) do
+    Transform.transform_string_with_sites(
+      @in_place,
+      Keyword.put(opts, :mutators, [:arithmetic, :relational, :integer])
+    )
+  end
+
+  defp total_outcomes do
+    for args <- [[[1, 2]], [[5, 6], 3], [[], 0], [[:a]], [[200]]] do
+      Process.put(:clean_events, [])
+
+      result =
+        try do
+          {:returned, apply(@fixture, :total, args)}
+        rescue
+          error -> {:raised, error.__struct__}
+        end
+
+      {result, Enum.reverse(Process.get(:clean_events))}
+    end
+  end
+
+  # The uninstrumented `:do` bodies of in-place clean regions: the second clause of a
+  # region `case` whose first clause is a guarded wildcard on the dispatch variable.
+  defp clean_bodies(metamutant) do
+    metamutant
+    |> Code.string_to_quoted!()
+    |> Macro.prewalk([], fn
+      {:case, _,
+       [
+         {:mutare_active, _, _},
+         [do: [{:->, _, [[{:when, _, [{:_, _, _}, _]}], _]}, {:->, _, [[{:_, _, _}], clean]}]]
+       ]} = node,
+      acc ->
+        {node, [clean | acc]}
+
+      node, acc ->
+        {node, acc}
+    end)
+    |> elem(1)
+    |> Enum.reject(
+      &(match?({name, _, args} when is_atom(name) and is_list(args), &1) and lifted_call?(&1))
+    )
+  end
+
+  # A lifted dispatcher's region calls its relocated clean clauses instead of holding a body.
+  defp lifted_call?({name, _, _args}), do: String.ends_with?(Atom.to_string(name), "_original")
 
   defp min_outcome(value) do
     {:returned, apply(@fixture, :min, [value])}

@@ -48,11 +48,13 @@ defmodule Mutare.Transform do
        `FunctionPlan` becomes one private function (threading the active id as an
        extra arg) behind a dispatcher, each mutant a single guarded clause. Ignored,
        unselected, and poisoned mutants retain their sites but emit no code.
-       Eligible lifted groups with at least eight executable variants also receive
-       an original clause copy: a mutation elsewhere enters that uninstrumented
-       implementation. Baseline/probe and the group's full body/head id interval
-       retain the instrumented path. `CleanPath` defines the conservative relocation
-       boundary; ordinary callees still enter through their own dispatchers.
+       A function holding two or more selector sites also keeps its source beside
+       the instrumented code, as a **clean region**: a lifted group gains a copy of
+       its original clauses, a clause that stays in place a second `:do` body, and
+       one decision on the already-read id sends a mutation elsewhere to the source.
+       Baseline/probe and the region's full id interval retain the instrumented
+       path. `CleanPath` defines what may be copied; a copied call still enters its
+       callee through that callee's own dispatcher.
     5. **Render** — annotations are stripped and the tree is rendered to source
        (with a Sourceror keyword-block workaround).
 
@@ -134,6 +136,10 @@ defmodule Mutare.Transform do
       exclusion, `and`-into), shared by the lifted and `case` paths.
     * `Mutare.Transform.LiftedEmit` — the dispatcher + gated base clauses for a
       lifted group (the assembly half of `emit_function_plan/2`).
+    * `Mutare.Transform.CleanRegion` — the one decision that sends a mutation
+      elsewhere to a function's uninstrumented source, and the policy for when that
+      repays its code; `Mutare.Transform.CleanPath` is the positive, scope-tracking
+      contract for which source may be copied.
     * `Mutare.Transform.CaseClauseEmit` — the tuple-the-scrutinee delivery for
       per-clause `case` pattern/guard mutants.
     * `Mutare.Transform.FnClauseEmit` — per-clause anonymous-function delivery,
@@ -171,6 +177,9 @@ defmodule Mutare.Transform do
     Candidate.Delivery,
     CaseClauseEmit,
     ClaimState,
+    ClauseAST,
+    CleanPath,
+    CleanRegion,
     ConfigMatches,
     CountReport,
     Config,
@@ -266,7 +275,8 @@ defmodule Mutare.Transform do
           metamutant: String.t(),
           sites: [Site.t()],
           next_id: pos_integer(),
-          dispatch_var: atom()
+          dispatch_var: atom(),
+          clean_decisions: [CleanRegion.Decision.t()]
         }
   def transform_string_with_sites(source, opts \\ []) when is_binary(source) do
     {transformed, ctx} = plan_and_emit(source, opts)
@@ -286,7 +296,8 @@ defmodule Mutare.Transform do
       metamutant: metamutant,
       sites: Enum.reverse(ctx.claim.sites),
       next_id: ctx.claim.next_id,
-      dispatch_var: ctx.config.active_var
+      dispatch_var: ctx.config.active_var,
+      clean_decisions: Enum.reverse(ctx.clean_decisions)
     }
   end
 
@@ -481,6 +492,7 @@ defmodule Mutare.Transform do
       skip_ids: Keyword.get(opts, :skip_ids, MapSet.new()),
       emit_ids: Keyword.get(opts, :emit_ids),
       clean_functions: Keyword.get(opts, :clean_functions, true),
+      clean_threshold: Keyword.get(opts, :clean_threshold, %Config{}.clean_threshold),
       ignore_directives: directives,
       skip_lifting:
         opts |> Keyword.get(:skip_lifting, MapSet.new()) |> Lifting.validate_skip_lifting!(),
@@ -688,7 +700,13 @@ defmodule Mutare.Transform do
     plan =
       ModulePlan.build(statements, ctx.scope.analysis_env.mutators, ctx.config, ctx.scope.module)
 
-    emit_module_plan(plan, record_skip_matches(ctx, plan.skip_lifting_matches))
+    # The sequence's own `def`/`defp` inventory is what lets a clean copy keep a call to a
+    # sibling function (`Mutare.Transform.CleanPath`). A nested statement block re-enters
+    # here with its own, smaller inventory; the enclosing one is restored on the way out.
+    outer = ctx.scope.local_functions
+    ctx = Ctx.update_scope(ctx, &%{&1 | local_functions: CleanPath.local_functions(statements)})
+    {emitted, ctx} = emit_module_plan(plan, record_skip_matches(ctx, plan.skip_lifting_matches))
+    {emitted, Ctx.update_scope(ctx, &%{&1 | local_functions: outer})}
   end
 
   # Accumulate the `:skip_lifting` entries this statement sequence matched onto the context's
@@ -778,17 +796,23 @@ defmodule Mutare.Transform do
     bound0 = ctx.scope.active_bound
 
     {emitted, ctx} =
-      emit_annotated_clause(Analyze.annotate(clause, ctx.scope.analysis_env), ctx, delivery)
+      emit_annotated_clause(
+        Analyze.annotate(clause, ctx.scope.analysis_env),
+        clause,
+        ctx,
+        delivery
+      )
 
     {emitted, Ctx.update_scope(ctx, &%{&1 | active_bound: bound0})}
   end
 
   # A normal body-bearing def/defp clause: emit the head with the read unbound, then the
-  # body blocks (`emit_clause_body/3`).
-  defp emit_annotated_clause({vis, meta, [head, body_kw]}, ctx, delivery)
+  # body blocks (`emit_clause_body/4`). `source` is the same clause before analysis — the
+  # uninstrumented code an in-place clean body is copied from.
+  defp emit_annotated_clause({vis, meta, [head, body_kw]}, source, ctx, delivery)
        when vis in [:def, :defp] and is_list(body_kw) do
     {head, ctx} = emit(head, unbind_active(ctx))
-    {body_kw, ctx} = emit_clause_body(body_kw, ctx, delivery)
+    {body_kw, ctx} = emit_clause_body(body_kw, source, ctx, delivery)
     {{vis, meta, [head, body_kw]}, ctx}
   end
 
@@ -796,7 +820,7 @@ defmodule Mutare.Transform do
   # to hoist into, so emit the whole node with the read unbound — identical to the
   # pre-hoist behaviour. (A header's only runtime sub-positions are its default values,
   # which keep the self-contained read regardless.)
-  defp emit_annotated_clause(node, ctx, _delivery), do: emit(node, unbind_active(ctx))
+  defp emit_annotated_clause(node, _source, ctx, _delivery), do: emit(node, unbind_active(ctx))
 
   # Mark the active-id read as unbound for the enclosed emit (a head's default values run in
   # a generated head clause where no binding is in scope, so they keep the self-contained read).
@@ -810,40 +834,113 @@ defmodule Mutare.Transform do
   #
   # A lifted clause's threaded parameter is in scope in every block, so every block reads the
   # bound var and no prologue is added.
-  defp emit_clause_body(body_kw, ctx, :lifted) when is_list(body_kw) do
+  defp emit_clause_body(body_kw, _source, ctx, :lifted) when is_list(body_kw) do
     Enum.map_reduce(body_kw, ctx, fn {key, value}, ctx -> emit_block(key, value, ctx, true) end)
   end
 
   # An in-place clause's prologue binds the id in `:do` only, so its sibling blocks
   # (`rescue`/`catch`/`else`/`after`) keep the inline read and `:do` alone gets the prepended
   # prologue.
-  defp emit_clause_body(body_kw, ctx, :in_place) when is_list(body_kw) do
+  defp emit_clause_body(body_kw, source, ctx, :in_place) when is_list(body_kw) do
     Enum.map_reduce(body_kw, ctx, fn {key, value}, ctx ->
       if AST.key_atom(key) == :do,
-        do: emit_prologue_block(key, value, ctx),
+        do: emit_prologue_block(key, value, source, ctx),
         else: emit_block(key, value, ctx, false)
     end)
   end
 
   # A non-lifted clause's `:do` block: emit it with the binding in scope, then prepend the
   # prologue `<var> = :persistent_term.get(...)` — but only if the emit actually referenced the
-  # binding (`Scope.active_referenced`, reset here and set by `SelectorEmit` as the bound read
-  # is emitted). With no reference the binding would draw an "unused variable" warning, so an
+  # binding (`Scope.active_references`, reset here and counted by `SelectorEmit` as each bound
+  # read is emitted). With no reference the binding would draw an "unused variable" warning, so an
   # unmutated `:do` block is left untouched.
-  defp emit_prologue_block(key, value, ctx) do
-    ctx = Ctx.update_scope(ctx, &%{&1 | active_bound: true, active_referenced: false})
+  #
+  # The prologue's binding is also where a **clean body** can be chosen: an eligible block is
+  # emitted twice under one `Mutare.Transform.CleanRegion` decision, so a mutant elsewhere
+  # runs the source's own body instead of answering every selector in this one. Only the
+  # `:do` block is a region — its sibling blocks keep their self-contained selectors, which
+  # stay reachable whichever body ran.
+  defp emit_prologue_block(key, value, source, ctx) do
+    first_id = ctx.claim.next_id
+    emitted_before = ctx.claim.emitted
+    ctx = Ctx.update_scope(ctx, &%{&1 | active_bound: true, active_references: 0})
     {value, ctx} = emit(value, ctx)
 
-    value =
-      if ctx.scope.active_referenced,
-        do:
-          prepend_statement(
-            value,
-            LiftedEmit.active_read(ctx.config.active_var, ctx.config.runtime_namespace)
-          ),
-        else: value
+    if ctx.scope.active_references > 0 do
+      region = %{
+        delivery: :in_place,
+        clause: source,
+        variants: ctx.claim.emitted - emitted_before,
+        sites: ctx.scope.active_references
+      }
 
-    {{key, value}, ctx}
+      {verdict, ctx} =
+        clean_verdict(ctx, region, fn ->
+          CleanPath.check_body(source, ctx.scope.local_functions)
+        end)
+
+      value =
+        case verdict do
+          :clean ->
+            CleanRegion.select(
+              ctx.config.active_var,
+              clean_range(ctx, first_id),
+              value,
+              source_do_block(source)
+            )
+
+          _other ->
+            value
+        end
+
+      read = LiftedEmit.active_read(ctx.config.active_var, ctx.config.runtime_namespace)
+      {{key, prepend_statement(value, read)}, ctx}
+    else
+      {{key, value}, ctx}
+    end
+  end
+
+  defp source_do_block({_vis, _meta, [_head, body_kw]}) do
+    {_key, body} = Enum.find(body_kw, fn {key, _body} -> AST.key_atom(key) == :do end)
+    body
+  end
+
+  # Whether a region gets a clean implementation. `check` runs only once the cheap
+  # conditions hold. Every outcome is recorded as a `CleanRegion.Decision` for the
+  # eligibility diagnostic; the count sink emits no clean code (it renders nothing) and
+  # records nothing.
+  defp clean_verdict(%Ctx{claim: %ClaimState{sink: :count}} = ctx, _region, _check),
+    do: {:disabled, ctx}
+
+  defp clean_verdict(%Ctx{config: %Config{clean_functions: false}} = ctx, _region, _check),
+    do: {:disabled, ctx}
+
+  defp clean_verdict(ctx, region, check) do
+    verdict =
+      if CleanRegion.worthwhile?(region.sites, ctx.config.clean_threshold) do
+        with :ok <- check.(), do: :clean
+      else
+        :below_threshold
+      end
+
+    {name, call_meta, args} = ClauseAST.clause_head_call(region.clause)
+
+    decision = %CleanRegion.Decision{
+      function: {name, if(is_list(args), do: length(args), else: 0)},
+      delivery: region.delivery,
+      line: Keyword.get(call_meta, :line),
+      variants: region.variants,
+      sites: region.sites,
+      verdict: verdict
+    }
+
+    {verdict, %{ctx | clean_decisions: [decision | ctx.clean_decisions]}}
+  end
+
+  # The region's ids in runtime space: a namespaced build selects by file-local id.
+  defp clean_range(ctx, first_id) do
+    offset = if ctx.config.runtime_namespace, do: ctx.config.id_origin - 1, else: 0
+    {first_id - offset, ctx.claim.next_id - 1 - offset}
   end
 
   # Any other block: bound iff the clause is lifted (its dispatcher parameter is in scope in
@@ -955,10 +1052,11 @@ defmodule Mutare.Transform do
     # Source clauses with in-place body selectors — claims the body ids first. The body
     # reads the threaded `mutare_active` parameter directly (the dispatcher binds it);
     # head default values keep the self-contained read (they ride onto the dispatcher).
-    # `active_referenced` is reset first so it answers, after the emit, whether any body
+    # `active_references` is reset first so it answers, after the emit, whether any body
     # selector took that parameter (see below).
-    ctx = Ctx.update_scope(ctx, &%{&1 | active_referenced: false})
+    ctx = Ctx.update_scope(ctx, &%{&1 | active_references: 0})
     {orig_clauses, ctx} = emit_clauses(plan.clauses, ctx, :lifted)
+    body_sites = ctx.scope.active_references
 
     # Then the lifted candidates, in order, each claiming its id. Non-skipped ones
     # yield `{id, clause_index, mutated_clause | :drop}`; a skipped (poisoned) id
@@ -975,7 +1073,7 @@ defmodule Mutare.Transform do
         end
       )
 
-    if claimed == [] and not ctx.scope.active_referenced do
+    if claimed == [] and body_sites == 0 do
       # All lifted variants were withheld, and no body needs the dispatcher's
       # active-id parameter. Keep the original function, including super/defaults.
       {orig_clauses, ctx}
@@ -992,13 +1090,21 @@ defmodule Mutare.Transform do
 
       # Include body/default ids as well as lifted ids. Holes from static selection or
       # poison may take the slower path, but must never hide an executable mutation.
-      active_range =
-        if ctx.config.clean_functions and ctx.claim.sink == :render and
-             ctx.claim.emitted - emitted_before >= 8 and
-             Mutare.Transform.CleanPath.eligible?(plan) do
-          offset = if ctx.config.runtime_namespace, do: ctx.config.id_origin - 1, else: 0
-          {first_id - offset, ctx.claim.next_id - 1 - offset}
-        end
+      # Each lifted mutant costs the dispatch a gate or an exclusion of its own, so it counts
+      # beside the body selectors as a site the clean clauses avoid.
+      region = %{
+        delivery: :lifted,
+        clause: hd(plan.clauses),
+        variants: ctx.claim.emitted - emitted_before,
+        sites: body_sites + length(claimed)
+      }
+
+      {verdict, ctx} =
+        clean_verdict(ctx, region, fn ->
+          CleanPath.check_function(plan, ctx.scope.local_functions)
+        end)
+
+      active_range = if verdict == :clean, do: clean_range(ctx, first_id)
 
       {LiftedEmit.assemble(plan, orig_clauses, claimed, group, ctx.config, records, active_range),
        ctx}

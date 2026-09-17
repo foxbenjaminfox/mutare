@@ -24,6 +24,7 @@ defmodule Mutare.Transform.Config do
           skip_ids: MapSet.t(),
           emit_ids: MapSet.t(pos_integer()) | nil,
           clean_functions: boolean(),
+          clean_threshold: pos_integer(),
           ignore_directives: Mutare.Ignore.Directives.t(),
           skip_lifting: MapSet.t(Mutare.Lifting.skip_entry()),
           warnings: boolean(),
@@ -45,8 +46,12 @@ defmodule Mutare.Transform.Config do
             # Static run selection: reserve every id/site, but emit only these ids.
             # nil retains the unrestricted metamutant; distinct from poison skip_ids.
             emit_ids: nil,
-            # Internal experiment control; normal builds use clean inactive lifted functions.
+            # Internal experiment control; normal builds emit clean regions.
             clean_functions: true,
+            # The fewest selector sites a region must hold before it gets a clean
+            # implementation (`Mutare.Transform.CleanRegion.worthwhile?/2`). Internal, like
+            # `clean_functions`.
+            clean_threshold: 2,
             # Match after Site construction so custom attribution and variant labels apply.
             ignore_directives: %Mutare.Ignore.Directives{},
             skip_lifting: MapSet.new(),

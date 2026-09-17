@@ -135,7 +135,9 @@ defmodule Mutare.TransformTest do
     %{metamutant: meta, sites: sites} =
       Mutare.Transform.transform_string_with_sites(
         "defmodule N do\n  def f(a, b), do: a + b == 0\nend\n",
-        mutators: @probe
+        mutators: @probe,
+        # A clean region would add its own `case mutare_active do`; this pin counts selectors.
+        clean_functions: false
       )
 
     # + -> - (1) and == -> != (1)

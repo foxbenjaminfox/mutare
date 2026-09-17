@@ -3,25 +3,55 @@
 # See bench/README.md for controls and interpretation.
 
 defmodule Mutare.AliasAnalysisBench do
-  @kernels [:tuple, :binary, :selectors, :clauses, :cases, :pipelines]
+  @kernels [
+    :tuple,
+    :binary,
+    :selectors,
+    :clauses,
+    :cases,
+    :pipelines,
+    :bindings,
+    :body_only,
+    :callback,
+    :leaf1,
+    :leaf2,
+    :leaf3,
+    :leaf4
+  ]
   @counts [
     tuple: 500_000,
     binary: 500_000,
     selectors: 100_000,
     clauses: 500_000,
     cases: 250_000,
-    pipelines: 30_000
+    pipelines: 30_000,
+    bindings: 250_000,
+    body_only: 250_000,
+    callback: 250_000,
+    leaf1: 500_000,
+    leaf2: 500_000,
+    leaf3: 500_000,
+    leaf4: 500_000
   ]
+  # The leaf kernels share one marker: their "inside" mutation lives in `leaf_one/2`, so
+  # for the larger leaves that state is one more "elsewhere" sample.
   @markers %{
     tuple: "a + 1",
     binary: "value + 1",
     selectors: "x + 2",
     clauses: "x + 3",
     cases: "value + 4",
-    pipelines: "x + 5"
+    pipelines: "x + 5",
+    bindings: "x + 11",
+    body_only: "x + 12",
+    callback: "acc + 13",
+    leaf1: "x + y",
+    leaf2: "x + y",
+    leaf3: "x + y",
+    leaf4: "x + y"
   }
 
-  def run(root, rounds, experiment \\ :alias) when rounds > 0 do
+  def run(root, rounds, experiment \\ :alias, clean_opts \\ []) when rounds > 0 do
     root = Path.expand(root)
     File.mkdir_p!(root)
     source = source()
@@ -30,9 +60,9 @@ defmodule Mutare.AliasAnalysisBench do
       file: "lib/kernel.ex",
       runtime_namespace: "lib/kernel.ex",
       mutators:
-        if(experiment == :clean,
-          do: [:arithmetic, :relational, :integer],
-          else: [:arithmetic, :relational]
+        if(experiment == :alias,
+          do: [:arithmetic, :relational],
+          else: [:arithmetic, :relational, :integer]
         )
     ]
 
@@ -45,11 +75,11 @@ defmodule Mutare.AliasAnalysisBench do
     sources = [{"original", source}, {"metamutant", meta}]
 
     sources =
-      if experiment == :clean do
+      if experiment in [:clean, :clean_alias] do
         %{metamutant: clean, sites: clean_sites} =
           Mutare.Transform.transform_string_with_sites(
             source,
-            options ++ [clean_functions: true]
+            options ++ [clean_functions: true] ++ clean_opts
           )
 
         unless sites == clean_sites, do: raise("clean path changed mutation identities")
@@ -189,10 +219,19 @@ defmodule Mutare.AliasAnalysisBench do
 
   defp alternating(round, experiment) do
     choices =
-      if experiment == :alias do
-        for shape <- ["original", "metamutant"], enabled? <- [true, false], do: {shape, enabled?}
-      else
-        for shape <- ["original", "metamutant", "clean"], do: {shape, false}
+      case experiment do
+        :alias ->
+          for shape <- ["original", "metamutant"],
+              enabled? <- [true, false],
+              do: {shape, enabled?}
+
+        :clean ->
+          for shape <- ["original", "metamutant", "clean"], do: {shape, false}
+
+        # Do the two effects compose? The clean build runs source code, which is where the
+        # alias pass finds `private_append`.
+        :clean_alias ->
+          for shape <- ["original", "clean"], enabled? <- [true, false], do: {shape, enabled?}
       end
 
     if rem(round, 2) == 1, do: choices, else: Enum.reverse(choices)
@@ -349,6 +388,53 @@ defmodule Mutare.AliasAnalysisBench do
         next = [value, 1, 2, 3] |> Enum.map(fn x -> x + 5 end) |> Enum.sum()
         pipelines_loop(n - 1, next)
       end
+
+      def bindings(n, seed), do: bindings_loop(n, seed)
+      defp bindings_loop(0, x), do: x
+      defp bindings_loop(n, x) do
+        adjusted = x + 11
+        scaled =
+          case rem(n, 3) do
+            0 -> adjusted * 2
+            1 ->
+              local = adjusted - 3
+              local * 2
+            _ -> adjusted
+          end
+        bindings_loop(n - 1, rem(scaled, 1_000_003))
+      end
+
+      def body_only(n, seed), do: body_only_loop(n, seed)
+      defp body_only_loop(n, x) do
+        if n > 0 do
+          y = x + 12
+          z = y * 3
+          body_only_loop(n - 1, rem(z, 1_000_003))
+        else
+          x
+        end
+      end
+
+      def callback(n, seed) do
+        Enum.reduce(1..n, seed, fn i, acc -> rem(acc + 13 + i, 1_000_003) end)
+      end
+
+      # mutare:ignore-start the drivers hold no mutant, so every build runs the same loop
+      def leaf1(n, seed), do: leaf_drive(n, seed, 1)
+      def leaf2(n, seed), do: leaf_drive(n, seed, 2)
+      def leaf3(n, seed), do: leaf_drive(n, seed, 3)
+      def leaf4(n, seed), do: leaf_drive(n, seed, 4)
+      defp leaf_drive(0, x, _leaf), do: x
+      defp leaf_drive(n, x, 1), do: leaf_drive(n - 1, leaf_one(x, 3), 1)
+      defp leaf_drive(n, x, 2), do: leaf_drive(n - 1, leaf_two(x, 3), 2)
+      defp leaf_drive(n, x, 3), do: leaf_drive(n - 1, leaf_three(x, 3), 3)
+      defp leaf_drive(n, x, 4), do: leaf_drive(n - 1, leaf_four(x, 3), 4)
+      # mutare:ignore-end
+
+      defp leaf_one(x, y), do: x + y
+      defp leaf_two(x, y), do: x + y + y
+      defp leaf_three(x, y), do: x + y + y + y
+      defp leaf_four(x, y), do: x + y + y + y + y
     end
     """
   end
@@ -364,6 +450,16 @@ case System.argv() do
   [output, rounds, "clean"] ->
     Mutare.AliasAnalysisBench.run(output, String.to_integer(rounds), :clean)
 
+  [output, rounds, "clean_alias"] ->
+    Mutare.AliasAnalysisBench.run(output, String.to_integer(rounds), :clean_alias)
+
+  [output, rounds, "clean", threshold] ->
+    Mutare.AliasAnalysisBench.run(output, String.to_integer(rounds), :clean,
+      clean_threshold: String.to_integer(threshold)
+    )
+
   _ ->
-    raise("usage: mix run bench/alias_analysis.exs OUTPUT [ROUNDS [clean]]")
+    raise(
+      "usage: mix run bench/alias_analysis.exs OUTPUT [ROUNDS [clean [THRESHOLD] | clean_alias]]"
+    )
 end

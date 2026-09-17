@@ -84,7 +84,9 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
     candidate by one of two mechanisms: an **in-place `case` selector** (body expressions) or
     **function lifting + a dispatcher** (guards, head patterns, clause structure — where a `case`
     is illegal). Placement is positional; mutators never choose. `Overlap` drops a leaf mutant a
-    call rewrite already covers.
+    call rewrite already covers. `CleanRegion` keeps a function's uninstrumented source beside
+    either delivery and sends a mutation elsewhere to it with one decision; `CleanPath` is the
+    positive, scope-tracking contract for what may be copied — NOTES "Clean regions".
 - **`Mutare.Schema`** — runs `Transform` across discovered files, assigning globally-unique
   report ids via a two-phase parallel build (count → prefix-sum → render). `Mutare.RuntimeId`
   separates those numbers from stable per-file runtime identities; see NOTES "Stable per-file

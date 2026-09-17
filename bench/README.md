@@ -182,13 +182,25 @@ alias analysis **disabled** throughout:
 ERL_FLAGS='+S 2:2' mix run bench/alias_analysis.exs /tmp/mutare-clean 5 clean
 ```
 
+A fourth argument sets the clean experiment's site threshold (`clean 1` gives every
+eligible region a clean implementation, including the single-site leaves). `clean_alias`
+crosses the two: original and clean builds, each with alias analysis on and off, since a
+clean binary loop is source code again and that is where `private_append` applies.
+
+```sh
+ERL_FLAGS='+S 2:2' mix run bench/alias_analysis.exs /tmp/mutare-clean-alias 5 clean_alias
+```
+
 Both experiments exercise tuple updates, binary appending, many body selectors,
-recursive clause dispatch, case dispatch, and pipelines with callbacks. The alias
+recursive clause dispatch, case dispatch, and pipelines with callbacks, and then what
+the first clean-path contract refused: fresh and `case`-local bindings (`bindings`), a
+recursive function no family lifts (`body_only`), a closure created once and invoked per
+element (`callback`), and leaf functions of one to four selector sites called from an
+ignored driver (`leaf1`…`leaf4`). The leaves locate the policy's crossover and expose
+the fixed cost every instrumented activation pays whatever its body holds. The alias
 experiment uses arithmetic/relational mutations; the clean experiment also uses
 integer mutations so literal function heads require lifting. Clean emission must
 retain exactly the same site metadata as ordinary emission; the script checks this.
-Conservative eligibility may leave individual kernels unchanged, which makes them
-useful controls.
 
 Each build runs in a fresh VM, measuring baseline, probe, an active mutant elsewhere
 in the same file, an active mutant in another file, and a safe body mutant inside
@@ -216,6 +228,27 @@ establish whether either optimization survived compilation; inspect the saved BE
 **Measurements live in [NOTES.md](../NOTES.md), not here.** Record dated results and
 the decisions they inform there; keep raw output local rather than checking in a
 second table that becomes stale when generation changes.
+
+## Clean-path eligibility
+
+`clean_eligibility.exs` answers why functions miss the clean path. It transforms every
+source under the given roots with the site threshold lowered to one and tabulates what
+the emitter decided for each candidate region (`Mutare.Transform.CleanRegion.Decision`):
+eligible or not per delivery, regions by selector-site count, and the first construct
+outside the `Mutare.Transform.CleanPath` contract, ranked by how many regions it cost.
+
+```sh
+mix run bench/clean_eligibility.exs lib
+mix run bench/clean_eligibility.exs deps/req/lib deps/mint/lib
+CLEAN_WHERE='{:call, {:put_in, 2}}' mix run bench/clean_eligibility.exs deps/req/lib
+```
+
+`CLEAN_WHERE` takes one reason exactly as printed and lists the regions refused for it.
+Remote calls are accepted only into modules the scanning VM can load, so run it where
+the sources' own application and dependencies are compiled; a root whose modules are
+absent reports them as `{:remote, …}` refusals that a real run would not make. Read a
+frequent reason as a question about the contract, not as a defect: an unknown macro or
+a `use`-injected helper is refused on purpose.
 
 ## Inspecting dispatch instructions
 

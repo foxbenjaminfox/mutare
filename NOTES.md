@@ -10675,6 +10675,10 @@ Neither inference nor verification is proposed for restoration.
 
 #### Clean inactive-function copies and pure self-recursion
 
+*The eligibility rules, the eight-variant floor, and the lifted-only scope recorded here
+were the first version; "Clean regions" (2026-09-17, below) replaced all three. The
+recursion and selection-stability reasoning still holds.*
+
 **Implementation boundary.** This first version reuses existing lifted dispatchers.
 It adds one raw clause group, so C+M becomes 2C+M, only after at least eight variants
 were actually emitted and `CleanPath` accepts the source. Eight is a conservative
@@ -10823,3 +10827,122 @@ The full suite completed in 659 seconds: **91 doctests, 19 properties, 3228 test
 0 failures, 1 skipped**. After the final `in` purity refinement and its runtime
 protocol regression, the focused clean-path/recorder/helper/dump run passed
 **57 tests**. Benchmark semantic checks and their narrower scope are recorded above.
+
+### Clean regions: scope-tracked eligibility and in-place bodies (2026-09-17)
+
+The first clean path (above) reached little code. A diagnostic, not intuition, said why,
+so it came first: `bench/clean_eligibility.exs` transforms a source tree with the policy
+threshold at one and tabulates each candidate region's verdict and the first construct
+that refused it (`Mutare.Transform.CleanRegion.Decision`, carried out of the transform on
+`Ctx.clean_decisions`). Share of **emitted variants** inside an eligible region:
+
+| Corpus | Lifted, first contract | Lifted, now | In place, first contract | In place, now |
+| --- | ---: | ---: | ---: | ---: |
+| Mutare's `lib/` (214 files, 31.8k variants) | 13% | 96% | 0% | 99% |
+| Eight deps (jason, req, mint, credo, finch, nimble_options, ex_doc, owl; 386 files, 48k variants) | 10% | 90% | 0% | 87% |
+
+Even that 13% overstates the first version: its eight-variant floor applied on top. The
+losses were ordinary Elixir, not exotic code — a fresh local binding, a sibling call,
+`user.name`, string interpolation, `%Struct{}`, `raise`, `for`, a closure — and the largest
+single one was structural: a function no family lifts had no clean path at all, and those
+are 57–64% of all regions.
+
+#### What may be copied
+
+`CleanPath` stays a **positive** contract and gained a lexical scope. It has to be
+positive even for a body duplicated inside its own function, where relocation is no
+concern: a copy that does not compile belongs to no mutant, so `Manifest` cannot attribute
+the error and poison recovery cannot save the single build. The scope is an
+under-approximation by design — a lost binding refuses a copy, an invented one could
+admit a zero-arity macro — and each rule was checked against the compiler before it was
+written down (the probe is reproduced in `clean_path_test.exs`, "lexical scope"). The
+asymmetries are the part worth remembering: sibling operands never see each other's
+bindings but what follows does; a `case` scrutinee's and an `if` condition's bindings
+reach the clauses *and* what follows; a short-circuit's left side reaches its right, whose
+own bindings go nowhere; `with`'s `else` sees none of the steps' bindings; a bitstring
+size may read a segment to its left, and a pin inside it names an outer variable.
+
+A bare call is a local function only if the module's own literal `def`/`defp` inventory
+names it (`CleanPath.local_functions/1`, bound per statement sequence on
+`Scope.local_functions`). The argument that makes this sound is the compiler's: one
+name/arity cannot be both defined and imported, nor defined as function and macro, so a
+compiling call to an inventoried name is that function. A local macro, a `defguard`, a
+generated `def`, and a `use`-injected helper are all absent — credo's `format_issue/2`
+alone accounts for 108 refused regions in the deps corpus, correctly. The inventory reads
+heads through `ModulePlan.clause_signature/1` so the whole-head `def unquote(head)` is not
+mistaken for a function called `unquote`.
+
+Closures needed no new reasoning about selection time. An instrumented closure already
+captures the enclosing function's bound id, so its body selectors answer to the selection
+at function entry; a raw closure in a clean body is the same answer. That is also why the
+report's "choose a clean closure at creation time" was not built: once `fn` is inside the
+contract, a closure in an inactive eligible function *is* raw, which covers the common
+case without a second mechanism.
+
+Three admissions rest on an argument rather than on syntax. **Defaults**: they stay on the
+public head either way, so a lifted group's clean clauses take only the pattern.
+**`Logger` macros** read the caller's function for metadata, but lifting already reports
+a generated name there, so a clean copy changes nothing a baseline could depend on.
+**`put_in/2` and its kin**: the path argument reads as the field and `Access` calls it is
+written with. What stays refused, and why it was not worth more: `__STACKTRACE__`,
+`__ENV__`, and `Process.info` (under half a percent of regions), `super`, `quote`, lexical directives,
+record and guard macros, anything a `use` injects.
+
+#### In-place bodies, and why only `:do`
+
+A clause that stays in place already binds the id once in a `:do` prologue, so that is
+where its region goes: one `CleanRegion.select/4` around the emitted body and the source
+body. The interval is the ids claimed while that block was emitted. `rescue`/`catch`/
+`else`/`after` beside it keep their self-contained selectors and stay reachable whichever
+body ran, which is what lets the region ignore them; wrapping the implicit `try` whole
+would have changed how those blocks read the id for no measured gain. Lifted and in-place
+regions share the `case`, the range translation, and the policy. `Manifest` reads the
+region `case` as a selector hosting no mutant (neither pattern is a positive integer);
+`clean_function_test.exs` pins manifest equality with and without regions.
+
+#### The policy counts sites, and the floor is two
+
+The cost of a region is one decision on an already-bound id; what it saves is one selector
+per *site executed*, whatever number of variants the site hosts (an integer literal is one
+site with three variants). `Scope.active_references` was already counting reads of the
+bound id to decide whether a prologue is needed, so it became a count instead of a flag,
+and a lifted group adds one per claimed head mutant (each costs the dispatch a gate or an
+exclusion). The leaf kernels put the crossover between one and two sites: with one, the
+decision costs what the selector did. 14% of regions in Mutare's `lib/` hold a single
+site (2% of variants) and get nothing.
+
+Cold self-hosted compile (198 files, 32.4k mutants, `mix compile --force` in the kept
+sandbox, three alternating rounds, CPU seconds because wall time swung 24–50 s under load):
+
+| Build | user + sys | BEAM bytes | source bytes |
+| --- | ---: | ---: | ---: |
+| no clean regions | 260 s | 9.23 MB | 14.4 MB |
+| clean regions, two-site floor | 281 s (+8%) | 10.84 MB (+17%) | 16.8 MB (+16%) |
+
+The metamutant compiled on the first attempt, which with 2,300 regions is the evidence
+that matters for the contract.
+
+#### Not taken from the same review
+
+Clean bodies for the unaffected clauses of the *active* function (one function in one
+run); a clean path for a non-probe baseline (one run in N); an opt-in for SSA alias
+analysis. `alias_analysis.exs … clean_alias` measures whether the two effects compose, and
+they do: with a mutant elsewhere the clean binary-append loop ran in 16.8 ms with alias
+analysis off and 7.9 ms with it on (the original source: 15.9 and 5.2), where the
+instrumented loop had gained only 14.9 → 10.3 (2026-09-15). The fixture's compile rose
+about 20% with the pass on. Three process-level rounds on a loaded machine, so indicative
+only — but it strengthens the case for the opt-in, which is a product decision about the
+option surface that these measurements should inform rather than pre-empt.
+
+#### Validation
+
+`transform_clean_property_test.exs` is differential and total over selections: for each
+generated module the metamutant with every eligible region clean and the one with none
+record the same sites and agree on every probed call under baseline, every mutant id, and
+an id nobody owns; a companion test pins that the generator does produce clean regions of
+both deliveries, so the property cannot pass vacuously. `clean_function_test.exs` compares
+every mutant of an in-place body (bindings, a closure, interpolation, a bitstring, a
+default, a sibling call into a lifted function, a `rescue` block beside the region) with
+its separately patched source, including side effects and exceptions, and checks baseline
+coverage is identical with and without regions.
+
