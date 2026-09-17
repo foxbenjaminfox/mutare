@@ -109,6 +109,23 @@ defmodule Mutare.Transform.NodeRangeTest do
       node = Sourceror.parse_string!(~s|~s"""\nhi\n"""|)
       assert NodeRange.get(node) == Sourceror.get_range(node)
     end
+
+    # ...and the range it passes through is *right*, which is what makes the passthrough
+    # safe. Sourceror < 1.12.3 sized a heredoc sigil's end as the sigil's own start column
+    # plus three, so a sigil that did not open in the closing fence's column (`x = ~s"""`,
+    # `@moduledoc ~S"""` — the ordinary shapes) ranged past the end of the fence line by the
+    # offset between the two. The `~> 1.12.3` floor is what this asserts against; the
+    # corresponding survivor diff is pinned in `report_test`.
+    test "a heredoc sigil offset from its closing fence ends at the fence" do
+      {:=, _, [_var, sigil]} = Sourceror.parse_string!(~s|x = ~s"""\nhi\n"""|)
+
+      # The sigil opens at column 5 of line 1; the fence occupies columns 1..3 of line 3,
+      # so the exclusive end is 3:4 — not 3:8, the pre-1.12.3 `start_column + 3`.
+      assert NodeRange.get(sigil) == %Sourceror.Range{
+               start: [line: 1, column: 5],
+               end: [line: 3, column: 4]
+             }
+    end
   end
 
   # The same tokenizer collapse (`\"` stored as `"`) hits interpolated strings,

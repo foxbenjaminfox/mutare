@@ -216,6 +216,76 @@ defmodule Mutare.ReportTest do
     end
   end
 
+  # Regression: a heredoc sigil (`~s"""`/`~S"""`) that does not open in its closing
+  # fence's column — `x = ~s"""`, `@moduledoc ~S"""`, every ordinary shape — ranged
+  # past the end of the fence line under Sourceror < 1.12.3, which sized the end as
+  # the *sigil's* start column plus three. The survivor diff then swallowed whatever
+  # followed the fence and, because `Report.diff/2` renders whole lines, dropped the
+  # `+` side entirely: the reader saw three deleted lines and no replacement at all.
+  # Fixed upstream in 1.12.3, which `mix.exs` floors at. `NodeRange` never corrected
+  # this quirk, so the floor is the whole guarantee — hence the pin.
+  # See `Mutare.Transform.NodeRange`.
+  describe "diff/2 of a heredoc sigil" do
+    @hd_source ~S'''
+    defmodule M do
+      def f do
+        x = ~s"""
+        hello
+        """
+
+        x
+      end
+    end
+    '''
+
+    defp hd_site(mutated_code) do
+      %{sites: sites} =
+        Mutare.Transform.transform_string_with_sites(@hd_source,
+          mutators: [Mutare.Mutators.StringSigilLiteral]
+        )
+
+      Enum.find(sites, &(&1.mutated_code == mutated_code))
+    end
+
+    test "the empty-string swap replaces the whole heredoc and keeps a + side" do
+      assert Report.diff(hd_site(~S{""}), @hd_source) ==
+               Enum.join(
+                 [
+                   ~S|-    x = ~s"""|,
+                   ~S|-    hello|,
+                   ~S|-    """|,
+                   ~S|+    x = ""|
+                 ],
+                 "\n"
+               )
+    end
+
+    test "the replacement stops at the fence, leaving the blank line and body" do
+      assert Report.patch(hd_site(~S{"mutare"}), @hd_source) == ~S"""
+             defmodule M do
+               def f do
+                 x = "mutare"
+
+                 x
+               end
+             end
+             """
+    end
+
+    test "every heredoc-sigil mutant's patch re-parses as valid Elixir" do
+      %{sites: sites} =
+        Mutare.Transform.transform_string_with_sites(@hd_source,
+          mutators: [Mutare.Mutators.StringSigilLiteral]
+        )
+
+      assert sites != []
+
+      for site <- sites do
+        assert {:ok, _} = Code.string_to_quoted(Report.patch(site, @hd_source))
+      end
+    end
+  end
+
   # Interpolated atoms and charlists mutate as a whole (`AtomLiteral`/`CharlistLiteral`);
   # their diffs must patch the full literal. The keyword-shorthand key form (`"k#{x}": v`)
   # is the sharp edge: its range must cover the trailing colon and both diff sides render

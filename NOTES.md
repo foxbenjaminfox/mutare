@@ -1642,12 +1642,22 @@ refs), and git does not recognise a repository without a `refs/` tree. The sandb
 deps then read as "lock mismatch" and the run died before the one compile. The v0.1.0
 release smoke test found it. `walk/2` now emits an empty directory as its own `:directory`
 entry, `mirror_source` creates it, and `prune_path` leaves a managed empty directory alone.
-### Keyword-`do:` normalization (Sourceror workaround) `[done, watch]`
-Sourceror's formatter raises when rendering `def f, do: <case>` (keyword block
-whose value is a multi-line `case`). `Mutare.Transform.Render` flips every
-keyword-format key back to a plain atom key before rendering (and `block_wrap`s
-a bare selector `case` for the same reason). Metamutant only; the report is
-unaffected. Keep an eye on Sourceror releases in case this becomes unnecessary.
+### Keyword-`do:` normalization (formatter workaround) `[done, watch Elixir]`
+Rendering `def f, do: <case>` (a keyword block whose value is a multi-line `case`)
+raises. `Mutare.Transform.Render` flips every keyword-format key back to a plain
+atom key before rendering (and `block_wrap`s a bare selector `case` for the same
+reason); `normalize_for_options/1` then repairs the one shape that unwrapping
+breaks — a `for` whose option list puts `do:` before `into:`, which Sourceror
+re-renders in block form with `into` stranded inside the body. Metamutant only;
+the report is unaffected.
+
+**Watch Elixir, not Sourceror.** `Sourceror.to_string/2` only assembles options
+and delegates to `Code.quoted_to_algebra/2`, so every rendering quirk above is
+the *stdlib* formatter's and moves on Elixir's release cadence. Sourceror
+1.12.0→1.12.3 changed `range.ex` and the parse options and left rendering
+untouched, which is what an audit against 1.12.3 (2026-09-17) confirmed. The
+earlier "keep an eye on Sourceror releases" here pointed the watch at the wrong
+project.
 
 ### Non-body operator positions
 Context is classified *positively* by `Mutare.Transform`'s `analyze/3`, a
@@ -8892,6 +8902,21 @@ floor — a consumer on a cooldown policy cannot resolve Mutare until 1.12.3 cle
 non-identity, and range-faithful") is what caught this; core's own `report_test.exs` regression
 (`String.split(x, ",", trim: true)`) now covers it directly, the floor guaranteeing which
 Sourceror it runs against.
+
+**1.12.3 fixed a third range, and that one was never worked around `[2026-09-17 follow-up]`.**
+The release also rewrote the **heredoc-sigil** end position. Before it, a `~s"""`/`~S"""`/`~r"""`
+ended at the *sigil's own* start column plus three — right only when the sigil opens in the closing
+fence's column, wrong by the offset between them for every ordinary shape (`x = ~s"""`,
+`@moduledoc ~S"""`). `NodeRange` never corrected this one: its sigil clause bails out on a heredoc
+(`close_delimiter/1` returns `nil` for the fence) because a heredoc cannot escape its delimiter, so
+the escaped-delimiter under-count it exists to fix cannot arise there — and the over-count it did
+have was simply never noticed. The floor is therefore the whole guarantee, which is why the pins are
+worth their weight: `report_test`'s "diff/2 of a heredoc sigil" (under 1.12.2 a `StringSigilLiteral`
+survivor's diff printed its three `-` lines and **no `+` line at all** — `Report.diff/2` renders whole
+lines, and the range ran past the fence into the blank line that followed, so the replacement never
+appeared) and `node_range_test`'s "a heredoc sigil offset from its closing fence ends at the fence"
+(the passthrough test beside it asserts `NodeRange.get == Sourceror.get_range`, which stayed true
+while the shared answer was wrong — a tautology is not a pin).
 
 ### `clause_drop` was always-on and unregistered `[fixed]`
 `clause_drop` shipped as the one structural built-in outside the `Mutare.Mutators` `@registry`,
