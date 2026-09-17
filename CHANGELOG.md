@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-17
+
+### Fixed
+
+- **Mutant locations are correct again under Sourceror 1.12.3.** Sourceror used to
+  size a bare `true`/`false`/`nil` one column too wide, and Mutare subtracted that
+  phantom column to compensate. Sourceror 1.12.3 fixed the over-count upstream, so
+  the subtraction began cutting a real character instead: a survivor whose range
+  ends at one of those three rendered its diff a character short (`trim: tru`,
+  closing paren left behind), and the JSON/SARIF reporters emitted the short
+  `endColumn`. The compensation is gone, and `sourceror` is now floored at
+  `~> 1.12.3` so there is one upstream behaviour rather than two. Mutation
+  behaviour was never affected — a metamutant is built from the AST, never the
+  range — and reports on Sourceror 1.12.2 and earlier were correct as they stood.
+
 ### Changed
 
 - **Mutant runs execute far more of the target at its original speed.** A function
@@ -244,7 +259,8 @@ Initial release.
   any label a mutator declares) to your own functions, with the mutators'
   value-aware reaction: `{MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout}`.
 
-[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/foxbenjaminfox/mutare/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/foxbenjaminfox/mutare/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/foxbenjaminfox/mutare/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/foxbenjaminfox/mutare/compare/v0.1.0...v0.1.1

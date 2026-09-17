@@ -25,8 +25,6 @@ defmodule Mutare.Transform.Analyze.Attach do
   alias Mutare.Mutator.Mutation.Attribution
   alias Mutare.Transform.{Candidate, Meta, NodeRange}
 
-  @bare_atoms [true, false, nil]
-
   # Offer `raw` to the mutators; if any fire, attach their candidates — built from
   # `raw`, so the diff renders the author's node — to `subject`, the already-analyzed
   # node whose children carry their own selectors. `subject` *is* `raw` at most sites;
@@ -83,9 +81,8 @@ defmodule Mutare.Transform.Analyze.Attach do
   # mislocate a site: a clause that isn't rangeable (no `Mutare.Site` could be built from it) or one
   # whose span escapes the offered node's footprint. Either is a mutator bug; warn and fall back to
   # attributing the site to the offered node (the pre-attribution behaviour) rather than emit a diff
-  # pointing at unrelated source or crash on a nil range. The range is normalized here and carried
-  # with the candidate, so delivery does not recompute a Sourceror range and reintroduce a tolerated
-  # bare-atom over-count. `nil` (no attribution) is the common path.
+  # pointing at unrelated source or crash on a nil range. The clause's range is carried with the
+  # candidate, so delivery does not recompute it. `nil` (no attribution) is the common path.
   defp checked_attribution(nil, _offered_node, _offered_range), do: {nil, nil}
 
   defp checked_attribution(
@@ -99,13 +96,8 @@ defmodule Mutare.Transform.Analyze.Attach do
         {nil, nil}
 
       clause_range ->
-        normalized_range =
-          clause_range
-          |> trim_trailing_bare_atom_overrun(clause)
-          |> trim_multiline_not_overrun(clause)
-
-        if within?(normalized_range, offered_range) do
-          {attribution, normalized_range}
+        if within?(clause_range, offered_range) do
+          {attribution, clause_range}
         else
           warn_attribution(offered_node, "its clause escapes the mutated node's span")
           {nil, nil}
@@ -125,92 +117,6 @@ defmodule Mutare.Transform.Analyze.Attach do
 
   defp within?(inner, outer) do
     pos(inner.start) >= pos(outer.start) and pos(inner.end) <= pos(outer.end)
-  end
-
-  # Sourceror over-counts the end column of a **multi-line** unary negation (`not X` / `!X`): it adds
-  # the width of the prefix operator to the operand's last-line end column, so `not exists(\n …\n)`
-  # (or `!foo(\n …\n)`) reports an end a few columns past the real closing delimiter, while a
-  # single-line negation, and the enclosing rewrite's own range, are ranged correctly. A prefix
-  # operator ends exactly where its operand does, so when the clause *ends* in such a negation, clamp
-  # to the operand's range — otherwise a legitimate `where: not exists(…)` clause is false-rejected by
-  # the containment check and collapsed back onto the macro line. Like the bare-atom trim, this only
-  # drops phantom trailing columns and never widens the range, so clamping is always safe here (it can
-  # only *relax* containment); the attributed clause text (`not exists(…)`) is unchanged, and it walks
-  # the same trailing path (through a keyword pair or an enclosing expression) so it fires whether the
-  # attribution points at the negation node, its keyword pair, or an expression ending in it.
-  defp trim_multiline_not_overrun(range, node) do
-    case trailing_not_operand_end(node) do
-      %Sourceror.Range{end: operand_end} ->
-        if pos(operand_end) < pos(range.end), do: %{range | end: operand_end}, else: range
-
-      _ ->
-        range
-    end
-  end
-
-  # The operand range of a trailing unary negation (`not X` / `!X`), or `nil` if the clause does not
-  # end in one. (A parenthesized `not(X)` carries no `closing`/`parens` meta of its own, so it takes
-  # this path too; its end still clamps toward the operand, which stays a safe non-widening move.)
-  defp trailing_not_operand_end({op, meta, [operand]}) when op in [:not, :!] do
-    if closing_meta?(meta), do: nil, else: safe_range(operand)
-  end
-
-  defp trailing_not_operand_end({{:__block__, _meta, [_key]}, value}),
-    do: trailing_not_operand_end(value)
-
-  defp trailing_not_operand_end({_form, meta, args}) when is_list(meta) and is_list(args) do
-    if closing_meta?(meta), do: nil, else: args |> List.last() |> trailing_not_operand_end()
-  end
-
-  defp trailing_not_operand_end(_node), do: nil
-
-  # Sourceror's bare-atom over-count is contagious: not only the `true`/`false`/`nil` node but also
-  # an expression or keyword pair ending in that node may report an end column one past its real
-  # textual extent. A report-location attribution is allowed to point at such an inner clause, so
-  # trim that one phantom column before the range is stored on the candidate/site. Do not do this
-  # for calls/containers/parenthesized forms with their own closing delimiter on the trailing path
-  # (`foo(true)`, `[true]`, `(x == true)`) — there the same numeric end column belongs to the
-  # delimiter and must remain part of the attributed range.
-  defp trim_trailing_bare_atom_overrun(range, node) do
-    case trailing_bare_atom_raw_range(node) do
-      %Sourceror.Range{end: raw_end} ->
-        if pos(raw_end) == pos(range.end),
-          do: %{range | end: Keyword.update!(range.end, :column, &(&1 - 1))},
-          else: range
-
-      _ ->
-        range
-    end
-  end
-
-  defp trailing_bare_atom_raw_range({:__block__, meta, [atom]} = node)
-       when atom in @bare_atoms do
-    if bare_atom_written_without_delimiter?(meta) and not closing_meta?(meta),
-      do: raw_range(node),
-      else: nil
-  end
-
-  defp trailing_bare_atom_raw_range({{:__block__, _meta, [_key]}, value}),
-    do: trailing_bare_atom_raw_range(value)
-
-  defp trailing_bare_atom_raw_range({_form, meta, args}) when is_list(meta) and is_list(args) do
-    if closing_meta?(meta), do: nil, else: args |> List.last() |> trailing_bare_atom_raw_range()
-  end
-
-  defp trailing_bare_atom_raw_range(_node), do: nil
-
-  defp bare_atom_written_without_delimiter?(meta),
-    do: meta[:format] != :keyword and meta[:delimiter] in [nil, ""]
-
-  defp closing_meta?(meta),
-    do:
-      Keyword.has_key?(meta, :closing) or Keyword.has_key?(meta, :parens) or
-        Keyword.has_key?(meta, :end)
-
-  defp raw_range(node) do
-    Sourceror.get_range(node)
-  rescue
-    _ -> nil
   end
 
   defp pos(loc), do: {loc[:line], loc[:column]}

@@ -168,10 +168,11 @@ defmodule Mutare.AttributionTest do
   end
 
   describe "a clause ending in a bare true/false/nil is not false-rejected" do
-    # Sourceror over-counts a node ending in a bare `true`/`false`/`nil` by one column, while the
-    # enclosing rewrite's range is not over-counted — so a strict containment check would reject a
-    # legitimate `where: y == true` clause and collapse it back to the macro line. The span check
-    # tolerates that documented one-column overrun.
+    # Sourceror used to over-count a node ending in a bare `true`/`false`/`nil` by one column while
+    # ranging the enclosing rewrite exactly, so the containment check needed a tolerance and the
+    # recorded range needed a trim. 1.12.3 ranges both exactly and the compensation is gone (see
+    # NOTES, "Sourceror's bare-atom over-count is fixed upstream"); this pins the outcome, so an
+    # upstream regression surfaces as a mislocated site rather than silently.
     @bare_atom_source """
     defmodule UsesQuery do
       import Mutare.Test.QueryDSL
@@ -210,12 +211,10 @@ defmodule Mutare.AttributionTest do
   end
 
   describe "a clause ending in a multi-line unary negation is not false-rejected" do
-    # Sourceror over-counts the end column of a multi-line unary negation (`not X` / `!X`) by the
-    # width of the prefix operator (a single-line negation ranges correctly), while the enclosing
-    # rewrite's range is not over-counted — so a strict containment check would reject a legitimate
-    # `where: not exists(…)` clause and collapse it back onto the macro line. The span check clamps
-    # the over-counted end to the operand's real end (`mutare_ecto`'s `not exists(subquery(…))`
-    # subquery filter-drops are the motivating case).
+    # Sourceror used to over-count a multi-line `not X` / `!X` by the width of the prefix operator
+    # while ranging the enclosing rewrite exactly, so the containment check needed a clamp
+    # (`mutare_ecto`'s `not exists(subquery(…))` subquery filter-drops are the motivating case).
+    # 1.12.3 ranges these exactly and the clamp is gone; this pins the outcome.
     # A paren-less `query` call (as `mutare_ecto`'s keyword-form `from` is) whose *last* clause value
     # is a multi-line `not exists(…)`: the call's range ends at that value's real end, so the value's
     # over-counted end pushes past it — the escape a paren-wrapped `query(…)` would instead absorb.

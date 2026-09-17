@@ -8865,6 +8865,34 @@ recorded site no longer depends on it. `Mutare.Test`'s rendering and any custom 
 metadata in the rendered code") — the clause-drop case is what kills the `:trailing_comments`
 deletion, which the pre-hoist helper had documented as an equivalent survivor.
 
+### Sourceror's bare-atom over-count is fixed upstream — `NodeRange` quirk 1 deleted `[fixed]`
+
+`NodeRange` carried a correction for Sourceror sizing a bare `true`/`false`/`nil` one column too
+wide — it sized an atom as its name *plus a colon*, right for a written `:foo` and a keyword key
+`foo:`, wrong for the three reserved words, which are written bare. Sourceror 1.12.3 fixed that
+upstream ("properly calculate ranges for special atoms"), which turned the subtraction into a
+*double* correction: a range ending at one of the three lost its last character, so a survivor's
+diff rendered `trim: tru` and the machine reporters emitted the short `endColumn`. Report-only in
+both directions — the metamutant is built from the AST, never the range — but precisely the
+failure quirk 1 existed to prevent, mirrored.
+
+1.12.3 fixed the **multi-line unary-negation** over-count in the same release, which made
+`NodeRange`'s negation clamp and `Attach`'s `trim_multiline_not_overrun/2` provable no-ops — both
+were non-widening, so against exact ranges they never fired (a parenthesized `not(X)` now ranges
+where the clamp used to land). Both went too, on the same reasoning: under the floor there is no
+upstream bug left for them to correct, and a clamp whose comment describes a fixed bug is worse
+than no clamp. `Attach` carried its own copy of the bare-atom trim as well — the over-count was
+*contagious*, an expression or keyword pair ending in the atom inheriting the phantom column — and
+that is what actually produced the bad diff (`NodeRange`'s copy alone was not the whole story).
+
+Deleted rather than made version-aware, with `mix.exs` floored at `{:sourceror, "~> 1.12.3"}`:
+one upstream behaviour to reason about instead of a version test guarding two. The cost is the
+floor — a consumer on a cooldown policy cannot resolve Mutare until 1.12.3 clears it.
+`mutare_ecto`'s range-fidelity invariant (`exotic_robustness_test.exs`, "sites are unique,
+non-identity, and range-faithful") is what caught this; core's own `report_test.exs` regression
+(`String.split(x, ",", trim: true)`) now covers it directly, the floor guaranteeing which
+Sourceror it runs against.
+
 ### `clause_drop` was always-on and unregistered `[fixed]`
 `clause_drop` shipped as the one structural built-in outside the `Mutare.Mutators` `@registry`,
 generated unconditionally by `FunctionPlan.build_drops/1`. The original reasoning (recorded under

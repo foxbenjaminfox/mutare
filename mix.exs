@@ -1,7 +1,7 @@
 defmodule Mutare.MixProject do
   use Mix.Project
 
-  @version "0.2.0"
+  @version "0.2.1"
   @source_url "https://github.com/foxbenjaminfox/mutare"
 
   # Internal modules deliberately kept `@moduledoc false`: the transform pipeline's
@@ -140,7 +140,7 @@ defmodule Mutare.MixProject do
 
   defp deps do
     [
-      {:sourceror, "~> 1.12"},
+      {:sourceror, "~> 1.12.3"},
       # Powers the `mix mutare.install` / `mix igniter.install mutare` generator
       # (see `Mix.Tasks.Mutare.Install`). Optional so it isn't forced on projects
       # that add Mutare by hand — the installer module is compiled away when absent
