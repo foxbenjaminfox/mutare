@@ -36,6 +36,23 @@ defmodule Mutare.Coverage.RecorderTest do
     end
   end
 
+  describe "recorded_ids/1 — the payload's ids" do
+    test "reads the local ids of a standalone or namespaced record, before and after reparse" do
+      for namespace <- [nil, "lib/example.ex"] do
+        record = Recorder.record_ast([3, 92, 1000], :mutare_active, namespace)
+        assert Recorder.recorded_ids(record) == {:ok, [3, 92, 1000]}
+
+        reparsed = Sourceror.parse_string!(Sourceror.to_string(record))
+        assert Recorder.recorded_ids(reparsed) == {:ok, [3, 92, 1000]}
+      end
+    end
+
+    test "is an error wherever record?/1 is false" do
+      assert Recorder.recorded_ids(Recorder.hit_ast([1], nil)) == :error
+      assert Recorder.recorded_ids(:ordinary_expression) == :error
+    end
+  end
+
   describe "record_ast/3 — the spliced expression" do
     test "is built from special forms and remote calls only, never a Kernel import" do
       # It is spliced into the target's modules, so nothing in it may resolve through the

@@ -295,12 +295,23 @@ defmodule Mutare.Coverage.Recorder do
   Both raw and literal-encoded reparsed ASTs are accepted.
   """
   @spec record?(Macro.t()) :: boolean()
-  def record?(node) do
+  def record?(node), do: match?({:ok, _ids}, recorded_ids(node))
+
+  @doc """
+  The runtime ids a gated coverage payload records, or `:error` for any other node.
+
+  The reader half of `hit_ast/2`, under the same recognition as `record?/1`: a namespaced
+  payload yields its local ids (the namespace is the file's, which the caller already knows).
+  `Mutare.Manifest` reads it to check that every emitted mutant has a record.
+  """
+  @spec recorded_ids(Macro.t()) :: {:ok, [pos_integer()]} | :error
+  def recorded_ids(node) do
     with {:ok, _gate, {{:., _, [helper, :hit]}, _, args}} <- when_true_args(node),
-         true <- helper_name(helper) in [helper_module(), fixture_module()] do
-      payload?(args)
+         true <- helper_name(helper) in [helper_module(), fixture_module()],
+         {:ok, ids} <- payload(args) do
+      {:ok, ids}
     else
-      _ -> false
+      _ -> :error
     end
   end
 
@@ -319,23 +330,24 @@ defmodule Mutare.Coverage.Recorder do
     end
   end
 
-  defp payload?([ids]), do: ids?(AST.unwrap_literal(ids))
+  defp payload([ids]), do: ids(AST.unwrap_literal(ids))
 
-  defp payload?([namespace, ids]) do
+  defp payload([namespace, ids]) do
     namespace = AST.unwrap_literal(namespace)
-    is_binary(namespace) and namespace != "" and ids?(AST.unwrap_literal(ids))
+
+    if is_binary(namespace) and namespace != "",
+      do: ids(AST.unwrap_literal(ids)),
+      else: :error
   end
 
-  defp payload?(_), do: false
+  defp payload(_), do: :error
 
-  defp ids?([_ | _] = ids) do
-    Enum.all?(ids, fn id ->
-      id = AST.unwrap_literal(id)
-      is_integer(id) and id > 0
-    end)
+  defp ids([_ | _] = ids) do
+    ids = Enum.map(ids, &AST.unwrap_literal/1)
+    if Enum.all?(ids, &(is_integer(&1) and &1 > 0)), do: {:ok, ids}, else: :error
   end
 
-  defp ids?(_), do: false
+  defp ids(_), do: :error
 
   defp literal(value), do: {:__block__, [], [value]}
 

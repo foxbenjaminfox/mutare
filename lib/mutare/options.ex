@@ -49,6 +49,7 @@ defmodule Mutare.Options do
           keep_sandbox: boolean(),
           seed_app_build: boolean(),
           strict_ignores: boolean(),
+          verify_invariants: boolean(),
           quiet: boolean(),
           verbose: boolean(),
           max_mutants: pos_integer() | nil,

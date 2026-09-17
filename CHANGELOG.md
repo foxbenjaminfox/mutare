@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--verify-invariants` (`verify_invariants:`) checks each transformed file
+  before the run relies on it.** Mutare reads the metamutant back and emits the
+  file a second time. It aborts with `Mutare.InvariantError` when a
+  recorded mutant has no branch that runs while it alone is active, when a
+  mutant has no coverage record, when generated code names an id that no mutant
+  records, when a mutant renders identically to its original code, or when the
+  second pass differs. These problems would otherwise distort the report
+  silently. They come from custom mutators, hosts, and extensions (for example,
+  a host splice that overwrites selectors core has already placed). The checks
+  add roughly a sixth to scan time and are off by default.
+- `Mutare.Manifest` lists every generated mention of a mutant id (`:mentions`).
+
+### Changed
+
+- **`Mutare.Test`'s source helpers run the invariant checks by default.**
+  `diffs/3`, `diffs_for/4`, `metamutant_source/3`,
+  `assert_metamutant_compiles/3`, and `compile_metamutant/3` raise
+  `Mutare.InvariantError` for a mutator that breaks the metamutant; pass
+  `verify_invariants: false` to opt out.
+
 ## [0.2.1] - 2026-09-17
 
 ### Fixed

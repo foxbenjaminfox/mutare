@@ -960,6 +960,20 @@ defmodule Mutare.SchemaTest do
     end
   end
 
+  test "verify_invariants reaches every render, and a violation keeps its type across workers",
+       %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+
+    assert %Schema{sites: [_]} = Schema.build(root, mutators: [Mutare.Test.StaleTokenMutator])
+
+    error =
+      assert_raise Mutare.InvariantError, fn ->
+        Schema.build(root, mutators: [Mutare.Test.StaleTokenMutator], verify_invariants: true)
+      end
+
+    assert [{:unchanged_mutant, %Mutare.Site{file: "lib/a.ex"}}] = error.violations
+  end
+
   describe "selection drift between the reported sites and the emitted mutants" do
     # Both sources put the `+` carrier node on line 3 and its right operand on line 4, so the pass
     # that attributes to one selects a different line from the pass that attributes to the other.

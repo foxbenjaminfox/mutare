@@ -167,6 +167,16 @@ your mutator composes with macro routing an *independent* library ships, use
 the bundled `Mutare.Test.RoutingExtension` rather than authoring a
 no-op routing provider.
 
+The source-driven helpers also check every transform they make
+(`verify_invariants: true`, unless you pass `false`) and raise
+`Mutare.InvariantError` when your mutator leaves the metamutant unsound: a
+recorded mutant that the metamutant cannot select, or that no coverage record
+lists, a replacement that renders identically to the original, or a mutator
+that returns something different each time it is called. A host whose splice
+overwrites selectors core already placed shows up here as core's mutants losing
+their branches. To run the same checks over a real project, use
+`mix mutare --check --verify-invariants`.
+
 ## Writing an extension
 
 An extension is a module implementing `Mutare.CallRouting`,

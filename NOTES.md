@@ -11060,3 +11060,94 @@ default, a sibling call into a lifted function, a `rescue` block beside the regi
 its separately patched source, including side effects and exceptions, and checks baseline
 coverage is identical with and without regions.
 
+### Verify mode: the transform reads its own output back `[done]`
+
+**Why.** mutare_ecto's commit 7970c97 fixed a host that claimed a keyword filter
+core had already routed per pair. The host's splice replaced the list, including the selectors
+core had placed inside it, with a selector whose catch-all was the raw original. Core's
+mutants kept their Sites and lost their branches, and the metamutant still compiled. Activating
+one of those mutants ran the original code, so no test could kill it. The report would call it a
+survivor, or uncovered where the coverage record had gone too. mutare_ecto pinned its case with a
+test that reads selector-clause ids back out of the metamutant. Nothing in core checked this in
+general. `ClaimState.claim/6` delivers the artifact, but nothing structural keeps that artifact
+alive until the render: `HostedEmit` builds a host's fallback from `candidate.original`, and any
+host splice is an opaque closure.
+
+**What.** `verify_invariants: true` (`--verify-invariants`, and the default in `Mutare.Test`'s
+source helpers) makes `transform_string_with_sites/2` run `Mutare.Transform.Invariants.check!/3`
+on its result, which raises `Mutare.InvariantError` listing every violation. The moduledoc of
+`Mutare.InvariantError` lists the checks. "Delivered" is `ClaimState.delivered?/2`, the predicate
+the claim itself now decides by. Composed with `Schema`'s always-on `verify_selection!/2` (reported
+sites = selected ids), this covers every site the runner will run.
+
+**A readback, not a check at splice time.** Comparing the ids inside a node before and after a
+host's splice would name the host. It would also need a second set of recognisers for
+unrendered ASTs, and it would cover only one delivery path. The readback catches any cause,
+including a core regression, and reuses `Mutare.Manifest`, whose recognisers poison recovery
+already depends on. The violation message names the mutant's family and line, which is enough to
+find the host sharing that line.
+
+**`Manifest` now walks explicitly.** Its `Macro.traverse` became a recursive walk that threads
+`within`, the id of the innermost mutant branch enclosing a node, and records `mentions`
+(`:branch`, `:exclusion`, `:record`) next to the regions. Over the corpus of `lib/`, `examples/`,
+and `test/support/` (256 files) the regions are identical to the old walk's output. Two facts from
+that corpus shaped the rules:
+
+- **Drops have no region.** 2,453 of the corpus's 35,715 delivered mutants are lifted
+  `clause_drop`s. A drop generates no code of its own; its only trace is the `=/=` exclusion on
+  the original clause, or the range form `GuardBuild.exclusion/2` writes for a run of seven or more
+  ids. A drop's id joins such a run only when the drop's clause is the last with other mutants and
+  the first dropped, because `FunctionPlan.candidates/1` orders a group's drops after all its
+  other candidates.
+  An exclusion therefore counts as a branch only for a `:delete` site. For any other mutant,
+  an exclusion alone just steps the original clause aside.
+- **Core never nests.** Every mention in the corpus (33,262 branch, 9,022 exclusion, and 35,715
+  record mentions) sits outside every mutant branch: a mutant branch holds raw children. The
+  reachability rule (at least one selecting mention with `within` `nil` or the mutant's own id)
+  therefore has no false positives on core's output. It exists for a host that places core's
+  transformed island only inside its own mutant branch. A coverage record inside a branch never
+  fires, because it is gated on the baseline, so it does not count either. Emitted ids and
+  recorded ids were equal in every file.
+
+**Unchanged mutants and determinism.** Comparing `original_code` with `mutated_code` needs the
+code, so verify mode forces `render_site_code`. That check catches the Sourceror stale-`:token`
+mistake in a custom mutator (`StaleTokenMutator`), which the property soak already rules out for
+the built-ins. Determinism is checked by emitting the source a second time in the same worker and
+comparing the sites, the next id, the dispatch variable, and a fingerprint
+(`:erlang.phash2/1`) of the **emitted tree**. The check catches random and stateful mutators
+(`UniqueLiteralMutator`), but not differences that appear only across processes; `Runner.Hydrate`
+re-renders in the parent, and its miss warning remains the only guard there.
+
+Comparing the tree rather than the rendered metamutant is what makes the mode affordable, and it
+is also the stronger comparison: the render is a pure function of the tree, so equal trees imply
+equal text, while two trees that differ only in metadata render alike and are still a
+nondeterministic pass. The fingerprint keeps the first pass's tree from being retained while the
+second one is built.
+
+**Cost.** Measured over a size-stratified sample of the corpus, each phase run in every
+repetition and the minimum taken (the machine is shared, and a drifting load otherwise decides
+the answer): a count pass is 0.71 s, a full transform 18.56 s with diffs deferred and 20.01 s
+with them eager, a readback 0.62 s, and a verified transform 21.48 s — **1.16×** a deferred
+scan. Scanning the whole corpus in parallel across 16 schedulers — the shape of a real scan —
+costs 1.24×. The render is ~95% of a transform, which is the whole reason the second pass stops
+before it; an earlier version re-rendered and cost 3× or worse. Verification adds nothing to the rest of
+a run (compile, baseline, per-mutant), so the figure is an upper bound on what a real run pays.
+The property soak went from 103 s to 108 s, generation dominating it.
+
+**Dogfooded.** Mutation-testing the three changed modules found what the hand-written tests had
+not: dead defensive guards in the new walk (generated code always satisfies them, so they were
+removed), and untested readback shapes — a multi-pattern `fn` or `catch` clause, a `with`'s second
+generator, `for` and `try` sequences, exclusion mentions, mention order where a call's callee and
+its arguments both carry mutants — plus the checker's own violation order and message text, now
+pinned by a golden message. The remaining survivors in `Mutare.Manifest` are in the older
+poison-attribution half, untouched here.
+
+**Not done: checks in the target's runtime.** Asserting during a mutant run that the active
+branch executed would be unsound for lifted mutants. The dispatcher records coverage for the
+whole group, and an active guard mutant need not match its arguments. Such a check would also
+change the compiled program it verifies. The static readback catches the known failure class.
+
+**The consequence to remember:** a new delivery shape (a selector form, a gate, an exclusion
+form) must be recognised by `Mutare.Manifest` in the same change. Before, a gap only weakened
+poison attribution. Now the property soak and every `Mutare.Test`-based suite report the
+unrecognised branch as missing.

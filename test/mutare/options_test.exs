@@ -196,6 +196,19 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":verify_invariants" do
+    test "defaults to false and accepts a boolean" do
+      assert Options.new([]).verify_invariants == false
+      assert Options.new(verify_invariants: true).verify_invariants == true
+    end
+
+    test "rejects a non-boolean" do
+      assert_raise ArgumentError, ~r/:verify_invariants must be true or false/, fn ->
+        Options.new(verify_invariants: "yes")
+      end
+    end
+  end
+
   describe ":quiet" do
     test "defaults to false" do
       assert Options.new([]).quiet == false

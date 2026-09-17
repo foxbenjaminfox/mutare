@@ -25,17 +25,16 @@ defmodule Mutare.RuntimeId do
   @spec index([Site.t()]) :: %{t() => pos_integer()}
   def index(sites), do: Map.new(sites, &{of(&1), &1.id})
 
+  @doc "The integer a Site's generated code selects on: its local id, or a standalone report id."
+  @spec local(Site.t()) :: non_neg_integer()
+  def local(%Site{} = site) do
+    case of(site) do
+      {_namespace, id} -> id
+      id -> id
+    end
+  end
+
   @doc "Map each file's emitted integers to report ids for lazy poison attribution."
   @spec file_index([Site.t()]) :: %{{String.t(), pos_integer()} => pos_integer()}
-  def file_index(sites) do
-    Map.new(sites, fn site ->
-      local =
-        case of(site) do
-          {_namespace, id} -> id
-          id -> id
-        end
-
-      {{site.file, local}, site.id}
-    end)
-  end
+  def file_index(sites), do: Map.new(sites, &{{&1.file, local(&1)}, &1.id})
 end

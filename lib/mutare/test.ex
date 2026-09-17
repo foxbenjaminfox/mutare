@@ -10,6 +10,8 @@ defmodule Mutare.Test do
 
   The source-driven helpers all call `Mutare.transform_string/2` and inherit its defaults — notably `expand_uses: true`, which the schema/query routing of `use`-heavy DSLs depends on. Each takes a trailing `opts` keyword list forwarded to `Mutare.transform_string/2` (the `mutators` argument overrides any `:mutators` option), so a suite can thread `:call_routes`, `:extensions`, or `expand_uses: false` without dropping to `Mutare.transform_string/2` itself.
 
+  One default differs: the source-driven helpers pass `verify_invariants: true` unless `opts` says otherwise, so every transform a test makes also checks that the mutators left the metamutant sound — each recorded mutant selectable and listed in a coverage record, none rendering unchanged, the render deterministic — and raises `Mutare.InvariantError` if not. A mutator that breaks one of these fails its own tests instead of silently distorting a real run's report. Pass `verify_invariants: false` to skip the checks, which cost a second emit pass and a parse per transform.
+
   > #### Selection is process-global {: .warning}
   >
   > Tests that call `with_active_mutant/2` must use `async: false`, because the
@@ -106,7 +108,7 @@ defmodule Mutare.Test do
   """
   @spec diffs(String.t(), [mutator()], keyword()) :: [{atom(), String.t(), String.t()}]
   def diffs(source, mutators, opts \\ []) do
-    result = Mutare.transform_string(source, Keyword.put(opts, :mutators, mutators))
+    result = transform(source, mutators, opts)
     for site <- result.mutants, do: {site.mutator, site.original_code, site.mutated_code}
   end
 
@@ -140,9 +142,7 @@ defmodule Mutare.Test do
   """
   @spec metamutant_source(String.t(), [mutator()], keyword()) :: String.t()
   def metamutant_source(source, mutators, opts \\ []) do
-    %{metamutant: metamutant} =
-      Mutare.transform_string(source, Keyword.put(opts, :mutators, mutators))
-
+    %{metamutant: metamutant} = transform(source, mutators, opts)
     metamutant
   end
 
@@ -214,7 +214,7 @@ defmodule Mutare.Test do
   def compile_metamutant(source, mutators, opts \\ []) do
     {isolate?, transform_opts} = Keyword.pop(opts, :uniquify, true)
 
-    result = Mutare.transform_string(source, Keyword.put(transform_opts, :mutators, mutators))
+    result = transform(source, mutators, transform_opts)
 
     {compiled, wrapper} = compile_metamutant_source!(result.metamutant, isolate?)
     modules = for {module, _binary} <- compiled, do: module
@@ -223,6 +223,13 @@ defmodule Mutare.Test do
     ExUnit.Callbacks.on_exit(fn -> Enum.each(loaded, &purge/1) end)
 
     {modules, result.mutants}
+  end
+
+  # The source helpers' one transform call: `mutators` overrides `opts`, and the invariant checks
+  # are on unless `opts` turns them off.
+  defp transform(source, mutators, opts) do
+    opts = opts |> Keyword.put(:mutators, mutators) |> Keyword.put_new(:verify_invariants, true)
+    Mutare.transform_string(source, opts)
   end
 
   # Compile a rendered metamutant, capturing stderr (a custom mutator's mutant may warn) and

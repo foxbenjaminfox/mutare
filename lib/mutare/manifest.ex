@@ -1,6 +1,7 @@
 defmodule Mutare.Manifest do
   @moduledoc """
-  A map from mutant ids to their generated line ranges in a rendered metamutant.
+  A map from mutant ids to their generated line ranges in a rendered metamutant,
+  and a list of every place the generated code names a mutant id.
 
   `Mutare.Transform` writes the metamutant; this is what `Mutare.Poison` reads
   back. It is built **lazily** (`from_source/2`), by `Mutare.Poison` on a failed
@@ -9,6 +10,11 @@ defmodule Mutare.Manifest do
   read only when a compile actually fails (rare — built-in mutators are
   compile-safe). `Poison` memoizes it within one recovery so a file faulting on
   several lines is walked once.
+
+  The one exception is `verify_invariants: true` (`mix mutare --verify-invariants`):
+  the transform then builds a manifest for every file it renders and compares its
+  `:mentions` with the mutants it recorded, raising `Mutare.InvariantError` on a
+  mismatch.
 
   **`Mutare.Poison`** uses each mutant's *generated ranges* — the metamutant line
   spans of the code that exists only because of that mutant, so a compile error's
@@ -72,29 +78,51 @@ defmodule Mutare.Manifest do
   """
 
   alias Mutare.AST
+  alias Mutare.Coverage.Recorder
   alias Mutare.Metamutant
 
   @typedoc "A generated line range and the mutant ids whose code occupies it."
   @type region :: %{ids: [pos_integer()], lo: pos_integer(), hi: pos_integer()}
 
   @typedoc """
+  One place where the generated code names a mutant id:
+
+    * `:branch` — code that runs only while `id` is active: a selector clause body, a gated
+      clause (lifted, tupled, `fn`, `receive`), or a gated guard alternative;
+    * `:exclusion` — an original clause stepping aside while `id` is active (`<var> =/= <id>`,
+      or the range form for a run of ids). A dropped clause leaves only this trace;
+    * `:record` — a coverage record listing `id`.
+
+  `within` is the id of the innermost mutant branch enclosing the mention, or `nil` outside
+  every branch. Code inside mutant `k`'s branch runs only while `k` is active, so a run that
+  activates `id` alone reaches the mention only when `within` is `nil` or `id`.
+  """
+  @type mention :: %{
+          kind: :branch | :exclusion | :record,
+          id: pos_integer(),
+          within: pos_integer() | nil
+        }
+
+  @typedoc """
   One file's manifest:
 
     * `:regions` — generated line ranges, for mapping a compile error back to a mutant.
+    * `:mentions` — every generated mention of a mutant id, in source order, for
+      `Mutare.Transform.Invariants` to check against the mutants the transform recorded.
     * `:ast` — the parsed metamutant the regions were ranged over, retained so the
       macro-expansion fallback (`ids_in_named_calls/2`) can range a blamed macro's calls in
       the same tree rather than parse the file a second time. `nil` on a hand-built manifest.
   """
-  @type t :: %__MODULE__{regions: [region()], ast: Macro.t() | nil}
+  @type t :: %__MODULE__{regions: [region()], mentions: [mention()], ast: Macro.t() | nil}
 
-  defstruct regions: [], ast: nil
+  defstruct regions: [], mentions: [], ast: nil
 
   @doc """
   Build a manifest from one file's rendered metamutant source and its dispatch variable.
 
   Re-parses (for `Sourceror.get_range/1`) and walks the tree once, attributing
   every selector clause, lifted private definition, and selector `case` to the
-  mutant id(s) it belongs to. `dispatch_var` is the name the transform chose for this
+  mutant id(s) it belongs to, and collecting every mention of an id (`t:mention/0`). `dispatch_var` is the name the transform chose for this
   file (`Mutare.Transform.Result.dispatch_var`): the hoisted selectors read it as their
   subject and the gated mutant clauses compare it, so it is what makes them recognisable.
   The parse is kept on the manifest (`:ast`): one failed compile can need both
@@ -116,11 +144,12 @@ defmodule Mutare.Manifest do
     %{build(ast, dispatch_var) | ast: ast}
   end
 
-  # Region-build over an already-parsed metamutant AST, threading the dispatch variable to
-  # the recognisers (a hoisted selector's bare-variable subject, a mutant clause's gate).
+  # Region and mention build over an already-parsed metamutant AST, threading the dispatch
+  # variable to the recognisers (a hoisted selector's bare-variable subject, a mutant clause's
+  # gate). Both accumulate reversed; the walk starts outside every mutant branch.
   defp build(ast, var) do
-    {_ast, regions} = Macro.traverse(ast, [], &enter(&1, &2, var), &leave/2)
-    %__MODULE__{regions: Enum.reverse(regions)}
+    {regions, mentions} = walk(ast, nil, var, {[], []})
+    %__MODULE__{regions: Enum.reverse(regions), mentions: Enum.reverse(mentions)}
   end
 
   @doc """
@@ -298,6 +327,22 @@ defmodule Mutare.Manifest do
 
   # --- traversal -----------------------------------------------------------
 
+  # One pre-order walk over the parsed metamutant, threading `within`: the id of the innermost
+  # mutant branch enclosing the current node (`nil` outside every branch). A recognised
+  # construct records its regions and mentions *before* its children are walked, and walks the
+  # children itself, entering each mutant branch with that mutant's id; every other node is
+  # descended generically, in `Macro.traverse/4`'s child order. The accumulator is
+  # `{regions, mentions}`, both reversed.
+  #
+  # A coverage record is recognised first: it names ids but holds no mutant code, so the walk
+  # does not enter it.
+  defp walk(node, within, var, acc) do
+    case Recorder.recorded_ids(node) do
+      {:ok, ids} -> mention(acc, :record, ids, within)
+      :error -> walk_node(node, within, var, acc)
+    end
+  end
+
   # A `case` selector. Two shapes:
   #
   #   * a *selector subject* `case` (in-place selector or lifted dispatcher) — each mutant
@@ -317,94 +362,150 @@ defmodule Mutare.Manifest do
   # subject) and the tupled-clause gate matcher (`pattern_mutant`). A user `case some_var do …`
   # is never mistaken for a selector: the dispatch name is salted away from every identifier
   # the source uses, so it can't equal a user scrutinee's name.
-  defp enter({:case, _meta, [subject, kw]} = node, regions, var) do
+  #
+  # A plain selector's subject (the active-id read, or its namespace projection) names no
+  # mutant, so only its clauses are walked; a tupled subject holds the construct's coverage
+  # record, so it is walked first.
+  defp walk_node({:case, _meta, [subject, kw]} = node, within, var, acc) do
     cond do
       Metamutant.subject?(subject, var) ->
-        {node, record_case(do_block(kw), node, regions, &selector_mutant/1)}
+        walk_clauses(node, [], do_block(kw), within, var, acc, &selector_mutant/1)
 
       Metamutant.pattern_subject?(subject, var) ->
-        {node, record_case(do_block(kw), node, regions, &pattern_mutant(&1, var))}
+        walk_clauses(node, [subject], do_block(kw), within, var, acc, &pattern_mutant(&1, var))
 
       true ->
-        {node, regions}
+        descend(node, within, var, acc)
     end
   end
 
   # A lifted mutant clause (`defp <base>(mutare_active, …) when mutare_active ===
   # <id> …`): its whole definition is that mutant's generated code — where a guard /
   # head-pattern poison lives. Original clauses (gated `mutare_active !== …`) and the
-  # dispatcher carry no gate, so `mutant_id/1` returns `nil` and they're skipped.
-  defp enter({vis, _meta, [head | _]} = node, regions, var) when vis in [:def, :defp] do
-    regions =
-      case mutant_id(head, var) do
-        nil -> regions
-        id -> push(range_region([id], node), regions)
-      end
+  # dispatcher carry no gate, so `mutant_id/1` returns `nil`; an original's exclusions are
+  # mentioned, which is how a dropped clause shows up at all.
+  defp walk_node({vis, _meta, [head | _]} = node, within, var, acc) when vis in [:def, :defp] do
+    case mutant_id(head, var) do
+      nil ->
+        acc
+        |> mention(:exclusion, guard_exclusions(head, var), within)
+        |> then(&descend(node, within, var, &1))
 
-    {node, regions}
+      id ->
+        acc
+        |> record_branches([{id, node}], nil, within)
+        |> then(&descend(node, id, var, &1))
+    end
   end
 
   # Per-clause fn delivery uses the same activation guard as tupled cases. Attribute
   # each entire mutant clause (including its head), plus the whole fn as a fallback
   # for structural errors. Ungated source fns and gated originals produce no regions.
-  defp enter({:fn, _meta, clauses} = node, regions, var),
-    do: {node, record_case(clauses, node, regions, &pattern_mutant(&1, var))}
+  defp walk_node({:fn, _meta, clauses} = node, within, var, acc),
+    do: walk_clauses(node, [], clauses, within, var, acc, &pattern_mutant(&1, var))
 
   # Receive message clauses carry the same per-clause activation gates. The after block
   # is not a message clause; its own body selectors are visited normally by the walk.
-  defp enter({:receive, _meta, [blocks]} = node, regions, var),
-    do: {node, record_case(do_block(blocks), node, regions, &pattern_mutant(&1, var))}
+  defp walk_node({:receive, _meta, [blocks]} = node, within, var, acc) do
+    case do_block(blocks) do
+      clauses when is_list(clauses) ->
+        acc = walk_clauses(node, [], clauses, within, var, acc, &pattern_mutant(&1, var))
+        after_blocks = for {key, value} <- blocks, AST.key_atom(key) != :do, do: value
+        walk(after_blocks, within, var, acc)
+
+      _ ->
+        descend(node, within, var, acc)
+    end
+  end
 
   # A guard-sequence construct (`ClauseGuardEmit`): a `with`/`for` `<-` clause or a
   # `with`/`try` `else`, `try` `catch`, `for … reduce:` `do` arrow clause whose guard carries
   # one `<var> === <id> and …` alternative per mutant. Each alternative is that mutant's
   # generated code; the whole construct is the fallback. Only the construct's *own* clause
-  # heads are read — a nested construct is entered on its own.
-  defp enter({form, _meta, args} = node, regions, var)
-       when form in [:with, :for, :try] and is_list(args) do
-    mutants =
-      for head <- clause_heads(args), {id, alt} <- sequence_mutants(head, var), do: {id, alt}
+  # heads are read — a nested construct is entered on its own. The clause bodies are shared by
+  # the mutant and original alternatives, so no branch scope is entered here.
+  defp walk_node({form, _meta, [_ | _] = args} = node, within, var, acc)
+       # mutare:ignore[conditional:true] equivalent — every other call this admits has no gated arrow clause: `case`, `fn` and `receive` are matched above, so nothing is found and nothing is recorded
+       when form in [:with, :for, :try] do
+    heads = clause_heads(args)
+    mutants = for head <- heads, {id, alt} <- sequence_mutants(head, var), do: {id, alt}
+    exclusions = Enum.flat_map(heads, &guard_exclusions(&1, var))
 
-    regions =
-      Enum.reduce(mutants, regions, fn {id, alt}, acc -> push(range_region([id], alt), acc) end)
-
-    {node, push(case_fallback(node, mutants), regions)}
+    acc
+    |> record_branches(mutants, node, within)
+    |> mention(:exclusion, exclusions, within)
+    |> then(&descend(node, within, var, &1))
   end
 
-  defp enter(node, regions, _var), do: {node, regions}
+  defp walk_node(node, within, var, acc), do: descend(node, within, var, acc)
 
-  defp leave(node, regions), do: {node, regions}
+  # The children of an unrecognised node, in `Macro.traverse/4` order: a call's callee, then its
+  # arguments (an atom in either place — a local call's name, a variable's context — is a leaf);
+  # a list's elements; a two-tuple's halves.
+  defp descend({form, _meta, args}, within, var, acc),
+    do: walk(args, within, var, walk(form, within, var, acc))
 
-  # Record a `case`'s mutant clauses: `extract.(clause)` yields `{id, region_node}` (the node
-  # whose range is that mutant's generated code) or `{nil, _}` for a non-mutant clause
-  # (catch-all, gated original). Each mutant's region, then the whole-`case` fallback over all
-  # of them.
-  defp record_case(clauses, case_node, regions, extract) when is_list(clauses) do
-    mutants = for clause <- clauses, {id, region} = extract.(clause), id != nil, do: {id, region}
+  defp descend(list, within, var, acc) when is_list(list),
+    do: Enum.reduce(list, acc, &walk(&1, within, var, &2))
 
-    regions =
-      Enum.reduce(mutants, regions, fn {id, region}, acc ->
-        push(range_region([id], region), acc)
+  defp descend({left, right}, within, var, acc),
+    do: walk(right, within, var, walk(left, within, var, acc))
+
+  defp descend(_leaf, _within, _var, acc), do: acc
+
+  # Record a construct's mutant clauses, then walk its `leading` children (a `case` subject)
+  # and its clauses. `extract.(clause)` yields `{id, region_node}` (the node whose range is that
+  # mutant's generated code, and which runs only while `id` is active) or `{nil, _}` for a
+  # non-mutant clause (catch-all, gated original), whose exclusions are mentioned instead.
+  defp walk_clauses(node, leading, clauses, within, var, acc, extract) do
+    extracted = Enum.map(clauses, &{&1, extract.(&1)})
+    mutants = for {_clause, {id, region}} <- extracted, id != nil, do: {id, region}
+
+    acc =
+      acc
+      |> record_branches(mutants, node, within)
+      |> then(&walk(leading, within, var, &1))
+
+    Enum.reduce(extracted, acc, fn
+      {clause, {nil, _region}}, acc ->
+        acc
+        |> mention(:exclusion, clause_exclusions(clause, var), within)
+        |> then(&walk(clause, within, var, &1))
+
+      {_clause, {id, region}}, acc ->
+        walk(region, id, var, acc)
+    end)
+  end
+
+  # Each mutant's region and `:branch` mention, then the whole-construct fallback region
+  # over all of them (`nil` construct: no fallback, as for a lifted clause).
+  defp record_branches({regions, mentions}, mutants, construct, within) do
+    {regions, mentions} =
+      Enum.reduce(mutants, {regions, mentions}, fn {id, region}, {regions, mentions} ->
+        {push(range_region([id], region), regions),
+         [%{kind: :branch, id: id, within: within} | mentions]}
       end)
 
-    push(case_fallback(case_node, mutants), regions)
+    {push(case_fallback(construct, mutants), regions), mentions}
   end
 
-  defp record_case(_not_list, _case_node, regions, _extract), do: regions
+  defp mention({regions, mentions}, kind, ids, within) do
+    {regions, Enum.reduce(ids, mentions, &[%{kind: kind, id: &1, within: within} | &2])}
+  end
 
   # A selector-`case` mutant clause `<id> -> <body>`: the id is its integer pattern; its
   # generated code is the body. A catch-all (`mutare_active -> …`) yields `{nil, nil}`.
   defp selector_mutant({:->, _, [[patt], body]}), do: {clause_id(patt), body}
-  defp selector_mutant(_), do: {nil, nil}
 
   # A tupled-`case` mutant clause `{mutare_active, <pat>} when mutare_active === <id> … ->
   # <body>`: the id is in the `when` gate, and its generated code (the mutated pattern/guard)
   # is in the head, so the whole clause is the region. A gated original (`!==`) / unguarded
   # original yields `{nil, nil}`.
-  defp pattern_mutant({:->, _, [[{:when, _wm, when_args}], _body]} = clause, var)
-       when length(when_args) >= 2 do
-    {_patterns, [guard]} = Enum.split(when_args, -1)
-    {gate_id(guard, var), clause}
+  defp pattern_mutant({:->, _, [[{:when, _wm, when_args}], _body]} = clause, var) do
+    case when_args |> List.last() |> gate_id(var) do
+      nil -> {nil, nil}
+      id -> {id, clause}
+    end
   end
 
   defp pattern_mutant(_, _), do: {nil, nil}
@@ -431,20 +532,75 @@ defmodule Mutare.Manifest do
   # The `{id, alternative}` pairs of a guard sequence: the trailing guard's `when`
   # alternatives (right-nested, as parsed) that carry a gate. A gated original (`=/=`
   # exclusion) and an unmutated guard yield nothing.
-  defp sequence_mutants({:when, _meta, when_args}, var) when length(when_args) >= 2 do
-    {_patterns, [guard]} = Enum.split(when_args, -1)
-
-    for alt <- alternatives(guard), id = gate_id(alt, var), id != nil, do: {id, alt}
+  defp sequence_mutants({:when, _meta, when_args}, var) do
+    # The match is a filter: an ungated alternative's `nil` gate drops it.
+    for alt <- when_args |> List.last() |> alternatives(), id = gate_id(alt, var), do: {id, alt}
   end
 
   defp alternatives({:when, _meta, alts}), do: Enum.flat_map(alts, &alternatives/1)
   defp alternatives(guard), do: [guard]
+
+  # --- exclusions ----------------------------------------------------------
+
+  # The ids an arrow clause's guard steps aside for; a guardless clause excludes nothing.
+  defp clause_exclusions({:->, _, [[{:when, _, _} = head], _body]}, var),
+    do: guard_exclusions(head, var)
+
+  defp clause_exclusions(_clause, _var), do: []
+
+  # The ids a `when` head's guard (its last operand: a definition's `f(…) when g`, a clause's
+  # `p1, p2 when g`, possibly itself a `when` sequence) steps aside for.
+  defp guard_exclusions({:when, _meta, operands}, var),
+    do: operands |> List.last() |> exclusions(var)
+
+  defp guard_exclusions(_head, _var), do: []
+
+  # Every id an exclusion guard names, in both of `Mutare.Transform.GuardBuild.exclusion/2`'s
+  # forms: `<var> =/= <id>`, and `<var> < <first> orelse <var> > <last>` for a run of ids
+  # (`first..last`, every id of which is excluded). Read through `AST.erlang_call_args/2`, the
+  # builder's inverse; only comparisons of the dispatch variable `var` with an integer literal
+  # match, so a source guard's own comparisons are skipped. A generated guard joins its
+  # comparisons with `:erlang` calls alone, so the search descends through call arguments only.
+  defp exclusions({_form, _meta, args} = node, var) when is_list(args) do
+    case excluded(node, var) do
+      {:ok, ids} -> ids
+      :error -> Enum.flat_map(args, &exclusions(&1, var))
+    end
+  end
+
+  defp exclusions(_leaf, _var), do: []
+
+  defp excluded(node, var) do
+    with :error <- excluded_id(node, var), do: excluded_run(node, var)
+  end
+
+  defp excluded_id(node, var) do
+    with {:ok, [{^var, _, _}, id_node]} <- AST.erlang_call_args(node, :"=/="),
+         id when is_integer(id) <- literal_int(id_node) do
+      {:ok, [id]}
+    else
+      _ -> :error
+    end
+  end
+
+  defp excluded_run(node, var) do
+    with {:ok, [below, above]} <- AST.erlang_call_args(node, :orelse),
+         {:ok, [{^var, _, _}, first_node]} <- AST.erlang_call_args(below, :<),
+         {:ok, [{^var, _, _}, last_node]} <- AST.erlang_call_args(above, :>),
+         first when is_integer(first) <- literal_int(first_node),
+         last when is_integer(last) <- literal_int(last_node) do
+      {:ok, Enum.to_list(first..last//1)}
+    else
+      _ -> :error
+    end
+  end
 
   # --- regions -------------------------------------------------------------
 
   # The whole `case`, attributed to every mutant id it hosts: the coarse fallback
   # for a structural error pointing at the `case` rather than a clause body.
   defp case_fallback(_case_node, []), do: nil
+  defp case_fallback(nil, _mutants), do: nil
 
   defp case_fallback(case_node, mutants),
     do: range_region(Enum.map(mutants, &elem(&1, 0)), case_node)

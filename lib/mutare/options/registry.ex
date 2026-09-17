@@ -366,6 +366,14 @@ defmodule Mutare.Options.Registry do
   # `Mutare.Ignore.ineffective/2`). Default `false` (warn only).
   defp validate_strict_ignores!(value), do: validate_boolean!(:strict_ignores, value)
 
+  # When true (`--verify-invariants`), every rendered file is checked before the run trusts it
+  # (`Mutare.Transform.Invariants`): the metamutant is read back and rendered a second time, and a
+  # violation — a recorded mutant with no reachable branch or coverage record, a mutant that
+  # renders unchanged, a nondeterministic render — aborts the scan with `Mutare.InvariantError`.
+  # For developing custom mutators, hosts, and extensions; it costs a parse, a second render, and
+  # every mutant's diff text per file. Default `false`.
+  defp validate_verify_invariants!(value), do: validate_boolean!(:verify_invariants, value)
+
   # When true (`--quiet`), the Mix task does not attach the live progress reporter
   # (`Mutare.Report.Live`), so nothing is written to stderr as the run proceeds —
   # for CI, or any time the live block is unwanted. The final report and any
@@ -792,6 +800,12 @@ defmodule Mutare.Options.Registry do
         default: false,
         cli: :boolean,
         validate: &validate_strict_ignores!/1
+      ),
+      spec(
+        key: :verify_invariants,
+        default: false,
+        cli: :boolean,
+        validate: &validate_verify_invariants!/1
       ),
       spec(
         key: :sandbox,

@@ -80,6 +80,10 @@ defmodule Mix.Tasks.Mutare do
 
   Each family's module docs list its exact swap table — print one with `mix mutare --explain relational`. You can also list your own module implementing `Mutare.Mutator` under `:mutators` to add a custom mutator.
 
+  While developing a custom mutator (or a host or extension), add `--verify-invariants`. Every transformed file is then read back, and emitted a second time to check the transform is deterministic. The run aborts on a mutant the metamutant cannot select, one no coverage record lists, one that renders identically to its original, or a file whose second pass differs — each of which would otherwise distort the report without any error. The checks add roughly a sixth to the scan (they skip the render, which is most of it), and nothing to the rest of the run, so they are cheap to leave on while developing:
+
+      mix mutare --check --verify-invariants
+
   ## Inspecting without running
 
   With these flags, the command prints information and exits without preparing a sandbox or running the suite — for discovery, scripting, and debugging configuration:
@@ -374,6 +378,9 @@ defmodule Mix.Tasks.Mutare do
         # exit 1 if any `# mutare:ignore` suppresses no mutant (a typo or stale
         # line), or any `# mutare:` comment names no recognized directive
         strict_ignores: false,
+        # check every transformed file before trusting it (for developing custom
+        # mutators; see "Mutator families" above)
+        verify_invariants: false,
         # suppress the live stderr progress (for CI / piped use)
         quiet: false,
         # print each step in detail: a line per mutant + per-phase numbers
@@ -485,6 +492,9 @@ defmodule Mix.Tasks.Mutare do
       # naming a known family's bad variant, or a mutator declaring a wire-unsafe label/name. Render it
       # as a clean Mix abort, not a raw stacktrace.
       error in Mutare.Ignore.SpecError -> Mix.raise(Exception.message(error))
+      # A `--verify-invariants` violation: the message names every violation and its site, which
+      # is what a mutator author needs; the checker's stacktrace is not.
+      error in Mutare.InvariantError -> Mix.raise(Exception.message(error))
     end
   end
 

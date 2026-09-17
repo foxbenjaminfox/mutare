@@ -44,6 +44,7 @@ defmodule Mutare.MixProject do
     Mutare.Transform.Config
     Mutare.Transform.ClauseGuardEmit
     Mutare.Transform.CoverageEmit
+    Mutare.Transform.Invariants
     Mutare.Runner.Hydrate
     Mutare.Runner.Compile
     Mutare.Runner.MutantRun

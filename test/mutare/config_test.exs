@@ -290,6 +290,12 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([strict_ignores: true], [])[:strict_ignores] == true
     end
 
+    test "--verify-invariants passes through; otherwise it's left to default" do
+      assert Config.merge([], verify_invariants: true)[:verify_invariants] == true
+      refute Keyword.has_key?(Config.merge([], []), :verify_invariants)
+      assert Config.merge([verify_invariants: true], [])[:verify_invariants] == true
+    end
+
     test "--quiet passes through; otherwise it's left to default" do
       assert Config.merge([], quiet: true)[:quiet] == true
       refute Keyword.has_key?(Config.merge([], []), :quiet)

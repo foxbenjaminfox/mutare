@@ -634,14 +634,17 @@ defmodule Mutare.Schema do
   # resolved `Mutare.CallRouting.Spec`s (known-macro argument routing), `[]` when none; `:extensions`
   # carries non-mutating modules implementing `Mutare.CallRouting`, `Mutare.UseExpansion`, or both;
   # the transform merges those capabilities with built-ins and enabled mutator capabilities.
-  # `:expand_uses` carries the `use`-expansion toggle (default `true`).
+  # `:expand_uses` carries the `use`-expansion toggle (default `true`), and `:verify_invariants`
+  # the render's self-check (default `false`; see `Mutare.Transform.Invariants`), which therefore
+  # also covers every poison rebuild.
   defp transform_opts(%Options{
          mutators: mutators,
          call_routes: macros,
          argument_marks: argument_marks,
          skip_lifting: skip_lifting,
          extensions: extensions,
-         expand_uses: expand_uses
+         expand_uses: expand_uses,
+         verify_invariants: verify_invariants
        }) do
     mutator_opts = if mutators == nil, do: [], else: [mutators: mutators]
 
@@ -655,7 +658,12 @@ defmodule Mutare.Schema do
     mutator_opts ++
       macro_opts ++
       extension_opts ++
-      [argument_marks: argument_marks, skip_lifting: skip_lifting, expand_uses: expand_uses]
+      [
+        argument_marks: argument_marks,
+        skip_lifting: skip_lifting,
+        expand_uses: expand_uses,
+        verify_invariants: verify_invariants
+      ]
   end
 
   @doc """

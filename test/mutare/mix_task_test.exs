@@ -593,6 +593,22 @@ defmodule Mix.Tasks.MutareTest do
       assert err.message =~ "# mutare:ignore-start is never closed"
     end
 
+    test "--verify-invariants renders a violation as a clean Mix abort" do
+      root = bare_project("defmodule A do\n  def f(x), do: x + 1\nend\n")
+      write_config(root, "[mutators: [Mutare.Test.StaleTokenMutator]]")
+
+      # The unchanged mutant passes unnoticed without the flag.
+      Mix.Tasks.Mutare.run([root, "--dry-run"])
+
+      err =
+        assert_raise Mix.Error, fn ->
+          Mix.Tasks.Mutare.run([root, "--dry-run", "--verify-invariants"])
+        end
+
+      assert err.message =~ "invariant check failed for lib/a.ex (1 violation)"
+      assert err.message =~ "mutant #1 (stale_token, lib/a.ex:2) `1` → `1` renders identically"
+    end
+
     test "--list-ignores renders a bad qualifier as a clean Mix abort, not a raw stacktrace" do
       # `--list-ignores`/`--dry-run` build a schema *outside* the mutation-run try/rescue, so the
       # qualifier `SpecError` must be caught at the dispatch level and surfaced as a clean Mix abort.

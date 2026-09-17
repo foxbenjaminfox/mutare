@@ -5,7 +5,7 @@ defmodule Mutare.TransformPropertyTest do
   invariants the whole tool rides on over a stream of *randomly generated* modules, so a
   bug in a syntactic corner no hand-written example happened to hit still gets caught.
 
-  Two invariants live here (the renderer half of the "compile once" bet; the *compiles*
+  Three invariants live here (the renderer half of the "compile once" bet; the *compiles*
   half is `transform_compile_property_test.exs`):
 
     * **Valid render** — for every valid module `m`, `transform_string(m)` produces source
@@ -15,6 +15,9 @@ defmodule Mutare.TransformPropertyTest do
       clean-meta `:token` footgun (reusing a literal's meta re-renders the *original* text
       even after the value changes — a silent equivalent no-op the score would mis-count),
       the very thing `Mutare.AST.literal/1` exists to prevent.
+    * **Sound readback** — `verify_invariants: true` (`Mutare.Transform.Invariants`): every
+      recorded mutant has a branch that runs when it alone is active and a coverage record, the
+      generated code names no other id, and a second render reproduces the first.
 
   The generator (`Mutare.TransformPropertyGenerators`) emits a small, valid-by-construction
   AST and renders it with `Macro.to_string/1` — the tool's real entry point is
@@ -64,8 +67,13 @@ defmodule Mutare.TransformPropertyTest do
           false
 
         {:ok, _} ->
+          # `verify_invariants` adds the readback checks (every mutant selectable and covered,
+          # nothing else named, a deterministic render); a violation raises and fails the case.
           %{metamutant: metamutant, sites: sites} =
-            Mutare.Transform.transform_string_with_sites(source, file: "prop.ex")
+            Mutare.Transform.transform_string_with_sites(source,
+              file: "prop.ex",
+              verify_invariants: true
+            )
 
           renders_valid?(metamutant, source) and mutants_observable?(sites, source, metamutant)
       end

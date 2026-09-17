@@ -30,6 +30,7 @@ defmodule Mutare.Transform.Config do
           warnings: boolean(),
           render_site_code: boolean(),
           summarize_sites: boolean(),
+          verify_invariants: boolean(),
           prefix: String.t(),
           active_var: atom(),
           super_var: atom(),
@@ -76,6 +77,12 @@ defmodule Mutare.Transform.Config do
             # so `transform_string/2`, the count pass, and tests build no summary. See
             # `Mutare.Site`'s "Live summary" section.
             summarize_sites: false,
+            # Whether the render checks its own output (`Mutare.Transform.Invariants`) before
+            # handing it back: re-reads the metamutant, renders the source a second time, and
+            # raises `Mutare.InvariantError` on any violation. Off by default; the checks cost a
+            # parse and a second render per file. Implies `render_site_code`, since one check
+            # compares each live mutant's rendered code with its original.
+            verify_invariants: false,
             # The prefix for generated private (lifted) names. `"__mutare_"` is the canonical
             # value; `Mutare.Transform` recomputes it per file — scanning the source's own
             # definitions — to a collision-free variant when the target already defines a

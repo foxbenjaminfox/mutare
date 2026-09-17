@@ -341,7 +341,7 @@ defmodule MyApp.Mutators.AccessPolicy do
 end
 ```
 
-This assumes both permission functions exist with the same arity, keeping the generated mutant compile-safe. Enable it with `mutators: [:builtins, MyApp.Mutators.AccessPolicy]`.
+This assumes both permission functions exist with the same arity, keeping the generated mutant compile-safe. Enable it with `mutators: [:builtins, MyApp.Mutators.AccessPolicy]`. While you develop it, `mix mutare --check --verify-invariants` builds the metamutant without running tests and fails if your mutator produces a mutant the report would misrepresent, such as one the metamutant cannot run.
 
 Example output:
 

@@ -190,6 +190,7 @@ defmodule Mutare.Transform do
     ClauseGuardEmit,
     HostedEmit,
     ImportWitness,
+    Invariants,
     LiftedEmit,
     Meta,
     MetaKeys,
@@ -256,6 +257,14 @@ defmodule Mutare.Transform do
       Callers that re-run the pipeline over a source already scanned pass `false` so each
       warning is printed once — `Mutare.Schema`'s render phase (the count phase warned) and
       `render_sites/2` (report-time re-derivation).
+    * `:verify_invariants` — when `true`, check the result before returning it and raise
+      `Mutare.InvariantError` listing every violation: the rendered metamutant must parse; every
+      mutant the result records as live must have a branch that runs when it alone is active, and
+      a coverage record; the generated code must name no other id; no live mutant may render
+      identically to its original; and emitting the source a second time must reproduce the
+      first pass. Meant for developing mutators, hosts, and extensions; the checks add roughly a
+      sixth to the transform's cost, since the second pass stops before the render. Defaults to
+      `false` (`Mutare.Test`'s source helpers default it to `true`).
   """
   @spec transform_string(String.t(), keyword()) :: Result.t()
   def transform_string(source, opts \\ []) when is_binary(source) do
@@ -279,7 +288,40 @@ defmodule Mutare.Transform do
           clean_decisions: [CleanRegion.Decision.t()]
         }
   def transform_string_with_sites(source, opts \\ []) when is_binary(source) do
+    {rendered, config, emitted} = render(source, opts)
+
+    # `:verify_invariants`: read the result back, and emit the program a second time to check
+    # the pass is deterministic. The second pass stops before the render — the metamutant is a
+    # pure function of the emitted tree, which `emitted` fingerprints — and repeats a pass whose
+    # advisories the first already printed.
+    if config.verify_invariants do
+      reemit = fn -> source |> emit_pass(Keyword.put(opts, :warnings, false)) |> elem(1) end
+      Invariants.check!(rendered, emitted, config, reemit)
+    end
+
+    rendered
+  end
+
+  # One pass, stopping before the render: the emitted tree, and the summary the determinism check
+  # compares — the tree's fingerprint (only under `:verify_invariants`; hashing costs nothing to
+  # skip), the recorded sites, the next id, and the dispatch variable.
+  defp emit_pass(source, opts) do
     {transformed, ctx} = plan_and_emit(source, opts)
+
+    summary = %{
+      program: if(ctx.config.verify_invariants, do: :erlang.phash2(transformed)),
+      sites: Enum.reverse(ctx.claim.sites),
+      next_id: ctx.claim.next_id,
+      dispatch_var: ctx.config.active_var
+    }
+
+    {{transformed, ctx}, summary}
+  end
+
+  # One full pass: plan, emit, and render the metamutant. Returns the result, the pass config,
+  # and the emitted summary.
+  defp render(source, opts) do
+    {{transformed, ctx}, emitted} = emit_pass(source, opts)
 
     # Nothing delivered — every candidate was ignored, poisoned, or statically unselected — so the
     # emitted tree *is* the parsed original: no selector, no coverage record, nothing for the
@@ -292,13 +334,13 @@ defmodule Mutare.Transform do
         else:
           transformed |> silence_helper_xref(ctx.config.runtime_namespace) |> Render.to_source()
 
-    %{
-      metamutant: metamutant,
-      sites: Enum.reverse(ctx.claim.sites),
-      next_id: ctx.claim.next_id,
-      dispatch_var: ctx.config.active_var,
-      clean_decisions: Enum.reverse(ctx.clean_decisions)
-    }
+    {%{
+       metamutant: metamutant,
+       sites: emitted.sites,
+       next_id: emitted.next_id,
+       dispatch_var: emitted.dispatch_var,
+       clean_decisions: Enum.reverse(ctx.clean_decisions)
+     }, ctx.config, emitted}
   end
 
   @doc """
@@ -502,11 +544,13 @@ defmodule Mutare.Transform do
       # `ModulePlan.build/4` (the lifting advisories), so *every* advisory honours the flag.
       warnings: Keyword.get(opts, :warnings, true),
       # Default `true`: the public API and tests render each site's diff eagerly. A `mix mutare`
-      # scan passes `false` to defer it (see `Mutare.Transform.Config`).
-      render_site_code: Keyword.get(opts, :render_site_code, true),
+      # scan passes `false` to defer it (see `Mutare.Transform.Config`); `:verify_invariants`
+      # renders it regardless, because one of its checks compares that code.
+      render_site_code: Keyword.get(opts, :render_site_code, true) or verify_invariants?(opts),
       # Default `false`: build no live `summary`. A `mix mutare` run passes `true` (unless
       # `--quiet`) so the live in-flight line has a cheap one-liner (see `Mutare.Transform.Config`).
       summarize_sites: Keyword.get(opts, :summarize_sites, false),
+      verify_invariants: verify_invariants?(opts),
       prefix: names.prefix,
       active_var: names.active_var,
       super_var: names.super_var,
@@ -515,6 +559,8 @@ defmodule Mutare.Transform do
       case_var: names.case_var
     }
   end
+
+  defp verify_invariants?(opts), do: Keyword.get(opts, :verify_invariants, false)
 
   # The per-source transform context: the config, a primed top-level (empty-behaviours) mutator
   # scope (`put_module_behaviours/3` refreshes the cache at each `defmodule` boundary), and the claim

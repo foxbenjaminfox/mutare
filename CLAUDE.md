@@ -97,7 +97,10 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
 - **`Mutare.Manifest` / `Mutare.Metamutant`** — the lazily-built map from a metamutant line range
   back to the local mutant id(s) living there, so **Poison** can attribute a compile error and
   translate to report ids. Keyed by id;
-  no metamutant↔original line mapping.
+  no metamutant↔original line mapping. The same walk lists every generated mention of an id,
+  which `Transform.Invariants` checks against the recorded Sites under `verify_invariants`
+  (`--verify-invariants`; on by default in `Mutare.Test`) — NOTES "Verify mode: the transform
+  reads its own output back".
 - **`Mutare.Sandbox`** (+ `Mirror`, `Ownership`, `Lock`, `Seed`, `Command`,
   `Command.Invocation`/`Output`, `CompilerOptions`) — materializes a temp copy of the target,
   overwrites the metamutant sources,
@@ -214,6 +217,10 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   to there; in a *body* (the coverage record, `Mutare.Coverage.Recorder.record_ast/3`) they are
   nested `case`s, because Elixir ≥ 1.21 accepts `:erlang.andalso` only in a guard — NOTES
   "Factor compiler input before rendering" and NOTES "`:erlang.andalso` is guard-only".
+- **Every delivery shape must be readable back.** `Mutare.Manifest` recognises what emission
+  writes: selector clauses, `===` gates, `=/=` and range exclusions, coverage records. A new
+  shape needs its reader in the same change: `verify_invariants` (the transform property soak,
+  every `Mutare.Test` helper) reports an unrecognised branch as a mutant with no branch.
 - **Two renderers, on purpose.** The metamutant is a build artifact (AST rewrite via
   `Sourceror.to_string`, only needs to compile); the report patches the original source. Don't try
   to make one serve both.
@@ -261,6 +268,9 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 | Deployment requirement (routed library must be loadable) | `required_modules/0` (checked once at startup, on mutators and extensions) | `environment_fixtures.ex` |
 | Leave a call-argument position alone *value-aware* (mark it, then decide) | `argument_marks/1` (declare `{mod, fun, arity, positions, label}`, config-aware) + read `Mutare.Mutator.marked?/2` in `mutate/2`; users extend any declared label's table with the `argument_marks:` option. To hold a position back from **every** family whatever its value, route it `:raw` (`call_routes/0`) instead — no mark needed | `IntegerLiteral` timeout table (`transform_duration_test.exs`) |
 | Per-kind `# mutare:ignore` qualifier | `variants/0` (opt-in) + tag via `Mutation.tagged/2` *or* `variant/2` | (value & operator families) |
+
+`Mutare.Test`'s source helpers run the `verify_invariants` checks by default;
+`test/support/invariant_fixtures.ex` holds one fixture per way a mutator or host breaks them.
 
 An **extension** is a non-mutating module implementing `Mutare.CallRouting`,
 `Mutare.UseExpansion`, or both. It has no `name/0`, never appears in a report, and is listed under

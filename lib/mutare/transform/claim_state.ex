@@ -136,20 +136,26 @@ defmodule Mutare.Transform.ClaimState do
       |> runtime_identity(config)
       |> Map.put(:block_macro, block_macro)
       |> apply_ignore(config.ignore_directives)
+      |> poison(config.skip_ids)
 
-    claim = %{claim | next_id: id + 1}
+    claim = %{claim | next_id: id + 1, sites: [site | claim.sites]}
 
-    cond do
-      id in config.skip_ids ->
-        {[], %{claim | sites: [poison(site) | claim.sites]}}
+    if delivered?(config, site),
+      do: {[artifact_fn.(local_id(config, id), item)], %{claim | emitted: claim.emitted + 1}},
+      else: {[], claim}
+  end
 
-      selected? and not site.ignored ->
-        {[artifact_fn.(local_id(config, id), item)],
-         %{claim | sites: [site | claim.sites], emitted: claim.emitted + 1}}
+  @doc """
+  Whether a `:render` claim delivers `site`'s artifact: the site is statically selected
+  (`emit_ids`), not poison-skipped, and not ignored.
 
-      true ->
-        {[], %{claim | sites: [site | claim.sites]}}
-    end
+  The one statement of that rule — `claim/6` decides by it, and
+  `Mutare.Transform.Invariants` reads it to know which mutants the metamutant must contain.
+  """
+  @spec delivered?(Config.t(), Site.t()) :: boolean()
+  def delivered?(%Config{emit_ids: emit_ids}, %Site{} = site) do
+    (is_nil(emit_ids) or MapSet.member?(emit_ids, site.id)) and not site.poisoned and
+      not site.ignored
   end
 
   defp local_id(%Config{runtime_namespace: nil}, id), do: id
@@ -190,5 +196,7 @@ defmodule Mutare.Transform.ClaimState do
       else: claim
   end
 
-  defp poison(%Site{} = site), do: %{site | poisoned: true}
+  # A poison-skipped id records its site, flagged, and delivers nothing.
+  defp poison(%Site{id: id} = site, skip_ids),
+    do: if(id in skip_ids, do: %{site | poisoned: true}, else: site)
 end
