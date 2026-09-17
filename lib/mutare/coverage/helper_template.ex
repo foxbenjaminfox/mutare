@@ -102,8 +102,8 @@ defmodule Mutare.Coverage.HelperTemplate do
         label = label()
 
         case unrecorded_ids(tid, namespace, ids, label) do
-          [] -> true
-          unrecorded -> record(unrecorded, label)
+          :none -> true
+          {unrecorded, key} -> record(unrecorded, key)
         end
     end
   end
@@ -146,15 +146,17 @@ defmodule Mutare.Coverage.HelperTemplate do
       end
 
     if cached_group?(ids, file_seen, label) do
-      []
+      :none
     else
+      # The label is classified once per newly reached group: the same key dedups the
+      # process-local cache and tells `record/2` which tables the ids belong in.
       key = attribution_key(label)
 
       case uncached(ids, file_seen, key) do
         [] ->
           updated = cache_group(file_seen, ids, label)
           if updated != file_seen, do: Process.put(cache_key, {tid, updated})
-          []
+          :none
 
         new ->
           updated =
@@ -164,7 +166,7 @@ defmodule Mutare.Coverage.HelperTemplate do
             |> cache_group(ids, label)
 
           Process.put(cache_key, {tid, updated})
-          Enum.map(new, &qualify(namespace, &1))
+          {Enum.map(new, &qualify(namespace, &1)), key}
       end
     end
   end
@@ -212,41 +214,43 @@ defmodule Mutare.Coverage.HelperTemplate do
 
   defp attribution_key(_label), do: :unlabeled
 
-  defp record(ids, label) do
+  # `key` is the classification `unrecorded_ids/4` already made (`attribution_key/1`), so a
+  # label is read as a runnable test name once per newly reached group, not once per id.
+  # Inserts stay one object at a time: most groups hold one to three ids, where building a
+  # list per table costs more than the calls it saves (NOTES "Coverage first hits").
+  defp record(ids, key) do
     Enum.each(ids, fn id ->
       :ets.insert(@agg_table, {id})
-
-      case label do
-        {mod, name} when is_atom(mod) ->
-          # Module → file, always: the granularity `:coverage` (and the `:tests` fallback) needs.
-          :ets.insert(@attr_table, {{mod, id}})
-
-          if filterable_name?(name) do
-            # A runnable ExUnit test name — the finer key `:tests` narrows with
-            # (`mix test <file> --only test:<name>`).
-            :ets.insert(@test_table, {{mod, name, id}})
-          else
-            # Labeled, but NOT a single runnable test: `setup_all` (`:setup_all`) or an `on_exit`
-            # closure (`-test …`). It covers the id through a module-scoped context, so `:tests`
-            # must run the whole file — narrowing to named tests would drop the covering context
-            # and manufacture a false survivor.
-            :ets.insert(@wholefile_table, {id})
-          end
-
-        # No recoverable test label — the line ran in a bare spawn, a `setup`-registered
-        # `on_exit` closure, or a `setup_all` whose work ran off-stack in a `Task` (an ordinary
-        # `setup_all`, and an `on_exit` registered in a test body, are recovered by tier 3,
-        # `stacktrace_label/1`, and take the attribution branch above). Record it so the caller
-        # runs the whole suite for this id rather than trusting partial per-file attribution (a
-        # test that also touches the line directly would otherwise mask this run and manufacture a
-        # false survivor).
-        _ ->
-          :ets.insert(@unlabeled_table, {id})
-      end
+      attribute(key, id)
     end)
 
     true
   end
+
+  # A runnable ExUnit test name: module → file is the granularity `:coverage` (and the
+  # `:tests` fallback) needs, and the name is the finer key `:tests` narrows with
+  # (`mix test <file> --only test:<name>`).
+  defp attribute({:test, mod, name}, id) do
+    :ets.insert(@attr_table, {{mod, id}})
+    :ets.insert(@test_table, {{mod, name, id}})
+  end
+
+  # Labeled, but NOT a single runnable test: `setup_all` (`:setup_all`) or an `on_exit`
+  # closure (`-test …`). It covers the id through a module-scoped context, so `:tests` must
+  # run the whole file — narrowing to named tests would drop the covering context and
+  # manufacture a false survivor.
+  defp attribute({:labeled, mod}, id) do
+    :ets.insert(@attr_table, {{mod, id}})
+    :ets.insert(@wholefile_table, {id})
+  end
+
+  # No recoverable test label — the line ran in a bare spawn, a `setup`-registered `on_exit`
+  # closure, or a `setup_all` whose work ran off-stack in a `Task` (an ordinary `setup_all`,
+  # and an `on_exit` registered in a test body, are recovered by tier 3, `stacktrace_label/1`,
+  # and take a labeled clause above). Record it so the caller runs the whole suite for this id
+  # rather than trusting partial per-file attribution (a test that also touches the line
+  # directly would otherwise mask this run and manufacture a false survivor).
+  defp attribute(:unlabeled, id), do: :ets.insert(@unlabeled_table, {id})
 
   # Is `name` a **runnable** ExUnit test name — one `mix test --only test:<name>` can select? The
   # three ExUnit generators name their bodies `:"test …"`, `:"doctest …"`, `:"property …"` (the

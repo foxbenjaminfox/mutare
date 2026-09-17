@@ -10922,6 +10922,17 @@ sandbox, three alternating rounds, CPU seconds because wall time swung 24–50 s
 The metamutant compiled on the first attempt, which with 2,300 regions is the evidence
 that matters for the contract.
 
+#### Coverage first hits
+
+`record/2` classified a label as a runnable test name once per id although
+`unrecorded_ids/4` had just classified it for the cache; the key now travels with the
+ids and `attribute/2` dispatches on it, so there is one reading of "is this a runnable
+test". Batching the ETS inserts per table was tried and dropped: the cold benchmark
+(`coverage_cache.exs … cold`, 2,048 groups hit once per fresh process) moved within noise,
+reductions *rose* about 10%, and a profile put list construction at 14% of a singleton
+hit. Most groups hold one to three ids. A cold hit costs ~4 µs, dominated by the
+process-dictionary and map updates, and only the one probe run pays it.
+
 #### Not taken from the same review
 
 Clean bodies for the unaffected clauses of the *active* function (one function in one

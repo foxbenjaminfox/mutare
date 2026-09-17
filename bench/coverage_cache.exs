@@ -1,8 +1,9 @@
 # Run with `elixir bench/coverage_cache.exs /path/to/reference_helper_template.ex`.
-# Compile both helpers with the same options, then compare warmed literal-payload calls in fresh
-# processes. This isolates probe bookkeeping; it says nothing about ordinary mutant runs.
+# Compile both helpers with the same options, then compare literal-payload calls in fresh
+# processes: warmed repeats by default, or with `cold` each process's first hit of every
+# group. This isolates probe bookkeeping; it says nothing about ordinary mutant runs.
 defmodule CoverageCacheBench do
-  def run(reference_path, label_mode \\ "labeled") do
+  def run(reference_path, label_mode \\ "labeled", temperature \\ "warm") do
     current_path = Path.expand("../lib/mutare/coverage/helper_template.ex", __DIR__)
     variants = [{:reference, reference_path}, {:current, current_path}]
 
@@ -32,10 +33,13 @@ defmodule CoverageCacheBench do
       "Elixir #{System.version()}, OTP #{System.otp_release()}, #{:erlang.system_info(:schedulers_online)} schedulers"
     )
 
-    IO.puts("attribution: #{label_mode}")
+    IO.puts("attribution: #{label_mode}, #{temperature}")
     IO.puts("ids\tgroups\tvariant\tns_per_hit\treductions_per_hit\tminor_gcs")
 
-    for size <- [1, 2, 3, 8, 32, 128], groups <- [1, 64] do
+    # A cold sample spends one hit per group, so it needs many groups to be measurable.
+    group_counts = if temperature == "cold", do: [2048], else: [1, 64]
+
+    for size <- [1, 2, 3, 8, 32, 128], groups <- group_counts do
       runners =
         Map.new(helpers, fn {name, helper} ->
           runner = Module.concat(__MODULE__, "#{name}_#{size}_#{groups}")
@@ -60,14 +64,14 @@ defmodule CoverageCacheBench do
           {name, runner}
         end)
 
-      rounds = div(300_000, groups)
+      rounds = if temperature == "cold", do: 1, else: div(300_000, groups)
       hits = rounds * groups
 
       samples =
         for sample <- 1..7,
             name <-
               if(rem(sample, 2) == 0, do: [:current, :reference], else: [:reference, :current]) do
-          {name, sample(runners[name], rounds, hits, label_mode)}
+          {name, sample(runners[name], rounds, hits, label_mode, temperature)}
         end
 
       for name <- [:reference, :current] do
@@ -81,7 +85,7 @@ defmodule CoverageCacheBench do
     end
   end
 
-  defp sample(runner, rounds, hits, label_mode) do
+  defp sample(runner, rounds, hits, label_mode, temperature) do
     parent = self()
     token = make_ref()
 
@@ -90,7 +94,7 @@ defmodule CoverageCacheBench do
         if label_mode == "labeled",
           do: Process.put(:"$process_label", {__MODULE__, :"test benchmark"})
 
-        runner.run(10)
+        if temperature == "warm", do: runner.run(10)
         :erlang.garbage_collect()
         {:reductions, before_reductions} = Process.info(self(), :reductions)
         {:garbage_collection, before_gc} = Process.info(self(), :garbage_collection)
@@ -130,6 +134,10 @@ case System.argv() do
   [reference_path, mode] when mode in ["labeled", "unlabeled"] ->
     CoverageCacheBench.run(reference_path, mode)
 
+  [reference_path, mode, temperature]
+  when mode in ["labeled", "unlabeled"] and temperature in ["warm", "cold"] ->
+    CoverageCacheBench.run(reference_path, mode, temperature)
+
   _ ->
-    raise "usage: elixir bench/coverage_cache.exs /path/to/reference_helper_template.ex [labeled|unlabeled]"
+    raise "usage: elixir bench/coverage_cache.exs /path/to/reference_helper_template.ex [labeled|unlabeled [warm|cold]]"
 end

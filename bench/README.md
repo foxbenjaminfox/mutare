@@ -15,9 +15,20 @@ It generates callers with literal ID payloads, warms their caches, and measures 
 alternating samples in fresh workers. The matrix varies IDs per hit and co-recording
 groups in one namespace; output reports median time, reductions per hit, and minor GCs
 from that sample. `unlabeled` includes memoized attribution recovery. These measurements
-cover repeated probe hits; they exclude cold-cache writes, full-suite startup and ordinary
-mutant runs, which do not call the helper. Exact-list comparisons may cost more for callers
+cover repeated probe hits; they exclude full-suite startup and ordinary mutant runs,
+which do not call the helper. Exact-list comparisons may cost more for callers
 that allocate new ID lists dynamically than for these generated literal payloads.
+
+A third argument, `cold`, measures the other path: each fresh worker hits 2,048 distinct
+groups once, unwarmed, so every hit records its ids.
+
+```sh
+elixir --erl '+S 2:2' bench/coverage_cache.exs /tmp/mutare-reference-helper.ex labeled cold
+```
+
+A cold hit costs microseconds rather than the warm path's ~130 ns, most of it in the
+process-dictionary and map updates, so expect differences between helpers of a few
+percent to sit inside the noise; read the reductions column beside the times.
 
 ## Compile fixtures
 
