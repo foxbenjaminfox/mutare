@@ -600,6 +600,12 @@ defmodule Mutare.Coverage.HelperTemplate do
     end)
   end
 
+  # `mod` is always an ExUnit label, so always a `_test.exs` module — `Code.require_file`d from
+  # the tree this run is executing in, so its recorded source is reliably under the root. A *lib*
+  # module's need not be: an app-build seed (`Mutare.Sandbox.Seed`) transplants beams compiled in
+  # the original checkout, and those record *its* absolute path, which `Path.relative_to/2` cannot
+  # shorten (NOTES "Self-hosting: a seeded beam records the original checkout's path"). Hence no
+  # fallback here — nothing but a label reaches this.
   defp source_file(mod) do
     with {:module, _} <- Code.ensure_loaded(mod),
          info when is_list(info) <- mod.module_info(:compile),

@@ -11151,3 +11151,64 @@ change the compiled program it verifies. The static readback catches the known f
 form) must be recognised by `Mutare.Manifest` in the same change. Before, a gap only weakened
 poison attribution. Now the property soak and every `Mutare.Test`-based suite report the
 unrecognised branch as missing.
+
+### Self-hosting: a seeded beam records the original checkout's path `[fixed — the test derives its own root]`
+A narrowed self-hosted run (`mix mutare --only …` on Mutare) failed its **baseline**, on one
+test, whenever app-build seeding was on:
+
+```
+1) test dump/1 … maps an attributed id to its module's source file, relative to the root
+   code:  assert payload.by_file["lib/mutare/mutators/arithmetic.ex"] == %{nil: [501]}
+   left:  nil
+```
+
+The cause is a fact about `_build` worth keeping in mind whenever a path comes out of a beam:
+**`module_info(:compile)[:source]` is an absolute path frozen at compile time**, and
+`Mutare.Sandbox.Seed.app_build/6` deliberately copies beams *without* recompiling them. So every
+lib module a narrowed run did not rewrite serves its original-checkout path inside the sandbox,
+while the sandbox's cwd is somewhere under `/tmp`. `Path.relative_to/2` cannot shorten a path that
+is not under the root, so it hands back the absolute one and the `by_file` key misses.
+
+The same fact is **load-bearing** one module over: `delete_metamutant_beams/2` matches each seeded
+beam's recorded source against `meta_sources`, which is built by joining the metamutant's relative
+path onto the **original** root (`expanded_root`), precisely because that is what the seeded beam
+records. Rewriting the paths into sandbox space to make them tidy would break that match — and the
+deletion is the structural guard against serving a stale beam over a metamutant. One fact, two
+consequences pulling opposite ways; neither should be "fixed".
+
+**Nothing in production was exposed**, and that is the reason no fallback was added to
+`source_file/1`. `by_file` is keyed by *covering test file*: the module it resolves always arrives
+as an ExUnit label (`$process_label`, a recovered `$callers` label, a `setup_all` `__ex_unit__/2`
+frame, an `on_exit` closure frame), all of which name a `_test.exs` module — and those are
+`Code.require_file`d from the tree the run is executing in, never seeded into
+`_build/<env>/lib/<app>/ebin`. Verified in a simulated sandbox: a `_test.exs` module reports the
+sandbox path, a `test/support/*.ex` module (which `elixirc_paths(:test)` *does* compile into
+`_build`) reports the original checkout's.
+
+**The fix is in the test**, which was the only thing assuming a lib module's beam came from the
+tree it is running in. It now reads the recorded source, asserts it ends in the expected relative
+path, and sets `MUTARE_COV_ROOT_FIXTURE` to the prefix that remains — so the assertion pins the
+relativisation, which is what it was written to check, and stays silent about which checkout
+compiled the beam. It keeps anchoring on a lib module on purpose: the file's ETS tables accumulate
+across its tests, and only a module no sibling test attributes to yields an exact `by_file` key.
+A fixture module defined in the test file would not — it would share `__MODULE__`'s source, and
+`setup_all`'s `hit([777])` already attributes there.
+
+Verified before and after on the real path, `mix mutare --only lib/mutare/mutators/logical.ex
+--max-mutants 2` on this checkout, both runs seeding identically (*"reused 358 app beams,
+recompiling 1 metamutant beam"*): with the old premise the baseline aborts on that one test, with
+the derived root it comes back green in 61.5s and both mutants are killed.
+
+One thing the fix gives up, and why that is free: with the root derived from the source, root and
+cwd coincide again in an ordinary checkout, so this test no longer distinguishes `MUTARE_COV_ROOT`
+from `File.cwd!()`. It never did — the old `setup` set the root *to* the cwd. The distinction that
+matters is the umbrella one the env var exists for (a per-app cwd must not strip the `apps/<app>/`
+prefix), and `umbrella_test.exs` "coverage records root-relative test files and selects per file"
+pins it end-to-end, on a real run, where it belongs.
+
+Why only *narrowed* runs: a full run rewrites nearly every lib file, so `arithmetic.ex` is a
+metamutant, its beam is deleted, and the recompile stamps the sandbox path — and past
+`@seed_app_build_max_fraction` a full run declines to seed at all. Narrow the run past that file
+and the seeded beam survives with the foreign one. (`dump_test.exs` was immune
+throughout — it attributes from the test process itself and expects
+`Path.relative_to_cwd(__ENV__.file)`, the production shape.)

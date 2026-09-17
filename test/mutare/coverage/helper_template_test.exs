@@ -510,8 +510,20 @@ defmodule Mutare.Coverage.HelperTemplateTest do
     end
 
     test "maps an attributed id to its module's source file, relative to the root", %{dump: dump} do
-      # A real, loadable module so `source_file/1` resolves a source.
+      # A real, loadable module so `source_file/1` resolves a source, and a *lib* one no sibling
+      # test attributes to, so this `by_file` key stays exclusively ours (the tables accumulate
+      # across the file). Its beam records the absolute path it was compiled from, which a
+      # narrowed self-hosted run seeds from the *original* checkout — so derive the root from
+      # that source rather than assuming the cwd. What's under test is the relativising, not
+      # which tree compiled the beam (NOTES "Self-hosting: a seeded beam records the original
+      # checkout's path").
       mod = Mutare.Mutators.Arithmetic
+      rel = "lib/mutare/mutators/arithmetic.ex"
+      source = mod.module_info(:compile) |> Keyword.fetch!(:source) |> to_string()
+
+      assert String.ends_with?(source, "/" <> rel)
+      System.put_env(H.root_env(), String.replace_suffix(source, "/" <> rel, ""))
+
       :ets.insert(H.agg_table(), {501})
       :ets.insert(H.attr_table(), {{mod, 501}})
 
@@ -520,7 +532,7 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       payload = dump |> File.read!() |> :erlang.binary_to_term()
 
       assert 501 in payload.aggregate[nil]
-      assert payload.by_file["lib/mutare/mutators/arithmetic.ex"] == %{nil => [501]}
+      assert payload.by_file[rel] == %{nil => [501]}
       assert is_map(payload.unlabeled)
     end
 
