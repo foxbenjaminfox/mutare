@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A hand-built `%Mutare.CallRouting.Call{}` must name `pipe_left`.** The key
   is enforced, so a test that builds the struct literally stops compiling; build
   it with `Call.new/5` instead. Matching on the struct is unaffected.
+- **Hosts that target the same fragment share one selector.** Inside a function
+  body, a later `Mutare.Mutator.MacroHost`'s mutants join the earlier host's
+  selector instead of nesting a second selector around it, and one coverage
+  record names every id. Each mutant keeps its own host's `wrap`, the first
+  host's wrapped original stays the fallback, and every host's `splice` still
+  runs in order — a later one now receives the combined selector. Where no
+  active-id binding is in scope (a default argument, a function of a module
+  defined at runtime) the selectors nest as before.
 
 ## [0.2.1] - 2026-09-17
 

@@ -168,8 +168,9 @@ defmodule Mutare.Transform.Analyze.Collect do
   # else the host); `note` rides verbatim, and `variant` is resolved now against the hosted
   # fragment's own `{original, mutated}` pair. That pair is lost once an outer host relays this lowered
   # rebuild, so a producer that derives labels through `variant/2` must be materialized here.
-  # The multi-host selector chaining emit performs (`target_key`/fallback) has no analog here:
-  # each lowered mutant is an independent single-point rebuild, not a combined build.
+  # The way emit combines several hosts' selectors on one target (`target_key`, `extend/4`) has
+  # no analog here: each lowered mutant is an independent single-point rebuild, not a combined
+  # build.
   defp lower_hosted(%Candidate.Hosted{} = cand, call_node, rev_path) do
     for %Dispatch.Result{spec: mutator, node: mutated} = result <- cand.mutants do
       {rev_path,

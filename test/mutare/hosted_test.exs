@@ -347,6 +347,136 @@ defmodule Mutare.HostedTest do
     end
   end
 
+  describe "the selectors several hosts weave for one fragment" do
+    defmodule CoverageSink do
+      def hit(ids) do
+        send(self(), {:covered, ids})
+        true
+      end
+    end
+
+    @inline_read_source """
+    defmodule Mutare.HostedFixtureInlineRead do
+      import Mutare.Test.HostDSL
+
+      def defaulted(kept \\\\ filter([:ok], 2 > 1)), do: kept
+    end
+    """
+
+    defp transform(source, mutators) do
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "hosted.ex",
+        mutators: mutators,
+        verify_invariants: true
+      )
+    end
+
+    # The mutant ids each selector in the metamutant names, clause by clause, outermost first.
+    defp selectors(%{metamutant: meta, dispatch_var: var}) do
+      {_ast, found} =
+        meta
+        |> Code.string_to_quoted!()
+        |> Macro.prewalk([], fn
+          {:case, _meta, [subject, [do: clauses]]} = node, found ->
+            ids = for {:->, _, [[id], _body]} <- clauses, is_integer(id), do: id
+            {node, if(Mutare.Metamutant.subject?(subject, var), do: [ids | found], else: found)}
+
+          node, found ->
+            {node, found}
+        end)
+
+      Enum.reverse(found)
+    end
+
+    defp ids_on_line(sites, line), do: for(site <- sites, site.line == line, do: site.id)
+
+    test "become one selector where the active id is already bound" do
+      result = transform(@source, [Mutare.Test.HostMutator, Mutare.Test.SecondHostMutator])
+
+      direct = ids_on_line(result.sites, 5)
+      piped = ids_on_line(result.sites, 9)
+      assert [_relaxed, _reflected, _second_host] = direct
+
+      # One selector per fragment; its clauses keep claim order (the earlier host's ids first).
+      assert selectors(result) == [direct, piped]
+
+      # Each function holds one selector site, which is what a clean region would save.
+      assert [%{sites: 1}, %{sites: 1}] = result.clean_decisions
+    end
+
+    test "record every host's ids in one baseline coverage hit" do
+      result = transform(@source, [Mutare.Test.HostMutator, Mutare.Test.SecondHostMutator])
+      direct = ids_on_line(result.sites, 5)
+
+      source =
+        String.replace(result.metamutant, "Mutare.HostedFixture", "Mutare.HostedFixtureObserved")
+
+      [{compiled, _binary}] = compile_observed(Mutare.HostedFixtureObserved, source, CoverageSink)
+
+      track_key = Mutare.Coverage.Recorder.track_key()
+      previous = :persistent_term.get(track_key, false)
+      :persistent_term.put(track_key, true)
+      on_exit(fn -> :persistent_term.put(track_key, previous) end)
+
+      assert apply(compiled, :direct, [2]) == [:ok]
+      assert_received {:covered, ^direct}
+      refute_received {:covered, _ids}
+    end
+
+    test "keep each host's wrap on its own branches, and the first host's on the original" do
+      later =
+        transform(@source, [Mutare.Test.HostMutator, Mutare.Test.WrappingHostMutator])
+
+      assert later.metamutant =~ "Function.identity(true)"
+      refute later.metamutant =~ "Function.identity(x"
+
+      earlier =
+        transform(@source, [Mutare.Test.WrappingHostMutator, Mutare.Test.HostMutator])
+
+      assert earlier.metamutant =~ "Function.identity(true)"
+      assert earlier.metamutant =~ "Function.identity(x > 1)"
+      refute earlier.metamutant =~ "Function.identity(x >= 1)"
+      refute earlier.metamutant =~ "Function.identity(x < 1)"
+
+      source =
+        String.replace(earlier.metamutant, "Mutare.HostedFixture", "Mutare.HostedFixtureWrapped")
+
+      [{compiled, _binary}] = compile_purging(Mutare.HostedFixtureWrapped, source)
+
+      assert apply(compiled, :direct, [1]) == []
+
+      Selector.put(id(earlier.sites, :wrapping_host, "true", 5))
+      assert apply(compiled, :direct, [1]) == [:ok]
+
+      Selector.put(id(earlier.sites, :host_filter, "x >= 1", 5))
+      assert apply(compiled, :direct, [1]) == [:ok]
+
+      Selector.put(id(earlier.sites, :host_filter, "x < 1", 5))
+      assert apply(compiled, :direct, [0]) == [:ok]
+    end
+
+    test "stay nested where each selector reads the active id for itself" do
+      result =
+        transform(@inline_read_source, [Mutare.Test.HostMutator, Mutare.Test.SecondHostMutator])
+
+      # A default argument runs where no binding is in scope, so each selector makes its own
+      # `:persistent_term` read: the later host's selector falls back to the earlier host's.
+      assert [relaxed, reflected, second_host] = ids_on_line(result.sites, 4)
+      assert selectors(result) == [[second_host], [relaxed, reflected]]
+
+      [{compiled, _binary}] =
+        compile_purging(Mutare.HostedFixtureInlineRead, result.metamutant)
+
+      assert apply(compiled, :defaulted, []) == [:ok]
+
+      Selector.put(reflected)
+      assert apply(compiled, :defaulted, []) == []
+
+      Selector.put(second_host)
+      assert apply(compiled, :defaulted, []) == [:ok]
+    end
+  end
+
   describe "a static :hosted at the piped-value position is rejected (not silently dropped)" do
     test "raises with an actionable message pointing at :routing" do
       source = """

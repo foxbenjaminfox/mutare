@@ -7983,6 +7983,8 @@ subscribed hosts can return targets for the same source fragment. Emitting their
 sequence lets a later `List.replace_at` erase the earlier selector while leaving its Sites behind.
 `HostedEmit` now remembers the selector for each `{range, logical_original}` target and uses it as
 the next selector's catch-all, nesting the selectors so every recorded id remains executable.
+(Where the active id is already bound the hosts now share one selector instead — "Hosts on one
+target share a selector".)
 Second, the unused-host check cannot use raw selector overlap: a broad dynamic route may overlap a
 host while a more-specific static `:skip` route wins every actual lookup. Reachability now evaluates
 representative concrete calls through the real specificity cascade; because routes contain only
@@ -11475,3 +11477,42 @@ metamutant, its beam is deleted, and the recompile stamps the sandbox path — a
 and the seeded beam survives with the foreign one. (`dump_test.exs` was immune
 throughout — it attributes from the test process itself and expects
 `Path.relative_to_cwd(__ENV__.file)`, the production shape.)
+
+### Hosts on one target share a selector (2026-09-18)
+
+When two subscribed hosts target the same fragment, `HostedEmit` used to make the earlier host's
+selector the later one's fallback (above, "Macro routing as an ecosystem contract"). That kept every
+id executable, and it stacked one selector per host over the same value: an inactive run answered
+each `case mutare_active` in turn and passed each coverage gate on the way down to the original.
+
+Inside a function body those selectors all read the scope's binding — one immutable value — and
+the only code between two of them is the outer one's coverage record, which core also wrote. So a
+later host's clauses now join the earlier host's: one `case`, the clauses in claim order, one
+record naming every id, the first host's `wrap(original)` as the fallback. Three decisions shaped
+how:
+
+- **The memo holds a selector's parts, not its node** (`HostedEmit.Woven`: subject, clauses,
+  fallback). Joining is `clauses ++ clauses` over parts core assembled. The alternative — take the
+  `case` at the target's position apart and merge into it — would have to *recognise* a selector
+  in whatever a host's `wrap`/`splice` produced, and two targets agreeing on a source range says
+  nothing about what that syntax is. With parts there is nothing to recognise, and a host-built
+  `case` that happens to switch on the dispatch variable can never be merged into.
+- **Only a selector that reads the binding is joined.** `SelectorEmit.subject_read/1` says what a
+  scrutinee reads, and the memo keeps the answer. Where no binding is in scope (a default
+  argument, a function of a runtime-nested module) each selector makes its own `:persistent_term`
+  read, and those stay nested exactly as before. Joining them would replace two reads with one —
+  almost certainly fine, since selection is process-constant in a real run, and the outer
+  catch-all even binds the value the inner selector then re-reads — but it is a different
+  argument from "the same binding", so it is left for its own change.
+- **Every host's `splice` still runs, in order, on the node the previous one returned**, each
+  handed the selector accumulated so far; a later splice replaces what an earlier one placed, as
+  it always did. Handing every splice the final selector was the other option and changes nothing
+  when hosts agree on the position, but when they do not it would copy the later host's ids to
+  the earlier host's position too. Each clause keeps its own host's `wrap`.
+
+The rebuilt selector is the same selector *site*, so it reuses the first host's subject rather
+than taking (and counting) another: `Scope.active_references` feeds the clean-region threshold,
+and a function whose only instrumentation is one shared selector now reports one site, not one per
+host. `Mutare.Manifest` needed no new reader — the result is an ordinary selector — and the
+whole-`case` poison fallback now spans every host's ids, which is what a structural error at that
+position implicates anyway.

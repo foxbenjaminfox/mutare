@@ -439,6 +439,47 @@ defmodule Mutare.Test.SecondHostMutator do
   def host(_call, _context), do: []
 end
 
+defmodule Mutare.Test.WrappingHostMutator do
+  @moduledoc """
+  A host-only subscriber on HostMutator's fragment whose `wrap` is visible in the metamutant
+  (`Function.identity/1`, so every branch keeps its value). Paired with an identity-`wrap` host it
+  shows whose `wrap` each branch of a shared selector carries.
+  """
+  @behaviour Mutare.Mutator
+  @behaviour Mutare.Mutator.MacroHost
+
+  @impl Mutare.Mutator
+  def name, do: :wrapping_host
+
+  @impl Mutare.Mutator.MacroHost
+  def hosted_macros, do: [{Mutare.Test.HostDSL, :filter, :any}]
+
+  @impl Mutare.Mutator.MacroHost
+  def host(%Mutare.CallRouting.Call{node: {form, _meta, args}}, _context)
+      when form == :filter and length(args) in [1, 2] do
+    index = length(args) - 1
+
+    splice = fn {name, meta, current_args}, case_node ->
+      {name, meta, List.replace_at(current_args, index, case_node)}
+    end
+
+    wrap = fn fragment ->
+      {{:., [], [{:__aliases__, [], [:Function]}, :identity]}, [], [fragment]}
+    end
+
+    [
+      Mutare.Mutator.MacroHost.Target.new(
+        Enum.at(args, index),
+        [Mutare.AST.literal(true)],
+        splice,
+        wrap: wrap
+      )
+    ]
+  end
+
+  def host(_call, _context), do: []
+end
+
 defmodule Mutare.Test.DerivedVariantHostMutator do
   @moduledoc """
   A host-only subscriber whose labels come from variant/2, not production-time tags.

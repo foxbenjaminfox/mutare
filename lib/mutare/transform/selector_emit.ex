@@ -52,8 +52,18 @@ defmodule Mutare.Transform.SelectorEmit do
   @spec raw_case([Macro.t()], Macro.t(), Ctx.t()) :: {Macro.t(), Ctx.t()}
   def raw_case(mutant_clauses, catch_all, %Ctx{} = ctx) do
     {subject, ctx} = subject(ctx)
-    {{:case, [], [subject, [do: mutant_clauses ++ [catch_all]]]}, ctx}
+    {raw_case_over(subject, mutant_clauses, catch_all), ctx}
   end
+
+  @doc """
+  `raw_case/3` over a subject the caller already holds (`subject_read/1`).
+
+  Rebuilding a selector in place of one already emitted goes through here: the rebuilt `case`
+  is the same selector site, so it takes no second subject and records no second reference.
+  """
+  @spec raw_case_over(Macro.t(), [Macro.t()], Macro.t()) :: Macro.t()
+  def raw_case_over(subject, mutant_clauses, catch_all),
+    do: {:case, [], [subject, [do: mutant_clauses ++ [catch_all]]]}
 
   @doc """
   Record that the emitted code references the hoisted binding (`Scope.active_references`).
@@ -75,10 +85,30 @@ defmodule Mutare.Transform.SelectorEmit do
   self-contained `:persistent_term` read.
   """
   @spec subject(Ctx.t()) :: {Macro.t(), Ctx.t()}
-  def subject(%Ctx{scope: scope, config: %Config{active_var: var} = config} = ctx) do
+  def subject(%Ctx{} = ctx) do
+    {_read, subject, ctx} = subject_read(ctx)
+    {subject, ctx}
+  end
+
+  @typedoc """
+  What a selector's scrutinee reads. `:binding` is the scope's hoisted active-id variable: one
+  immutable value, so every selector that reads it in that scope switches on the same id.
+  `:inline` is the selector's own `:persistent_term` read, which it shares with no other.
+  """
+  @type read :: :binding | :inline
+
+  @doc """
+  `subject/1`, naming what the scrutinee reads.
+
+  A caller that may later fold more mutant clauses into the selector it is building
+  (`Mutare.Transform.HostedEmit`) keeps the answer: only `:binding` selectors are known to
+  switch on one value.
+  """
+  @spec subject_read(Ctx.t()) :: {read(), Macro.t(), Ctx.t()}
+  def subject_read(%Ctx{scope: scope, config: %Config{active_var: var} = config} = ctx) do
     if Scope.active_var_bound?(scope),
-      do: {{var, [], nil}, reference_active(ctx)},
-      else: {Mutare.Metamutant.subject_ast(config.runtime_namespace), ctx}
+      do: {:binding, {var, [], nil}, reference_active(ctx)},
+      else: {:inline, Mutare.Metamutant.subject_ast(config.runtime_namespace), ctx}
   end
 
   @doc "The selector catch-all branch: baseline plus every inactive mutant."
