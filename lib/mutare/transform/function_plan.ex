@@ -11,7 +11,7 @@ defmodule Mutare.Transform.FunctionPlan do
   # the emission half (assigning ids, building the dispatcher and the gated
   # clauses) because that shares the `Ctx` id-threading discipline with the in-place
   # path. What lives here is the *vocabulary*: which mutants a group admits, and —
-  # per candidate — *which one clause* it mutates and *how* (`mutated_clause/2`).
+  # per candidate — *which one clause* it mutates and *how* (`variant/2`).
   #
   # ## The shared tagged clause group
   #
@@ -19,11 +19,10 @@ defmodule Mutare.Transform.FunctionPlan do
   # An earlier design stored that materialized clause group on each candidate — N
   # near-identical copies for N mutants. Instead the plan holds the group *once*,
   # with every mutatable guard operator *and* head-pattern literal tagged by a
-  # unique `meta[:mutare_tag]` (`tagged_clauses`); each `Candidate.Lifted` carries
-  # only its `tag`, its `clause_index`, and the replacement node (a guard operator
-  # and a head literal are the same shape here, so one struct serves both).
-  # `mutated_clause/2` reconstructs *just the one tagged clause*
-  # on demand by replacing the tagged node. Tags are stripped before rendering, so a
+  # unique `meta[:mutare_tag]` (`tagged_clauses`); each `Candidate.LiftedGuard` /
+  # `Candidate.Lifted` carries only its `tag`, its `clause_index`, and the replacement
+  # node. `variant/2` reconstructs *just the one tagged clause* — or, for a guard, just
+  # its guards — on demand by replacing the tagged node. Tags are stripped before rendering, so a
   # leftover tag on a sibling node is harmless. Guards and pattern literals share one
   # tag counter (`build_lifted/2`) so their tags are unique group-wide.
   #
@@ -52,7 +51,7 @@ defmodule Mutare.Transform.FunctionPlan do
           signature: signature(),
           clauses: [Macro.t()],
           tagged_clauses: [Macro.t()],
-          lifted: [Candidate.Lifted.t()],
+          lifted: [Candidate.LiftedGuard.t() | Candidate.Lifted.t()],
           pattern_structures: [Candidate.PatternStructure.t()],
           guard_drops: [Candidate.GuardDrop.t()],
           drops: [Candidate.Drop.t()]
@@ -118,45 +117,78 @@ defmodule Mutare.Transform.FunctionPlan do
       }),
       do: lifted ++ pattern_structures ++ guard_drops ++ drops
 
-  @doc """
-  Materialize the *single* clause a candidate mutates, with its position.
+  @typedoc """
+  What one lifted candidate does to its source clause (`clause_index` first):
 
-  Returns `{clause_index, mutated_clause | :drop}`. Each lifted candidate touches
-  exactly one source clause — a guard/head-literal swap rewrites that clause's
-  head, a structure rewrite replaces its head args, a drop removes it — so emission
-  needs only the one affected clause, not a full copy of the group. The returned
-  clause carries a **raw body** (no in-place selectors); `Mutare.Transform`
-  assembles it into the shared lifted function as a guarded mutant clause, while
-  the *unchanged* clauses are emitted once as the lifted function's originals.
-
-    * `Candidate.Lifted` — the tagged clause at `clause_index` with the tagged node
-      (guard operator or head literal) replaced by `mutated`.
-    * `Candidate.PatternStructure` — the clause at `clause_index` with its head args
-      replaced by `mutated_args`.
-    * `Candidate.Drop` — `:drop`; no clause, the original is simply gated off when
-      this mutant is active.
+    * `{:guard, index, guards}` — the clause with its guard list replaced by `guards` (`[]`:
+      the `when` removed) and **nothing else changed**. Only the two guard-resident candidates
+      yield it, so a consumer may rely on the head patterns and the body being the source
+      clause's own — which is what lets emission deliver several of them as alternatives of
+      one clause.
+    * `{:clause, index, clause}` — a whole mutated clause, its head patterns changed.
+    * `{:drop, index}` — no clause; the original is gated off while this mutant is active.
   """
-  @spec mutated_clause(t(), Candidate.t()) :: {non_neg_integer(), Macro.t() | :drop}
-  def mutated_clause(%__MODULE__{tagged_clauses: tagged}, %Candidate.Lifted{
+  @type variant ::
+          {:guard, non_neg_integer(), [Macro.t()]}
+          | {:clause, non_neg_integer(), Macro.t()}
+          | {:drop, non_neg_integer()}
+
+  @doc """
+  What a candidate does to the *single* clause it mutates (`t:variant/0`).
+
+  Each lifted candidate touches exactly one source clause, so emission needs only that
+  clause's change, not a copy of the group. A mutated clause carries a **raw body** (no
+  in-place selectors); `Mutare.Transform.LiftedEmit` assembles it into the shared lifted
+  function as a gated mutant clause, while the *unchanged* clauses are emitted once as the
+  lifted function's originals.
+
+    * `Candidate.LiftedGuard` — `:guard`: the tagged clause's guards with the tagged operator
+      replaced by `mutated`. Only the guards are rewritten; the body is never walked.
+    * `Candidate.GuardDrop` — `:guard` with no guards: the mutant clause is gated only by
+      `mutare_active === <id>` and matches unconditionally when active.
+    * `Candidate.Lifted` — `:clause`: the tagged clause with the tagged head literal replaced.
+    * `Candidate.PatternStructure` — `:clause`: the clause with its head args replaced by
+      `mutated_args`.
+    * `Candidate.Drop` — `:drop`.
+  """
+  @spec variant(t(), Candidate.t()) :: variant()
+  def variant(%__MODULE__{tagged_clauses: tagged}, %Candidate.LiftedGuard{
+        clause_index: index,
+        tag: tag,
+        mutated: mutated
+      }) do
+    guards = tagged |> Enum.at(index) |> ClauseAST.guards()
+    {:guard, index, Enum.map(guards, &Tag.replace_tag(&1, tag, mutated))}
+  end
+
+  def variant(%__MODULE__{}, %Candidate.GuardDrop{clause_index: index}), do: {:guard, index, []}
+
+  def variant(%__MODULE__{tagged_clauses: tagged}, %Candidate.Lifted{
         clause_index: index,
         tag: tag,
         mutated: mutated
       }),
-      do: {index, Tag.replace_tag(Enum.at(tagged, index), tag, mutated)}
+      do: {:clause, index, Tag.replace_tag(Enum.at(tagged, index), tag, mutated)}
 
-  def mutated_clause(%__MODULE__{clauses: clauses}, %Candidate.PatternStructure{
+  def variant(%__MODULE__{clauses: clauses}, %Candidate.PatternStructure{
         clause_index: index,
         mutated_args: mutated_args
       }),
-      do: {index, ClauseAST.put_head_args(Enum.at(clauses, index), mutated_args)}
+      do: {:clause, index, ClauseAST.put_head_args(Enum.at(clauses, index), mutated_args)}
 
-  # A guard removal — the clause with its `when` stripped, so the lifted mutant
-  # clause is gated only by `mutare_active === <id>` (no source guard) and matches
-  # unconditionally when active. Raw body, like every lifted mutant.
-  def mutated_clause(%__MODULE__{clauses: clauses}, %Candidate.GuardDrop{clause_index: index}),
-    do: {index, ClauseAST.drop_clause_guard(Enum.at(clauses, index))}
+  def variant(%__MODULE__{}, %Candidate.Drop{clause_index: index}), do: {:drop, index}
 
-  def mutated_clause(%__MODULE__{}, %Candidate.Drop{clause_index: index}), do: {index, :drop}
+  @doc """
+  The whole clause a `{:guard, index, guards}` variant stands for: source clause `index` with
+  its guard list replaced (`[]`: the `when` removed). For a guard variant delivered on its
+  own — the only one of its clause, or one that may not share a clause.
+  """
+  @spec guard_clause(t(), non_neg_integer(), [Macro.t()]) :: Macro.t()
+  def guard_clause(%__MODULE__{clauses: clauses}, index, []),
+    do: clauses |> Enum.at(index) |> ClauseAST.drop_clause_guard()
+
+  def guard_clause(%__MODULE__{clauses: clauses}, index, guards),
+    do: clauses |> Enum.at(index) |> ClauseAST.put_guards(guards)
 
   # === lifted candidates (guards + head-pattern literals) ====================
 
@@ -218,7 +250,9 @@ defmodule Mutare.Transform.FunctionPlan do
           end)
 
         tagged_clause = ClauseAST.put_guards(clause, tagged_guards)
-        {tagged_clause, lifted_candidates(targets, index), next_tag, targets == []}
+
+        {tagged_clause, lifted_candidates(Candidate.LiftedGuard, targets, index), next_tag,
+         targets == []}
     end
   end
 
@@ -263,21 +297,23 @@ defmodule Mutare.Transform.FunctionPlan do
         {clause, [], next_tag}
 
       _ ->
-        {ClauseAST.put_head_args(clause, tagged_args), lifted_candidates(targets, index),
-         next_tag}
+        {ClauseAST.put_head_args(clause, tagged_args),
+         lifted_candidates(Candidate.Lifted, targets, index), next_tag}
     end
   end
 
-  # Expand a clause's tagged guard / head-literal `targets` into `Candidate.Lifted`s,
-  # one per `{mutator, mutated, note, variant}` (a literal can admit several — an integer → `n+1`,
-  # `n-1`, `0`). Guard and head-literal targets build the *same* candidate (both are a
-  # tagged-node replacement in one lifted clause), so this serves `build_guards` and
-  # `build_pattern_literals` alike; `Tag.expand_targets/2` owns the source-order +
-  # range-skip contract. `variant` carries a value family's production-time `# mutare:ignore`
-  # tag (a head literal — a swapped float/int/string), `nil` for a guard operator (derived).
-  defp lifted_candidates(targets, index) do
+  # Expand a clause's tagged `targets` into candidates, one per `{mutator, mutated, note,
+  # variant}` (a literal can admit several — an integer → `n+1`, `n-1`, `0`). Guard and
+  # head-literal targets carry the same fields (both are a tagged-node replacement in one
+  # lifted clause), so this serves `build_guards` and `build_pattern_literals` alike, each
+  # naming its own `struct` — `Candidate.LiftedGuard` or `Candidate.Lifted` — because the
+  # caller is where the target's position is known (`variant/2` dispatches on it).
+  # `Tag.expand_targets/2` owns the source-order + range-skip contract. `variant` carries a
+  # value family's production-time `# mutare:ignore` tag (a head literal — a swapped
+  # float/int/string), `nil` for a guard operator (derived).
+  defp lifted_candidates(struct, targets, index) do
     Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, variant, range ->
-      %Candidate.Lifted{
+      struct!(struct,
         tag: tag,
         clause_index: index,
         mutator: mutator,
@@ -286,7 +322,7 @@ defmodule Mutare.Transform.FunctionPlan do
         range: range,
         note: note,
         variant: variant
-      }
+      )
     end)
   end
 
@@ -306,7 +342,7 @@ defmodule Mutare.Transform.FunctionPlan do
   # wildcards) for each clause. Unlike guards/literals these don't tag a single node:
   # the rewrite spans sibling positions or repeated variables (and a 2-tuple/list has
   # no taggable meta), so each candidate carries the mutated head args and is applied by
-  # whole-clause rebuild (`mutated_clause/2`, like a `Drop`). A clause is indexed
+  # whole-clause rebuild (`variant/2`, like a `Drop`). A clause is indexed
   # so the rebuild targets the right one.
   #
   # The participating mutators are the enabled ones exporting `pattern_mutations/2`

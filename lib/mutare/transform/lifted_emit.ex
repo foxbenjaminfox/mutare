@@ -9,10 +9,14 @@ defmodule Mutare.Transform.LiftedEmit do
   # `{id, index, clause, witness}` claims, the group number, the config, and prepared
   # coverage expressions, and an optional complete function id interval for a clean path.
   #
-  # The interleaving scheme: each source clause's mutant clauses (one per candidate overriding
-  # it, gated `when <var> === <id>`) precede the source clause itself (gated `when <var> !==
-  # <those ids>`), so exactly one wins per `(id, args)` — the per-clause `C+M` lifting (see
-  # `Mutare.Transform.FunctionPlan` and NOTES "lifting blowup").
+  # The interleaving scheme: each source clause's mutant clauses (gated `when <var> === <id>`)
+  # precede the source clause itself (gated `when <var> !== <those ids>`), so exactly one wins
+  # per `(id, args)` — the per-clause `C+M` lifting (see `Mutare.Transform.FunctionPlan` and
+  # NOTES "lifting blowup"). A candidate that changes the head patterns gets a clause of its
+  # own. A clause's **guard-only** variants share one: their patterns and raw body are the
+  # source clause's, so they differ in the guard alone and become its `when` alternatives,
+  # each gated on its own id (`lifted_guard_group/3`) — one copy of the body where there was
+  # one per mutant.
   # An eligible clean path adds C raw original clauses, for 2C+M total; it never
   # duplicates a whole group per mutant. Pure self-recursion can remain in that copy.
 
@@ -42,14 +46,15 @@ defmodule Mutare.Transform.LiftedEmit do
     defstruct @enforce_keys
   end
 
-  @typep claim :: {non_neg_integer(), non_neg_integer(), Macro.t() | :drop, term()}
+  @typep claim :: {pos_integer(), FunctionPlan.variant(), ImportWitness.witness_set()}
 
   @doc """
   The lifted function group as emitted: the public dispatcher followed by the interleaved base
   clauses (`build_base_clauses/3`). `orig_clauses` are the source clauses with their in-place
-  body selectors already emitted; `claimed` the `{id, clause_index, mutated_clause | :drop,
-  witness}` claims; `group_number` the file-wide lifted-group counter (for a collision-free base
-  name). `records` are the dispatcher's coverage expressions, prepared by the
+  body selectors already emitted; `claimed` the `{id, variant, witness}` claims
+  (`t:FunctionPlan.variant/0`); `group_number` the file-wide lifted-group counter (for a
+  collision-free base name). A `:guard` variant is a statement that its mutant may share a
+  clause with its siblings; the caller hands over a `:clause` variant for one that may not. `records` are the dispatcher's coverage expressions, prepared by the
   stateful emitter; assembly does not choose their gate or track scope usage.
 
   A non-nil `active_range` adds one raw original clause group and routes mutations
@@ -96,7 +101,7 @@ defmodule Mutare.Transform.LiftedEmit do
     defaults = clause_defaults(orig_clauses)
 
     [build_dispatcher(group, records, defaults, active_range)] ++
-      build_base_clauses(group, orig_clauses, claimed) ++
+      build_base_clauses(group, plan, orig_clauses, claimed) ++
       clean_clauses(group, plan, active_range)
   end
 
@@ -115,11 +120,11 @@ defmodule Mutare.Transform.LiftedEmit do
   # <those ids>`, so it steps aside when a mutant is active). A dropped clause contributes only
   # its exclusion (no mutant clause); a bodiless header contributes neither — its defaults ride
   # on the dispatcher and it has no body to lift.
-  defp build_base_clauses(%Group{} = group, orig_clauses, claimed) do
+  defp build_base_clauses(%Group{} = group, plan, orig_clauses, claimed) do
     # One grouping by source clause, not a scan of all M candidates per clause. Every claimed
     # candidate overrides (guard/literal/structure) or drops its clause, so the group *is* both
     # the clause's mutant clauses and the id set excluding its original version.
-    by_clause = Enum.group_by(claimed, fn {_id, index, _clause, _witness} -> index end)
+    by_clause = Enum.group_by(claimed, fn {_id, variant, _witness} -> elem(variant, 1) end)
 
     orig_clauses
     |> Enum.with_index()
@@ -127,16 +132,54 @@ defmodule Mutare.Transform.LiftedEmit do
       claims = Map.get(by_clause, index, [])
 
       mutant_clauses =
-        for {id, _index, clause, witness} <- claims,
-            clause != :drop,
-            do: lifted_mutant(group, id, clause, witness)
+        claims
+        |> deliveries(plan)
+        |> Enum.map(fn
+          {:own, id, clause, witness} -> lifted_mutant(group, id, clause, witness)
+          {:shared, members} -> lifted_guard_group(group, plan, members)
+        end)
 
       if ClauseAST.bodiless_header?(orig) do
         mutant_clauses
       else
-        excluded = Enum.map(claims, fn {id, _index, _clause, _witness} -> id end)
+        excluded = Enum.map(claims, fn {id, _variant, _witness} -> id end)
         mutant_clauses ++ [lifted_original(group, orig, excluded)]
       end
+    end)
+  end
+
+  # One source clause's claims as the mutant clauses to emit, in claim order: `{:own, id,
+  # clause, witness}` for a clause of one mutant, `{:shared, members}` for two or more guard
+  # variants delivered as one. A drop emits nothing.
+  #
+  # Guard variants share a clause only with an **equal import witness**. The witness is
+  # spliced into the shared body, so a hidden import conflict there fails the compile on a
+  # line that belongs to every member — correct only when every member carries that witness.
+  # (Almost always all `nil`: a guard operator is rarely a bare imported call.)
+  #
+  # The shared clause stands where its first member stood and later members are skipped, so
+  # a function with no group of two renders exactly as it did: mutant clauses of one source
+  # clause are gated on distinct ids, and their relative order decides nothing.
+  defp deliveries(claims, plan) do
+    shared =
+      claims
+      |> Enum.filter(&match?({_id, {:guard, _index, _guards}, _witness}, &1))
+      |> Enum.group_by(fn {_id, _variant, witness} -> witness end)
+      |> Map.filter(fn {_witness, members} -> match?([_, _ | _], members) end)
+
+    Enum.flat_map(claims, fn
+      {_id, {:drop, _index}, _witness} ->
+        []
+
+      {id, {:clause, _index, clause}, witness} ->
+        [{:own, id, clause, witness}]
+
+      {id, {:guard, index, guards}, witness} = claim ->
+        case shared do
+          %{^witness => [^claim | _later] = members} -> [{:shared, members}]
+          %{^witness => _members} -> []
+          %{} -> [{:own, id, FunctionPlan.guard_clause(plan, index, guards), witness}]
+        end
     end)
   end
 
@@ -280,6 +323,47 @@ defmodule Mutare.Transform.LiftedEmit do
   defp lifted_mutant(%Group{} = group, id, clause, witness) do
     {clause_meta, call_meta, args, guards, body} = clause_parts(clause)
     guard = GuardBuild.and_into(GuardBuild.gate(id, group.var), GuardBuild.combine(guards))
+    body = ImportWitness.prepend(body, witness)
+    lifted_clause(group, clause_meta, call_meta, args, guard, body)
+  end
+
+  # One lifted clause for **several guard mutants** of one source clause: the source head
+  # patterns, one copy of the raw body, and a `when` alternative per member, each gated on its
+  # own id —
+  #
+  #     defp <base>(mutare_active, x)
+  #          when mutare_active === 101 and x > 10
+  #          when mutare_active === 102 and x >= 9 do
+  #       <raw body, once>
+  #     end
+  #
+  # Alternatives, not one boolean over the members: each `when` alternative is tried on its
+  # own and a failing one — a raising one included — fails only itself, while `andalso`
+  # short-circuits on the gate before an inactive member's guard is evaluated. So with member
+  # `idᵢ` active the clause behaves exactly as `lifted_mutant/4`'s clause for `idᵢ` did, and
+  # with none active it fails and dispatch continues. When the active member's guard fails,
+  # the original below still excludes that id, so dispatch reaches the *next source clause*,
+  # never the unmutated version — as it did with a clause per mutant.
+  #
+  # A member whose source guard is itself `when a when b` contributes two alternatives (the
+  # gate distributed over both); `GuardBuild.sequence/1` flattens them into the one
+  # right-nested sequence the compiler accepts. No helper function, body parameter, or
+  # function boundary is introduced: this is not raw-body outlining (NOTES "Raw-body
+  # outlining"), and the body's bindings and `__ENV__.function` are what they were.
+  defp lifted_guard_group(
+         %Group{} = group,
+         plan,
+         [{_id, {:guard, index, _}, witness} | _] = members
+       ) do
+    {clause_meta, call_meta, args, _guards, body} = clause_parts(Enum.at(plan.clauses, index))
+
+    guard =
+      members
+      |> Enum.map(fn {id, {:guard, _index, guards}, _witness} ->
+        GuardBuild.and_into(GuardBuild.gate(id, group.var), GuardBuild.combine(guards))
+      end)
+      |> GuardBuild.sequence()
+
     body = ImportWitness.prepend(body, witness)
     lifted_clause(group, clause_meta, call_meta, args, guard, body)
   end

@@ -242,6 +242,48 @@ defmodule Mutare.ClauseGuardTest do
       assert mod.f([5, 1]) == 5
     end
 
+    test "a source guard that is already a `when` sequence stays one flat sequence" do
+      # Each mutant of `when v > 10 when v < 0` is itself a two-alternative sequence (the gate
+      # distributed over both). Nested as the left operand of the next `when` it rendered as
+      # `(a when b) when c`, which the compiler reads as a call to `when/2` inside the guard:
+      # the type checker crashed, with no line for poison recovery to attribute.
+      {meta, all} =
+        sites(
+          """
+          defmodule ClauseGuardSequence do
+            def f(x) do
+              with v when v > 10 when v < 0 <- x do
+                {:ok, v}
+              else
+                e -> {:else, e}
+              end
+            end
+          end
+          """,
+          mutators: [Mutare.Mutators.Relational]
+        )
+
+      refute meta =~ "(:erlang.andalso"
+      [{mod, _}] = Mutare.Test.Compile.string(meta)
+
+      assert mod.f(11) == {:ok, 11}
+      assert mod.f(-1) == {:ok, -1}
+      assert mod.f(10) == {:else, 10}
+      assert mod.f(0) == {:else, 0}
+
+      # The first alternative mutated: the second still admits what it always did.
+      Selector.put(site(all, "v > 10", "v >= 10").id)
+      assert mod.f(10) == {:ok, 10}
+      assert mod.f(-1) == {:ok, -1}
+      assert mod.f(0) == {:else, 0}
+
+      # The second alternative mutated: likewise for the first.
+      Selector.put(site(all, "v < 0", "v <= 0").id)
+      assert mod.f(0) == {:ok, 0}
+      assert mod.f(11) == {:ok, 11}
+      assert mod.f(10) == {:else, 10}
+    end
+
     test "a raising mutant guard fails only its own alternative" do
       # `hd(v)` on a non-list raises inside a guard → that alternative is false, exactly as a
       # source guard `when hd(v) == 1` would be; the original alternative is not consulted

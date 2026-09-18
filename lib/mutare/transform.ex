@@ -1083,7 +1083,10 @@ defmodule Mutare.Transform do
   # lifted mutant adds a single extra `<base>` clause, gated `when mutare_active
   # === <id>`, placed *before* the source clause it overrides — so a mutant
   # touching one clause no longer duplicates the other N-1 (the C×M → C+M win; see
-  # NOTES "lifting blowup"). The original clauses are gated `when mutare_active !==
+  # NOTES "lifting blowup"). One source clause's guard-only mutants go further and
+  # share a single extra clause, one `when` alternative each, so its raw body is
+  # emitted once rather than per mutant (`LiftedEmit`; the two conditions that
+  # keep a guard mutant out of that are below, at `own_clause_unless_built_in/3`). The original clauses are gated `when mutare_active !==
   # <id>` for every mutant that overrides or drops them, so exactly one wins for
   # any (id, args): the mutant when its id is active and its head/guard match, else
   # the original. Ids are assigned exactly as before — in-place **body** ids first
@@ -1105,7 +1108,7 @@ defmodule Mutare.Transform do
     body_sites = ctx.scope.active_references
 
     # Then the lifted candidates, in order, each claiming its id. Non-skipped ones
-    # yield `{id, clause_index, mutated_clause | :drop}`; a skipped (poisoned) id
+    # yield `{id, variant, witness}` (`t:FunctionPlan.variant/0`); a skipped (poisoned) id
     # yields nothing here (its site is still recorded), so it is neither emitted as
     # a mutant clause nor excluded from its original — i.e. it behaves as baseline.
     {claimed, ctx} =
@@ -1114,10 +1117,14 @@ defmodule Mutare.Transform do
         ctx,
         {&Delivery.site/4, &Delivery.line/1},
         fn id, candidate ->
-          {index, clause} = FunctionPlan.mutated_clause(plan, candidate)
-          {id, index, clause, ImportWitness.for_candidate(candidate)}
+          variant =
+            plan |> FunctionPlan.variant(candidate) |> own_clause_unless_built_in(plan, candidate)
+
+          {id, variant, ImportWitness.for_candidate(candidate)}
         end
       )
+
+    claimed = own_clauses_outside_contract(claimed, plan, ctx.scope.local_functions)
 
     if claimed == [] and body_sites == 0 do
       # All lifted variants were withheld, and no body needs the dispatcher's
@@ -1155,6 +1162,52 @@ defmodule Mutare.Transform do
       {LiftedEmit.assemble(plan, orig_clauses, claimed, group, ctx.config, records, active_range),
        ctx}
     end
+  end
+
+  # `LiftedEmit` delivers the `:guard` variants of one source clause as `when` alternatives of
+  # a single clause holding one copy of the raw body. Two conditions keep a guard variant out
+  # of that, each by restating it as the whole `:clause` it stands for — which `LiftedEmit`
+  # gives a clause of its own, exactly as before.
+  #
+  # **A custom mutator's guard.** Poison recovery attributes a compile error by line. Built-in
+  # swaps reuse the source's operands and compile by construction; a custom replacement need
+  # not, and a guard error can land on the clause head or carry no line at all. In a clause
+  # of its own that still blames one mutant. In a shared clause it would fall to the
+  # whole-clause region and drop every healthy sibling with it.
+  defp own_clause_unless_built_in({:guard, index, guards} = variant, plan, candidate) do
+    if Mutare.Mutators.built_in?(candidate.mutator.module),
+      do: variant,
+      else: {:clause, index, FunctionPlan.guard_clause(plan, index, guards)}
+  end
+
+  defp own_clause_unless_built_in(variant, _plan, _candidate), do: variant
+
+  # **A clause outside `CleanPath`'s contract.** Sharing changes how many times the body's
+  # macros expand, and only a body of known functions and allow-listed macros is certain not
+  # to notice (`CleanPath.check_clause/3`). Checked once per source clause, and only for a
+  # clause with two or more guard variants — a lone one is never shared.
+  defp own_clauses_outside_contract(claimed, plan, local_functions) do
+    outside =
+      claimed
+      |> Enum.flat_map(fn
+        {_id, {:guard, index, _guards}, _witness} -> [index]
+        _claim -> []
+      end)
+      |> Enum.frequencies()
+      |> Enum.filter(fn {index, count} ->
+        count >= 2 and CleanPath.check_clause(plan, index, local_functions) != :ok
+      end)
+      |> MapSet.new(fn {index, _count} -> index end)
+
+    Enum.map(claimed, fn
+      {id, {:guard, index, guards}, witness} = claim ->
+        if MapSet.member?(outside, index),
+          do: {id, {:clause, index, FunctionPlan.guard_clause(plan, index, guards)}, witness},
+          else: claim
+
+      claim ->
+        claim
+    end)
   end
 
   # === in-place transform: analyze (annotate) then assign/emit ===============

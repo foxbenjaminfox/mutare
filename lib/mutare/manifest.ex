@@ -44,7 +44,9 @@ defmodule Mutare.Manifest do
     * each selector clause body (`<id> -> <mutated>`) — catches in-place mutants,
       including multiline bodies;
     * each lifted mutant clause (gated `when mutare_active === <id>`) — catches a
-      guard/head-pattern poison, whose code is outside the dispatcher;
+      guard/head-pattern poison, whose code is outside the dispatcher. A clause shared by
+      several guard mutants (one `when` alternative each) gives every alternative to its own
+      mutant, and the whole clause — head patterns and the one shared body — to all of them;
     * the whole selector `case`, attributed to *all* the mutant ids it hosts — the
       coarse fallback for a structural error that points at the `case` itself.
 
@@ -93,14 +95,16 @@ defmodule Mutare.Manifest do
       or the range form for a run of ids). A dropped clause leaves only this trace;
     * `:record` — a coverage record listing `id`.
 
-  `within` is the id of the innermost mutant branch enclosing the mention, or `nil` outside
-  every branch. Code inside mutant `k`'s branch runs only while `k` is active, so a run that
-  activates `id` alone reaches the mention only when `within` is `nil` or `id`.
+  `within` names the innermost mutant branch enclosing the mention — the ids under which
+  that branch runs — or is `nil` outside every branch. It is a list because a clause shared
+  by several guard mutants runs its one body under any of them; every other branch has one
+  id. Code inside a branch runs only while one of its ids is active, so a run that activates
+  `id` alone reaches the mention only when `within` is `nil` or holds `id`.
   """
   @type mention :: %{
           kind: :branch | :exclusion | :record,
           id: pos_integer(),
-          within: pos_integer() | nil
+          within: [pos_integer(), ...] | nil
         }
 
   @typedoc """
@@ -327,7 +331,7 @@ defmodule Mutare.Manifest do
 
   # --- traversal -----------------------------------------------------------
 
-  # One pre-order walk over the parsed metamutant, threading `within`: the id of the innermost
+  # One pre-order walk over the parsed metamutant, threading `within`: the ids of the innermost
   # mutant branch enclosing the current node (`nil` outside every branch). A recognised
   # construct records its regions and mentions *before* its children are walked, and walks the
   # children itself, entering each mutant branch with that mutant's id; every other node is
@@ -379,22 +383,38 @@ defmodule Mutare.Manifest do
     end
   end
 
-  # A lifted mutant clause (`defp <base>(mutare_active, …) when mutare_active ===
-  # <id> …`): its whole definition is that mutant's generated code — where a guard /
-  # head-pattern poison lives. Original clauses (gated `mutare_active !== …`) and the
-  # dispatcher carry no gate, so `mutant_id/1` returns `nil`; an original's exclusions are
+  # A lifted mutant clause (`defp <base>(mutare_active, …) when mutare_active === <id> …`).
+  # Read by its gated `when` alternatives (`sequence_mutants/2`, as for a guard sequence):
+  #
+  #   * **one id** — the whole definition is that mutant's generated code, where a guard /
+  #     head-pattern poison lives. (Its source guard may itself be `when a when b`: the gate is
+  #     distributed over both, so two alternatives still name one id.)
+  #   * **several ids** — a clause shared by one source clause's guard mutants
+  #     (`LiftedEmit.lifted_guard_group/3`). Each alternative is its own mutant's code, so a
+  #     poisoned guard drops that mutant and leaves its siblings; the head patterns and the
+  #     one shared body belong to every member, which is the whole-definition fallback.
+  #
+  # Either way the body runs only under the clause's ids. Original clauses (gated
+  # `mutare_active !== …`) and the dispatcher carry no gate; an original's exclusions are
   # mentioned, which is how a dropped clause shows up at all.
   defp walk_node({vis, _meta, [head | _]} = node, within, var, acc) when vis in [:def, :defp] do
-    case mutant_id(head, var) do
-      nil ->
+    mutants = sequence_mutants(head, var)
+
+    case mutants |> Enum.map(&elem(&1, 0)) |> Enum.uniq() do
+      [] ->
         acc
         |> mention(:exclusion, guard_exclusions(head, var), within)
         |> then(&descend(node, within, var, &1))
 
-      id ->
+      [id] ->
         acc
         |> record_branches([{id, node}], nil, within)
-        |> then(&descend(node, id, var, &1))
+        |> then(&descend(node, [id], var, &1))
+
+      ids ->
+        acc
+        |> record_branches(mutants, node, within)
+        |> then(&descend(node, ids, var, &1))
     end
   end
 
@@ -473,7 +493,7 @@ defmodule Mutare.Manifest do
         |> then(&walk(clause, within, var, &1))
 
       {_clause, {id, region}}, acc ->
-        walk(region, id, var, acc)
+        walk(region, [id], var, acc)
     end)
   end
 
@@ -529,13 +549,16 @@ defmodule Mutare.Manifest do
   defp unwrap_clauses({:__block__, _meta, [clauses]}) when is_list(clauses), do: clauses
   defp unwrap_clauses(clauses), do: clauses
 
-  # The `{id, alternative}` pairs of a guard sequence: the trailing guard's `when`
-  # alternatives (right-nested, as parsed) that carry a gate. A gated original (`=/=`
-  # exclusion) and an unmutated guard yield nothing.
+  # The `{id, alternative}` pairs of a guarded head — a definition's `f(…) when g` or a
+  # clause's `p1, p2 when g`: the trailing guard's `when` alternatives (right-nested, as
+  # parsed) that carry a gate. A gated original (`=/=` exclusion), an unmutated guard, and an
+  # unguarded head yield nothing.
   defp sequence_mutants({:when, _meta, when_args}, var) do
     # The match is a filter: an ungated alternative's `nil` gate drops it.
     for alt <- when_args |> List.last() |> alternatives(), id = gate_id(alt, var), do: {id, alt}
   end
+
+  defp sequence_mutants(_head, _var), do: []
 
   defp alternatives({:when, _meta, alts}), do: Enum.flat_map(alts, &alternatives/1)
   defp alternatives(guard), do: [guard]
@@ -602,8 +625,9 @@ defmodule Mutare.Manifest do
   defp case_fallback(_case_node, []), do: nil
   defp case_fallback(nil, _mutants), do: nil
 
+  # An id whose source guard had two alternatives appears once per alternative in `mutants`.
   defp case_fallback(case_node, mutants),
-    do: range_region(Enum.map(mutants, &elem(&1, 0)), case_node)
+    do: range_region(mutants |> Enum.map(&elem(&1, 0)) |> Enum.uniq(), case_node)
 
   defp range_region(ids, node) do
     case Sourceror.get_range(node) do
@@ -640,18 +664,6 @@ defmodule Mutare.Manifest do
   defp clause_id({:__block__, _meta, [id]}) when is_integer(id) and id > 0, do: id
   defp clause_id(id) when is_integer(id) and id > 0, do: id
   defp clause_id(_), do: nil
-
-  # The mutant id a *lifted mutant clause* carries in its `when <var> === <id> …`
-  # gate (the leftmost conjunct `Transform.lifted_mutant/3` emits), or `nil` for
-  # everything else: a lifted *original* clause (gated `<var> !== …`), the public
-  # dispatcher, and user code. This is how a poison inside a generated guard/head
-  # maps back to its mutant now that each lifted mutant is a single gated clause
-  # rather than a `_m<id>`-named full copy. `var` is the (possibly salted) dispatch
-  # variable name the caller supplied.
-  defp mutant_id({:when, _meta, [_call | guards]}, var),
-    do: Enum.find_value(guards, &gate_id(&1, var))
-
-  defp mutant_id(_, _), do: nil
 
   # Find a `<var> === <id>` gate anywhere in a guard, returning `<id>`. `Transform.GuardBuild`
   # emits it as the explicit `:erlang."=:="/2` call no target import can redirect, so that is

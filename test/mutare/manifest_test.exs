@@ -539,7 +539,7 @@ defmodule Mutare.ManifestTest do
 
       assert Manifest.from_source(source, :mutare_active).mentions == [
                %{kind: :branch, id: 1, within: nil},
-               %{kind: :branch, id: 2, within: 1}
+               %{kind: :branch, id: 2, within: [1]}
              ]
     end
   end

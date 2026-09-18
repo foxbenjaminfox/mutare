@@ -270,6 +270,29 @@ defmodule Mutare.Transform.CleanPath do
   end
 
   @doc """
+  Whether one clause of a lifted group lies wholly inside the contract — head, guards, and
+  every body block.
+
+  `Mutare.Transform.LiftedEmit` asks this before it delivers a clause's guard mutants as
+  `when` alternatives of **one** clause holding one copy of the raw body, where it used to
+  emit a copy per mutant. The reason differs from a clean copy's. Nothing new is compiled
+  here — the merge removes copies — so no unattributable compile failure is at stake. What
+  changes is how many times the body's macros expand, and only a body made of known
+  functions and the allow-listed macros is certain not to notice. An unknown macro keeps one
+  clause per mutant, exactly as before.
+  """
+  @spec check_clause(FunctionPlan.t(), non_neg_integer(), locals()) :: verdict()
+  def check_clause(
+        %FunctionPlan{signature: {_vis, name, arity}, clauses: clauses},
+        index,
+        locals \\ MapSet.new()
+      ) do
+    verdict(fn ->
+      clause(Enum.at(clauses, index), %Env{self_call: {name, arity}, locals: locals})
+    end)
+  end
+
+  @doc """
   Whether one in-place clause's `:do` body may be duplicated inside its own function.
   The head, its defaults, and any `rescue`/`catch`/`else`/`after` block stay single; the
   head is still read, for the bindings it establishes.

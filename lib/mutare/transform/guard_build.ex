@@ -42,6 +42,28 @@ defmodule Mutare.Transform.GuardBuild do
   def and_into(gate, expr), do: both(gate, expr)
 
   @doc """
+  Join guard alternatives into one `when` sequence, **right-nested** — the only shape the
+  compiler reads as alternatives: `a when b when c` parses as `a when (b when c)`, and
+  `elixir_utils:extract_guards/1` peels alternatives off the right operand alone. An
+  alternative that is itself a sequence (a gate `and_into/2` distributed over a source guard's
+  own `when a when b`) is flattened first. Nested on the left it renders as `(a when b) when c`
+  and reaches the guard as a call to `when/2`, which crashes the type checker
+  (`Module.Types.Pattern.of_guard/5`) with no line for poison recovery to attribute.
+  """
+  @spec sequence([Macro.t(), ...]) :: Macro.t()
+  def sequence([_ | _] = guards) do
+    guards
+    |> Enum.flat_map(&alternatives/1)
+    |> Enum.reverse()
+    |> Enum.reduce(fn alternative, rest -> {:when, [], [alternative, rest]} end)
+  end
+
+  @doc "A guard's `when` alternatives in order, however they are nested; a plain guard is one."
+  @spec alternatives(Macro.t()) :: [Macro.t(), ...]
+  def alternatives({:when, _meta, operands}), do: Enum.flat_map(operands, &alternatives/1)
+  def alternatives(guard), do: [guard]
+
+  @doc """
   Collapse a clause's guard list (`[]` or a single expr; multiple is a defensive `and`-fold)
   into one expression, or `nil` when empty.
   """

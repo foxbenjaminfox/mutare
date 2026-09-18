@@ -228,6 +228,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
   defp profile(%Candidate.MatchPattern{}), do: {:match_pattern, :in_place, nil}
   defp profile(%Candidate.MacroPattern{}), do: {:macro_pattern, :in_place, nil}
   defp profile(%Candidate.Lifted{}), do: {:lifted, :lifted_replace, nil}
+  defp profile(%Candidate.LiftedGuard{}), do: {:lifted, :lifted_replace, nil}
   defp profile(%Candidate.PatternStructure{}), do: {:lifted, :lifted_replace, nil}
   defp profile(%Candidate.GuardDrop{}), do: {:lifted, :lifted_replace, nil}
   defp profile(%Candidate.Drop{}), do: {:lifted, :clause_drop, nil}

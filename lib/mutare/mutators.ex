@@ -84,6 +84,8 @@ defmodule Mutare.Mutators do
     Mutare.Mutators.ClauseDrop
   ]
 
+  @built_in MapSet.new(Keyword.values(@registry))
+
   @doc "The ordered `family => module` registry of every built-in mutator."
   @spec registry() :: [{atom(), module()}]
   def registry, do: @registry
@@ -96,6 +98,22 @@ defmodule Mutare.Mutators do
   """
   @spec all() :: [module()]
   def all, do: Keyword.values(@registry)
+
+  @doc """
+  Whether `module` is one of the built-in mutators — as opposed to a custom module a project
+  lists under `:mutators`.
+
+  Built-in swaps are compile-safe by construction (they reuse the source's operands), which a
+  custom mutator's replacement need not be. The transform reads this where that difference
+  decides a delivery: see `Mutare.Transform.LiftedEmit`.
+
+      iex> Mutare.Mutators.built_in?(Mutare.Mutators.Relational)
+      true
+      iex> Mutare.Mutators.built_in?(String)
+      false
+  """
+  @spec built_in?(module()) :: boolean()
+  def built_in?(module), do: module in @built_in
 
   @doc """
   Every known built-in family atom, in registry order.

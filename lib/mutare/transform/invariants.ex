@@ -113,14 +113,21 @@ defmodule Mutare.Transform.Invariants do
       selecting == [] ->
         [{:missing_branch, site}]
 
-      Enum.any?(selecting, &(&1.within in [nil, id])) ->
+      Enum.any?(selecting, &reached_by?(&1, id)) ->
         []
 
       true ->
-        enclosing = selecting |> Enum.map(& &1.within) |> Enum.uniq() |> Enum.sort()
+        # Every selecting mention sits in a branch that excludes `id`, so each `within` is a list.
+        enclosing = selecting |> Enum.flat_map(& &1.within) |> Enum.uniq() |> Enum.sort()
         [{:unreachable_branch, site, Enum.map(enclosing, &{&1, Map.get(recorded, &1)})}]
     end
   end
+
+  # Whether a run activating `id` alone reaches the mention: it is outside every mutant branch,
+  # or inside one that runs under `id` (a clause shared by several guard mutants runs under
+  # each of them).
+  defp reached_by?(%{within: nil}, _id), do: true
+  defp reached_by?(%{within: ids}, id), do: id in ids
 
   # An exclusion alone changes behaviour only for a dropped clause; any other mutant must have
   # code of its own, or the exclusion merely steps its original aside.

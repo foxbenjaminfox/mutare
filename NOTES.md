@@ -9784,7 +9784,9 @@ expressions would prove a much narrower benefit than general head/guard outlinin
 The target's global or explicit Erlang inlining can also undo helper sharing; an
 inlining policy belongs with an outlining design, not an incidental compiler override.
 
-The namespace half is implemented separately below. Outlining remains deferred.
+The namespace half is implemented separately below. Outlining remains deferred. One slice of
+its benefit needed no outlining at all — a lifted clause's guard mutants; see "Guard-only
+variants share a clause".
 
 ### Stable per-file runtime identities `[done]`
 
@@ -11174,6 +11176,152 @@ every mutant of an in-place body (bindings, a closure, interpolation, a bitstrin
 default, a sibling call into a lifted function, a `rescue` block beside the region) with
 its separately patched source, including side effects and exceptions, and checks baseline
 coverage is identical with and without regions.
+
+### Guard-only variants share a clause `[done for lifted functions; case/fn/receive open]` (2026-09-18)
+
+C+M lifting removed the copies of a mutant's *unaffected sibling clauses*. It left the
+copies of the *affected clause's own unchanged body*: `LiftedEmit` emitted one
+`lifted_mutant/4` per candidate, each carrying the raw body, so a clause with body `B` and
+`G` guard mutants cost about `G·|B| + Σ|gⱼ|`. Guard mutants are the common case of that —
+they change nothing but the guard.
+
+**What changed.** A clause's guard-only mutants are now `when` alternatives of **one**
+clause: the source head patterns, one raw body, one alternative per mutant gated on its id.
+The cost is `|B| + Σ|gⱼ|`. It is *not* the raw-body outlining deferred above: no helper
+function, no body parameters, no new function boundary, so none of that proposal's
+relocation problems (head bindings, `__ENV__.function`, implicit `try` blocks, `super`)
+arise. Dispatch is unchanged in meaning: gates are on distinct ids, each alternative fails on
+its own (a raising guard included), and the original still excludes every member, so a member
+whose guard fails hands the call to the *next source clause* and never to the unmutated one.
+
+**Guard-only is stated at discovery, not inferred.** `Candidate.Lifted` used to cover guard
+swaps and head literals alike, on the grounds that nothing downstream told them apart. Now
+something does, so by the candidate-design rule the guard swap is its own struct
+(`Candidate.LiftedGuard`, built by `build_guards`), and `FunctionPlan.variant/2` returns a
+typed `{:guard, index, guards}` / `{:clause, index, clause}` / `{:drop, index}`. Inferring it
+later — from tag order (guards are tagged first) or by comparing heads — was rejected
+because its failure is silent and expensive: a head-literal mutant misread as guard-only is
+emitted with the *source* patterns, behaves as the original, and is reported as a survivor no
+test can kill. `verify_invariants` would not see it (a branch exists; the Site's diff comes
+from the candidate). A side effect: a guard variant rewrites only the guards, where
+`mutated_clause/2` ran `Tag.replace_tag` over the whole clause, body included, once per mutant.
+
+**Three conditions keep a guard variant in a clause of its own**, each by handing `LiftedEmit`
+a `:clause` variant instead, so the assembler's rule stays total and policy-free:
+
+- *A custom mutator's guard.* Poison recovery attributes by line. Built-in swaps reuse the
+  source's operands and compile by construction; a custom replacement need not, and a guard
+  error can land on the clause head or carry no line. Alone, that still blames one mutant;
+  shared, it falls to the whole-clause region and drops healthy siblings.
+- *A clause outside `CleanPath`'s contract* (`check_clause/3`). The argument differs from a
+  clean copy's: nothing new is compiled — the merge *removes* copies — so no unattributable
+  compile failure is at stake. What changes is how many times the body's macros expand, and
+  only a body of known functions and allow-listed macros is certain not to notice. This is
+  conservative: a stateful macro already sees several expansions per clause (raw, instrumented,
+  clean), and sharing moves the count toward the source's one. Relaxing it needs an argument
+  about expansion counts, not about relocation. Definition callbacks see fewer generated
+  clauses either way, as they always saw generated ones.
+- *An unequal import witness.* The witness is spliced into the shared body, so its failure
+  lands on a line every member owns — right only when every member carries it.
+
+A group of one takes the old `lifted_mutant/4` path literally, and a shared clause stands
+where its first member stood, so a function with no group of two renders as it did.
+
+**The precedent had a bug, and the merge would have inherited it.**
+`ClauseGuardEmit.guard_sequence/3` was the model (gated alternatives for `with`/`for`/`try`).
+`GuardBuild.and_into/2` correctly distributes a gate over a source guard that is already
+`when a when b` — but the result, itself a `when`, was then nested as the **left** operand of
+the next `when`. The compiler peels alternatives off the right operand only
+(`elixir_utils:extract_guards/1`), so `(a when b) when c` reached the guard as a call to
+`when/2` and crashed the type checker (`Module.Types.Pattern.of_guard/5`, "Please report this
+bug") with no `file:line` and no `expanding macro:` frame — nothing for either poison
+attribution to hold, so the single build was lost. Reproduced on the shipped code with `with
+x when x > 10 when x < 0 <- v` under `:relational`. `GuardBuild.sequence/1` now flattens every
+alternative and right-nests; both emitters use it. It stayed hidden because a `with` clause
+with alternative guards *and* a mutatable operator is rare; a lifted `def … when a when b`
+is not (the `guards-N` fixture is that shape).
+
+**Readback.** `Manifest` read a lifted clause by its *first* gate (`mutant_id/2`), so a shared
+clause attributed everything to one member — and, run before the reader was taught the shape,
+`verify_invariants` reported every other member as "no branch", which is the check doing its
+job. A definition is now read by its gated alternatives (`sequence_mutants/2`, the reader
+guard sequences already had): one id keeps the whole definition as its region, exactly as
+before; several ids get a region per alternative plus the whole definition as the fallback for
+all of them. So a poisoned guard drops its member and leaves the siblings, and an error in
+the shared body drops the group. A mention's `within` became a list (`[id]` everywhere else),
+since a shared body runs under any member; `Invariants` asks whether it holds the id. No
+companion package reads mentions.
+
+**Measured** on the existing `guard_body-{isolated,default}-NxB` grid (N guard comparisons ×
+B body statements; Elixir 1.19.5 / OTP 26). Site counts are identical in all 18 projects.
+
+| Fixture | Source bytes before → after | AST nodes before → after |
+| --- | ---: | ---: |
+| `isolated-2x10` | 2,739 → 2,142 (0.78×) | 610 → 433 |
+| `isolated-8x10` | 7,955 → 4,970 (0.62×) | 1,971 → 1,086 |
+| `isolated-2x160` | 15,339 → 8,442 (0.55×) | 5,110 → 2,683 |
+| `isolated-8x160` | 45,755 → 11,270 (0.25×) | 15,471 → 3,336 |
+| `default-8x10` | 38,601 → 25,069 (0.65×) | 8,520 → 4,508 |
+| `default-8x160` | 321,652 → 165,320 (0.51×) | 80,370 → 25,358 |
+
+Holding N and growing B, the after column grows by one body per step instead of N+2; holding
+B and growing N, it grows by one guard per mutant. The default rows shrink less because the
+instrumented original's body (its selectors) dominates them, and that copy is untouched.
+
+Source size is the wrong measure on its own ("Factor compiler input before rendering"), so
+the compile was timed: `mix compile --force --no-verification` in fresh processes, before and
+after alternating, five rounds, CPU seconds (user + sys) because the machine was shared (load
+average 18–23 throughout). About 2.8 s of every figure is `mix` booting — `isolated-2x10`
+measured 2.76 s before and 2.84 s after, which is noise, not a regression.
+
+| Fixture | CPU median before → after | Peak RSS | BEAM bytes |
+| --- | ---: | ---: | ---: |
+| `isolated-8x160` | 3.84 → 3.11 s | 188 → 132 MB | 87,128 → 24,568 |
+| `default-8x160` | 8.47 → 4.46 s | 452 → 212 MB | 436,684 → 103,432 |
+
+The question that decided it was whether the repeated bodies disappear *before* the expensive
+passes, since the compiler might have been discovering the sharing cheaply. It was not. One
+`--profile time` run per side of `default-8x160`: compiling the file took 4,766 → 1,290 ms,
+and `beam_ssa_opt` alone 3.84 → 0.94 s — every copy had been going through SSA optimization.
+The BEAM is 4.2× smaller too, so nothing downstream was merging them either. (One profile run
+per side; the five-round medians above carry the comparison.) These are fixtures built to
+expose the term: a codebase gains in proportion to its large-bodied clauses with several
+guard mutants.
+
+**Tests.** `lifted_guard_group_test.exs` compares every mutant with its independently patched
+source — under `:relational` and under the default set, where sixteen members from several
+families share one clause beside an instrumented original — including raising outcomes (term
+order puts a list above every integer, so `classify([1], 2)` passes `x > 10` and raises in the
+body, in source and metamutant alike; the first oracle rescued only `FunctionClauseError` and
+mistook that for a bug). It also pins the fallthrough rule, a raising alternative, the flat
+sequence, the three own-clause conditions, per-alternative attribution, and recovery after
+dropping one member. Disabling the sharing fails exactly the delivery-dependent tests and
+none of the behavioural ones, which is the split wanted. The transform property soaks pass;
+their generator emits guarded clauses whose single comparison already yields a multi-member
+group under the default set, so they exercise the shape rather than skirt it.
+
+**Open: `case`, `fn`, `receive`.** `CaseClauseEmit.mutant_clause/3` and
+`ClauseVariants.interleave/4` still carry a raw body per mutant; the new
+`case_body`/`fn_body`/`receive_body` fixtures put `isolated-8x160` at 53,605 / 53,089 / 53,098
+generated bytes from ~1,770, where the lifted grid stood before this change. By the survey
+under "Guard-only clauses" lifted heads are 1,344 of 1,724 guarded clauses, `case` 315, `fn`
+62, `receive` 3. Three things make it more than a port:
+
+- *Typing.* `CaseClause` carries `mutant_pattern` + `mutant_guard` with no guard-only fact,
+  and `FnClause`/`ReceiveClause` a whole `mutant_clause`. Discovery knows
+  (`guard_clause_candidates`, `clause_guard_candidates`); by the struct rule that is three
+  more structs, or guard candidates that carry a `mutant_guard` in place of a clause.
+- *Eligibility.* `CleanPath` threads lexical scope from the function head, so an inner clause
+  body checked alone loses the outer bindings and is refused nearly always. The usable fact
+  is the *enclosing* function clause's verdict — sound, since a clause inside the contract
+  holds only bodies inside it — but it is computed after the body is emitted, and would have
+  to be known on `Scope` before.
+- *Readback.* `Manifest.walk_clauses/7` extracts one `{id, region}` per arrow clause.
+
+`fn`/`receive` also keep their raw-versus-emitted body split and their unbound-scope
+whole-construct fallback, neither of which the merge may disturb. The instrumented original's
+body stays separate everywhere, for the reason that split exists: a pipe stage's
+instrumentation is macro-visible.
 
 ### Verify mode: the transform reads its own output back `[done]`
 

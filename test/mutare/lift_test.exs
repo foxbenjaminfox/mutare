@@ -192,8 +192,9 @@ defmodule Mutare.LiftTest do
       # ...and the generated private group moves to a salted, still-`__mutare_` prefix.
       assert meta =~ ~r/defp __mutare_0_classify_1_g1\(/
 
+      # (Whitespace-tolerant inside the head: the renderer may break the argument list.)
       assert meta =~
-               ~r/defp __mutare_0_classify_1_g1\(mutare_active, n\)\s+when :erlang\.andalso\(:erlang\."=:="\(mutare_active, \d+\),/
+               ~r/defp __mutare_0_classify_1_g1\(\s*mutare_active,\s*n\s*\)\s+when :erlang\.andalso\(:erlang\."=:="\(mutare_active, \d+\),/
 
       refute meta =~ ~r/defp #{lifted_name(:classify, 1, 1)}\(/
 

@@ -77,6 +77,11 @@ defmodule Mutare.CompileShapes do
       for {shape, isolated} <- [
             {:head_body, [:integer]},
             {:guard_body, [:relational]},
+            # The same guard grid in the three arrow-clause constructs, whose guard mutants
+            # still carry a raw body each.
+            {:case_body, [:relational]},
+            {:fn_body, [:relational]},
+            {:receive_body, [:relational]},
             {:rescue_types, [:rescue_type]},
             {:rescue_clauses, [:rescue_type]}
           ],
@@ -354,6 +359,25 @@ defmodule Mutare.CompileShapes do
 
     {"defmodule CompileShape do\ndef run(#{head}) when #{guard} do\n#{body(size)}\nend\nend\n",
      "CompileShape.run(#{args}) == #{20 + size * 2}"}
+  end
+
+  defp body_source(shape, count, size) when shape in [:case_body, :fn_body, :receive_body] do
+    clause = "x when #{Enum.map_join(1..count, " and ", &"x >= #{&1}")} ->\n#{body(size)}"
+    expected = 20 + size * 2
+
+    case shape do
+      :case_body ->
+        {"defmodule CompileShape do\ndef run(x) do\ncase x do\n#{clause}\n_ -> :missing\nend\nend\nend\n",
+         "CompileShape.run(20) == #{expected} and CompileShape.run(0) == :missing"}
+
+      :fn_body ->
+        {"defmodule CompileShape do\ndef run() do\nfn\n#{clause}\n_ -> :missing\nend\nend\nend\n",
+         "CompileShape.run().(20) == #{expected} and CompileShape.run().(0) == :missing"}
+
+      :receive_body ->
+        {"defmodule CompileShape do\ndef run() do\nreceive do\n#{clause}\nafter\n0 -> :timeout\nend\nend\nend\n",
+         "(send(self(), 20); CompileShape.run() == #{expected} and CompileShape.run() == :timeout)"}
+    end
   end
 
   defp body_source(shape, count, size) when shape in [:rescue_types, :rescue_clauses] do

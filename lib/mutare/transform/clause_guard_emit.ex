@@ -116,9 +116,10 @@ defmodule Mutare.Transform.ClauseGuardEmit do
   end
 
   # The mutant alternatives in id order, then the original gated by the exclusion of exactly
-  # those ids — right-nested, the shape the parser gives `a when b when c`. A `GuardDrop`'s
-  # `nil` mutant guard leaves the bare gate; an original that is itself a sequence stays one
-  # (`and_into` distributes the exclusion over its alternatives).
+  # those ids. A `GuardDrop`'s `nil` mutant guard leaves the bare gate. A source guard that is
+  # itself a sequence (`when a when b`) makes every member one too — `and_into` distributes the
+  # gate or the exclusion over its alternatives — so `GuardBuild.sequence/1` flattens them all
+  # into the one right-nested sequence the compiler accepts.
   defp guard_sequence(guard, variants, var) do
     ids = Enum.map(variants, &elem(&1, 0))
 
@@ -128,9 +129,6 @@ defmodule Mutare.Transform.ClauseGuardEmit do
       end)
 
     original = GuardBuild.merge(GuardBuild.exclusion(ids, var), guard)
-
-    (mutants ++ [original])
-    |> Enum.reverse()
-    |> Enum.reduce(fn alt, acc -> {:when, [], [alt, acc]} end)
+    GuardBuild.sequence(mutants ++ [original])
   end
 end

@@ -51,7 +51,7 @@ explicitly, including on Mix 1.20. The smoke command runs separately from the ti
 compile and checks baseline behavior; it does not validate every mutant or coverage
 attribution. These are standalone compiler fixtures, without the sandbox bootstrap.
 
-The full matrix has 120 projects, including large arithmetic metamutants. To work
+The full matrix has 174 projects, including large arithmetic metamutants. To work
 on a subset, pass one or more **name prefixes** after the output directory:
 
 ```sh
@@ -85,6 +85,7 @@ included in the decision. `projects.tsv` records the configured set for every pr
 | `receive-*`, `receive_default-*` | 10 / 20 / 40 clauses | Per-clause receive delivery; unmatched messages, mailbox order, zero timeout |
 | `head_body-{isolated,default}-NxB` | 2 / 4 / 8 head literals × 10 / 40 / 160 body statements | Raw-body duplication from pattern mutations; isolated set is IntegerLiteral |
 | `guard_body-{isolated,default}-NxB` | Same grid, guard comparisons × body statements | Raw-body duplication from guard mutations; isolated set is Relational |
+| `case_body-*`, `fn_body-*`, `receive_body-*` (`-{isolated,default}-NxB`) | The `guard_body` grid inside a `case`, `fn`, or `receive` clause | Raw-body duplication from guard mutations in the arrow-clause constructs; isolated set is Relational |
 | `rescue_types-{isolated,default}-NxB` | Same grid, exception types × body statements | Compare whole-`try` duplication with shared protected bodies for type-list narrowing; isolated set is RescueType |
 | `rescue_clauses-{isolated,default}-NxB` | Same grid, rescue clauses × body statements | Same comparison for rescue-clause removal; isolated set is RescueType |
 | `ignored-{arithmetic,default}-{0,50,100}` | Percentage of 1,000 functions ignored | Measure emission suppression against the same executable source |
