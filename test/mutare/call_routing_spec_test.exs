@@ -109,15 +109,8 @@ defmodule Mutare.CallRouting.SpecGrammarTest do
     end
 
     test "are normalized by the ArgumentRoutes constructors and validator alike" do
-      call = %Call{
-        node: {:f, [], [{:q, [], nil}, [timeout: 5]]},
-        module: M,
-        name: :f,
-        arguments: [{:q, [], nil}, [timeout: 5]],
-        pipe_mode: :unpiped,
-        effective_arity: 2,
-        rebuild: fn _n, _a -> nil end
-      }
+      call =
+        Call.new({:f, [], [{:q, [], nil}, [timeout: 5]]}, M, :f, :unpiped, fn _n, _a -> nil end)
 
       routes = ArgumentRoutes.from_visible(call, [:expression, [timeout: :raw]])
 

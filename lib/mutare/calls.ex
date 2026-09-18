@@ -8,7 +8,7 @@ defmodule Mutare.Calls do
 
   `module_key/1` encodes a real module atom into the key shape `resolved_call/1` returns, and `resolved_call_to/3` bundles the common "is this a call to module M (function F)?" match — together they save a caller from ever constructing or pattern-building the key representation itself.
 
-  `resolved_routed_call/1` is the routed-call twin — a call matched by a `call_routes` entry, macro or function. It returns a stable `Mutare.CallRouting.Call` with a natural module atom, visible arguments, pipe information, and a source-preserving rebuild function.
+  `resolved_routed_call/1` is the routed-call twin — a call matched by a `call_routes` entry, macro or function. It returns a stable `Mutare.CallRouting.Call` with a natural module atom, visible arguments, pipe information (a piped call's left side included), and a source-preserving rebuild function.
 
   `routed_treatments/1` reads *how a node's macro is registered* — the resolved per-argument routing the merged registry (built-ins + every mutator's/extension's `call_routes/0` + the declarative `:call_routes` option) assigned it. A macro host uses it in two places: on its own call's `node`, to locate the positions the route marked `:hosted` (including values nested under `{:keyword, …}`); and on a nested macro inside a fragment it walks, to read its argument treatments or determine whether the whole call is skipped (`:skip`). In both cases it replaces re-deriving the classification.
 

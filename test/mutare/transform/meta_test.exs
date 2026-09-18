@@ -95,11 +95,22 @@ defmodule Mutare.Transform.MetaTest do
       assert Meta.piped_routing(meta) == :binding_pattern
     end
 
-    test "macro_call round-trips the resolved {module, name} identity" do
+    test "routed_call round-trips the resolved identity, with the pipe's left side" do
       assert Meta.routed_call([]) == nil
 
-      meta = Meta.stamp_routed_call([], {[:Ecto, :Query], :from})
-      assert Meta.routed_call(meta) == {[:Ecto, :Query], :from}
+      unpiped = {[:Ecto, :Query], :from, :unpiped}
+      assert [] |> Meta.stamp_routed_call(unpiped) |> Meta.routed_call() == unpiped
+
+      piped = {[:Ecto, :Query], :from, {:piped, {:query, [], nil}}}
+      assert [] |> Meta.stamp_routed_call(piped) |> Meta.routed_call() == piped
+    end
+
+    test "routed_call reads anything but a well-formed identity as absent" do
+      key = Mutare.Transform.MetaKeys.route_call_key()
+
+      for malformed <- [{[:Ecto, :Query], :from}, {[:Ecto, :Query], :from, :piped}, :from] do
+        assert Meta.routed_call([{key, malformed}]) == nil
+      end
     end
   end
 

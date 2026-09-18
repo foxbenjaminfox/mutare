@@ -18,7 +18,7 @@ defmodule Mutare.Transform.ConfigMatches do
   # key, and the mark-call key `:mutare_mark_call`), so that is one cheap prewalk with no
   # resolution logic of its own, and it can't drift from what the resolver matched.
 
-  alias Mutare.CallRouting.Registry
+  alias Mutare.CallRouting.{Call, Registry}
   alias Mutare.CallRouting.Registry.Entry
   alias Mutare.Mutator
   alias Mutare.Transform.Meta
@@ -63,15 +63,15 @@ defmodule Mutare.Transform.ConfigMatches do
 
   defp add_route(acc, meta, args, registry) do
     case Meta.routed_call(meta) do
-      {module_key, fun, pipe_mode} when pipe_mode in [:piped, :unpiped] ->
-        arity = Mutator.effective_arity(args || [], pipe_mode)
+      {module_key, fun, pipe_left} ->
+        arity = Mutator.effective_arity(args || [], Call.pipe_mode(pipe_left))
 
         case Registry.lookup(registry, module_key, fun, arity) do
           %Entry{} = entry -> %{acc | routes: MapSet.put(acc.routes, Entry.key(entry))}
           nil -> acc
         end
 
-      _ ->
+      nil ->
         acc
     end
   end

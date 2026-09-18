@@ -193,17 +193,9 @@ defmodule Mutare.Transform.Calls do
     # impossible state Mutare never produces. Rather than commit to a partial `macro_rebuild` that
     # would raise on it, degrade to `nil` (the documented "not a recognised known-macro call"), so a
     # caller handing in an arbitrary node can never crash here.
-    with {module_key, name, pipe_mode} <- macro_identity(meta),
+    with {module_key, name, pipe_left} <- Meta.routed_call(meta),
          rebuild when is_function(rebuild, 2) <- macro_rebuild(head, meta, module_key, args) do
-      %Mutare.CallRouting.Call{
-        node: node,
-        module: natural_module(module_key),
-        name: name,
-        arguments: args,
-        pipe_mode: pipe_mode,
-        effective_arity: Mutare.Mutator.effective_arity(args, pipe_mode),
-        rebuild: rebuild
-      }
+      Mutare.CallRouting.Call.new(node, natural_module(module_key), name, pipe_left, rebuild)
     else
       _ -> nil
     end
@@ -234,15 +226,6 @@ defmodule Mutare.Transform.Calls do
   end
 
   def routed_treatments(_node), do: nil
-
-  # The resolved `{module_key, name, pipe_mode}` identity from a node's own meta, or `nil` when absent —
-  # i.e. when the node was never matched against the macro registry.
-  defp macro_identity(meta) do
-    case Meta.routed_call(meta) do
-      {_module, _name, pipe_mode} = identity when pipe_mode in [:piped, :unpiped] -> identity
-      _ -> nil
-    end
-  end
 
   defp natural_module(nil), do: nil
   defp natural_module(module) when is_list(module), do: Module.concat(module)

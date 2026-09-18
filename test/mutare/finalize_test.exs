@@ -170,15 +170,10 @@ defmodule Mutare.FinalizeTest do
 
   describe "the hosted :mutants path" do
     defp call do
-      %Mutare.CallRouting.Call{
-        node: {:x, [], []},
-        module: Mutare.Test.HostDSL,
-        name: :x,
-        arguments: [],
-        pipe_mode: :unpiped,
-        effective_arity: 0,
-        rebuild: fn name, args -> {name, [], args} end
-      }
+      Mutare.CallRouting.Call.new({:x, [], []}, Mutare.Test.HostDSL, :x, :unpiped, fn name,
+                                                                                      args ->
+        {name, [], args}
+      end)
     end
 
     test "finalize/2 runs on each target mutant, dropping skips and enriching the rest" do

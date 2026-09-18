@@ -55,7 +55,7 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_kernel_displaced` — a Kernel fn displaced by `import …, except:`    (Imports)
   #   * `:mutare_route`            — a routed call's per-argument positions, or `:skip` (Resolve.RouteStamp, from the route registry)
   #   * `:mutare_route_piped`      — piped-value routing for a routed `|>` RHS         (Resolve.RouteStamp, from the route registry)
-  #   * `:mutare_route_call`       — resolved `{module_key, name}` routed-call identity (Resolve.RouteStamp, read by Calls.resolved_routed_call/1)
+  #   * `:mutare_route_call`       — resolved `{module_key, name, pipe_left}` routed-call identity (Resolve.RouteStamp, read through Meta.routed_call/1)
   #   * `:mutare_use_directives`   — import/alias/require a `use` injects            (Uses)
   #   * `:mutare_use_behaviours`   — `@behaviour`s a `use` injects (on the `use`)    (Uses)
   #   * `:mutare_use_degraded`     — `{module, reason}` a `use` failed to expand     (Uses, read by `--check`)

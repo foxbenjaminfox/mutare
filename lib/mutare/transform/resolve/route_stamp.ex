@@ -16,12 +16,13 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   @typep diag :: %{warn?: boolean(), file: String.t()}
 
   # The slice of the resolve pass's env this stamp reads: the known-macro registry, whether the
-  # call is a `|>` right-hand side (for its effective arity), and the diagnostics wiring (whether
-  # advisory warnings print, and the file that labels them) — see
+  # call is a `|>` right-hand side and the left side it is piped from (for its effective arity,
+  # and for the `Call` a classifier, host, or mutator is shown), and the diagnostics wiring
+  # (whether advisory warnings print, and the file that labels them) — see
   # `Mutare.Transform.Resolve.annotate/3`.
   @typep env :: %{
            :call_routes => Routes.registry(),
-           :pipe_mode => Mutator.pipe_mode(),
+           :pipe_left => Call.pipe_left(),
            :diag => diag(),
            optional(atom()) => term()
          }
@@ -32,7 +33,8 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   @spec stamp(keyword(), Spec.module_key() | nil, atom(), [Macro.t()], Macro.t(), env()) ::
           keyword()
   def stamp(meta, module_key, fun, args, call_node, env) do
-    %{call_routes: registry, pipe_mode: pipe_mode, diag: diag} = env
+    %{call_routes: registry, pipe_left: pipe_left, diag: diag} = env
+    pipe_mode = Call.pipe_mode(pipe_left)
     arity = Mutator.effective_arity(args, pipe_mode)
 
     case Routes.lookup(registry, module_key, fun, arity) do
@@ -45,13 +47,14 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
           # the call as an anonymous function may be invalid. Drop the witness where the macro is
           # known; the resolution stamp itself stays.
           #
-          # Stamp the resolved identity (`{module_key, name}`) *before* dispatching, and thread the
-          # updated meta back onto `call_node` — so a `:routing` classifier (invoked *inside*
-          # `stamp_spec`) that normalizes the node via `Mutare.Transform.Calls.resolved_routed_call/1`
-          # already sees it. `module_key` is `nil` only for a name-only (`{:*, name, …}`) match whose
+          # Stamp the resolved identity (`t:Mutare.Transform.Meta.routed_call/0`) *before*
+          # dispatching, and thread the updated meta back onto `call_node` — so a `:routing`
+          # classifier (invoked *inside* `stamp_spec`) that normalizes the node via
+          # `Mutare.Transform.Calls.resolved_routed_call/1` already sees it, pipe-left included.
+          # `module_key` is `nil` only for a name-only (`{:*, name, …}`) match whose
           # module the resolver couldn't see; the reader then returns `{nil, name, …}`, which a
           # module-matching classifier clause simply skips (its purpose — match by name instead).
-          meta = stamp_identity(Imports.drop_witness(meta), module_key, fun, pipe_mode)
+          meta = stamp_identity(Imports.drop_witness(meta), module_key, fun, pipe_left)
           stamp_spec(meta, entry, put_meta(call_node, meta), arity, pipe_mode, diag)
         else
           # A wildcard route (`{Kernel, :*, :raw}`, `{:*, :if, …}`) whose cascade reached a head
@@ -66,9 +69,10 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   end
 
   # Record the resolved macro identity on the call meta, read back by
-  # `Mutare.Transform.Calls.resolved_routed_call/1`.
-  defp stamp_identity(meta, module_key, fun, pipe_mode),
-    do: Meta.stamp_routed_call(meta, {module_key, fun, pipe_mode})
+  # `Mutare.Transform.Calls.resolved_routed_call/1` — at routing, at hosting, and from a mutator's
+  # own `mutate/2`, so all three are shown the same `pipe_left`.
+  defp stamp_identity(meta, module_key, fun, pipe_left),
+    do: Meta.stamp_routed_call(meta, {module_key, fun, pipe_left})
 
   # Replace a call node's own (top) meta — `{head, _meta, args}` covers both the remote
   # (`head = {:., …}`) and bare (`head = fun`) shapes the resolver hands here.
@@ -317,8 +321,9 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
         route: Spec.key(spec),
         reason: :unhostable_pipe_argument,
         message:
-          "macro #{inspect(Spec.key(spec))} routes the pipe's left side as :hosted, but host/2 " <>
-            "receives only the visible macro call"
+          "macro #{inspect(Spec.key(spec))} routes the pipe's left side as :hosted, but a " <>
+            "host's splice rewrites only the visible macro call — host/2 can read the left side " <>
+            "(call.pipe_left), not replace it"
       )
     end
 

@@ -149,7 +149,10 @@ defmodule Mutare.CallRouting do
   as a map (or `_context`) so a later field can't break your clause.
 
   The `call` is a stable `Mutare.CallRouting.Call`, already normalized across bare, qualified,
-  aliased, imported, and piped forms. `ArgumentRoutes.from_effective/2` uses the same effective
+  aliased, imported, and piped forms. A piped call's `pipe_left` holds the pipe's left side as
+  written, so the piped position can be routed by its shape like any visible argument
+  (`Post |> from(…)` and `build(x) |> from(…)` need not share a treatment).
+  `ArgumentRoutes.from_effective/2` uses the same effective
   argument order as static declarations. `ArgumentRoutes.from_visible/3` is convenient when only
   written arguments matter and makes the pipe-left treatment explicit. Returned treatments and
   lengths are validated by the transform.

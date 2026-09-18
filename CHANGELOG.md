@@ -20,6 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a host splice that overwrites selectors core has already placed). The checks
   add roughly a sixth to scan time and are off by default.
 - `Mutare.Manifest` lists every generated mention of a mutant id (`:mentions`).
+- **A routed call written as a pipe stage is shown the pipe's left side.**
+  `Mutare.CallRouting.Call` gains `pipe_left` — `:unpiped`, or `{:piped, left}`
+  with the left side as written. The piped position is the call's effective
+  first argument, and adapters used to route it without seeing it; a
+  `route_arguments/2` classifier can now route it by shape (`Post |> from(…)`
+  held back from the `alias` family, `build(x) |> from(…)` left mutable), and a
+  host or mutator can read a declaration written there. It is the same value
+  in `route_arguments/2`, in `host/2`, and from
+  `Mutare.Calls.resolved_routed_call/1`. It is read-only, so the piped position
+  still cannot be routed `:hosted`.
+- `Mutare.CallRouting.Call.new/5` builds a call value from its independent
+  facts and derives `arguments`, `pipe_mode`, and `effective_arity`.
 
 ### Changed
 
@@ -28,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `assert_metamutant_compiles/3`, and `compile_metamutant/3` raise
   `Mutare.InvariantError` for a mutator that breaks the metamutant; pass
   `verify_invariants: false` to opt out.
+- **A hand-built `%Mutare.CallRouting.Call{}` must name `pipe_left`.** The key
+  is enforced, so a test that builds the struct literally stops compiling; build
+  it with `Call.new/5` instead. Matching on the struct is unaffected.
 
 ## [0.2.1] - 2026-09-17
 

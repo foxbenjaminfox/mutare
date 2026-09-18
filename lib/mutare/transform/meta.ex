@@ -165,13 +165,29 @@ defmodule Mutare.Transform.Meta do
 
   def piped_routing(_meta), do: nil
 
-  @doc """
-  The resolved `{module_key, name}` macro identity stamped on a call (`:mutare_route_call`), or
-  `nil` when the node was never matched against the macro registry. Read by
-  `Mutare.Transform.Calls.resolved_routed_call/1`.
+  @typedoc """
+  A routed call's identity stamp: the resolved module key and name, and whether the call is a
+  pipe's right side — in which case the left side rides along **as written** (no resolve stamps;
+  see `Mutare.Transform.Resolve`'s `|>` clause for why that bounds the stamp's size).
   """
-  @spec routed_call(keyword() | term()) :: term()
-  def routed_call(meta) when is_list(meta), do: Keyword.get(meta, MetaKeys.route_call_key())
+  @type routed_call ::
+          {Mutare.CallRouting.Spec.module_key() | nil, atom(),
+           Mutare.CallRouting.Call.pipe_left()}
+
+  @doc """
+  The `t:routed_call/0` identity stamped on a call (`:mutare_route_call`), or `nil` when the node
+  was never matched against the macro registry (or carries anything but a well-formed stamp). Read
+  by `Mutare.Transform.Calls.resolved_routed_call/1` and `Mutare.Transform.ConfigMatches`.
+  """
+  @spec routed_call(keyword() | term()) :: routed_call() | nil
+  def routed_call(meta) when is_list(meta) do
+    case Keyword.get(meta, MetaKeys.route_call_key()) do
+      {_module_key, name, :unpiped} = identity when is_atom(name) -> identity
+      {_module_key, name, {:piped, _left}} = identity when is_atom(name) -> identity
+      _absent_or_malformed -> nil
+    end
+  end
+
   def routed_call(_meta), do: nil
 
   @doc "Stamp visible-argument macro routing onto a call's meta (`:mutare_route`)."
@@ -183,9 +199,10 @@ defmodule Mutare.Transform.Meta do
   def stamp_piped_routing(meta, routing),
     do: [{MetaKeys.piped_route_key(), routing} | meta]
 
-  @doc "Stamp the resolved `{module_key, name}` macro identity onto a call's meta (`:mutare_route_call`)."
-  @spec stamp_routed_call(keyword(), term()) :: keyword()
-  def stamp_routed_call(meta, identity), do: [{MetaKeys.route_call_key(), identity} | meta]
+  @doc "Stamp the `t:routed_call/0` identity onto a call's meta (`:mutare_route_call`)."
+  @spec stamp_routed_call(keyword(), routed_call()) :: keyword()
+  def stamp_routed_call(meta, {_module_key, _name, _pipe_left} = identity),
+    do: [{MetaKeys.route_call_key(), identity} | meta]
 
   # --- replace-by-tag discovery marker ---------------------------------------
 

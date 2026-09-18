@@ -941,15 +941,10 @@ defmodule Mutare.HostedTest do
     end
 
     defp malformed_call(node) do
-      %Mutare.CallRouting.Call{
-        node: node,
-        module: Mutare.Test.HostDSL,
-        name: elem(node, 0),
-        arguments: elem(node, 2),
-        pipe_mode: :unpiped,
-        effective_arity: length(elem(node, 2)),
-        rebuild: fn name, args -> {name, [], args} end
-      }
+      Mutare.CallRouting.Call.new(node, Mutare.Test.HostDSL, elem(node, 0), :unpiped, fn name,
+                                                                                         args ->
+        {name, [], args}
+      end)
     end
 
     test "a non-1-arity :wrap raises (not a raw FunctionClauseError)" do

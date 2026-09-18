@@ -26,9 +26,11 @@ defmodule Mutare.Transform.Resolve do
   # rather than two passes: a second pass would rebuild the same alias env to resolve imports.
   #
   # The env: `aliases` (the alias map), `imports` (`%{module_path => selector}`), `kernel`
-  # (the tracked `Kernel` selector, default `:all`), `pipe_mode` (`:piped`/`:unpiped` — whether the
-  # current node is a `|>` right-hand side, so `Imports` can recover a piped call's effective
-  # arity), and `module` (the enclosing module, `nil` at the top level — the one piece of module
+  # (the tracked `Kernel` selector, default `:all`), `pipe_left` (`:unpiped`, or `{:piped, lhs}`
+  # when the current node is a `|>` right-hand side — so `Imports` can recover a piped call's
+  # effective arity, and `RouteStamp` can show a routed call the left side it is piped from; one
+  # key, so resetting the mode resets the left side with it),
+  # and `module` (the enclosing module, `nil` at the top level — the one piece of module
   # scope this pass tracks, so `Mutare.Transform.ModuleScope` can fold the implicit alias a nested
   # `defmodule` introduces; a call to a sibling nested module by short name then resolves to the
   # module Elixir defines, matching a `:call_routes` entry keyed on it). Bare function captures
@@ -37,6 +39,7 @@ defmodule Mutare.Transform.Resolve do
   # needs for capture mutation.
 
   alias Mutare.AST
+  alias Mutare.CallRouting.Call
   alias Mutare.CallRouting.Registry, as: Routes
   alias Mutare.Mutator
   alias Mutare.Transform.{Aliases, Calls, Imports, MetaKeys, ModuleScope, Uses}
@@ -66,7 +69,7 @@ defmodule Mutare.Transform.Resolve do
       aliases: %{},
       imports: %{},
       kernel: Imports.default_selector(),
-      pipe_mode: :unpiped,
+      pipe_left: :unpiped,
       # The enclosing module (`nil` at the file top level), threaded so `ModuleScope` can fold the
       # implicit alias Elixir introduces for a nested module — a sibling nested module referred to
       # by short name then resolves to what the compiler defines (`Outer.Foo`, not the bare `Foo`).
@@ -110,7 +113,7 @@ defmodule Mutare.Transform.Resolve do
   defp walk({:quote, meta, args}, env) when is_list(args) do
     # The head (`Kernel.SpecialForms.quote`) is stamped like any bare call, so a `:skip` route on
     # it is honoured — the analyzer then leaves the whole quote alone, escaping unquotes included.
-    {meta, _module_key} = stamp_bare_call(:quote, meta, args, %{env | pipe_mode: :unpiped})
+    {meta, _module_key} = stamp_bare_call(:quote, meta, args, %{env | pipe_left: :unpiped})
     {:quote, meta, walk_live_quote_args(args, env)}
   end
 
@@ -120,12 +123,19 @@ defmodule Mutare.Transform.Resolve do
   # RHS's effective argument 0, so if the RHS marks that position (`Process.sleep/1`,
   # `:timer.sleep/1`, or a custom index-0 mark) `mark_pipe_receiver/3` marks the LHS — the piped
   # counterpart of the visible-arg stamping the RHS clause did.
+  #
+  # The RHS is walked under the LHS **as written** (`{:piped, lhs}`, before this pass touches it):
+  # a routed RHS records it in its identity stamp, which is how a `Mutare.CallRouting.Call` comes
+  # to carry its `pipe_left`. Unwalked is what a classifier already sees of the visible arguments
+  # (`RouteStamp.stamp/6`'s `call_node`), and it bounds the stamp: a walked LHS would carry the
+  # previous stage's stamp, which carries the stage before it, doubling per stage; as written,
+  # stage N's copy is the N-1 stages upstream and nothing more.
   defp walk({:|>, meta, [lhs, rhs]}, env) do
     # The pipe head is a resolvable call too (`Kernel.|>/2`): stamp it so a `:skip` route on it is
     # honoured (a positional route never applies — `Mutare.Transform.StructuralForms`).
-    {meta, _module_key} = stamp_bare_call(:|>, meta, [lhs, rhs], %{env | pipe_mode: :unpiped})
-    rhs = walk(rhs, %{env | pipe_mode: :piped})
-    {lhs, rhs} = mark_pipe_receiver(walk(lhs, %{env | pipe_mode: :unpiped}), rhs, env)
+    {meta, _module_key} = stamp_bare_call(:|>, meta, [lhs, rhs], %{env | pipe_left: :unpiped})
+    rhs = walk(rhs, %{env | pipe_left: {:piped, lhs}})
+    {lhs, rhs} = mark_pipe_receiver(walk(lhs, %{env | pipe_left: :unpiped}), rhs, env)
     {:|>, meta, [lhs, rhs]}
   end
 
@@ -142,7 +152,7 @@ defmodule Mutare.Transform.Resolve do
     # The capture head (`Kernel.SpecialForms.&`) is stamped like any bare call, so a `:skip` route
     # on it is honoured here too (the other `&` shapes reach the bare-call clause on their own).
     {amp_meta, _module_key} =
-      stamp_bare_call(:&, amp_meta, [{:/, slash_meta, [ref, right]}], %{env | pipe_mode: :unpiped})
+      stamp_bare_call(:&, amp_meta, [{:/, slash_meta, [ref, right]}], %{env | pipe_left: :unpiped})
 
     case capture_arity(right) do
       {:ok, arity} ->
@@ -193,7 +203,7 @@ defmodule Mutare.Transform.Resolve do
        when is_atom(fun) and is_list(args) do
     case Aliases.resolve_node(mod, %{}) do
       nil ->
-        walked = walk(mod, %{env | pipe_mode: :unpiped})
+        walked = walk(mod, %{env | pipe_left: :unpiped})
         {{:., dot_meta, [walked, fun]}, call_meta, descend(args, env)}
 
       module_key ->
@@ -209,7 +219,7 @@ defmodule Mutare.Transform.Resolve do
   # receiver above — an aliased/imported/known-macro call inside an immediately-invoked `fn` gets its
   # stamp. (Analyze's `descend_receiver/2` has the matching clause.)
   defp walk({{:., dot_meta, [callee]}, call_meta, args}, env) when is_list(args) do
-    {{:., dot_meta, [walk(callee, %{env | pipe_mode: :unpiped})]}, call_meta, descend(args, env)}
+    {{:., dot_meta, [walk(callee, %{env | pipe_left: :unpiped})]}, call_meta, descend(args, env)}
   end
 
   # A `defmodule … do … end`: stamp the head (an `__aliases__` head with its resolved module — the
@@ -229,7 +239,7 @@ defmodule Mutare.Transform.Resolve do
     body_env =
       if kernel_module_definer?(:defmodule, meta, args, env),
         do: module_body_env(head, env),
-        else: %{env | pipe_mode: :unpiped}
+        else: %{env | pipe_left: :unpiped}
 
     {:defmodule, meta, [defmodule_head(head, env), walk(body, body_env)]}
   end
@@ -253,7 +263,7 @@ defmodule Mutare.Transform.Resolve do
   # "this is Kernel's `defimpl`" signal; a displaced one carries none and stays an expression.
   defp walk({:defimpl, meta, args}, env) when is_list(args) and length(args) >= 2 do
     {meta, _module_key} = stamp_bare_call(:defimpl, meta, args, env)
-    enclosing = %{env | pipe_mode: :unpiped}
+    enclosing = %{env | pipe_left: :unpiped}
 
     if kernel_module_definer?(:defimpl, meta, args, env) do
       impl = ModuleScope.impl_module(hd(args), defimpl_for_type(args), env.aliases)
@@ -288,14 +298,18 @@ defmodule Mutare.Transform.Resolve do
   # import / Kernel-displacement marks. Returns `{meta, module_key}` so the caller can also
   # stamp any argument marks the resolved module/function carries (`descend_marked/4`).
   defp stamp_bare_call(fun, meta, args, env) do
-    meta = Imports.stamp(fun, meta, args, env.imports, env.kernel, env.pipe_mode)
-    arity = Mutator.effective_arity(args, env.pipe_mode)
+    meta = Imports.stamp(fun, meta, args, env.imports, env.kernel, pipe_mode(env))
+    arity = Mutator.effective_arity(args, pipe_mode(env))
     module_key = bare_module_key(fun, arity, meta, env)
     meta = RouteStamp.stamp(meta, module_key, fun, args, {fun, meta, args}, env)
     {stamp_mark_call(meta, module_key, fun, args, env), module_key}
   end
 
-  defp descend(args, env), do: Enum.map(args, &walk(&1, %{env | pipe_mode: :unpiped}))
+  defp descend(args, env), do: Enum.map(args, &walk(&1, %{env | pipe_left: :unpiped}))
+
+  # Whether the node being walked is a `|>` right-hand side. Derived from `env.pipe_left`, the
+  # env's only record of pipe position, so the mode and the left side cannot disagree.
+  defp pipe_mode(env), do: Call.pipe_mode(env.pipe_left)
 
   # The head of a `defmodule`: an `__aliases__` head is *stamped* with its resolved module (for
   # `Mutare.Lifting`; no descent — it's a module path), a non-`__aliases__` (dynamic) head is a live
@@ -303,7 +317,7 @@ defmodule Mutare.Transform.Resolve do
   defp defmodule_head({:__aliases__, _, _} = head, env),
     do: Aliases.stamp_module(head, env.aliases)
 
-  defp defmodule_head(head, env), do: walk(head, %{env | pipe_mode: :unpiped})
+  defp defmodule_head(head, env), do: walk(head, %{env | pipe_left: :unpiped})
 
   # The env a genuine `Kernel.defmodule` body is walked under: the enclosing env plus the module it
   # enters (`child_module/3` — the unresolved sentinel for a non-static head) and the in-body
@@ -314,7 +328,7 @@ defmodule Mutare.Transform.Resolve do
     aliases =
       ModuleScope.register_defined_module({:defmodule, [], [head]}, env.module, env.aliases)
 
-    %{env | pipe_mode: :unpiped, module: child, aliases: aliases}
+    %{env | pipe_left: :unpiped, module: child, aliases: aliases}
   end
 
   # The `for:` type of a `defimpl`, wherever it sits — a standalone opts arg (`defimpl P, for: T do
@@ -331,13 +345,13 @@ defmodule Mutare.Transform.Resolve do
   # context (a piped receiver is effective arg 0), then the marked nodes are descended un-piped like
   # every other argument — the stamp rides through untouched.
   defp descend_marked(args, module_key, fun, env),
-    do: args |> ArgumentMarks.stamp(module_key, fun, env.pipe_mode, env.marks) |> descend(env)
+    do: args |> ArgumentMarks.stamp(module_key, fun, pipe_mode(env), env.marks) |> descend(env)
 
   # Record on the call's own meta that a mark declaration matched it (`:mutare_mark_call`) — the
   # side channel `Mutare.Transform.ConfigMatches` reads to find configured `argument_marks:` entries
   # that reached no call. Keyed exactly as `ArgumentMarks.stamp/5` looks the declaration up.
   defp stamp_mark_call(meta, module_key, fun, args, env) do
-    arity = Mutator.effective_arity(args, env.pipe_mode)
+    arity = Mutator.effective_arity(args, pipe_mode(env))
     ArgumentMarks.stamp_call(meta, module_key, fun, arity, env.marks)
   end
 
@@ -586,7 +600,7 @@ defmodule Mutare.Transform.Resolve do
             pair
 
           _option ->
-            {key, walk(value, %{env | pipe_mode: :unpiped})}
+            {key, walk(value, %{env | pipe_left: :unpiped})}
         end
 
       other ->
@@ -604,8 +618,8 @@ defmodule Mutare.Transform.Resolve do
   # route on it is honoured by `Analyze.QuoteEscape` and the escaping argument stays as written.
   defp walk_quoted_data({form, meta, [arg]}, 1, env)
        when form in [:unquote, :unquote_splicing] do
-    {meta, _module_key} = stamp_bare_call(form, meta, [arg], %{env | pipe_mode: :unpiped})
-    {form, meta, [walk(arg, %{env | pipe_mode: :unpiped})]}
+    {meta, _module_key} = stamp_bare_call(form, meta, [arg], %{env | pipe_left: :unpiped})
+    {form, meta, [walk(arg, %{env | pipe_left: :unpiped})]}
   end
 
   defp walk_quoted_data({form, _meta, [_arg]} = node, quote_level, _env)

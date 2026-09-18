@@ -56,15 +56,10 @@ defmodule Mutare.MutatorTest do
 
   describe "host_targets/3" do
     defp call do
-      %Mutare.CallRouting.Call{
-        node: {:x, [], []},
-        module: Mutare.Test.HostDSL,
-        name: :x,
-        arguments: [],
-        pipe_mode: :unpiped,
-        effective_arity: 0,
-        rebuild: fn name, args -> {name, [], args} end
-      }
+      Mutare.CallRouting.Call.new({:x, [], []}, Mutare.Test.HostDSL, :x, :unpiped, fn name,
+                                                                                      args ->
+        {name, [], args}
+      end)
     end
 
     test "keeps a target's custom 1-arity :wrap function" do

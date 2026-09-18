@@ -9258,6 +9258,75 @@ the adapter-grade DSLs classifiers describe are exactly where a spliced `case` i
 Displacing nothing keeps the documented default. The rule is one-way — a `:skip` may withhold
 mutants, never grant a position more freedom than the route it replaced.
 
+### A routed call is shown its pipe-left `[done; the hoist half deferred]`
+
+A piped routed call's effective argument 0 is the `|>`'s left side, and `Call` held only the
+visible arguments. A classifier therefore had to route that position blind, and no one treatment
+fits what gets piped. `mutare_ecto` met all three failures: `piped_treatment(:from)` routes the
+hidden source `:raw` (it must — `Post |> from(…)` under `:expression` hands `Post` to `:alias`),
+so `q |> where(…) |> from(limit: 5)` silently lost every upstream mutant; the composable stages
+route it `:expression`, so `Post |> where(…)` gets `Mutare.Mutant |> where(…)`; and
+`(p in Post) |> from(where: p.x > 1)` wove `dynamic([], p.x > 1)`, because the host could not read
+the declaration. `:interior` was tried there as a shape-blind compromise and rejected: it withholds
+only the argument's own node, so `{"posts", Post} |> from(…)` gains the string and alias swaps.
+
+`Call.pipe_left` is `:unpiped | {:piped, left}`. Three decisions behind it:
+
+- **It rides the identity stamp** (`:mutare_route_call`, now `{module_key, name, pipe_left}`). A
+  `Call` is rebuilt from the stage node at three seams — `RouteStamp` (routing),
+  `Routed.host_candidates/3` (hosting), and an adapter's own `Calls.resolved_routed_call/1` inside
+  `mutate/2` — and the last is a published *unary* reader. Passing the left side through each
+  seam's context instead would leave that reader unable to fill the field, and `Call` needing a
+  third "piped, left side unknown" state.
+- **The stamped left side is as written**, taken before `Resolve` walks it. A walked left side
+  carries the previous stage's stamp, which carries the stage before: the unshared size doubles per
+  stage. As written, stage N's copy is the N−1 stages upstream — a sum of prefixes, quadratic in a
+  chain's length and small at any length people write. In memory it shares structure with the real
+  left side either way; the bound matters where a term is flattened (the invariant fingerprint).
+  `Site`s carry rendered strings, not nodes, so the copy never crosses a process boundary. The cost
+  is that an adapter cannot resolve calls *inside* the left side; the shapes a classifier sorts
+  (alias, string, tuple, `in`, anything else) need no resolution.
+- **Read-only.** `rebuild` and a host's `splice` rewrite the visible call; core has no splice path
+  into the left operand, so `:hosted` on the piped position stays rejected
+  (`:unhostable_pipe_argument`, reworded — "host/2 receives only the visible call" stopped being
+  the reason).
+
+The resolve env carries the same tagged value as its **only** record of pipe position
+(`env.pipe_left`; the mode is derived). `resolve.ex` resets pipe position at thirteen descents; a
+second key for the left side would have needed resetting at each, and a missed one hands a nested
+call a stale left side. `Call.new/5` makes the same move on the struct: `pipe_mode` and
+`effective_arity` stay as fields (adapters match on them) but are derived from `pipe_left` and the
+node. The key is enforced rather than defaulted — a default would let a hand-built
+`pipe_mode: :piped` sit beside `pipe_left: :unpiped` — so a test that built `%Call{}` literally
+fails to compile until it says what is piped; `new/5` is what it should change to.
+
+**Deferred — `PipeEmit.hoist/2` still binds a non-value left side.** The closure
+(`lhs |> (fn mutare_piped -> … end).()`) evaluates the left side and hides its syntax from the
+stage macro, so a whole-call mutant on a stage whose piped position is `:raw`/`:pattern`/
+`:binding_pattern` breaks the build (`(p in Post) |> from(order_by: …)`: `Kernel.in/2` on an
+unbound `p`, and `from` handed a bare variable). No built-in family lands a whole-call candidate
+there; an extension's mutator does. The fix is to distribute instead — pipe the left side into
+each branch, no closure, as `MatchPatterns.rehome_call_mutations/2` already does for a
+`:binding_pattern` statement. It is always sound (one branch runs, so the left side still
+evaluates once; the closure only ever saved rendered size) and it does not reopen the `hoist/1`
+blow-up for `:raw`, whose left side is never analyzed and so holds no selectors. Three things to
+settle when it is taken up:
+
+- A `:pattern` left side *can* hold selectors, inside a pin (`{:ok, ^(x |> f())} |> match?(r)`).
+  Pipe the emitted left side in the catch-all only and the as-written one (this entry's stamp
+  supplies it) in the mutant branches: under an active mutant every other selector takes its
+  default, so the two behave alike there, and the copies stay selector-free.
+- The trigger may be better stated as its complement — closure only for `:expression` and
+  `:interior`, the evaluated values. `ArgumentRoutes.validate/2` accepts any treatment in the piped
+  slot, and `{:keyword, …}`, a keyed refinement, and `:interpolated` also describe something the
+  macro reads as syntax.
+- What today's breakage costs is unmeasured. If the error escapes line attribution,
+  `Poison.macro_poison/4` drops by macro *name* — every `from` mutant in the file, not the stage's.
+  Run it before ranking this.
+
+Until then an adapter can see the shape and withhold whole-call mutants for it, which it could not
+before.
+
 ### `:interior` has to account for the operand the suppression withheld `[done]`
 
 `:interior` analyzes its argument and then drops the candidates on the argument's own node. The

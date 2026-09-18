@@ -3,16 +3,11 @@ defmodule Mutare.CallRoutingTest do
 
   alias Mutare.CallRouting.{ArgumentRoutes, Call, ContractError}
 
+  doctest Call
+
   defp call(pipe_mode, arguments) do
-    %Call{
-      node: {:where, [], arguments},
-      module: Ecto.Query,
-      name: :where,
-      arguments: arguments,
-      pipe_mode: pipe_mode,
-      effective_arity: length(arguments) + if(pipe_mode == :piped, do: 1, else: 0),
-      rebuild: fn name, args -> {name, [], args} end
-    }
+    pipe_left = if pipe_mode == :piped, do: {:piped, {:query, [], nil}}, else: :unpiped
+    Call.new({:where, [], arguments}, Ecto.Query, :where, pipe_left, &{&1, [], &2})
   end
 
   describe "ArgumentRoutes" do

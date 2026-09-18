@@ -223,7 +223,11 @@ keyword *values* positionally, keep keys raw), or `:hosted` (hand the
 position to a host mutator — below). The `:routing` sentinel defers to
 `route_arguments/2` when the right treatment depends on the call's shape —
 `where(q, category: "Foo")` is data, `where(q, [u], u.x == u.y)` is a DSL
-fragment. Two limits on what a route may name: the structural forms (`if`,
+fragment. A piped call's first argument is the `|>`'s left side, which the
+call node does not hold: `call.pipe_left` carries it (`{:piped, left}`, as
+written), so a classifier routes that position by shape too — pass the
+treatment as `ArgumentRoutes.from_visible(call, visible, piped: treatment)`.
+Two limits on what a route may name: the structural forms (`if`,
 `case`, the boolean operators — anything the analyzer walks with a clause of its
 own) take `:skip` only; definitions (`def`, `defmodule`, …) and literal syntax (`{}`, `%{}`, …)
 take no route —
