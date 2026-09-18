@@ -1643,13 +1643,34 @@ deps then read as "lock mismatch" and the run died before the one compile. The v
 release smoke test found it. `walk/2` now emits an empty directory as its own `:directory`
 entry, `mirror_source` creates it, and `prune_path` leaves a managed empty directory alone.
 ### Keyword-`do:` normalization (formatter workaround) `[done, watch Elixir]`
-Rendering `def f, do: <case>` (a keyword block whose value is a multi-line `case`)
-raises. `Mutare.Transform.Render` flips every keyword-format key back to a plain
-atom key before rendering (and `block_wrap`s a bare selector `case` for the same
-reason); `normalize_for_options/1` then repairs the one shape that unwrapping
-breaks — a `for` whose option list puts `do:` before `into:`, which Sourceror
-re-renders in block form with `into` stranded inside the body. Metamutant only;
-the report is unaffected.
+`Mutare.Transform.Render` flips every block-wrapped pair key back to a plain atom
+before rendering, because of how the stdlib normalizer reads a wrapped key.
+`Code.Normalizer.normalize_kw_args/3` takes a block-wrapped atom key as the mark
+of a pair already in formatter shape and returns it without descending into the
+value. Emission splices un-normalized nodes under exactly those keys — in
+`def f, do: <selector>`, `selector_case/2` builds `[do: clauses]` with a plain key
+and no `do:`/`end:` meta — so with the key left wrapped they reach
+`Code.Formatter` raw and it raises (`CaseClauseError` in `force_args?/2` on
+`{:do, clauses}`; `KeyError :token` on a bare integer). A plain key sends the
+normalizer into the value. The `case`'s size is beside the point: a *parsed*
+multi-line `case` under a keyword `do:` renders fine with keys intact, and this
+entry used to blame "multi-line" wrongly. (`block_wrap/1` is a separate
+workaround; its doc carries the reason.) Metamutant only; the report is
+unaffected.
+
+The unwrap costs one shape. `normalize_call/2` formats any call whose final
+argument is a plain keyword list *led by* `:do` as a do-block (it stamps
+`do:`/`end:` meta), so `for x <- xs, do: x, into: %{}` re-renders in block form
+with `into` stranded inside the body — source that still parses and fails only
+at compile. `normalize_for_options/1` moves `do:` to the end of the option list,
+which keeps that branch from firing.
+
+**Dead end: exempting keyword-format keys (2026-09-18, Elixir 1.19.5).** Only a
+block key *lacking* `format: :keyword` renders as invalid `[:key => value]`, and a
+`for` with its keyword-format keys intact renders correctly, so narrowing the
+unwrap to the keys lacking it looks like it retires `normalize_for_options/1`. It
+fails 637 of the fast suite's 3199 tests with the raises above: keyword-format
+keys are precisely the ones selectors sit under.
 
 **Watch Elixir, not Sourceror.** `Sourceror.to_string/2` only assembles options
 and delegates to `Code.quoted_to_algebra/2`, so every rendering quirk above is

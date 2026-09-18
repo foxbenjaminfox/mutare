@@ -61,10 +61,13 @@ defmodule Mutare.Transform.Render do
   def selector_case_parts(_node), do: :error
 
   # Sourceror represents keyword-syntax keys (`do:`, `else:`, but also `ms:`,
-  # `env:`, any `key: value`) as `{:__block__, [format: :keyword], [key]}`. A
-  # block-wrapped pair key left in a list renders as invalid `key => value`
-  # syntax, so unwrap every single-expression block key and let Sourceror render
-  # the surrounding pair as either `key: value` or `{key, value}`.
+  # `env:`, any `key: value`) as `{:__block__, [format: :keyword], [key]}`.
+  # Unwrap every single-expression block key, keyword-format ones included:
+  # `Code.Normalizer` skips the value under a block-wrapped atom key, so a node
+  # emission spliced there (a selector) would reach the formatter un-normalized
+  # and raise. A block key without `format: :keyword` would also render as
+  # invalid `[:key => value]`. With plain keys the pair renders as `key: value`
+  # or `{key, value}`. NOTES "Keyword-`do:` normalization".
   defp normalize_keyword_blocks(ast) do
     Macro.prewalk(ast, fn
       {{:__block__, _meta, [key]}, value} ->
