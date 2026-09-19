@@ -89,6 +89,13 @@ defmodule Mutare.Transform do
   whole upstream chain per branch and blow up exponentially. The Site still records
   the bare stage, so the diff is unchanged.
 
+  A routed left operand is evaluated this way only for `:expression` and `:interior`.
+  Other treatments describe macro syntax: emission instead supplies the left operand
+  directly to each branch's stage, preserving declarations such as `(p in Post) |> from(…)`.
+  The catch-all keeps the emitted operand, including its mutations; mutant branches use
+  the as-written operand because no upstream mutant can be active there. Upstream selectors
+  therefore appear once even inside interpolations or routed keyword values.
+
   ## Function lifting + dispatcher (guards, dispatch)
 
   A `case` is illegal in a `when` guard, and guards drive dispatch *across*

@@ -204,6 +204,20 @@ defmodule Mutare.Transform.Meta do
   def stamp_routed_call(meta, {_module_key, _name, _pipe_left} = identity),
     do: [{MetaKeys.route_call_key(), identity} | meta]
 
+  @typedoc "A pipe evaluates a value, or passes its original left operand as macro syntax."
+  @type pipe_delivery :: :value | {:syntax, Macro.t()}
+
+  @doc "The pipe's delivery plan, recorded before its RHS becomes a selector."
+  @spec pipe_delivery(keyword()) :: pipe_delivery()
+  def pipe_delivery(meta), do: Keyword.get(meta, MetaKeys.pipe_delivery_key(), :value)
+
+  @doc "Record syntax delivery on the pipe itself; value delivery needs no stamp."
+  @spec stamp_pipe_delivery(keyword(), pipe_delivery()) :: keyword()
+  def stamp_pipe_delivery(meta, :value), do: meta
+
+  def stamp_pipe_delivery(meta, {:syntax, _original} = delivery),
+    do: Keyword.put(meta, MetaKeys.pipe_delivery_key(), delivery)
+
   # --- replace-by-tag discovery marker ---------------------------------------
 
   @doc """

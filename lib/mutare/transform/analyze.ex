@@ -553,7 +553,7 @@ defmodule Mutare.Transform.Analyze do
   # is neither a valid expression nor a valid pattern. Treating it as runtime would splice
   # a selector `case` into pattern/opaque position and poison the build.
   defp analyze_form({:|>, meta, [lhs, rhs]}, :runtime, env) do
-    {:|>, meta,
+    {:|>, Meta.stamp_pipe_delivery(meta, Routed.pipe_delivery(rhs)),
      [
        Routed.analyze_piped_value(lhs, rhs, env),
        analyze_pipe_stage(rhs, env)
@@ -843,6 +843,8 @@ defmodule Mutare.Transform.Analyze do
   # `PipeEmit.hoist/2` lifts the selector out of the illegal pipe-RHS position into a
   # one-shot closure on the piped value — `lhs |> (fn v -> case … (each branch pipes
   # `v`) … end).()`. A non-call RHS (rare) is analyzed normally.
+  # Syntax-valued left operands instead distribute into those branches (`Routed.pipe_delivery/1`
+  # recorded the delivery plan on the parent pipe before its stage becomes a selector).
   #
   # A piped **known-macro** stage (`q |> where([p], p.x == 1)`, the query-builder shape)
   # routes its arguments by treatment too — `Resolve` already stamped the *visible*-position

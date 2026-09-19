@@ -19,40 +19,64 @@ defmodule Mutare.Transform.PipeEmit do
   # copy of `lhs`. This keeps a chain of mutated stages linear in the rendered source, and the
   # bare stage stays the Site's recorded node, so the diff is unaffected.
 
-  alias Mutare.Transform.{Ctx, Render}
+  # Syntax-valued operands cannot enter that closure: it evaluates them and hides their
+  # AST from the macro. Distribute the pipe into the selector instead. Only the catch-all
+  # gets the emitted LHS; mutant branches get the as-written one, since no upstream mutant
+  # can be active there. This also keeps selectors inside pins from multiplying.
+
+  alias Mutare.Transform.{Ctx, Meta, Render}
 
   @doc """
-  Hoist a selector `case` out of the RHS of a pipe, when the RHS is one of our selectors.
+  Hoist a selector out of a pipe's RHS and preserve a pinned LHS's rendering precedence.
   """
   @spec hoist(Macro.t(), Ctx.t()) :: Macro.t()
-  def hoist({:|>, meta, [lhs, rhs]} = node, ctx) do
+  def hoist({:|>, meta, [lhs, rhs]}, ctx) do
     # The pipe's RHS is one of our selectors iff it carries the builder's marker; the subject
     # (inline read or hoisted variable) is reused as-is inside the closure.
     case Render.selector_case_parts(rhs) do
       {:ok, subject, clauses} ->
-        var = {ctx.config.piped_var, [], nil}
-
-        piped =
-          Enum.map(clauses, fn {:->, m, [pat, body]} ->
-            {:->, m, [pat, pipe_tail(var, body)]}
-          end)
-
-        closure = {:fn, [], [{:->, [], [[var], Render.selector_case(subject, piped)]}]}
-        invocation = {{:., [], [closure]}, [], []}
-        {:|>, meta, [lhs, invocation]}
+        case Meta.pipe_delivery(meta) do
+          :value -> value_pipe(lhs, meta, subject, clauses, ctx)
+          {:syntax, original} -> syntax_pipe(lhs, original, subject, clauses)
+        end
 
       :error ->
-        node
+        pipe_into(lhs, rhs, meta)
     end
   end
 
   def hoist(node, _ctx), do: node
 
+  defp value_pipe(lhs, meta, subject, clauses, ctx) do
+    var = {ctx.config.piped_var, [], nil}
+    piped = Enum.map(clauses, &pipe_clause(var, &1))
+    closure = {:fn, [], [{:->, [], [[var], Render.selector_case(subject, piped)]}]}
+    invocation = {{:., [], [closure]}, [], []}
+    {:|>, meta, [lhs, invocation]}
+  end
+
+  defp syntax_pipe(lhs, original, subject, clauses) do
+    {mutants, [catch_all]} = Enum.split(clauses, -1)
+    piped = Enum.map(mutants, &pipe_clause(original, &1)) ++ [pipe_clause(lhs, catch_all)]
+    Render.selector_case(subject, piped)
+  end
+
+  defp pipe_clause(lhs, {:->, meta, [pattern, body]}),
+    do: {:->, meta, [pattern, pipe_tail(lhs, body)]}
+
   # Pipe `lhs` into a selector clause body. A mutant clause body is a single expression
   # (the mutated stage), piped whole; the catch-all body is a block whose head is the
   # coverage record and whose tail is the original stage, so only the tail is piped.
   defp pipe_tail(lhs, {:__block__, bmeta, stmts}) when stmts != [],
-    do: {:__block__, bmeta, List.update_at(stmts, -1, &{:|>, [], [lhs, &1]})}
+    do: {:__block__, bmeta, List.update_at(stmts, -1, &pipe_into(lhs, &1))}
 
-  defp pipe_tail(lhs, body), do: {:|>, [], [lhs, body]}
+  defp pipe_tail(lhs, body), do: pipe_into(lhs, body)
+
+  # Sourceror renders a generated pin over a selector as `^case … end |> stage()`,
+  # which reparses as `^(case … end |> stage())`. Expand just this pipe as Kernel would,
+  # so the pin stays the macro's argument. This also applies when only the LHS mutates.
+  defp pipe_into(lhs, stage, meta \\ [])
+  defp pipe_into({:^, _, [_]} = lhs, stage, _meta), do: Macro.pipe(lhs, stage, 0)
+
+  defp pipe_into(lhs, stage, meta), do: {:|>, meta, [lhs, stage]}
 end

@@ -438,4 +438,22 @@ defmodule Mutare.Transform.Analyze.Routed do
   end
 
   def analyze_piped_value(lhs, _rhs, env), do: Analyze.annotate(lhs, env)
+
+  # Only evaluated positions may be bound to a closure parameter. Every other treatment
+  # describes syntax the receiving macro must see. Keep the as-written operand from resolve,
+  # not the analyzed one: mutant branches must not duplicate selectors in interpolated pins or
+  # keyword values. The catch-all will retain the emitted operand and all its mutants.
+  @spec pipe_delivery(Macro.t()) :: Meta.pipe_delivery()
+  def pipe_delivery({_form, meta, _args}) when is_list(meta) do
+    case Meta.piped_routing(meta) do
+      value when value in [nil, :expression, :interior] ->
+        :value
+
+      _syntax ->
+        {_module, _name, {:piped, original}} = Meta.routed_call(meta)
+        {:syntax, original}
+    end
+  end
+
+  def pipe_delivery(_rhs), do: :value
 end

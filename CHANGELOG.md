@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Whole-call mutants on a pipe stage preserve a syntax-valued left operand. Routed
+  declarations, patterns, keyword fragments and interpolations reach the macro directly,
+  instead of being evaluated through a closure. This lets adapters mutate stages such as
+  `(p in Post) |> from(order_by: …)` without poisoning the single build. Mutations inside
+  the left operand remain reachable without duplicating their selectors.
+- A generated interpolation on a pipe's left keeps its precedence when rendered, including
+  when only the left operand carries mutations.
+
 ## [0.3.0] - 2026-09-19
 
 ### Added

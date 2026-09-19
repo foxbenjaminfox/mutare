@@ -227,6 +227,12 @@ fragment. A piped call's first argument is the `|>`'s left side, which the
 call node does not hold: `call.pipe_left` carries it (`{:piped, left}`, as
 written), so a classifier routes that position by shape too — pass the
 treatment as `ArgumentRoutes.from_visible(call, visible, piped: treatment)`.
+Whole-call mutants preserve syntax in that slot: only `:expression` and `:interior`
+operands are evaluated into a temporary value. A `:raw` declaration such as
+`(p in Post) |> from(…)` is supplied directly to each mutant stage. The left operand
+remains read-only to the adapter; this does not enable source rewrites or `:hosted`
+routing of that position.
+
 Two limits on what a route may name: the structural forms (`if`,
 `case`, the boolean operators — anything the analyzer walks with a clause of its
 own) take `:skip` only; definitions (`def`, `defmodule`, …) and literal syntax (`{}`, `%{}`, …)

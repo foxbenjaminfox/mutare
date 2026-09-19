@@ -9260,7 +9260,7 @@ the adapter-grade DSLs classifiers describe are exactly where a spliced `case` i
 Displacing nothing keeps the documented default. The rule is one-way — a `:skip` may withhold
 mutants, never grant a position more freedom than the route it replaced.
 
-### A routed call is shown its pipe-left `[done; the hoist half deferred]`
+### A routed call is shown its pipe-left `[done]`
 
 A piped routed call's effective argument 0 is the `|>`'s left side, and `Call` held only the
 visible arguments. A classifier therefore had to route that position blind, and no one treatment
@@ -9302,32 +9302,38 @@ node. The key is enforced rather than defaulted — a default would let a hand-b
 `pipe_mode: :piped` sit beside `pipe_left: :unpiped` — so a test that built `%Call{}` literally
 fails to compile until it says what is piped; `new/5` is what it should change to.
 
-**Deferred — `PipeEmit.hoist/2` still binds a non-value left side.** The closure
+**Part B — syntax-preserving pipe delivery, completed 2026-09-19.** The old closure
 (`lhs |> (fn mutare_piped -> … end).()`) evaluates the left side and hides its syntax from the
 stage macro, so a whole-call mutant on a stage whose piped position is `:raw`/`:pattern`/
-`:binding_pattern` breaks the build (`(p in Post) |> from(order_by: …)`: `Kernel.in/2` on an
+`:binding_pattern` broke the build (`(p in Post) |> from(order_by: …)`: `Kernel.in/2` on an
 unbound `p`, and `from` handed a bare variable). No built-in family lands a whole-call candidate
-there; an extension's mutator does. The fix is to distribute instead — pipe the left side into
-each branch, no closure, as `MatchPatterns.rehome_call_mutations/2` already does for a
-`:binding_pattern` statement. It is always sound (one branch runs, so the left side still
-evaluates once; the closure only ever saved rendered size) and it does not reopen the `hoist/1`
-blow-up for `:raw`, whose left side is never analyzed and so holds no selectors. Three things to
-settle when it is taken up:
+there; an extension's mutator does. The runner experiment measured the collateral damage:
+one failing piped `raw/2` call caused recovery to poison all three calls in its file, including
+two direct calls whose mutants compiled independently. The same fixture now runs and kills all
+three mutants, with no recovery (`pipe_syntax_runner_test.exs`).
 
-- A `:pattern` left side *can* hold selectors, inside a pin (`{:ok, ^(x |> f())} |> match?(r)`).
-  Pipe the emitted left side in the catch-all only and the as-written one (this entry's stamp
-  supplies it) in the mutant branches: under an active mutant every other selector takes its
-  default, so the two behave alike there, and the copies stay selector-free.
-- The trigger may be better stated as its complement — closure only for `:expression` and
-  `:interior`, the evaluated values. `ArgumentRoutes.validate/2` accepts any treatment in the piped
-  slot, and `{:keyword, …}`, a keyed refinement, and `:interpolated` also describe something the
-  macro reads as syntax.
-- What today's breakage costs is unmeasured. If the error escapes line attribution,
-  `Poison.macro_poison/4` drops by macro *name* — every `from` mutant in the file, not the stage's.
-  Run it before ranking this.
+Analysis records `:value | {:syntax, original_left}` on the pipe's own metadata before its RHS
+becomes a selector. Only `:expression` and `:interior` take the value closure; every other
+treatment distributes the left operand directly into each branch. Mutant branches use the
+as-written operand from the route identity; the catch-all retains the emitted operand. Under a
+stage mutant no upstream mutant can be active, so this preserves behavior while keeping the
+upstream selectors and their coverage records in one place. Existing binding-escape tuple
+exports still own a `:binding_pattern` statement whose bindings escape the call.
 
-Until then an adapter can see the shape and withhold whole-call mutants for it, which it could not
-before.
+Two details the proposal did not establish:
+
+- A plain `:pattern` pin currently remains in pattern context; the illustrative chain inside
+  `^(x |> f())` does **not** receive runtime mutants. The duplication risk is real for
+  `:interpolated` pins and routed keyword values. The size property covers those actual mutable
+  prefixes as well as raw and pattern operands; runtime checks prove each upstream and stage
+  mutant remains reachable, with one evaluation of the interpolated operand.
+- Sourceror prints a generated pinned selector as `^case … end |> stage()`, which reparses
+  with the pipe *inside* the pin. `PipeEmit` expands a pipe with a top-level pinned LHS to its
+  direct call via `Macro.pipe/3`; the macro then receives the pin with the intended precedence.
+  This is needed even if the stage itself has no mutant.
+
+The companion Ecto change can now remove its whole-call exclusion for piped `in` declarations.
+Source binding reorders still require editing the read-only left operand and remain deferred.
 
 ### `:interior` has to account for the operand the suppression withheld `[done]`
 
