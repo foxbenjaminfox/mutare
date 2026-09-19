@@ -102,7 +102,7 @@ defmodule Mutare.Mutator do
 
   ## Targeting a macro or DSL
 
-  A mutator whose mutation depends on a macro's arguments being routed specially implements `Mutare.CallRouting` and registers the macros from `c:Mutare.CallRouting.call_routes/0`. Routes may be static or use `:routing` with `c:Mutare.CallRouting.route_arguments/2` for shape-aware classification. Listing the mutator in `:mutators` auto-registers them.
+  A mutator whose mutation depends on a macro's arguments being routed specially implements `Mutare.CallRouting` and registers the macros from `c:Mutare.CallRouting.call_routes/0`. Routes may be static or use `:routing` with `c:Mutare.CallRouting.route_arguments/1` for shape-aware classification. Listing the mutator in `:mutators` auto-registers them.
 
   Core still offers the *whole* registered call to `c:mutate/2`, with `context.mutators` carrying the run's enabled specs — so a mutator that keeps a DSL argument raw (`:raw`) can rewrite the call itself and sub-contract the ordinary-Elixir islands inside that raw argument back to core's generation via `Mutare.Analyze.expression_mutations/3`, relaying each rebuild as a `Mutare.Mutator.Mutation` with `producer:` set (see `Mutare.Analyze` — the island is analyzed with the full set, so another mutator's registered macro inside it is offered to *its* owner the same way).
 
@@ -232,7 +232,7 @@ defmodule Mutare.Mutator do
 
   A module listed more than once (the documented multi-instance `:as` pattern)
   runs `init/1` once **per instance**, each call receiving that entry's own
-  options. `c:Mutare.CallRouting.route_arguments/2` is *not* config-aware: macro
+  options. `c:Mutare.CallRouting.route_arguments/1` is *not* config-aware: macro
   routing is shared by every mutator that meets the routed call, so its
   classification stays instance-independent by design (see `Mutare.CallRouting`).
   """

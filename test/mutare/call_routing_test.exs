@@ -26,14 +26,14 @@ defmodule Mutare.CallRoutingTest do
       ContractError.exception(
         provider: Example.Router,
         route: {Ecto.Query, :where, 2},
-        callback: {:route_arguments, 2},
+        callback: {:route_arguments, 1},
         value: :bad,
         reason: :invalid_result
       )
 
     assert error.provider == Example.Router
     assert error.route == {Ecto.Query, :where, 2}
-    assert error.callback == {:route_arguments, 2}
+    assert error.callback == {:route_arguments, 1}
     assert error.reason == :invalid_result
   end
 end

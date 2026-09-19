@@ -124,7 +124,7 @@ defmodule Mutare.CallRouting.Registry do
   defp collect_routes(modules, kind) do
     Enum.flat_map(modules, fn module ->
       has_routes? = Reflection.exports?(module, :call_routes, 0)
-      has_router? = Reflection.exports?(module, :route_arguments, 2)
+      has_router? = Reflection.exports?(module, :route_arguments, 1)
 
       entries =
         if has_routes? do
@@ -139,10 +139,10 @@ defmodule Mutare.CallRouting.Registry do
       if has_router? and not Enum.any?(entries, &Spec.classifier?(&1.spec)) do
         contract_error!(
           provider: module,
-          callback: {:route_arguments, 2},
+          callback: {:route_arguments, 1},
           reason: :unused_callback,
           message:
-            "#{inspect(module)} implements route_arguments/2 but registers no :routing route; " <>
+            "#{inspect(module)} implements route_arguments/1 but registers no :routing route; " <>
               "add one to call_routes/0 or remove the callback"
         )
       end
@@ -165,15 +165,15 @@ defmodule Mutare.CallRouting.Registry do
   end
 
   defp prepare_route!(spec, module, kind) do
-    if Spec.classifier?(spec) and not Reflection.exports?(module, :route_arguments, 2) do
+    if Spec.classifier?(spec) and not Reflection.exports?(module, :route_arguments, 1) do
       contract_error!(
         provider: module,
         route: Spec.key(spec),
-        callback: {:route_arguments, 2},
+        callback: {:route_arguments, 1},
         reason: :missing_callback,
         message:
           "#{inspect(module)} registers :routing for #{inspect(Spec.key(spec))} but does not " <>
-            "implement route_arguments/2"
+            "implement route_arguments/1"
       )
     end
 
@@ -314,7 +314,7 @@ defmodule Mutare.CallRouting.Registry do
         Spec.classifier?(spec) ->
           raise ArgumentError,
                 "declarative :call_routes entry #{inspect(Spec.key(spec))} uses :routing, which " <>
-                  "requires call_routes/0 and route_arguments/2 on an enabled provider"
+                  "requires call_routes/0 and route_arguments/1 on an enabled provider"
 
         Spec.adapter_graded?(spec) ->
           raise ArgumentError,

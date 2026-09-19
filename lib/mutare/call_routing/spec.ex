@@ -14,7 +14,7 @@ defmodule Mutare.CallRouting.Spec do
   #     per-position list is rejected with a message naming `:raw`;
   #   * a uniform argument *treatment*, applied to every position;
   #   * a per-position list of *positions* (padded with `:expression`);
-  #   * the `:routing` classifier sentinel (resolved per call by `route_arguments/2`).
+  #   * the `:routing` classifier sentinel (resolved per call by `route_arguments/1`).
   #
   # A *position* is an argument treatment, a `{:keyword, [position]}` per-pair routing (adapter
   # grade), or a **keyed refinement** — written `[leading, key: position, …]` (the leading treatment
@@ -127,7 +127,7 @@ defmodule Mutare.CallRouting.Spec do
 
   @doc """
   Whether `spec`'s `args` is the `:routing` classifier sentinel (resolved per call node by
-  its router's `c:Mutare.CallRouting.route_arguments/2`), rather than a static treatment.
+  its router's `c:Mutare.CallRouting.route_arguments/1`), rather than a static treatment.
 
       iex> Mutare.CallRouting.Spec.new(Kernel, :match?, 2, :pattern)
       ...> |> Mutare.CallRouting.Spec.classifier?()
@@ -156,7 +156,7 @@ defmodule Mutare.CallRouting.Spec do
   `[:expression, timeout: :raw]` is not).
 
   The `:routing` classifier is adapter-grade too, but is rejected on its own terms (it needs a
-  `route_arguments/2` callback, which configuration cannot supply), so it returns `false` here.
+  `route_arguments/1` callback, which configuration cannot supply), so it returns `false` here.
   """
   @spec adapter_graded?(t()) :: boolean()
   def adapter_graded?(%__MODULE__{args: :routing}), do: false
@@ -274,7 +274,7 @@ defmodule Mutare.CallRouting.Spec do
   @spec routing(t(), non_neg_integer()) :: [position()] | :skip
   def routing(%__MODULE__{args: :routing}, _count) do
     raise ArgumentError,
-          "a :routing call route is resolved per call node by its router's route_arguments/2 " <>
+          "a :routing call route is resolved per call node by its router's route_arguments/1 " <>
             "(Mutare.Transform.Resolve), not by Mutare.CallRouting.Spec.routing/2"
   end
 

@@ -66,7 +66,7 @@ defmodule Mutare.Mutator.MacroHost do
   only the logical fragment change.
 
   Subscribe through `c:hosted_macros/0`. The active macro route must contain `:hosted`, either
-  statically or from `c:Mutare.CallRouting.route_arguments/2`. `context` is the same map
+  statically or from `c:Mutare.CallRouting.route_arguments/1`. `context` is the same map
   `c:Mutare.Mutator.mutate/2` receives, plus `:mutators` — the run's enabled
   `Mutare.Mutator.Spec`s (hosts included; `Mutare.Analyze.expression_mutations/3` lowers a
   nested host's targets to whole-call rebuilds instead of weaving them, so a sub-contracted

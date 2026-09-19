@@ -223,7 +223,7 @@ ahead of the call), `:raw` (leave as written),
 it, delivered through `^` interpolation), `{:keyword, ...}` (route
 keyword *values* positionally, keep keys raw), or `:hosted` (hand the
 position to a host mutator — below). The `:routing` sentinel defers to
-`route_arguments/2` when the right treatment depends on the call's shape —
+`route_arguments/1` when the right treatment depends on the call's shape —
 `where(q, category: "Foo")` is data, `where(q, [u], u.x == u.y)` is a DSL
 fragment. Return the treatments as `ArgumentRoutes.new(call, treatments)`, one
 per entry of `call.arguments`. A piped routed call needs no special handling:

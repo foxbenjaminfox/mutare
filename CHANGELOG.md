@@ -34,7 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `Mutare.CallRouting.ArgumentRoutes`' `from_effective` and `from_visible` constructors are
     replaced by `new/2` (one treatment per argument), and its `visible`/`piped` readers by
     `treatments/1`.
-  - `route_arguments/2`'s context no longer carries `:pipe_mode` (it is empty).
+  - `c:Mutare.CallRouting.route_arguments/1` replaces `route_arguments/2`: its context
+    argument carried only `:pipe_mode`, which a call shown unpiped no longer has.
 
 ### Fixed
 

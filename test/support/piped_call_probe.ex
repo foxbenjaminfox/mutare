@@ -24,7 +24,7 @@ end
 defmodule Mutare.Test.PipedCallProbe do
   @moduledoc """
   Reports the `Mutare.CallRouting.Call` each of an adapter's three seams is shown for a
-  `Mutare.Test.PipedCallDSL.stage/2` call — `c:Mutare.CallRouting.route_arguments/2`,
+  `Mutare.Test.PipedCallDSL.stage/2` call — `c:Mutare.CallRouting.route_arguments/1`,
   `c:Mutare.Mutator.MacroHost.host/2`, and `Mutare.Calls.resolved_routed_call/1` from inside
   `c:Mutare.Mutator.mutate/2` — by sending `{:piped_call_probe, seam, call}` to the process
   running the transform.
@@ -55,7 +55,7 @@ defmodule Mutare.Test.PipedCallProbe do
   def hosted_macros, do: [{@dsl, :stage, 2}]
 
   @impl Mutare.CallRouting
-  def route_arguments(%Call{arguments: [source, _condition]} = call, _context) do
+  def route_arguments(%Call{arguments: [source, _condition]} = call) do
     report(:route_arguments, call)
     ArgumentRoutes.new(call, [source_treatment(source), :hosted])
   end

@@ -312,7 +312,7 @@ defmodule Mutare.CallRouting.RegistryTest do
     end
 
     test "build/3 raises when a declarative entry asks for callback-backed routing" do
-      assert_raise ArgumentError, ~r/requires call_routes\/0 and route_arguments\/2/, fn ->
+      assert_raise ArgumentError, ~r/requires call_routes\/0 and route_arguments\/1/, fn ->
         Macros.build([{Ecto.Query, :where, :any, :routing}], [])
       end
 
@@ -353,11 +353,11 @@ defmodule Mutare.CallRouting.RegistryTest do
                    end
     end
 
-    test "build/3 rejects a route_arguments/2 no :routing route reaches" do
+    test "build/3 rejects a route_arguments/1 no :routing route reaches" do
       specs = Mutator.Spec.for_module(Mutare.Test.DeadRouterMutator)
 
       assert_raise Mutare.CallRouting.ContractError,
-                   ~r/implements route_arguments\/2 but registers no :routing route/,
+                   ~r/implements route_arguments\/1 but registers no :routing route/,
                    fn ->
                      Macros.build([], [specs])
                    end

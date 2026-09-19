@@ -11627,7 +11627,7 @@ sum-of-prefixes `pipe_left` was, for the same reason: it holds the pipe *unwalke
 - A classifier still sees its arguments as written (an upstream stage in argument 0 is a `|>`
   node there) while `host/2`/`mutate/2` see them resolved. Unchanged from before, now pinned in
   `piped_routed_call_test.exs`.
-- `route_arguments/2` keeps its context argument, now empty.
+- `route_arguments/2` became `route_arguments/1`: its context carried only `:pipe_mode`.
 
 **Companions.** `mutare_ecto` and `mutare_phoenix_swoosh` must move to `ArgumentRoutes.new/2`
 and `Call.new/4`; the plugin's piped twin paths (`piped_treatment/1`, `FromCall`'s

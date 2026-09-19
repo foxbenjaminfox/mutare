@@ -209,7 +209,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
 
       :error ->
         IO.warn(
-          "#{inspect(router)}.route_arguments/2 routed argument #{index} of " <>
+          "#{inspect(router)}.route_arguments/1 routed argument #{index} of " <>
             "#{inspect(Spec.key(spec))} as {:keyword, …}, but " <>
             "`#{Macro.to_string(arg)}` is not a literal keyword list " <>
             "(#{location(diag, arg)}). The value is left unrouted and produces no " <>
@@ -259,17 +259,17 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   end
 
   defp invoke_router!(router, call, spec) do
-    router.route_arguments(call, %{})
+    router.route_arguments(call)
   rescue
     error ->
       contract_error!(
         provider: router,
         route: Spec.key(spec),
-        callback: {:route_arguments, 2},
+        callback: {:route_arguments, 1},
         value: error,
         reason: :callback_failed,
         message:
-          "#{inspect(router)}.route_arguments/2 failed for #{inspect(Spec.key(spec))}: " <>
+          "#{inspect(router)}.route_arguments/1 failed for #{inspect(Spec.key(spec))}: " <>
             Exception.message(error)
       )
   end
@@ -288,11 +288,11 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   defp invalid_routes!(spec, value, detail) do
     contract_error!(
       route: Spec.key(spec),
-      callback: {:route_arguments, 2},
+      callback: {:route_arguments, 1},
       value: value,
       reason: :invalid_result,
       message:
-        "route_arguments/2 for #{inspect(Spec.key(spec))} #{detail}, got: #{inspect(value)}"
+        "route_arguments/1 for #{inspect(Spec.key(spec))} #{detail}, got: #{inspect(value)}"
     )
   end
 

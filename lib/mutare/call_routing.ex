@@ -28,7 +28,7 @@ defmodule Mutare.CallRouting do
 
   Users write routes under `call_routes:` in `.mutare.exs`; a module implementing this behaviour
   registers them through `c:call_routes/0`. A route may be static, or use the `:routing` sentinel to
-  defer a concrete call's argument treatments to `c:route_arguments/2`.
+  defer a concrete call's argument treatments to `c:route_arguments/1`.
 
   Both extensions and mutators may implement this behaviour. Enabling the module under `:extensions`
   or `:mutators` also enables its routes.
@@ -50,7 +50,7 @@ defmodule Mutare.CallRouting do
         end
 
         @impl Mutare.CallRouting
-        def route_arguments(call, _context) do
+        def route_arguments(call) do
           routes = Enum.map(call.arguments, &classify/1)
           Mutare.CallRouting.ArgumentRoutes.new(call, routes)
         end
@@ -92,11 +92,11 @@ defmodule Mutare.CallRouting do
 
   | Goal | Behaviours | Callbacks |
   | --- | --- | --- |
-  | Library-vocabulary routing, no mutations (a `:extensions` entry) | `Mutare.CallRouting` | `call_routes/0` (+ `route_arguments/2` if any route is `:routing`) |
-  | A mutator whose mutation depends on routing | `Mutare.Mutator` + `Mutare.CallRouting` | `name/0`, a producer, `call_routes/0` (+ `route_arguments/2`) |
+  | Library-vocabulary routing, no mutations (a `:extensions` entry) | `Mutare.CallRouting` | `call_routes/0` (+ `route_arguments/1` if any route is `:routing`) |
+  | A mutator whose mutation depends on routing | `Mutare.Mutator` + `Mutare.CallRouting` | `name/0`, a producer, `call_routes/0` (+ `route_arguments/1`) |
   | A mutator that mutates *inside* a DSL fragment (`:hosted`) | `Mutare.Mutator` + `Mutare.Mutator.MacroHost` | `name/0`, `hosted_macros/0`, `host/2`; it may also implement `CallRouting` when it also defines the DSL's routes |
 
-  Always declare the `@behaviour`s you implement. The registry discovers capabilities by exported callbacks, so a typo'd or missing callback would otherwise compile to a silently inert module. Declaring `@behaviour` lets the compiler check the required callbacks, and the registry additionally rejects, at scan time, a module whose `route_arguments/2` or `host/2` no route ever reaches (a forgotten `:routing`/`:hosted` registration).
+  Always declare the `@behaviour`s you implement. The registry discovers capabilities by exported callbacks, so a typo'd or missing callback would otherwise compile to a silently inert module. Declaring `@behaviour` lets the compiler check the required callbacks, and the registry additionally rejects, at scan time, a module whose `route_arguments/1` or `host/2` no route ever reaches (a forgotten `:routing`/`:hosted` registration).
 
   ## Route forms and precedence
 
@@ -154,7 +154,7 @@ defmodule Mutare.CallRouting do
   Returns call-route declarations.
 
   A treatment may be static or the `:routing` sentinel. `:routing` requires
-  `c:route_arguments/2`. A `:hosted` treatment requires at least one enabled
+  `c:route_arguments/1`. A `:hosted` treatment requires at least one enabled
   `Mutare.Mutator.MacroHost` whose `c:Mutare.Mutator.MacroHost.hosted_macros/0` matches it.
 
   Route declarations do not receive per-instance options.
@@ -168,9 +168,8 @@ defmodule Mutare.CallRouting do
   `where(q, category: "Foo")` is plain data while `where(q, [u], u.x == u.y)` contains a DSL
   fragment. Return a `Mutare.CallRouting.ArgumentRoutes` value.
 
-  `context` is an opt-independent `t:routing_context/0`, currently empty; it carries no mutator
-  options, because routing is a global library fact. Match it as a map (or `_context`) so a
-  later field can't break your clause.
+  The callback receives the call and nothing else — no mutator options, because routing is a
+  global library fact.
 
   The `call` is a stable `Mutare.CallRouting.Call`, already normalized across bare, qualified,
   aliased, imported, and piped forms: a piped call arrives as the direct call, its piped operand
@@ -240,15 +239,8 @@ defmodule Mutare.CallRouting do
   `{:keyword, [:interpolated, :raw]}`: mutate `"Foo"` through a `^`-pinned selector, keep the column-name
   keys raw, and skip the `nil` pair whose DSL meaning may be `IS NULL` rather than an Elixir value.
   """
-  @callback route_arguments(call :: Mutare.CallRouting.Call.t(), context :: routing_context()) ::
+  @callback route_arguments(call :: Mutare.CallRouting.Call.t()) ::
               Mutare.CallRouting.ArgumentRoutes.t()
-
-  @typedoc """
-  The opt-independent context `c:route_arguments/2` receives for a concrete call. Currently
-  empty; it may gain fields, so match it as a map rather than destructuring exhaustively. It
-  deliberately carries **no** mutator options — routing is a global library fact.
-  """
-  @type routing_context :: %{}
 
   @typedoc """
   A treatment for one call argument or nested keyword value: an atom treatment, a `{:keyword, …}`
@@ -271,5 +263,5 @@ defmodule Mutare.CallRouting do
   @type routing_treatment :: treatment()
   @type keyword_value_treatment :: treatment()
 
-  @optional_callbacks route_arguments: 2
+  @optional_callbacks route_arguments: 1
 end

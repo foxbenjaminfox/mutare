@@ -1,7 +1,7 @@
 defmodule Mutare.CallRouting.ArgumentRoutes do
   @moduledoc """
   The resolved argument treatments returned by
-  `c:Mutare.CallRouting.route_arguments/2`.
+  `c:Mutare.CallRouting.route_arguments/1`.
 
   One treatment per entry of `Mutare.CallRouting.Call.arguments`, in order. `new/2` validates
   that shape immediately (and normalizes each treatment — a keyed refinement written

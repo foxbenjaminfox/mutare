@@ -233,7 +233,7 @@ defmodule Mutare.Test.ShadowingRoutingExtension do
     ]
 
   @impl Mutare.CallRouting
-  def route_arguments(call, _context) do
+  def route_arguments(call) do
     routes = Enum.map(call.arguments, fn _argument -> :expression end)
     Mutare.CallRouting.ArgumentRoutes.new(call, routes)
   end
@@ -247,7 +247,7 @@ defmodule Mutare.Test.DynamicRoutingExtension do
   def call_routes, do: [{Mutare.Test.SomeDSL, :dynamic_frag, :any, :routing}]
 
   @impl Mutare.CallRouting
-  def route_arguments(%Mutare.CallRouting.Call{arguments: args} = call, _context) do
+  def route_arguments(%Mutare.CallRouting.Call{arguments: args} = call) do
     Mutare.CallRouting.ArgumentRoutes.new(
       call,
       Enum.map(args, fn _arg -> :raw end)
@@ -267,7 +267,7 @@ defmodule Mutare.Test.HostedRoutingExtension do
   def call_routes, do: [{Mutare.Test.SomeDSL, :spoofed_frag, :any, :routing}]
 
   @impl Mutare.CallRouting
-  def route_arguments(%Mutare.CallRouting.Call{arguments: args} = call, _context) do
+  def route_arguments(%Mutare.CallRouting.Call{arguments: args} = call) do
     Mutare.CallRouting.ArgumentRoutes.new(
       call,
       Enum.map(args, fn _arg -> :hosted end)

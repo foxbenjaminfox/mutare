@@ -22,7 +22,7 @@ defmodule Mutare.Test.ClobberingHostMutator do
   def call_routes, do: [{Mutare.Test.HostDSL, :filter, 2, :routing}]
 
   @impl Mutare.CallRouting
-  def route_arguments(%Call{} = call, _context),
+  def route_arguments(%Call{} = call),
     do: ArgumentRoutes.new(call, [:hosted, :expression])
 
   @impl Mutare.Mutator.MacroHost

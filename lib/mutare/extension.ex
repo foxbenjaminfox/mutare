@@ -11,7 +11,7 @@ defmodule Mutare.Extension do
 
       [extensions: [Mutare.Gettext]]
 
-  Entries may be bare modules or `{module, opts}` pairs. Options are delivered only to `c:Mutare.UseExpansion.expand_use/3`; `c:Mutare.CallRouting.call_routes/0` declarations and `c:Mutare.CallRouting.route_arguments/2` classification are intentionally options-independent.
+  Entries may be bare modules or `{module, opts}` pairs. Options are delivered only to `c:Mutare.UseExpansion.expand_use/3`; `c:Mutare.CallRouting.call_routes/0` declarations and `c:Mutare.CallRouting.route_arguments/1` classification are intentionally options-independent.
 
   Mutators may implement `Mutare.CallRouting` too, but belong under `:mutators`. They are rejected from `:extensions` so their mutation producers cannot be enabled accidentally as routing-only modules.
 

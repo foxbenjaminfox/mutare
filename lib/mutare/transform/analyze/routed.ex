@@ -228,7 +228,7 @@ defmodule Mutare.Transform.Analyze.Routed do
 
   # **Per-keyword-pair** routing for a keyword-list argument (classifier-only — produced by a
   # recursive keyword routing from either a static route or
-  # `c:Mutare.CallRouting.route_arguments/2`).
+  # `c:Mutare.CallRouting.route_arguments/1`).
   # For each `key: value` pair the **key is left raw** (a keyword key in a DSL is a field/option
   # *name*, not a value to mutate) and the **value is routed by its own treatment** from
   # `value_treatments`, positionally. The motivating case is Ecto's keyword-shorthand `where`
@@ -421,7 +421,7 @@ defmodule Mutare.Transform.Analyze.Routed do
               "pair, but #{length(value_treatments)} treatment(s) were declared for the " <>
               "#{length(pairs)}-pair `#{Macro.to_string(pairs)}`. Name every pair (use :raw to " <>
               "leave a value as written); when call sites vary in pair count, register the macro with " <>
-              ":routing and classify each call's shape in route_arguments/2."
+              ":routing and classify each call's shape in route_arguments/1."
     end
   end
 
