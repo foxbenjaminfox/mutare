@@ -11522,3 +11522,44 @@ and a function whose only instrumentation is one shared selector now reports one
 host. `Mutare.Manifest` needed no new reader — the result is an ordinary selector — and the
 whole-`case` poison fallback now spans every host's ids, which is what a structural error at that
 position implicates anyway.
+
+### Only `Kernel`'s `|>` is the pipe `[done]` (2026-09-19)
+
+Every pipe-specific path matched the bare `{:|>, _, [lhs, rhs]}` shape, so a module that
+displaced the operator (`import Kernel, except: [|>: 2]` beside its own `|>`) had its custom
+operator treated as `Kernel.|>/2`. Shadowing a `Kernel` name with a plain import is a compile
+error, so narrowing `Kernel`'s import is the only door, and `Imports` already stamped the `|>`
+head with the displacement — nothing read it.
+
+The worst consequence was not a lost mutant but a changed baseline. `PipeEmit.hoist/2` emits
+`lhs |> (fn p -> case … p |> stage … end).()`, which applies the operator twice. Under an
+`{:ok, value}`-binding pipe macro the outer application unwraps and calls the closure with the
+bare value, and the inner one, seeing no `{:ok, _}`, passes it along without calling the stage:
+`{:ok, [1, 2, 3]} |> Enum.reject(…)` returned `[1, 2, 3]` from the *unmutated* metamutant
+(`displaced_pipe_test.exs` pins it). The same assumption resolved the stage at the piped arity,
+offered it `pipe_mode: :piped`, recorded a `pipe_left`, and let `pipe_into/3` expand a pinned
+left side the way `Kernel` would.
+
+The rule: a `|>` is the pipe only when `Calls.kernel_call?/1` says so — the reading
+`Returns` already applied to `if`/`unless` and `CleanPath` to every construct. `Resolve`,
+which writes the stamp, branches on the module key it just resolved; `Analyze`,
+`MatchPatterns` and `PipeEmit.hoist/2` ask the reader. `Manifest.named_call/2` cannot ask (it
+reads the rendered metamutant, which carries no stamps) and need not: it only widens a
+macro-poison attribution.
+
+A displaced `|>` is then a call, and needs a default treatment. The generic one (offer the
+node, descend both operands as values) is right for an operator *function* and wrong for a
+pipe-shaped *macro*, which reads its right side as the syntax of a call still missing an
+argument: a whole-call mutant on the stage would hand it `lhs |> case … end`, and every call
+family would judge the stage one argument short. Whether the operator is a macro is often
+unknowable (a local `defmacro`, an unloadable module), and the macro is by far the likelier
+reason to displace `|>`, so the default is `[:expression, :interior]`: the stage's own node
+withheld, its arguments and the left side mutated. An operator function loses the stage's
+whole-call mutants to that caution and gets them back with
+`{MyPipe, :|>, 2, [:expression, :expression]}` — `StructuralForms.classify/2` keys the
+`:skip`-only rule on `[:Kernel]`, so the custom head is an ordinary `:call`.
+
+Inherited limit: a displacement injected by a `use` Mutare cannot expand is invisible, as for
+every other `Kernel` name (`Imports`, "Scope and limits"). The other structural `Kernel`
+heads (`if`/`unless`, the connectives, `in`) still dispatch in `Analyze` by shape; they were
+not audited here.

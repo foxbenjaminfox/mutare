@@ -24,7 +24,7 @@ defmodule Mutare.Transform.Analyze do
 
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Transform.{Candidate, Meta, Suppression}
+  alias Mutare.Transform.{Calls, Candidate, Meta, Suppression}
 
   # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
   # the body path's five equivalent-sibling clauses below match on these shared `defguard`s
@@ -552,12 +552,20 @@ defmodule Mutare.Transform.Analyze do
   # its LHS into match?'s **pattern** position, and a `:raw` macro may accept a LHS that
   # is neither a valid expression nor a valid pattern. Treating it as runtime would splice
   # a selector `case` into pattern/opaque position and poison the build.
-  defp analyze_form({:|>, meta, [lhs, rhs]}, :runtime, env) do
-    {:|>, Meta.stamp_pipe_delivery(meta, Routed.pipe_delivery(rhs)),
-     [
-       Routed.analyze_piped_value(lhs, rhs, env),
-       analyze_pipe_stage(rhs, env)
-     ]}
+  #
+  # Only `Kernel.|>/2` is that pipe. A `|>` displaced out of `Kernel` is a call to somebody
+  # else's operator, and the closure `PipeEmit.hoist/2` builds would apply that operator twice —
+  # so it is analyzed as the call it is (`analyze_foreign_pipe/2`).
+  defp analyze_form({:|>, meta, [lhs, rhs]} = node, :runtime, env) do
+    if Calls.kernel_call?(node) do
+      {:|>, Meta.stamp_pipe_delivery(meta, Routed.pipe_delivery(rhs)),
+       [
+         Routed.analyze_piped_value(lhs, rhs, env),
+         analyze_pipe_stage(rhs, env)
+       ]}
+    else
+      analyze_foreign_pipe(node, env)
+    end
   end
 
   # `for` comprehension: its generators (`<-`), filters, `:into`/`:reduce` options
@@ -853,6 +861,19 @@ defmodule Mutare.Transform.Analyze do
     do: do_analyze_call_node(node, env, %{pipe_mode: :piped})
 
   defp analyze_pipe_stage(other, env), do: analyze(other, :runtime, env)
+
+  # A `|>` that is not `Kernel`'s: a routed call like any other, under the route the user gave
+  # the custom operator, or else `@foreign_pipe_routing`. The default reads the right side the
+  # way a pipe-shaped macro does — as the *syntax* of a call still missing an argument — so the
+  # stage's own node is withheld (`:interior`): a selector there would hand the macro
+  # `left |> case … end`, and every family would judge the stage at the wrong arity. Its
+  # arguments, and the left side, are ordinary values. An operator defined as a *function* loses
+  # the stage's whole-call mutants to this caution; routing it `[:expression, :expression]`
+  # restores them.
+  @foreign_pipe_routing [:expression, :interior]
+
+  defp analyze_foreign_pipe({:|>, meta, _operands} = node, env),
+    do: Routed.analyze_routed_call(node, Meta.routing(meta) || @foreign_pipe_routing, env)
 
   # The shared call-node dispatch behind the generic runtime `analyze/3` clause and
   # `analyze_pipe_stage/2`: a call stamped a **known macro** (`meta[:mutare_route]`, set by

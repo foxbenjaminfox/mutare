@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `|>` displaced out of `Kernel` is no longer treated as the pipe.** In a module that
+  writes `import Kernel, except: [|>: 2]` beside its own operator, Mutare read every `|>` as
+  `Kernel.|>/2`: a mutated stage was lifted into a closure that applied the custom operator
+  twice, which could change the *unmutated* program (an `{:ok, value}`-binding pipe skipped
+  the stage), and the stage was resolved and offered to mutators at the piped arity. A
+  displaced `|>` is now an ordinary call to that operator. By default its left side is a
+  value and its right side is routed `:interior` — the stage's own node is withheld, its
+  arguments mutate — and a `call_routes:` entry on the operator (`{MyPipe, :|>, 2, […]}`)
+  replaces that default with any positional treatments.
+
 ## [0.3.1] - 2026-09-19
 
 ### Fixed

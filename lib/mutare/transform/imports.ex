@@ -56,6 +56,9 @@ defmodule Mutare.Transform.Imports do
   #
   #   * Operator displacement (`import Kernel, except: [+: 2]` + a custom `+`) is out of
   #     scope: the operator families (Arithmetic/Relational/Logical) don't read the stamp.
+  #     The exception is `|>`, whose displacement changes what Mutare *generates* around it,
+  #     not just which mutants apply — every reader of a `|>` node asks
+  #     `Mutare.Transform.Calls.kernel_call?/1` first (NOTES "Only `Kernel`'s `|>` is the pipe").
   #   * A `use`-injected import is surfaced by `Mutare.Transform.Uses` when the `use` is
   #     expandable (static args, loadable module): its directives are folded through `register/4`
   #     like a textual import. A *non-expandable* `use` (dynamic args, non-loadable target) or a

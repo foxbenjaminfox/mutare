@@ -14,7 +14,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   #   * a `for` qualifier                                       → `analyze_match_statement/2`
 
   alias Mutare.AST
-  alias Mutare.Transform.{Candidate, Meta, NodeRange, PatternStructure}
+  alias Mutare.Transform.{Calls, Candidate, Meta, NodeRange, PatternStructure}
   alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.Attach
 
@@ -131,8 +131,22 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # `-> false` siblings stay counted): the `is_list/1` checks are defensive — a `|>` RHS
   # call node always has keyword-list meta and a list of args — so loosening the guard
   # (forcing it `true`, weakening `and` to `or`) is equivalent; forcing it `false` is killed.
-  defp binding_pattern_macro({:|>, meta, [lhs, {form, rhs_meta, args} = rhs]})
+  #
+  # The pipe reading is `Kernel.|>/2`'s alone: a `|>` displaced out of `Kernel` is a call to a
+  # custom operator, read by its own route like any other call (`written_binding_pattern/1`).
+  defp binding_pattern_macro({:|>, _meta, [_lhs, {_form, rhs_meta, args}]} = node)
        when is_list(rhs_meta) and is_list(args) do
+    if Calls.kernel_call?(node),
+      do: piped_binding_pattern(node),
+      else: written_binding_pattern(node)
+  end
+
+  defp binding_pattern_macro({_form, meta, args} = node) when is_list(meta) and is_list(args),
+    do: written_binding_pattern(node)
+
+  defp binding_pattern_macro(_node), do: nil
+
+  defp piped_binding_pattern({:|>, meta, [lhs, {form, rhs_meta, args} = rhs]}) do
     case Meta.piped_routing(rhs_meta) do
       :binding_pattern ->
         {lhs, fn mutated -> {:|>, meta, [mutated, rhs]} end}
@@ -154,7 +168,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # NOTE (equivalent survivors, deliberately not `# mutare:ignore`d so the killed
   # `-> false` siblings stay counted): same defensive `is_list/1` checks as above — a real
   # call node always satisfies them — so loosening this guard is equivalent.
-  defp binding_pattern_macro({form, meta, args}) when is_list(meta) and is_list(args) do
+  defp written_binding_pattern({form, meta, args}) do
     case binding_pattern_index(meta) do
       nil ->
         nil
@@ -164,8 +178,6 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
          fn mutated -> {form, meta, List.replace_at(args, index, mutated)} end}
     end
   end
-
-  defp binding_pattern_macro(_node), do: nil
 
   # The first visible-arg position routed `:binding_pattern` (`meta[:mutare_route]`), or `nil`.
   defp binding_pattern_index(meta) do
@@ -228,8 +240,23 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # and each re-homed with `mutant_expr` the mutated stage piped back from the LHS pattern, so
   # the mutant branch runs `lhs |> <mutated stage>` and the bindings reach the export tuple.
   # mutare:ignore[guard_drop] equivalent — a `|>` RHS call node always has keyword-list meta, so the guard never excludes a real stage.
-  defp rehome_call_mutations({:|>, meta, [lhs, {_form, rhs_meta, _args} = rhs]}, export)
+  defp rehome_call_mutations({:|>, _meta, [_lhs, {_form, rhs_meta, _args}]} = node, export)
        when is_list(rhs_meta) do
+    if Calls.kernel_call?(node),
+      do: rehome_stage_mutations(node, export),
+      else: rehome_written_call_mutations(node, export)
+  end
+
+  # A directly-written call carries its mutations on its own meta — re-home them with
+  # `mutant_expr` the mutated call itself. (A `|>` displaced out of `Kernel` is one too.)
+  # mutare:ignore[guard_drop] equivalent — a call node always has keyword-list meta, so the guard never excludes a real call.
+  defp rehome_call_mutations({_form, meta, _args} = node, export) when is_list(meta),
+    do: rehome_written_call_mutations(node, export)
+
+  # mutare:ignore[clause_drop] equivalent — `rehome_call_mutations/2` is only ever called on the analyzed macro/pipe node, which always matches one of the two heads above; this fallback is unreachable for valid input.
+  defp rehome_call_mutations(node, _export), do: {node, []}
+
+  defp rehome_stage_mutations({:|>, meta, [lhs, rhs]}, export) do
     {inplace, rhs} = take_inplace_candidates(rhs)
 
     call_candidates =
@@ -240,18 +267,12 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
     {{:|>, meta, [lhs, rhs]}, call_candidates}
   end
 
-  # A directly-written call carries its mutations on its own meta — re-home them with
-  # `mutant_expr` the mutated call itself.
-  # mutare:ignore[guard_drop] equivalent — a call node always has keyword-list meta, so the guard never excludes a real call.
-  defp rehome_call_mutations({_form, meta, _args} = node, export) when is_list(meta) do
+  defp rehome_written_call_mutations(node, export) do
     {inplace, node} = take_inplace_candidates(node)
 
     call_candidates = Enum.map(inplace, &call_mutation_candidate(&1, export, &1.mutated))
     {node, call_candidates}
   end
-
-  # mutare:ignore[clause_drop] equivalent — `rehome_call_mutations/2` is only ever called on the analyzed macro/pipe node, which always matches one of the two heads above; this fallback is unreachable for valid input.
-  defp rehome_call_mutations(node, _export), do: {node, []}
 
   # Pull a node's whole-call **in-place** mutations off, returning `{in-place mutations, node}`
   # with only the in-place ones removed (any non-`InPlace` candidates stay). Only the in-place

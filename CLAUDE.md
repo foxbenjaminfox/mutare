@@ -219,6 +219,9 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   to there; in a *body* (the coverage record, `Mutare.Coverage.Recorder.record_ast/3`) they are
   nested `case`s, because Elixir ≥ 1.21 accepts `:erlang.andalso` only in a guard — NOTES
   "Factor compiler input before rendering" and NOTES "`:erlang.andalso` is guard-only".
+- **Only `Kernel`'s `|>` is the pipe.** A module can displace the operator, and the hoisting
+  closure would then apply the custom one twice. Any code about to read a `{:|>, …}` node as a
+  pipe asks `Mutare.Transform.Calls.kernel_call?/1` first — NOTES "Only `Kernel`'s `|>` is the pipe".
 - **Every delivery shape must be readable back.** `Mutare.Manifest` recognises what emission
   writes: selector clauses, `===` gates, `=/=` and range exclusions, coverage records. A new
   shape needs its reader in the same change: `verify_invariants` (the transform property soak,

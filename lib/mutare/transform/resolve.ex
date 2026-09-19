@@ -130,13 +130,27 @@ defmodule Mutare.Transform.Resolve do
   # (`RouteStamp.stamp/6`'s `call_node`), and it bounds the stamp: a walked LHS would carry the
   # previous stage's stamp, which carries the stage before it, doubling per stage; as written,
   # stage N's copy is the N-1 stages upstream and nothing more.
-  defp walk({:|>, meta, [lhs, rhs]}, env) do
+  #
+  # All of that holds for `Kernel.|>/2` alone. A `|>` displaced out of `Kernel`
+  # (`import Kernel, except: [|>: 2]` beside a custom operator) is somebody else's macro or
+  # function: whether its right side receives the left as an argument is that definition's
+  # business, so the node takes the generic bare-call walk — operands unpiped, no pipe-left
+  # recorded, and the whole routing vocabulary open to it (its head resolves to a `:call`, not
+  # the structural `Kernel` pipe). `Mutare.Transform.Calls.kernel_call?/1` is how every later
+  # reader of a `|>` node asks the same question.
+  defp walk({:|>, meta, [lhs, rhs] = args}, env) do
     # The pipe head is a resolvable call too (`Kernel.|>/2`): stamp it so a `:skip` route on it is
     # honoured (a positional route never applies — `Mutare.Transform.StructuralForms`).
-    {meta, _module_key} = stamp_bare_call(:|>, meta, [lhs, rhs], %{env | pipe_left: :unpiped})
-    rhs = walk(rhs, %{env | pipe_left: {:piped, lhs}})
-    {lhs, rhs} = mark_pipe_receiver(walk(lhs, %{env | pipe_left: :unpiped}), rhs, env)
-    {:|>, meta, [lhs, rhs]}
+    unpiped = %{env | pipe_left: :unpiped}
+    {meta, module_key} = stamp_bare_call(:|>, meta, args, unpiped)
+
+    if module_key == [:Kernel] do
+      rhs = walk(rhs, %{env | pipe_left: {:piped, lhs}})
+      {lhs, rhs} = mark_pipe_receiver(walk(lhs, unpiped), rhs, env)
+      {:|>, meta, [lhs, rhs]}
+    else
+      {:|>, meta, descend_marked(args, module_key, :|>, unpiped)}
+    end
   end
 
   # A bare function-reference capture `&fun/N` is a call value, but the ref node is

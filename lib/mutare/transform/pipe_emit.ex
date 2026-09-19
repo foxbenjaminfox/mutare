@@ -24,13 +24,23 @@ defmodule Mutare.Transform.PipeEmit do
   # gets the emitted LHS; mutant branches get the as-written one, since no upstream mutant
   # can be active there. This also keeps selectors inside pins from multiplying.
 
-  alias Mutare.Transform.{Ctx, Meta, Render}
+  # All of it is `Kernel.|>/2`'s alone. A `|>` displaced out of `Kernel` is left exactly as
+  # emitted: the closure would apply the custom operator twice (once to reach the closure, once
+  # inside each branch), and expanding a pinned left side would assume `Kernel`'s desugaring.
+
+  alias Mutare.Transform.{Calls, Ctx, Meta, Render}
 
   @doc """
   Hoist a selector out of a pipe's RHS and preserve a pinned LHS's rendering precedence.
   """
   @spec hoist(Macro.t(), Ctx.t()) :: Macro.t()
-  def hoist({:|>, meta, [lhs, rhs]}, ctx) do
+  def hoist({:|>, meta, [lhs, rhs]} = node, ctx) do
+    if Calls.kernel_call?(node), do: hoist_kernel_pipe(lhs, rhs, meta, ctx), else: node
+  end
+
+  def hoist(node, _ctx), do: node
+
+  defp hoist_kernel_pipe(lhs, rhs, meta, ctx) do
     # The pipe's RHS is one of our selectors iff it carries the builder's marker; the subject
     # (inline read or hoisted variable) is reused as-is inside the closure.
     case Render.selector_case_parts(rhs) do
@@ -44,8 +54,6 @@ defmodule Mutare.Transform.PipeEmit do
         pipe_into(lhs, rhs, meta)
     end
   end
-
-  def hoist(node, _ctx), do: node
 
   defp value_pipe(lhs, meta, subject, clauses, ctx) do
     var = {ctx.config.piped_var, [], nil}
