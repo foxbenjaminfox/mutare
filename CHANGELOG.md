@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`:lazy_expression`, a position treatment for a callee that may not evaluate an argument
+  eagerly.** Mutare treats every call as a function in every respect its route does not address,
+  including when its arguments run: to deliver a whole-call mutant on a pipe stage it evaluates
+  the piped value once, ahead of the stage. A macro that evaluates that operand late,
+  conditionally, or never (`value |> lazy(enabled?)`) routes the position `:lazy_expression`.
+  The argument is mutated exactly like an `:expression`, and is handed to the callee unevaluated
+  in every branch. Accepted in `call_routes:` and from `call_routes/0` alike.
+
 ### Changed
 
 - **A piped routed call is shown, mutated and delivered as the direct call it is sugar for.**
@@ -16,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   routed `:hosted` (previously a `ContractError`). Reports are unchanged — a mutant that leaves
   argument 0 alone is still located at, and diffed as, the stage the user wrote; one that
   rewrites it is reported over the whole pipe. Stages that take no positional route (an
-  ordinary function call, a `:skip`ped call) stay pipes. **Breaking for adapters:**
+  ordinary function call, a `:skip`ped call) stay pipes. A rewritten stage whose first position
+  is `:expression` or `:interior` still has its piped value evaluated once, as before; one
+  routed `:lazy_expression`, or as syntax, never does. **Breaking for adapters:**
   - `Mutare.CallRouting.Call` loses `pipe_left`, `pipe_mode` and `effective_arity`, and its
     five-argument `new` becomes `new/4` (`node, module, name, rebuild`).
   - `Mutare.CallRouting.ArgumentRoutes`' `from_effective` and `from_visible` constructors are

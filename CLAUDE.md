@@ -224,9 +224,16 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   code about to read a `{:|>, …}` node as a pipe asks `Mutare.Transform.Calls.kernel_call?/1`
   first — NOTES "Only `Kernel`'s `|>` is the pipe". And `Resolve` rewrites a piped stage under a
   positional route into the direct call, so routing, hosting, mutation and delivery never see
-  one; the `|>` nodes that survive have an unrouted or `:skip`ped right side, whose left side
-  is a value. `Mutare.Transform.WrittenPipe` is what keeps a rewritten call's Site in the
-  user's spelling and footprint — NOTES "A routed pipe stage becomes a direct call".
+  one; the `|>` nodes that survive have an unrouted or `:skip`ped right side.
+  `Mutare.Transform.WrittenPipe` is what keeps a rewritten call's Site in the user's spelling
+  and footprint — NOTES "A routed pipe stage becomes a direct call".
+- **A call is a function in every respect its route does not address — evaluation included.**
+  Routes are for functions and macros alike, and core never derives which a call is. So the
+  hoisting closure, and the let-binding of a rewritten stage's piped value
+  (`PipeEmit.bound_argument/2`), evaluate a piped operand ahead of any stage whose position 0 is
+  `:expression`/`:interior`. The one way to say otherwise is the position word
+  `:lazy_expression`; anything that binds a user expression ahead of a call must honour it —
+  NOTES "Evaluation is a route's to declare: `:lazy_expression`".
 - **Every delivery shape must be readable back.** `Mutare.Manifest` recognises what emission
   writes: selector clauses, `===` gates, `=/=` and range exclusions, coverage records. A new
   shape needs its reader in the same change: `verify_invariants` (the transform property soak,
@@ -289,7 +296,7 @@ case is Gettext; see `test/support/extension_fixtures.ex` and NOTES "Extension `
 override".
 
 The contract details (notes, `:as` renaming, the call-routing vocabulary — `:skip` for a whole
-call; `:expression`/`:raw`/`:interior`/`:pattern`/`:binding_pattern`/keyed `[key: …]` refinements
+call; `:expression`/`:lazy_expression`/`:raw`/`:interior`/`:pattern`/`:binding_pattern`/keyed `[key: …]` refinements
 per position; the adapter-grade `:hosted`/`:interpolated`/`{:keyword, …}` — the variant-label
 rules, the `families:` grammar) are in the
 `Mutare.Mutator` / `Mutare.CallRouting` / `Mutare.Mutator.MacroHost` /

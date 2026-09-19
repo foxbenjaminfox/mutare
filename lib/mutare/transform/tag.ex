@@ -323,8 +323,11 @@ defmodule Mutare.Transform.Tag do
   # The keyword container's own offer, by the leading treatment. Only the Sourceror-wrapped
   # explicit list (`{:__block__, _, [list]}`) is a node the ordinary walk offers (the `[…] → []`
   # collapse); the bare trailing sugar is a plain list and never was.
-  defp offer_container({:__block__, _meta, _args} = node, :expression, acc, mutators),
-    do: offer_target(node, acc, mutators)
+  defp offer_container({:__block__, _meta, _args} = node, leading, acc, mutators) do
+    if Mutare.CallRouting.Spec.expression?(leading),
+      do: offer_target(node, acc, mutators),
+      else: {node, acc}
+  end
 
   defp offer_container(node, _leading, acc, _mutators), do: {node, acc}
 

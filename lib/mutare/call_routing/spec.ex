@@ -63,7 +63,16 @@ defmodule Mutare.CallRouting.Spec do
 
   # The argument treatments — what a *position* may be. `:skip` is deliberately absent: it is the
   # call-level word, valid only as a route's bare `args`.
-  @treatments [:expression, :interior, :raw, :pattern, :binding_pattern, :hosted, :interpolated]
+  @treatments [
+    :expression,
+    :lazy_expression,
+    :interior,
+    :raw,
+    :pattern,
+    :binding_pattern,
+    :hosted,
+    :interpolated
+  ]
   @call_skip :skip
 
   # The glob wildcard atom. Means "match anything" in the module, name, or arity slot.
@@ -87,10 +96,21 @@ defmodule Mutare.CallRouting.Spec do
   among them (see `skip?/1`).
 
       iex> Mutare.CallRouting.Spec.treatments()
-      [:expression, :interior, :raw, :pattern, :binding_pattern, :hosted, :interpolated]
+      [:expression, :lazy_expression, :interior, :raw, :pattern, :binding_pattern, :hosted, :interpolated]
   """
   @spec treatments() :: [treatment()]
   def treatments, do: @treatments
+
+  @doc """
+  Whether `treatment` is analyzed as an ordinary Elixir expression — offered to mutators whole
+  and descended. `:lazy_expression` is one: it differs from `:expression` only in what
+  *delivery* may do (`Mutare.Transform.PipeEmit` never evaluates it ahead of the call).
+
+      iex> Enum.map([:expression, :lazy_expression, :interior], &Mutare.CallRouting.Spec.expression?/1)
+      [true, true, false]
+  """
+  @spec expression?(term()) :: boolean()
+  def expression?(treatment), do: treatment in [:expression, :lazy_expression]
 
   @doc """
   Whether `spec` skips the whole call (`args: :skip`) — the inert-leaf route: no whole-node offer,

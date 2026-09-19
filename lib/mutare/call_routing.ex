@@ -17,7 +17,8 @@ defmodule Mutare.CallRouting do
       (`{Kernel.SpecialForms, :case, :skip}`; special-form arities follow the AST, so use the
       any-arity form).
     * **treat each argument** by a *position*: `:expression` (ordinary runtime code, the default),
-      `:raw` (leave the argument exactly as written — a DSL body, a pattern interpreted by the macro, an
+      `:lazy_expression` (the same, for a callee that may evaluate the argument late,
+      conditionally, more than once, or never — see "Evaluation" below), `:raw` (leave the argument exactly as written — a DSL body, a pattern interpreted by the macro, an
       identifier list), `:interior` (descend into the argument but offer nothing on its own node —
       an assigns map whose emptying is a crash-kill while its values are the signal), `:pattern` /
       `:binding_pattern` (descend as a match pattern), and — for a literal keyword-list argument — a
@@ -57,9 +58,27 @@ defmodule Mutare.CallRouting do
 
   Shape-dependent routes use `:routing`. A `:hosted` treatment marks a position as raw for core and available to every enabled `Mutare.Mutator.MacroHost` subscribing to that macro. Routing and mutation ownership are independent: one library adapter can describe the DSL while several mutators contribute mutations inside it.
 
+  ## Evaluation
+
+  **A call is a function in every respect its route does not address** — unrouted, or routed
+  for some other reason (a function routed `[:raw, :expression]` to hold one argument back is
+  still a function). That includes *when its arguments run*: a function evaluates them first,
+  in order, exactly once, and to deliver a whole-call mutant on a pipe stage Mutare relies on
+  it, evaluating the piped value once and handing every branch the result. It does so whenever
+  the stage's first position is `:expression` or `:interior`, routed or not (and, for a routed
+  stage, no mutant there rewrites that argument).
+
+  A macro need not evaluate its arguments that way (`value |> lazy(enabled?)` may expand to
+  `if enabled?, do: value`), and nothing in `:expression` says it does. Route such a position
+  `:lazy_expression`: Mutare mutates the argument exactly as it would an `:expression`, and
+  never evaluates it ahead of the call — every branch hands the callee the expression itself.
+  A position routed as syntax (`:raw`, a pattern, `:hosted`, …) is never evaluated ahead either.
+  `:lazy_expression` can only switch that optimisation off, so it is safe to declare wherever
+  you are unsure; the price is a larger metamutant for long chains of such stages.
+
   ## The vocabulary, tiered
 
-  `:skip`, `:raw`, `:interior`, `:expression`, `:pattern`, `:binding_pattern`, and keyed refinements built from them can only *remove* or *re-route* mutants, and preserve those declared argument contexts; they are the whole vocabulary the declarative `call_routes:` configuration key accepts. `:interpolated`, `{:keyword, ...}`, and `:hosted` are adapter-grade: each asserts a fact about a DSL that Mutare cannot verify, and the module routing it takes responsibility for that fact. An `:interpolated` position must genuinely accept `^` interpolation — where it doesn't, the spliced selector fails the single metamutant compile and is recovered as poison, discarding those mutants after a rebuild. A `{:keyword, ...}` list routes keyword *values positionally* and must name exactly one treatment per pair — a length mismatch raises at transform time, and a non-keyword argument under it is left raw (warned when a `:routing` classifier routed it; silent for a static route, whose other call shapes may be legal forms). A `:hosted` route without an enabled subscribing host aborts the run at scan time. These treatments must come from a module implementing this behaviour — an adapter written and tested against the library it describes; a declarative `call_routes:` entry that uses one (a keyed refinement included) is rejected with an `ArgumentError`.
+  `:skip`, `:raw`, `:interior`, `:expression`, `:lazy_expression`, `:pattern`, `:binding_pattern`, and keyed refinements built from them can only *remove* or *re-route* mutants, and preserve those declared argument contexts; they are the whole vocabulary the declarative `call_routes:` configuration key accepts. `:interpolated`, `{:keyword, ...}`, and `:hosted` are adapter-grade: each asserts a fact about a DSL that Mutare cannot verify, and the module routing it takes responsibility for that fact. An `:interpolated` position must genuinely accept `^` interpolation — where it doesn't, the spliced selector fails the single metamutant compile and is recovered as poison, discarding those mutants after a rebuild. A `{:keyword, ...}` list routes keyword *values positionally* and must name exactly one treatment per pair — a length mismatch raises at transform time, and a non-keyword argument under it is left raw (warned when a `:routing` classifier routed it; silent for a static route, whose other call shapes may be legal forms). A `:hosted` route without an enabled subscribing host aborts the run at scan time. These treatments must come from a module implementing this behaviour — an adapter written and tested against the library it describes; a declarative `call_routes:` entry that uses one (a keyed refinement included) is rejected with an `ArgumentError`.
 
   `:skip` is a statement about the *call*, so it is valid only as a route's bare treatment (`{Mixpanel, :track, 3, :skip}`); inside a per-position list it is rejected with a message naming `:raw`. Every other word is a statement about a *position*.
 
@@ -239,6 +258,7 @@ defmodule Mutare.CallRouting do
   """
   @type treatment ::
           :expression
+          | :lazy_expression
           | :interior
           | :raw
           | :pattern

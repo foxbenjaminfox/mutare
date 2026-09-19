@@ -107,6 +107,67 @@ defmodule Mutare.PipeSyntaxTest do
     assert length(Regex.scan(~r/fn mutare_piped ->/, emitted)) == 1
   end
 
+  describe "a chain of value-routed stages" do
+    @chain """
+    defmodule Chain do
+      import Mutare.Test.PipeSyntaxDSL
+      def f(n, sink), do: tick(n, sink) |> plus(1) |> plus(10) |> plus(100)
+      def g(n), do: plus(plus(n, 1), 10)
+
+      defp tick(n, sink) do
+        send(sink, :evaluated)
+        n
+      end
+    end
+    """
+
+    test "delivers each stage's mutant, evaluating the piped value once" do
+      {[module], sites} = compile_metamutant(@chain, [@mutator])
+      piped = Enum.filter(sites, &(&1.line == 3))
+      assert Enum.map(piped, & &1.original_code) == ["plus(1)", "plus(10)", "plus(100)"]
+
+      assert module.f(0, self()) == 111
+      assert_received :evaluated
+      refute_received :evaluated
+
+      for {site, expected} <- Enum.zip(piped, [110, 101, 11]) do
+        assert with_active_mutant(site.id, fn -> module.f(0, self()) end) == expected
+        assert_received :evaluated
+        refute_received :evaluated
+      end
+    end
+
+    test "binds the piped value once per stage, and only for a stage written as a pipe" do
+      emitted = metamutant_source(@chain, [@mutator])
+
+      # `f`'s three piped stages each bind; `g`'s directly written calls never do — a macro may
+      # evaluate a written argument late, or not at all.
+      assert length(Regex.scan(~r/fn mutare_piped ->/, emitted)) == 3
+      assert length(Regex.scan(~r/tick\(n, sink\)/, emitted)) == 2
+    end
+
+    test "falls back to plain delivery when a mutant does not keep the piped value" do
+      # The tail stage also carries return-value constants, which replace the whole call: bound,
+      # they would evaluate the upstream chain the constant was meant to stand in for.
+      source = """
+      defmodule Tail do
+        import Mutare.Test.PipeSyntaxDSL
+        def f(n), do: n |> plus(1) |> plus(10)
+      end
+      """
+
+      {[module], sites} = compile_metamutant(source, [@mutator, :return_value])
+      assert module.f(0) == 11
+      assert Enum.any?(sites, &(&1.mutator == :return_value))
+
+      emitted = metamutant_source(source, [@mutator, :return_value])
+      assert length(Regex.scan(~r/fn mutare_piped ->/, emitted)) == 1
+
+      assert {11, 10} = observe_mutant(sites, {"plus(1)", "plus(0)"}, fn -> module.f(0) end)
+      assert {11, 1} = observe_mutant(sites, {"plus(10)", "plus(0)"}, fn -> module.f(0) end)
+    end
+  end
+
   test "an interpolated left operand compiles when the stage has no mutant" do
     source = """
     defmodule Pins do
@@ -143,6 +204,36 @@ defmodule Mutare.PipeSyntaxPropertyTest do
       Mutare.Test.Metamutant.assert_compiles(long.metamutant)
       true
     end
+  end
+
+  property "a chain of value-routed stages keeps rendered growth linear", numtests: 10 do
+    forall depth <- integer(2, 16) do
+      short = routed_chain(depth)
+      long = routed_chain(depth * 2)
+      assert length(short.sites) == depth
+      assert length(long.sites) == depth * 2
+      assert byte_size(long.metamutant) < 3 * byte_size(short.metamutant)
+      Mutare.Test.Metamutant.assert_compiles(long.metamutant)
+      true
+    end
+  end
+
+  defp routed_chain(depth) do
+    chain = Enum.map_join(1..depth, "", fn i -> " |> plus(#{i})" end)
+
+    Mutare.Transform.transform_string_with_sites(
+      """
+      defmodule RoutedChain do
+        import Mutare.Test.PipeSyntaxDSL
+        def f(n) do
+          total = n#{chain}
+          total
+        end
+      end
+      """,
+      file: "routed_chain.ex",
+      mutators: [Mutare.Test.PipeSyntaxMutator]
+    )
   end
 
   defp transform(depth, shape) do

@@ -31,8 +31,8 @@ defmodule Mutare.Test.PipedCallProbe do
 
   Its classifier routes the source **by its shape**, which a piped source shares with a written
   one: a schema alias or a binding declaration is left `:raw` (an alias swap there is a broken
-  query, not a mutant), and anything else is an ordinary `:expression`, so the upstream code
-  keeps its mutants.
+  query, not a mutant), and anything else is a `:lazy_expression`, so the upstream code keeps
+  its mutants.
 
   Its one mutation rewrites argument 0 — a binding declaration's source, `p in xs` to
   `p in Enum.reverse(xs)` — the analog of an adapter reordering a piped query's bindings.
@@ -91,7 +91,9 @@ defmodule Mutare.Test.PipedCallProbe do
 
   defp source_treatment({:__aliases__, _meta, _segments}), do: :raw
   defp source_treatment({:in, _meta, [_binding, _queryable]}), do: :raw
-  defp source_treatment(_value), do: :expression
+  # `stage/2` evaluates its source only when the condition holds, so a computed source is an
+  # expression Mutare may mutate but must not evaluate ahead of the call.
+  defp source_treatment(_value), do: :lazy_expression
 
   defp report(seam, call), do: send(self(), {:piped_call_probe, seam, call})
 end

@@ -216,6 +216,7 @@ defmodule Mutare.CallRouting.SpecGrammarTest do
   test "the treatment vocabulary is the argument words only" do
     assert Spec.treatments() == [
              :expression,
+             :lazy_expression,
              :interior,
              :raw,
              :pattern,

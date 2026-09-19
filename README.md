@@ -236,6 +236,7 @@ An entry is `{Module, :name, arity, treatment}`, or `{Module, :name, treatment}`
 - `:raw` — leave the argument exactly as written (no descent, no mutation).
 - `:interior` — mutate what is *inside* the argument, but never the argument's own node.
 - `:expression` — mutate it as normal runtime code (the default).
+- `:lazy_expression` — the same, for a callee (a macro) that may evaluate the argument late, conditionally, or never. Mutare then never evaluates it ahead of the call. Any other call is assumed to evaluate its arguments as a function does.
 - `:pattern` — descend as a match pattern, without mutating the pattern itself.
 - `:binding_pattern` — like `:pattern`, for macros whose bindings escape into the caller.
 - `[leading, key: treatment, …]` — a *keyed refinement* for an argument written as a literal keyword list: the argument follows `leading` (default `:expression`), except that each named key's value follows its own treatment. Refinements nest (`[retry: [max_retries: :raw]]`).

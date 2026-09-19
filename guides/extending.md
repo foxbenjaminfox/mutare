@@ -213,7 +213,9 @@ end
 A route names a resolved call, with the same routing rules for macros and
 functions. Its treatment is either `:skip` (the whole call is an inert leaf: never
 offered to a mutator, nothing inside it descended) or one *position* per
-argument: `:expression` (mutate normally), `:raw` (leave as written),
+argument: `:expression` (mutate normally), `:lazy_expression` (the same, for a
+callee that may not evaluate the argument eagerly — Mutare never evaluates it
+ahead of the call), `:raw` (leave as written),
 `:interior` (mutate the argument's contents but never its own node),
 `:pattern`/`:binding_pattern` (treat as a pattern), a keyed refinement
 `[leading, key: treatment, …]` over a literal keyword argument,
@@ -237,7 +239,7 @@ own) take `:skip` only; definitions (`def`, `defmodule`, …) and literal syntax
 take no route —
 an explicit key is rejected, a wildcard's positions are not applied to them.
 
-`:skip`, `:raw`, `:interior`, `:expression`, `:pattern`, `:binding_pattern`,
+`:skip`, `:raw`, `:interior`, `:expression`, `:lazy_expression`, `:pattern`, `:binding_pattern`,
 and keyed refinements built from them are also the end-user vocabulary of the
 declarative `call_routes:` config key — they can only remove or re-route
 mutants. The other three are adapter-grade: routing a position

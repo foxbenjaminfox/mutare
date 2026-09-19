@@ -11615,10 +11615,9 @@ whole of that obligation, read off one stamp (`:mutare_written_pipe`, the `|>` a
 **Size.** Rewritten routed chains (Ecto pipelines) lose the closure, so each whole-call mutant
 copies the as-written upstream chain: a sum of prefixes, not the exponential of `hoist/1`
 (that came from copying the *emitted* left side). Directly nested calls have always paid this.
-Unmeasured on a real query module; if it matters, core can let-bind argument 0 when it is
-value-routed and no mutant at that stage touched it — an emission-only optimisation with no
-API surface. The stamp itself is the same sum-of-prefixes `pipe_left` was, for the same reason:
-it holds the pipe *unwalked*.
+A rewritten stage therefore binds its piped value again where its route allows — see
+"Evaluation is a route's to declare: `:lazy_expression`". The stamp itself is the same
+sum-of-prefixes `pipe_left` was, for the same reason: it holds the pipe *unwalked*.
 
 **Known limits.**
 - The rewrite is not context-aware: a pipe inside another macro's `:raw` argument is rewritten
@@ -11634,3 +11633,60 @@ it holds the pipe *unwalked*.
 and `Call.new/4`; the plugin's piped twin paths (`piped_treatment/1`, `FromCall`'s
 `pipe_left` source, the `binding_reorders/1` guard, `replace_source/2`'s `:unpiped` head)
 collapse into the direct ones.
+
+### Evaluation is a route's to declare: `:lazy_expression` `[done]` (2026-09-19)
+
+**The question.** Delivering a whole-call mutant on a pipe stage through the hoisting closure
+evaluates the piped value ahead of the stage, exactly once. A function does that with its
+first argument; a macro need not — `lazy(value, on?)` may expand to `if on?, do: value` — and
+then the closure runs an operand the macro would have skipped, in the *unmutated* branch too.
+`:expression` does not settle it: a treatment says what core may do *inside* an argument, not
+when the callee evaluates it.
+
+**Three answers that were wrong**, in the order they were tried:
+
+1. *Let-bind a rewritten routed stage's argument 0 when it is `:expression`*, on the argument
+   that a pipe's operand "was already evaluated first under closure delivery". Precedent, not
+   proof: it silently asserted eagerness for every routed macro.
+2. *Bind only ahead of a stage provably a function* (a loadable module exporting it as a
+   function and not a macro), distributing the pipe otherwise. Rejected on principle: Mutare
+   does not derive function-versus-macro. An unrouted call is a function, and a user who wants
+   otherwise says so.
+3. *Let "routed" mean "macro"*: bind unrouted stages, never routed ones. That made any
+   positional route a statement about evaluation, which it is not — call routes are for
+   functions and macros alike (`{MyApp.Audit, :log, 2, [:raw, :expression]}` holds an
+   uninformative argument back from every family and says nothing else), and it charged such a
+   function the size of direct delivery for using a route as intended.
+
+**The answer.** *A call is a function in every respect its route does not address* —
+evaluation included. So evaluation needed a word, and got one: the position treatment
+`:lazy_expression`. It is analyzed exactly as `:expression`
+(`Mutare.CallRouting.Spec.expression?/1`; the two readers that match the word by name, the
+keyed-container offers in `Routed` and `Tag`, ask that) and differs only in delivery: core
+never evaluates it ahead of the call. User-tier, accepted in `call_routes:`, because it can
+only switch an optimisation off — a wrong `:lazy_expression` costs size, a missing one is the
+same exposure every unrouted macro has always had. Per-position because laziness is
+per-argument; no `:interior` counterpart until something needs one.
+
+Delivery then reads the route and nothing else. An unrouted stage keeps the closure. A
+rewritten routed stage binds its piped value through the same closure
+(`PipeEmit.bound_argument/2`, applied in `emit_selector_site`) when it was written as a pipe,
+position 0 is `:expression`/`:interior`, and every candidate kept argument 0 — the structural
+test `WrittenPipe.stage_attribution/2` also uses. It renders under the user's own `|>`
+(`<emitted arg 0> |> (fn mutare_piped -> … end).()`): applying the closure to the argument
+directly is linear in nodes but nests each stage inside the next, 40 KB at depth 32 against
+17 KB piped. A candidate that rewrites or drops argument 0 (a binding reorder; a return-value
+constant on a tail stage) sends that one site to plain direct delivery, since bound it would
+evaluate the operand it replaces.
+
+**What this asks of adapters.** A routed macro with `:expression` at position 0 is bound, as it
+was through 0.3.1. For `mutare_ecto`'s composable stages that is sound if Ecto evaluates the
+query argument once and first — believed, not verified here; it is the adapter author's fact
+to confirm, and to mark `:lazy_expression` where it fails.
+
+**Evidence that built-in users are unaffected.** Every family that lands a whole-call mutant
+on a stage reads a rule table keyed to stdlib modules. Piping all 237 macros of `elixir`,
+`logger`, `eex` and `ex_unit` through every family gave three of them a closure —
+`Integer.is_even/1`, `Integer.is_odd/1`, `Kernel.<>/2` — each of which evaluates its operand
+once and first. `pipe_macro_stage_test.exs` pins the contract in all three states: unrouted,
+routed `:expression`, routed `:lazy_expression`.

@@ -89,12 +89,17 @@ defmodule Mutare.Transform do
   whole upstream chain per branch and blow up exponentially. The Site still records
   the bare stage, so the diff is unchanged.
 
-  The closure is sound because the piped value is a value. A stage whose left side a macro
-  may read as *syntax* — `(p in Post) |> from(…)` — is a **routed** stage, and those never
-  reach emission as pipes: the resolve pass rewrites a piped call under a positional route into
+  The closure evaluates the piped value ahead of the stage, as a function does its first
+  argument — and a call is a function in every respect its route does not address
+  (`Mutare.CallRouting`, "Evaluation"). A stage under a positional route never reaches emission
+  as a pipe: the resolve pass rewrites a piped call under a positional route into
   the direct call `Kernel.|>/2` would build, delivered like any direct call (its mutant branches
-  hold the as-written arguments, the catch-all the emitted ones). Only `Kernel`'s `|>` is
-  treated as a pipe at all; one a module displaced is a call to that module's operator.
+  hold the as-written arguments, the catch-all the emitted ones). Such a stage still binds its
+  piped value once, through the same closure, when its first position is `:expression` or
+  `:interior` and every mutant there keeps that argument — so a chain of routed stages stays
+  linear too. A first position routed `:lazy_expression`, or as syntax, is never evaluated ahead
+  of the call. Only `Kernel`'s `|>` is treated as a pipe at all; one a module displaced is a
+  call to that module's operator.
 
   ## Function lifting + dispatcher (guards, dispatch)
 
@@ -1379,6 +1384,10 @@ defmodule Mutare.Transform do
   defp emit_site(node, candidates, ctx), do: emit_selector_site(node, candidates, ctx)
 
   defp emit_selector_site(node, candidates, ctx) do
+    # A rewritten pipe stage whose piped value every mutant keeps binds it once, so a chain of
+    # routed stages stays linear — `PipeEmit.bound_argument/2`. `:inline` for every other site.
+    binding = PipeEmit.bound_argument(node, candidates)
+
     {clauses, ctx} =
       SelectorEmit.claim_items(candidates, ctx, {&Delivery.site/4, &Delivery.line/1}, fn id,
                                                                                          candidate ->
@@ -1387,6 +1396,7 @@ defmodule Mutare.Transform do
            [id],
            candidate
            |> Delivery.selector_branch()
+           |> PipeEmit.rebind(binding, ctx)
            |> ImportWitness.wrap(ImportWitness.for_candidate(candidate))
          ]}
       end)
@@ -1403,10 +1413,17 @@ defmodule Mutare.Transform do
         {default, ctx}
 
       _ ->
-        {case_node, ctx} = SelectorEmit.selector_case(default, clauses, ctx)
-        {pin_if_needed(case_node, candidates), ctx}
+        {case_node, ctx} =
+          default |> PipeEmit.rebind(binding, ctx) |> SelectorEmit.selector_case(clauses, ctx)
+
+        {case_node
+         |> pin_if_needed(candidates)
+         |> PipeEmit.close(binding, argument_zero(default), ctx), ctx}
     end
   end
+
+  defp argument_zero({_head, _meta, [zero | _rest]}), do: zero
+  defp argument_zero(_node), do: nil
 
   # An `:interpolated` in-place candidate's selector must be **`^`-pinned**: the value sits
   # in a compile-time DSL position (an Ecto keyword-shorthand value) that accepts `^(case …)` but

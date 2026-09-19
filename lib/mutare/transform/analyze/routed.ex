@@ -304,8 +304,11 @@ defmodule Mutare.Transform.Analyze.Routed do
   # `:interior` by definition, `:raw`/`:hosted` because the list is DSL data, `:pattern` because a
   # pattern is never offered in place, `:interpolated` because pinning a container is the compound
   # case `reject_compound_value!/2` forbids.
-  defp offer_container({:__block__, _meta, _args} = routed, raw, :expression, env),
-    do: Attach.offer(routed, raw, env.mutators)
+  defp offer_container({:__block__, _meta, _args} = routed, raw, leading, env) do
+    if Mutare.CallRouting.Spec.expression?(leading),
+      do: Attach.offer(routed, raw, env.mutators),
+      else: routed
+  end
 
   defp offer_container(routed, _raw, _leading, _env), do: routed
 
