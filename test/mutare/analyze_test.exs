@@ -147,7 +147,7 @@ defmodule Mutare.AnalyzeTest do
            :expression,
            {:hosted, [Mutare.Test.HostMutator, Mutare.Test.DerivedVariantHostMutator]}
          ])
-         |> Meta.stamp_routed_call({[:Mutare, :Test, :HostDSL], :filter, :unpiped}), args}
+         |> Meta.stamp_routed_call({[:Mutare, :Test, :HostDSL], :filter, 2}), args}
 
       # The host runs through the same attachment the transform uses, but each target mutant
       # comes back **lowered**: `splice(wrap(mutant))` — the woven selector degenerated to its
@@ -201,7 +201,7 @@ defmodule Mutare.AnalyzeTest do
         {form,
          meta
          |> Meta.stamp_routing([:expression, {:hosted, [BothSurfaceFilterMutator]}])
-         |> Meta.stamp_routed_call({[:Mutare, :Test, :HostDSL], :filter, :unpiped}), args}
+         |> Meta.stamp_routed_call({[:Mutare, :Test, :HostDSL], :filter, 2}), args}
 
       rendered =
         stamped

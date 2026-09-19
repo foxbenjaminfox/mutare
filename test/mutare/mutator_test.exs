@@ -56,8 +56,7 @@ defmodule Mutare.MutatorTest do
 
   describe "host_targets/3" do
     defp call do
-      Mutare.CallRouting.Call.new({:x, [], []}, Mutare.Test.HostDSL, :x, :unpiped, fn name,
-                                                                                      args ->
+      Mutare.CallRouting.Call.new({:x, [], []}, Mutare.Test.HostDSL, :x, fn name, args ->
         {name, [], args}
       end)
     end

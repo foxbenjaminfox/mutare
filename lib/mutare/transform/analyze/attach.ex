@@ -23,7 +23,7 @@ defmodule Mutare.Transform.Analyze.Attach do
 
   alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Mutation.Attribution
-  alias Mutare.Transform.{Candidate, Meta, NodeRange}
+  alias Mutare.Transform.{Candidate, Meta, NodeRange, WrittenPipe}
 
   # Offer `raw` to the mutators; if any fire, attach their candidates — built from
   # `raw`, so the diff renders the author's node — to `subject`, the already-analyzed
@@ -59,7 +59,10 @@ defmodule Mutare.Transform.Analyze.Attach do
     range = NodeRange.get(node)
 
     Enum.map(muts, fn %Dispatch.Result{} = result ->
-      {attribution, attribution_range} = checked_attribution(result.attribution, node, range)
+      # A mutator's own attribution wins; failing one, a rewritten pipe stage's mutant is
+      # reported at the stage the user wrote (`WrittenPipe.stage_attribution/2`).
+      attribution = result.attribution || WrittenPipe.stage_attribution(node, result.node)
+      {attribution, attribution_range} = checked_attribution(attribution, node, range)
 
       %Candidate.InPlace{
         mutator: result.spec,

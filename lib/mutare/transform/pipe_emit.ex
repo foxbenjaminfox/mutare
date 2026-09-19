@@ -19,16 +19,15 @@ defmodule Mutare.Transform.PipeEmit do
   # copy of `lhs`. This keeps a chain of mutated stages linear in the rendered source, and the
   # bare stage stays the Site's recorded node, so the diff is unaffected.
 
-  # Syntax-valued operands cannot enter that closure: it evaluates them and hides their
-  # AST from the macro. Distribute the pipe into the selector instead. Only the catch-all
-  # gets the emitted LHS; mutant branches get the as-written one, since no upstream mutant
-  # can be active there. This also keeps selectors inside pins from multiplying.
+  # The closure is sound because the piped value *is* a value: a stage whose left side a macro
+  # reads as syntax is a routed stage, and `Mutare.Transform.Resolve` has already rewritten those
+  # into direct calls — no `|>` node reaches here with a selector on a routed right side.
 
   # All of it is `Kernel.|>/2`'s alone. A `|>` displaced out of `Kernel` is left exactly as
   # emitted: the closure would apply the custom operator twice (once to reach the closure, once
   # inside each branch), and expanding a pinned left side would assume `Kernel`'s desugaring.
 
-  alias Mutare.Transform.{Calls, Ctx, Meta, Render}
+  alias Mutare.Transform.{Calls, Ctx, Render}
 
   @doc """
   Hoist a selector out of a pipe's RHS and preserve a pinned LHS's rendering precedence.
@@ -45,10 +44,7 @@ defmodule Mutare.Transform.PipeEmit do
     # (inline read or hoisted variable) is reused as-is inside the closure.
     case Render.selector_case_parts(rhs) do
       {:ok, subject, clauses} ->
-        case Meta.pipe_delivery(meta) do
-          :value -> value_pipe(lhs, meta, subject, clauses, ctx)
-          {:syntax, original} -> syntax_pipe(lhs, original, subject, clauses)
-        end
+        value_pipe(lhs, meta, subject, clauses, ctx)
 
       :error ->
         pipe_into(lhs, rhs, meta)
@@ -61,12 +57,6 @@ defmodule Mutare.Transform.PipeEmit do
     closure = {:fn, [], [{:->, [], [[var], Render.selector_case(subject, piped)]}]}
     invocation = {{:., [], [closure]}, [], []}
     {:|>, meta, [lhs, invocation]}
-  end
-
-  defp syntax_pipe(lhs, original, subject, clauses) do
-    {mutants, [catch_all]} = Enum.split(clauses, -1)
-    piped = Enum.map(mutants, &pipe_clause(original, &1)) ++ [pipe_clause(lhs, catch_all)]
-    Render.selector_case(subject, piped)
   end
 
   defp pipe_clause(lhs, {:->, meta, [pattern, body]}),

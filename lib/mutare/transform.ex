@@ -89,12 +89,12 @@ defmodule Mutare.Transform do
   whole upstream chain per branch and blow up exponentially. The Site still records
   the bare stage, so the diff is unchanged.
 
-  A routed left operand is evaluated this way only for `:expression` and `:interior`.
-  Other treatments describe macro syntax: emission instead supplies the left operand
-  directly to each branch's stage, preserving declarations such as `(p in Post) |> from(…)`.
-  The catch-all keeps the emitted operand, including its mutations; mutant branches use
-  the as-written operand because no upstream mutant can be active there. Upstream selectors
-  therefore appear once even inside interpolations or routed keyword values.
+  The closure is sound because the piped value is a value. A stage whose left side a macro
+  may read as *syntax* — `(p in Post) |> from(…)` — is a **routed** stage, and those never
+  reach emission as pipes: the resolve pass rewrites a piped call under a positional route into
+  the direct call `Kernel.|>/2` would build, delivered like any direct call (its mutant branches
+  hold the as-written arguments, the catch-all the emitted ones). Only `Kernel`'s `|>` is
+  treated as a pipe at all; one a module displaced is a call to that module's operator.
 
   ## Function lifting + dispatcher (guards, dispatch)
 

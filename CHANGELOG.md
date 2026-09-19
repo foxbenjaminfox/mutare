@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A piped routed call is shown, mutated and delivered as the direct call it is sugar for.**
+  `(p in Post) |> from(order_by: …)` reaches `route_arguments/2`, `host/2`, `mutate/2` and
+  `Mutare.Calls.resolved_routed_call/1` as `from(p in Post, order_by: …)`. The piped operand is
+  argument 0: a classifier routes it by shape, `call.rebuild` can rewrite it, and it may be
+  routed `:hosted` (previously a `ContractError`). Reports are unchanged — a mutant that leaves
+  argument 0 alone is still located at, and diffed as, the stage the user wrote; one that
+  rewrites it is reported over the whole pipe. Stages that take no positional route (an
+  ordinary function call, a `:skip`ped call) stay pipes. **Breaking for adapters:**
+  - `Mutare.CallRouting.Call` loses `pipe_left`, `pipe_mode` and `effective_arity`, and its
+    five-argument `new` becomes `new/4` (`node, module, name, rebuild`).
+  - `Mutare.CallRouting.ArgumentRoutes`' `from_effective` and `from_visible` constructors are
+    replaced by `new/2` (one treatment per argument), and its `visible`/`piped` readers by
+    `treatments/1`.
+  - `route_arguments/2`'s context no longer carries `:pipe_mode` (it is empty).
+
 ### Fixed
 
 - **A `|>` displaced out of `Kernel` is no longer treated as the pipe.** In a module that
@@ -56,7 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in `route_arguments/2`, in `host/2`, and from
   `Mutare.Calls.resolved_routed_call/1`. It is read-only, so the piped position
   still cannot be routed `:hosted`.
-- `Mutare.CallRouting.Call.new/5` builds a call value from its independent
+- `Mutare.CallRouting.Call`'s `new/5` builds a call value from its independent
   facts and derives `arguments`, `pipe_mode`, and `effective_arity`.
 
 ### Changed

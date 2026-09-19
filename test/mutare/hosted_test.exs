@@ -477,45 +477,28 @@ defmodule Mutare.HostedTest do
     end
   end
 
-  describe "a static :hosted at the piped-value position is rejected (not silently dropped)" do
-    test "raises with an actionable message pointing at :routing" do
-      source = """
-      defmodule Mutare.PipedHostFixture do
-        import Mutare.Test.PipedDSL
+  describe "a static :hosted at argument 0 hosts the same whether the call is piped or direct" do
+    # A piped routed call is rewritten into the direct call, so the pipe's left side is the
+    # visible argument 0 a host can splice into. `host/2` returns [] in this fixture, so there
+    # are no hosted sites — the point is that resolution does not raise, in either spelling.
+    for {spelling, body} <- [piped: "(x > 1) |> rotate()", direct: "rotate(x > 1)"] do
+      test "#{spelling}" do
+        source = """
+        defmodule Mutare.PipedHostFixture do
+          import Mutare.Test.PipedDSL
 
-        def f(x) do
-          (x > 1) |> rotate()
+          def f(x) do
+            #{unquote(body)}
+          end
         end
+        """
+
+        assert %{sites: []} =
+                 Mutare.Transform.transform_string_with_sites(source,
+                   file: "p.ex",
+                   mutators: [Mutare.Test.PipedHostMutator]
+                 )
       end
-      """
-
-      assert_raise Mutare.CallRouting.ContractError, ~r/pipe's left side as :hosted/s, fn ->
-        Mutare.Transform.transform_string_with_sites(source,
-          file: "p.ex",
-          mutators: [Mutare.Test.PipedHostMutator]
-        )
-      end
-    end
-
-    test "the same static :hosted at argument 0 hosts fine when written directly (not piped)" do
-      source = """
-      defmodule Mutare.DirectHostFixture do
-        import Mutare.Test.PipedDSL
-
-        def f(x) do
-          rotate(x > 1)
-        end
-      end
-      """
-
-      # Direct call: argument 0 is a visible argument, so it is hosted normally (no raise).
-      # `host/2` returns [] in this fixture, so there are simply no hosted sites — the point
-      # is that resolution does not raise.
-      _ =
-        Mutare.Transform.transform_string_with_sites(source,
-          file: "d.ex",
-          mutators: [Mutare.Test.PipedHostMutator]
-        )
     end
   end
 
@@ -1071,8 +1054,7 @@ defmodule Mutare.HostedTest do
     end
 
     defp malformed_call(node) do
-      Mutare.CallRouting.Call.new(node, Mutare.Test.HostDSL, elem(node, 0), :unpiped, fn name,
-                                                                                         args ->
+      Mutare.CallRouting.Call.new(node, Mutare.Test.HostDSL, elem(node, 0), fn name, args ->
         {name, [], args}
       end)
     end

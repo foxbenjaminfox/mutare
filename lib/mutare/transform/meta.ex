@@ -166,13 +166,11 @@ defmodule Mutare.Transform.Meta do
   def piped_routing(_meta), do: nil
 
   @typedoc """
-  A routed call's identity stamp: the resolved module key and name, and whether the call is a
-  pipe's right side — in which case the left side rides along **as written** (no resolve stamps;
-  see `Mutare.Transform.Resolve`'s `|>` clause for why that bounds the stamp's size).
+  A routed call's resolved identity: the module key (`nil` for a name-only match whose module the
+  resolver could not see), the name, and the **effective arity** the route matched at — one more
+  than the written arguments for a `:skip`ped stage still written as a pipe's right side.
   """
-  @type routed_call ::
-          {Mutare.CallRouting.Spec.module_key() | nil, atom(),
-           Mutare.CallRouting.Call.pipe_left()}
+  @type routed_call :: {Mutare.CallRouting.Spec.module_key() | nil, atom(), non_neg_integer()}
 
   @doc """
   The `t:routed_call/0` identity stamped on a call (`:mutare_route_call`), or `nil` when the node
@@ -182,9 +180,12 @@ defmodule Mutare.Transform.Meta do
   @spec routed_call(keyword() | term()) :: routed_call() | nil
   def routed_call(meta) when is_list(meta) do
     case Keyword.get(meta, MetaKeys.route_call_key()) do
-      {_module_key, name, :unpiped} = identity when is_atom(name) -> identity
-      {_module_key, name, {:piped, _left}} = identity when is_atom(name) -> identity
-      _absent_or_malformed -> nil
+      {_module_key, name, arity} = identity
+      when is_atom(name) and is_integer(arity) and arity >= 0 ->
+        identity
+
+      _absent_or_malformed ->
+        nil
     end
   end
 
@@ -201,22 +202,31 @@ defmodule Mutare.Transform.Meta do
 
   @doc "Stamp the `t:routed_call/0` identity onto a call's meta (`:mutare_route_call`)."
   @spec stamp_routed_call(keyword(), routed_call()) :: keyword()
-  def stamp_routed_call(meta, {_module_key, _name, _pipe_left} = identity),
+  def stamp_routed_call(meta, {_module_key, _name, _arity} = identity),
     do: [{MetaKeys.route_call_key(), identity} | meta]
 
-  @typedoc "A pipe evaluates a value, or passes its original left operand as macro syntax."
-  @type pipe_delivery :: :value | {:syntax, Macro.t()}
+  @doc """
+  The `|>` a routed call was written as — `{:|>, meta, [left, stage]}`, untouched by any pass —
+  or `nil` for a call written directly. `Mutare.Transform.Resolve` turns a piped routed call
+  into the direct call `Kernel.|>/2` would build, so everything downstream reads one call shape;
+  this stamp is what lets a Site keep the user's spelling and footprint
+  (`Mutare.Transform.WrittenPipe`).
+  """
+  @spec written_pipe(Macro.t()) :: Macro.t() | nil
+  def written_pipe({_form, meta, args}) when is_list(meta) and is_list(args),
+    do: Keyword.get(meta, MetaKeys.written_pipe_key())
 
-  @doc "The pipe's delivery plan, recorded before its RHS becomes a selector."
-  @spec pipe_delivery(keyword()) :: pipe_delivery()
-  def pipe_delivery(meta), do: Keyword.get(meta, MetaKeys.pipe_delivery_key(), :value)
+  def written_pipe(_node), do: nil
 
-  @doc "Record syntax delivery on the pipe itself; value delivery needs no stamp."
-  @spec stamp_pipe_delivery(keyword(), pipe_delivery()) :: keyword()
-  def stamp_pipe_delivery(meta, :value), do: meta
+  @doc "Stamp a direct call with the `|>` it was written as (`written_pipe/1`)."
+  @spec stamp_written_pipe(keyword(), Macro.t()) :: keyword()
+  def stamp_written_pipe(meta, {:|>, _pipe_meta, [_left, _stage]} = pipe),
+    do: [{MetaKeys.written_pipe_key(), pipe} | meta]
 
-  def stamp_pipe_delivery(meta, {:syntax, _original} = delivery),
-    do: Keyword.put(meta, MetaKeys.pipe_delivery_key(), delivery)
+  @doc "Drop the `written_pipe/1` stamp from a node's own meta."
+  @spec drop_written_pipe(Macro.t()) :: Macro.t()
+  def drop_written_pipe({form, meta, args}) when is_list(meta),
+    do: {form, Keyword.delete(meta, MetaKeys.written_pipe_key()), args}
 
   # --- replace-by-tag discovery marker ---------------------------------------
 

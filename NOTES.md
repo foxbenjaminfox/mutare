@@ -9260,7 +9260,7 @@ the adapter-grade DSLs classifiers describe are exactly where a spliced `case` i
 Displacing nothing keeps the documented default. The rule is one-way — a `:skip` may withhold
 mutants, never grant a position more freedom than the route it replaced.
 
-### A routed call is shown its pipe-left `[done]`
+### A routed call is shown its pipe-left `[superseded — see "A routed pipe stage becomes a direct call"]`
 
 A piped routed call's effective argument 0 is the `|>`'s left side, and `Call` held only the
 visible arguments. A classifier therefore had to route that position blind, and no one treatment
@@ -11563,3 +11563,74 @@ Inherited limit: a displacement injected by a `use` Mutare cannot expand is invi
 every other `Kernel` name (`Imports`, "Scope and limits"). The other structural `Kernel`
 heads (`if`/`unless`, the connectives, `in`) still dispatch in `Analyze` by shape; they were
 not audited here.
+
+### A routed pipe stage becomes a direct call `[done]` (2026-09-19)
+
+`left |> stage(args)` is sugar for `stage(left, args)`, and core had stopped treating it as
+sugar. Two releases of machinery followed from keeping the `|>` node around a *routed* stage:
+`Call.pipe_left`/`pipe_mode`/`effective_arity`, `ArgumentRoutes`' separate `piped` slot and its
+two constructors, the `:mutare_route_piped` reach-back for every routed stage, the
+`:unhostable_pipe_argument` rejection, `PipeEmit`'s second (syntax-preserving) delivery with its
+`:mutare_pipe_delivery` stamp, and a read-only left side that kept `mutare_ecto`'s source
+binding reorders deferred. A writable-left API was sketched next (a `pipe_left:` field on
+`Mutation`, legal only under syntax delivery) and would have added a third.
+
+The cut that removes all of it: a piped left side can only be *syntax* when the right side is
+a macro Mutare knows about — a routed call. An unrouted stage is a function call as far as
+Mutare can tell, so its left side is a value and the hoisting closure is sound for it,
+unconditionally. So `Resolve`'s `|>` clause asks one question of the unwalked stage
+(`RouteStamp.positional?/4`: does it take a route that treats argument positions?) and, if so,
+replaces the pipe with `Macro.pipe(left, stage, 0)` — the function `Kernel.|>/2` itself calls,
+so the two agree by construction — and walks *that*. Every later pass reads one call shape:
+the classifier routes the piped operand as argument 0 by shape, `rebuild` rewrites it, `:hosted`
+applies to it, and delivery is the ordinary direct-call selector (mutant branches hold the
+as-written arguments, the catch-all the emitted ones — which is exactly what Part B of the
+pipe-left proposal had built by hand for pipes).
+
+**What stays a pipe.** An unrouted stage (closure delivery, `pipe_mode: :piped` to the
+arity-aware families). A stage under the call-level `:skip`: its left side is documented as the
+skipped call's *sibling* and keeps its mutants (`Repo.insert!(u) |> Mixpanel.track(…)`), which a
+rewrite would bury inside an inert leaf — so `:mutare_route_piped` survives for exactly one
+producer, `stamp_skipped_pipe`, answering for a displaced route's position 0. And a `|>` that
+is itself `:skip`ped, beneath which a positionally routed stage is walked piped and left
+unstamped (nothing reads inside an inert leaf).
+
+**The Site is where the rewrite must not show**, and `Mutare.Transform.WrittenPipe` is the
+whole of that obligation, read off one stamp (`:mutare_written_pipe`, the `|>` as written):
+
+- *Range.* `Sourceror.get_range/1` of the rewritten call is the **stage's** span (a call
+  ranges from its head), which is wrong for anything replacing the whole expression — a
+  `return_value` mutant patched over it would leave `left |>` behind. Every range in the
+  transform goes through `NodeRange.get/1`, which answers the written pipe's span for a
+  stamped node.
+- *Narrowing.* A whole-call mutant that kept argument 0 is a mutation of the stage and is
+  reported there — the stage's line (where a `# mutare:ignore` sits), the stage's text on both
+  sides. `Attach.build_candidates/2` expresses that with the existing `Mutation.Attribution`
+  (`WrittenPipe.stage_attribution/2`), so `Delivery` needed nothing new. A mutator's own
+  attribution wins, and now passes the span check for a clause on the left side. A mutant that
+  rewrote argument 0 has no narrower home than the pipe and takes the default.
+- *Spelling.* `Site` renders through `WrittenPipe.resugar/1`, so a rewritten call nested
+  anywhere in a Site's node reads as the pipe it was, with whatever operand 0 it now holds.
+
+**Size.** Rewritten routed chains (Ecto pipelines) lose the closure, so each whole-call mutant
+copies the as-written upstream chain: a sum of prefixes, not the exponential of `hoist/1`
+(that came from copying the *emitted* left side). Directly nested calls have always paid this.
+Unmeasured on a real query module; if it matters, core can let-bind argument 0 when it is
+value-routed and no mutant at that stage touched it — an emission-only optimisation with no
+API surface. The stamp itself is the same sum-of-prefixes `pipe_left` was, for the same reason:
+it holds the pipe *unwalked*.
+
+**Known limits.**
+- The rewrite is not context-aware: a pipe inside another macro's `:raw` argument is rewritten
+  too, so that macro receives `stage(left, args)` where the user wrote `left |> stage(args)`.
+  Equivalent wherever the macro evaluates the argument as Elixir; observable only to a macro
+  that gives `|>` its own meaning *and* whose right side resolves to a routed call.
+- A classifier still sees its arguments as written (an upstream stage in argument 0 is a `|>`
+  node there) while `host/2`/`mutate/2` see them resolved. Unchanged from before, now pinned in
+  `piped_routed_call_test.exs`.
+- `route_arguments/2` keeps its context argument, now empty.
+
+**Companions.** `mutare_ecto` and `mutare_phoenix_swoosh` must move to `ArgumentRoutes.new/2`
+and `Call.new/4`; the plugin's piped twin paths (`piped_treatment/1`, `FromCall`'s
+`pipe_left` source, the `binding_reorders/1` guard, `replace_source/2`'s `:unpiped` head)
+collapse into the direct ones.

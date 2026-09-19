@@ -193,9 +193,9 @@ defmodule Mutare.Transform.Calls do
     # impossible state Mutare never produces. Rather than commit to a partial `macro_rebuild` that
     # would raise on it, degrade to `nil` (the documented "not a recognised known-macro call"), so a
     # caller handing in an arbitrary node can never crash here.
-    with {module_key, name, pipe_left} <- Meta.routed_call(meta),
+    with {module_key, name, _arity} <- Meta.routed_call(meta),
          rebuild when is_function(rebuild, 2) <- macro_rebuild(head, meta, module_key, args) do
-      Mutare.CallRouting.Call.new(node, natural_module(module_key), name, pipe_left, rebuild)
+      Mutare.CallRouting.Call.new(node, natural_module(module_key), name, rebuild)
     else
       _ -> nil
     end
@@ -203,7 +203,7 @@ defmodule Mutare.Transform.Calls do
 
   def resolved_routed_call(_node), do: nil
 
-  # Returns the resolved treatment for each visible argument of a routed call, `:skip` for a
+  # Returns the resolved treatment for each argument of a routed call, `:skip` for a
   # call routed as an inert leaf, or `nil` for an unrouted node. See
   # `Mutare.Calls.routed_treatments/1` for the contract.
   #

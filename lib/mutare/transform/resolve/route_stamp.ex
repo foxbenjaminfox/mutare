@@ -16,13 +16,12 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   @typep diag :: %{warn?: boolean(), file: String.t()}
 
   # The slice of the resolve pass's env this stamp reads: the known-macro registry, whether the
-  # call is a `|>` right-hand side and the left side it is piped from (for its effective arity,
-  # and for the `Call` a classifier, host, or mutator is shown), and the diagnostics wiring
+  # call is a `|>` right-hand side (for its effective arity), and the diagnostics wiring
   # (whether advisory warnings print, and the file that labels them) — see
   # `Mutare.Transform.Resolve.annotate/3`.
   @typep env :: %{
            :call_routes => Routes.registry(),
-           :pipe_left => Call.pipe_left(),
+           :pipe_mode => Mutator.pipe_mode(),
            :diag => diag(),
            optional(atom()) => term()
          }
@@ -33,8 +32,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   @spec stamp(keyword(), Spec.module_key() | nil, atom(), [Macro.t()], Macro.t(), env()) ::
           keyword()
   def stamp(meta, module_key, fun, args, call_node, env) do
-    %{call_routes: registry, pipe_left: pipe_left, diag: diag} = env
-    pipe_mode = Call.pipe_mode(pipe_left)
+    %{call_routes: registry, pipe_mode: pipe_mode, diag: diag} = env
     arity = Mutator.effective_arity(args, pipe_mode)
 
     case Routes.lookup(registry, module_key, fun, arity) do
@@ -42,37 +40,67 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
         meta
 
       %Entry{spec: spec} = entry ->
-        if StructuralForms.applies?(module_key, fun, spec) do
-          # A known macro routes its arguments specially, so a bare-import witness that rebuilds
-          # the call as an anonymous function may be invalid. Drop the witness where the macro is
-          # known; the resolution stamp itself stays.
-          #
-          # Stamp the resolved identity (`t:Mutare.Transform.Meta.routed_call/0`) *before*
-          # dispatching, and thread the updated meta back onto `call_node` — so a `:routing`
-          # classifier (invoked *inside* `stamp_spec`) that normalizes the node via
-          # `Mutare.Transform.Calls.resolved_routed_call/1` already sees it, pipe-left included.
-          # `module_key` is `nil` only for a name-only (`{:*, name, …}`) match whose
-          # module the resolver couldn't see; the reader then returns `{nil, name, …}`, which a
-          # module-matching classifier clause simply skips (its purpose — match by name instead).
-          meta = stamp_identity(Imports.drop_witness(meta), module_key, fun, pipe_left)
-          stamp_spec(meta, entry, put_meta(call_node, meta), arity, pipe_mode, diag)
-        else
-          # A wildcard route (`{Kernel, :*, :raw}`, `{:*, :if, …}`) whose cascade reached a head
-          # its key never named and that cannot carry it: a positional route on a structural form
-          # (`if`, `and`, `case`, …), or any route on a declaration (`def`, `use`, …). The explicit
-          # key forms were rejected at `Mutare.CallRouting.Spec.new/4`; here the route's positions
-          # simply do not apply, so the head stays unstamped — analyzed as usual, and not counted
-          # among the route's matches (`Mutare.Transform.ConfigMatches`).
-          meta
+        cond do
+          # A positional route never meets a piped call: `Resolve` rewrites such a stage into a
+          # direct call before walking it (`positional?/4` is the question it asks). The one
+          # stage still walked piped under a positional route sits beneath a `|>` that is
+          # itself `:skip`ped — an inert leaf nothing will read — so it is left unstamped.
+          pipe_mode == :piped and not Spec.skip?(spec) ->
+            meta
+
+          StructuralForms.applies?(module_key, fun, spec) ->
+            stamp_matched(meta, entry, module_key, fun, call_node, arity, diag)
+
+          true ->
+            # A wildcard route (`{Kernel, :*, :raw}`, `{:*, :if, …}`) whose cascade reached a
+            # head its key never named and that cannot carry it: a positional route on a
+            # structural form (`if`, `and`, `case`, …), or any route on a declaration (`def`,
+            # `use`, …). The explicit key forms were rejected at
+            # `Mutare.CallRouting.Spec.new/4`; here the route's positions simply do not apply,
+            # so the head stays unstamped — analyzed as usual, and not counted among the
+            # route's matches (`Mutare.Transform.ConfigMatches`).
+            meta
         end
+    end
+  end
+
+  # A known macro routes its arguments specially, so a bare-import witness that rebuilds the call
+  # as an anonymous function may be invalid. Drop the witness where the macro is known; the
+  # resolution stamp itself stays.
+  #
+  # Stamp the resolved identity (`t:Mutare.Transform.Meta.routed_call/0`) *before* dispatching, and
+  # thread the updated meta back onto `call_node` — so a `:routing` classifier (invoked *inside*
+  # `stamp_spec`) that normalizes the node via `Mutare.Transform.Calls.resolved_routed_call/1`
+  # already sees it. `module_key` is `nil` only for a name-only (`{:*, name, …}`) match whose
+  # module the resolver couldn't see; the reader then returns `{nil, name, arity}`, which a
+  # module-matching classifier clause simply skips (its purpose — match by name instead).
+  defp stamp_matched(meta, %Entry{} = entry, module_key, fun, call_node, arity, diag) do
+    meta = stamp_identity(Imports.drop_witness(meta), module_key, fun, arity)
+    stamp_spec(meta, entry, put_meta(call_node, meta), arity, diag)
+  end
+
+  @doc """
+  Whether a call resolving to `module_key`/`fun` at `arity` takes a **positional** route — one
+  that treats its arguments, as opposed to no route or the call-level `:skip`. The question
+  `Mutare.Transform.Resolve` asks of a `|>` stage before rewriting the pipe as a direct call.
+  """
+  @spec positional?(Routes.registry(), Spec.module_key() | nil, atom(), non_neg_integer()) ::
+          boolean()
+  def positional?(registry, module_key, fun, arity) do
+    case Routes.lookup(registry, module_key, fun, arity) do
+      nil ->
+        false
+
+      %Entry{spec: spec} ->
+        not Spec.skip?(spec) and StructuralForms.applies?(module_key, fun, spec)
     end
   end
 
   # Record the resolved macro identity on the call meta, read back by
   # `Mutare.Transform.Calls.resolved_routed_call/1` — at routing, at hosting, and from a mutator's
-  # own `mutate/2`, so all three are shown the same `pipe_left`.
-  defp stamp_identity(meta, module_key, fun, pipe_left),
-    do: Meta.stamp_routed_call(meta, {module_key, fun, pipe_left})
+  # own `mutate/2`.
+  defp stamp_identity(meta, module_key, fun, arity),
+    do: Meta.stamp_routed_call(meta, {module_key, fun, arity})
 
   # Replace a call node's own (top) meta — `{head, _meta, args}` covers both the remote
   # (`head = {:., …}`) and bare (`head = fun`) shapes the resolver hands here.
@@ -80,21 +108,20 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
 
   # Compute and stamp a matched macro spec's per-position routing.
   #
-  # Both static and dynamic declarations normalize to `ArgumentRoutes`: visible treatments align
-  # exactly with the call node, while a piped LHS has its own explicit slot.
+  # Both static and dynamic declarations normalize to `ArgumentRoutes`: one treatment per
+  # argument of the call node.
   defp stamp_spec(
          meta,
          %Entry{spec: %Spec{args: :routing} = spec, router: router} = entry,
          call_node,
          _arity,
-         pipe_mode,
          diag
        ) do
     call = resolved_call!(call_node, spec)
-    routes = invoke_router!(router, call, spec, pipe_mode)
+    routes = invoke_router!(router, call, spec)
     routes = validate_routes!(spec, call, routes)
     warn_misshapen_keyword_routes(diag, router, spec, call, routes)
-    stamp_routes(meta, attach_hosts!(routes, entry), spec)
+    stamp_routes(meta, attach_hosts!(routes, entry))
   end
 
   # The call-level `:skip`: the whole call is an inert leaf. Stamp the bare `:skip` (not a
@@ -103,13 +130,19 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   # `Mutare.Transform.Calls.routed_treatments/1` reports `:skip`. No piped stamp is written: a piped
   # receiver is the `|>`'s left operand, a sibling of the skipped call rather than part of it, so it
   # is analyzed as ordinary runtime (a `Repo.insert!(u) |> Mixpanel.track(…)` keeps its mutants).
-  defp stamp_spec(meta, %Entry{spec: %Spec{args: :skip}} = entry, call_node, arity, _pipe, _diag),
-    do: meta |> Meta.stamp_routing(:skip) |> stamp_skipped_pipe(entry, call_node, arity)
+  defp stamp_spec(
+         meta,
+         %Entry{spec: %Spec{args: :skip}} = entry,
+         {_head, _meta, args},
+         arity,
+         _diag
+       ),
+       do: meta |> Meta.stamp_routing(:skip) |> stamp_skipped_pipe(entry, length(args), arity)
 
-  defp stamp_spec(meta, %Entry{spec: spec} = entry, call_node, arity, _pipe_mode, _diag) do
+  defp stamp_spec(meta, %Entry{spec: spec} = entry, call_node, arity, _diag) do
     call = resolved_call!(call_node, spec)
-    routes = ArgumentRoutes.from_effective(call, Spec.routing(spec, arity))
-    stamp_routes(meta, attach_hosts!(routes, entry), spec)
+    routes = ArgumentRoutes.new(call, Spec.routing(spec, arity))
+    stamp_routes(meta, attach_hosts!(routes, entry))
   end
 
   # The one position a bare `:skip` still has to answer for. A piped receiver is the `|>`'s left
@@ -124,28 +157,19 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   # DSLs classifiers describe are exactly where a spliced `case` is illegal. Displacing nothing
   # keeps the documented default — an unrouted receiver is ordinary runtime, so
   # `Repo.insert!(u) |> Mixpanel.track(…)` keeps its `Repo.insert!(u)` mutants.
-  defp stamp_skipped_pipe(meta, %Entry{displaced: nil}, _call_node, _arity), do: meta
+  defp stamp_skipped_pipe(meta, %Entry{displaced: nil}, _visible, _arity), do: meta
 
-  defp stamp_skipped_pipe(meta, %Entry{displaced: %Spec{} = displaced}, call_node, arity) do
+  # Written directly, the skipped call has no piped receiver to answer for.
+  defp stamp_skipped_pipe(meta, %Entry{}, arity, arity), do: meta
+
+  defp stamp_skipped_pipe(meta, %Entry{displaced: %Spec{} = displaced}, _visible, arity) do
     if Spec.classifier?(displaced) do
       Meta.stamp_piped_routing(meta, :raw)
     else
-      stamp_displaced_pipe(meta, displaced, call_node, arity)
-    end
-  end
-
-  defp stamp_displaced_pipe(meta, displaced, call_node, arity) do
-    case Calls.resolved_routed_call(call_node) do
-      %Call{pipe_mode: :piped} = call ->
-        routes = ArgumentRoutes.from_effective(call, Spec.routing(displaced, arity))
-
-        case ArgumentRoutes.piped(routes) do
-          treatment when treatment in [nil, :expression] -> meta
-          treatment -> Meta.stamp_piped_routing(meta, treatment)
-        end
-
-      _unpiped_or_unresolved ->
-        meta
+      case displaced |> Spec.routing(arity) |> hd() |> Spec.normalize_position!() do
+        :expression -> meta
+        treatment -> Meta.stamp_piped_routing(meta, treatment)
+      end
     end
   end
 
@@ -166,7 +190,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
 
   defp warn_misshapen_keyword_routes(diag, router, spec, call, routes) do
     routes
-    |> ArgumentRoutes.visible()
+    |> ArgumentRoutes.treatments()
     |> Enum.zip(call.arguments)
     |> Enum.with_index()
     |> Enum.each(fn {{treatment, arg}, index} ->
@@ -234,8 +258,8 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
     end
   end
 
-  defp invoke_router!(router, call, spec, pipe_mode) do
-    router.route_arguments(call, %{pipe_mode: pipe_mode})
+  defp invoke_router!(router, call, spec) do
+    router.route_arguments(call, %{})
   rescue
     error ->
       contract_error!(
@@ -283,10 +307,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
       )
     end
 
-    {
-      Enum.map(ArgumentRoutes.visible(routes), &attach_hosts(&1, hosts)),
-      attach_hosts(ArgumentRoutes.piped(routes), hosts)
-    }
+    Enum.map(ArgumentRoutes.treatments(routes), &attach_hosts(&1, hosts))
   end
 
   defp attach_hosts(:hosted, hosts), do: {:hosted, hosts}
@@ -302,9 +323,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   defp attach_hosts(other, _hosts), do: other
 
   defp routes_contain_hosted?(routes),
-    do:
-      Enum.any?(ArgumentRoutes.visible(routes), &contains_hosted?/1) or
-        contains_hosted?(ArgumentRoutes.piped(routes))
+    do: Enum.any?(ArgumentRoutes.treatments(routes), &contains_hosted?/1)
 
   defp contains_hosted?(:hosted), do: true
   defp contains_hosted?({:hosted, _hosts}), do: true
@@ -315,24 +334,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
 
   defp contains_hosted?(_), do: false
 
-  defp stamp_routes(meta, {visible, piped}, spec) do
-    if contains_hosted?(piped) do
-      contract_error!(
-        route: Spec.key(spec),
-        reason: :unhostable_pipe_argument,
-        message:
-          "macro #{inspect(Spec.key(spec))} routes the pipe's left side as :hosted, but a " <>
-            "host's splice rewrites only the visible macro call — host/2 can read the left side " <>
-            "(call.pipe_left), not replace it"
-      )
-    end
-
-    meta = Meta.stamp_routing(meta, visible)
-
-    if is_nil(piped) or piped == :expression,
-      do: meta,
-      else: Meta.stamp_piped_routing(meta, piped)
-  end
+  defp stamp_routes(meta, treatments), do: Meta.stamp_routing(meta, treatments)
 
   @spec contract_error!(keyword()) :: no_return()
   defp contract_error!(opts), do: raise(ContractError, opts)

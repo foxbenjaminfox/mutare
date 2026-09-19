@@ -13,6 +13,7 @@ defmodule Mutare.Site do
   """
 
   alias Mutare.AST
+  alias Mutare.Transform.WrittenPipe
 
   @type t :: %__MODULE__{
           id: pos_integer(),
@@ -224,6 +225,8 @@ defmodule Mutare.Site do
   # an optional already-normalized `:variant`/`:note` an attribution drop threads through (a plain
   # clause/rescue drop passes neither, keeping the pre-attribution `variant: []`, `note: nil`).
   defp delete_site(id, file, range, clause_node, mutator_name, kind, opts) do
+    clause_node = WrittenPipe.resugar(clause_node)
+
     %{
       base_site(id, file, range)
       | mutator: mutator_name,
@@ -383,15 +386,19 @@ defmodule Mutare.Site do
     keyword_key? = keyword_key?(original_node)
     renderer = code_renderer(range)
 
+    # A routed call written as a pipe reads as that pipe (`Mutare.Transform.WrittenPipe`).
+    original_shown = WrittenPipe.resugar(original_node)
+    mutated_shown = WrittenPipe.resugar(mutated_node)
+
     %{
       base_site(id, file, range)
       | mutator: mutator.name,
         kind: kind,
         original_form: node_form(original_node),
         mutated_form: node_form(mutated_node),
-        original_code: render_code(original_node, keyword_key?, render?, renderer),
-        mutated_code: render_code(mutated_node, keyword_key?, render?, renderer),
-        summary: replace_summary(mutator.name, original_node, mutated_node, summary?),
+        original_code: render_code(original_shown, keyword_key?, render?, renderer),
+        mutated_code: render_code(mutated_shown, keyword_key?, render?, renderer),
+        summary: replace_summary(mutator.name, original_shown, mutated_shown, summary?),
         note: opts[:note],
         variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node, variant)
     }

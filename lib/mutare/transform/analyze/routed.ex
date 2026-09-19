@@ -422,13 +422,12 @@ defmodule Mutare.Transform.Analyze.Routed do
     end
   end
 
-  # The left side of a `|>` whose right side is a known macro: the piped value is the macro's
-  # *effective argument 0*, so it inherits position 0's treatment, which `Resolve` recorded on
-  # the stage as `:mutare_route_piped` (stamped only when it isn't the `:expression` default —
-  # so the common runtime LHS carries no stamp and falls through unchanged). Routing it through
-  # the same `route_macro_arg/3` as the visible args keeps the piped position in lockstep with
-  # a written first argument: a `1 |> match?(1)` LHS routes as `:pattern`, a `:raw` macro's LHS
-  # is left raw, and any other LHS stays ordinary runtime.
+  # The left side of a `|>` whose right side is a call under the call-level `:skip`. The skipped
+  # call is an inert leaf, but the piped value is its *effective argument 0*: when the skip
+  # displaced a code-provided route, `Resolve` recorded that route's position 0 on the stage as
+  # `:mutare_route_piped` (only when it isn't the `:expression` default), and the left side is
+  # routed by it — a skipped `1 |> match?(1)` keeps its LHS a `:pattern`. Any other LHS is
+  # ordinary runtime. (A stage under a positional route is not a pipe here: `Resolve` rewrote it.)
   def analyze_piped_value(lhs, {_form, rhs_meta, _args}, env)
       when is_list(rhs_meta) do
     case Meta.piped_routing(rhs_meta) do
@@ -438,22 +437,4 @@ defmodule Mutare.Transform.Analyze.Routed do
   end
 
   def analyze_piped_value(lhs, _rhs, env), do: Analyze.annotate(lhs, env)
-
-  # Only evaluated positions may be bound to a closure parameter. Every other treatment
-  # describes syntax the receiving macro must see. Keep the as-written operand from resolve,
-  # not the analyzed one: mutant branches must not duplicate selectors in interpolated pins or
-  # keyword values. The catch-all will retain the emitted operand and all its mutants.
-  @spec pipe_delivery(Macro.t()) :: Meta.pipe_delivery()
-  def pipe_delivery({_form, meta, _args}) when is_list(meta) do
-    case Meta.piped_routing(meta) do
-      value when value in [nil, :expression, :interior] ->
-        :value
-
-      _syntax ->
-        {_module, _name, {:piped, original}} = Meta.routed_call(meta)
-        {:syntax, original}
-    end
-  end
-
-  def pipe_delivery(_rhs), do: :value
 end

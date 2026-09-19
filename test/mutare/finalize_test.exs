@@ -170,8 +170,7 @@ defmodule Mutare.FinalizeTest do
 
   describe "the hosted :mutants path" do
     defp call do
-      Mutare.CallRouting.Call.new({:x, [], []}, Mutare.Test.HostDSL, :x, :unpiped, fn name,
-                                                                                      args ->
+      Mutare.CallRouting.Call.new({:x, [], []}, Mutare.Test.HostDSL, :x, fn name, args ->
         {name, [], args}
       end)
     end

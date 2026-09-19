@@ -546,19 +546,18 @@ defmodule Mutare.Transform.Analyze do
   # so an arity-changing mutator (`CollectionArity`) is offered the node *as piped*
   # and sees the true arity. (Arity-blind mutators are unaffected — they ignore the flag.)
   #
-  # The LHS is *usually* an ordinary runtime expression, but when the RHS is a **known
-  # macro** the piped value is that macro's effective argument 0, so it inherits position
-  # 0's treatment (`analyze_piped_value/3` — the "reach back"): a `1 |> match?(1)` pipes
-  # its LHS into match?'s **pattern** position, and a `:raw` macro may accept a LHS that
-  # is neither a valid expression nor a valid pattern. Treating it as runtime would splice
-  # a selector `case` into pattern/opaque position and poison the build.
+  # The LHS is an ordinary runtime expression, with one exception: a stage under the call-level
+  # `:skip` whose skip displaced a code-provided route answers for its effective argument 0 by
+  # that route's position 0 (`analyze_piped_value/3`) — a skipped `1 |> match?(1)` must not
+  # have a selector `case` spliced into its pattern. (A stage under a *positional* route never
+  # arrives as a pipe: `Resolve` rewrote it into a direct call.)
   #
   # Only `Kernel.|>/2` is that pipe. A `|>` displaced out of `Kernel` is a call to somebody
   # else's operator, and the closure `PipeEmit.hoist/2` builds would apply that operator twice —
   # so it is analyzed as the call it is (`analyze_foreign_pipe/2`).
   defp analyze_form({:|>, meta, [lhs, rhs]} = node, :runtime, env) do
     if Calls.kernel_call?(node) do
-      {:|>, Meta.stamp_pipe_delivery(meta, Routed.pipe_delivery(rhs)),
+      {:|>, meta,
        [
          Routed.analyze_piped_value(lhs, rhs, env),
          analyze_pipe_stage(rhs, env)
@@ -851,12 +850,10 @@ defmodule Mutare.Transform.Analyze do
   # `PipeEmit.hoist/2` lifts the selector out of the illegal pipe-RHS position into a
   # one-shot closure on the piped value — `lhs |> (fn v -> case … (each branch pipes
   # `v`) … end).()`. A non-call RHS (rare) is analyzed normally.
-  # Syntax-valued left operands instead distribute into those branches (`Routed.pipe_delivery/1`
-  # recorded the delivery plan on the parent pipe before its stage becomes a selector).
   #
-  # A piped **known-macro** stage (`q |> where([p], p.x == 1)`, the query-builder shape)
-  # routes its arguments by treatment too — `Resolve` already stamped the *visible*-position
-  # routing (the piped value dropped), so a `:raw` DSL body is left raw instead of mutated.
+  # The stage is an **unrouted** call, or one under the call-level `:skip` (left alone by
+  # `do_analyze_call_node/3`): a stage under a positional route is no longer a pipe by the time
+  # it gets here — `Resolve` rewrote it into a direct call.
   defp analyze_pipe_stage({_form, _meta, args} = node, env) when is_list(args),
     do: do_analyze_call_node(node, env, %{pipe_mode: :piped})
 

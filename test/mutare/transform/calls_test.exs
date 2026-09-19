@@ -114,7 +114,7 @@ defmodule Mutare.Transform.CallsTest do
       # import (`import Mx.DSL, only: [filter: 2]` — a `:qualify` kind): the resolved identity plus
       # the import resolution. Set directly to drive the bare rebuild's `:qualify` branch.
       meta = [
-        mutare_route_call: {[:Mx, :DSL], :filter, :unpiped},
+        mutare_route_call: {[:Mx, :DSL], :filter, 2},
         mutare_import: {[:Mx, :DSL], :qualify}
       ]
 
@@ -187,7 +187,7 @@ defmodule Mutare.Transform.CallsTest do
       # impossible state Mutare never produces; `resolved_routed_call/1` returns nil rather than
       # raising a `FunctionClauseError` from the (otherwise partial) rebuild.
       anon_head =
-        {{:., [], [{:f, [], nil}]}, [mutare_route_call: {[:X], :f, :unpiped}], [{:a, [], nil}]}
+        {{:., [], [{:f, [], nil}]}, [mutare_route_call: {[:X], :f, 1}], [{:a, [], nil}]}
 
       assert Calls.resolved_routed_call(anon_head) == nil
     end

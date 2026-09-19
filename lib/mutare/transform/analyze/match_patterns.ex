@@ -146,22 +146,10 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
 
   defp binding_pattern_macro(_node), do: nil
 
-  defp piped_binding_pattern({:|>, meta, [lhs, {form, rhs_meta, args} = rhs]}) do
+  defp piped_binding_pattern({:|>, meta, [lhs, {_form, rhs_meta, _args} = rhs]}) do
     case Meta.piped_routing(rhs_meta) do
-      :binding_pattern ->
-        {lhs, fn mutated -> {:|>, meta, [mutated, rhs]} end}
-
-      _ ->
-        case binding_pattern_index(rhs_meta) do
-          nil ->
-            nil
-
-          index ->
-            {Enum.at(args, index),
-             fn mutated ->
-               {:|>, meta, [lhs, {form, rhs_meta, List.replace_at(args, index, mutated)}]}
-             end}
-        end
+      :binding_pattern -> {lhs, fn mutated -> {:|>, meta, [mutated, rhs]} end}
+      _other -> nil
     end
   end
 

@@ -110,30 +110,30 @@ defmodule Mutare.CallRouting.SpecGrammarTest do
 
     test "are normalized by the ArgumentRoutes constructors and validator alike" do
       call =
-        Call.new({:f, [], [{:q, [], nil}, [timeout: 5]]}, M, :f, :unpiped, fn _n, _a -> nil end)
+        Call.new({:f, [], [{:q, [], nil}, [timeout: 5]]}, M, :f, fn _n, _a -> nil end)
 
-      routes = ArgumentRoutes.from_visible(call, [:expression, [timeout: :raw]])
+      routes = ArgumentRoutes.new(call, [:expression, [timeout: :raw]])
 
-      assert ArgumentRoutes.visible(routes) == [
+      assert ArgumentRoutes.treatments(routes) == [
                :expression,
                {:keyed, :expression, [timeout: :raw]}
              ]
 
-      forged = %ArgumentRoutes{visible: [:expression, [timeout: :raw]], piped: nil}
+      forged = %ArgumentRoutes{treatments: [:expression, [timeout: :raw]]}
       assert {:ok, normalized} = ArgumentRoutes.validate(forged, call)
 
-      assert ArgumentRoutes.visible(normalized) == [
+      assert ArgumentRoutes.treatments(normalized) == [
                :expression,
                {:keyed, :expression, [timeout: :raw]}
              ]
 
       assert_raise ArgumentError, ~r/use :raw/, fn ->
-        ArgumentRoutes.from_visible(call, [:expression, :skip])
+        ArgumentRoutes.new(call, [:expression, :skip])
       end
 
       assert {:error, _} =
                ArgumentRoutes.validate(
-                 %ArgumentRoutes{visible: [:expression, :skip], piped: nil},
+                 %ArgumentRoutes{treatments: [:expression, :skip]},
                  call
                )
     end

@@ -5,33 +5,18 @@ defmodule Mutare.CallRoutingTest do
 
   doctest Call
 
-  defp call(pipe_mode, arguments) do
-    pipe_left = if pipe_mode == :piped, do: {:piped, {:query, [], nil}}, else: :unpiped
-    Call.new({:where, [], arguments}, Ecto.Query, :where, pipe_left, &{&1, [], &2})
-  end
+  defp call(arguments), do: Call.new({:where, [], arguments}, Ecto.Query, :where, &{&1, [], &2})
 
   describe "ArgumentRoutes" do
-    test "effective routes split the pipe argument from visible arguments" do
-      routes = ArgumentRoutes.from_effective(call(:piped, [:condition]), [:raw, :hosted])
+    test "holds one normalized treatment per argument" do
+      routes = ArgumentRoutes.new(call([:query, :condition]), [:raw, :hosted])
 
-      assert ArgumentRoutes.piped(routes) == :raw
-      assert ArgumentRoutes.visible(routes) == [:hosted]
+      assert ArgumentRoutes.treatments(routes) == [:raw, :hosted]
     end
 
-    test "visible routes default a piped argument explicitly to expression" do
-      routes = ArgumentRoutes.from_visible(call(:piped, [:condition]), [:hosted])
-
-      assert ArgumentRoutes.piped(routes) == :expression
-      assert ArgumentRoutes.visible(routes) == [:hosted]
-    end
-
-    test "constructors reject a treatment-count mismatch" do
-      assert_raise ArgumentError, ~r/expected 2 effective-argument treatments/, fn ->
-        ArgumentRoutes.from_effective(call(:piped, [:condition]), [:hosted])
-      end
-
-      assert_raise ArgumentError, ~r/expected 1 visible-argument treatments/, fn ->
-        ArgumentRoutes.from_visible(call(:unpiped, [:condition]), [])
+    test "rejects a treatment-count mismatch" do
+      assert_raise ArgumentError, ~r/expected 2 argument treatments, got 1/, fn ->
+        ArgumentRoutes.new(call([:query, :condition]), [:hosted])
       end
     end
   end

@@ -223,15 +223,13 @@ keyword *values* positionally, keep keys raw), or `:hosted` (hand the
 position to a host mutator — below). The `:routing` sentinel defers to
 `route_arguments/2` when the right treatment depends on the call's shape —
 `where(q, category: "Foo")` is data, `where(q, [u], u.x == u.y)` is a DSL
-fragment. A piped call's first argument is the `|>`'s left side, which the
-call node does not hold: `call.pipe_left` carries it (`{:piped, left}`, as
-written), so a classifier routes that position by shape too — pass the
-treatment as `ArgumentRoutes.from_visible(call, visible, piped: treatment)`.
-Whole-call mutants preserve syntax in that slot: only `:expression` and `:interior`
-operands are evaluated into a temporary value. A `:raw` declaration such as
-`(p in Post) |> from(…)` is supplied directly to each mutant stage. The left operand
-remains read-only to the adapter; this does not enable source rewrites or `:hosted`
-routing of that position.
+fragment. Return the treatments as `ArgumentRoutes.new(call, treatments)`, one
+per entry of `call.arguments`. A piped routed call needs no special handling:
+Mutare rewrites it into the direct call `Kernel.|>/2` would build, so
+`(p in Post) |> from(order_by: …)` is shown — to a classifier, a host, and a
+mutator alike — as `from(p in Post, order_by: …)`. The piped operand is
+argument 0: routed by its shape, rewritable through `call.rebuild`, and
+hostable like any other position. Reports keep the pipe the user wrote.
 
 Two limits on what a route may name: the structural forms (`if`,
 `case`, the boolean operators — anything the analyzer walks with a clause of its

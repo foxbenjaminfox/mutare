@@ -39,7 +39,11 @@ defmodule Mutare.Transform.NodeRange do
 
   @doc "Like `Sourceror.get_range/1`, correcting the sigil/interpolated-string under-count."
   @spec get(Macro.t()) :: Sourceror.Range.t() | nil
-  def get(node), do: node |> Sourceror.get_range() |> correct(node)
+  def get(node) do
+    # A routed call written as a pipe stands where the whole `left |> stage` stood
+    # (`Mutare.Transform.WrittenPipe`); its own meta would range the stage alone.
+    Mutare.Transform.WrittenPipe.range(node) || node |> Sourceror.get_range() |> correct(node)
+  end
 
   # A sigil: `{:sigil_x, meta, [{:<<>>, _, segments}, modifiers]}`. The head also
   # admits a plain `call(<<…>>, [..])` of the same shape, so `sigil_range/3`

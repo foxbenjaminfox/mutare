@@ -55,7 +55,7 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_kernel_displaced` — a Kernel fn displaced by `import …, except:`    (Imports)
   #   * `:mutare_route`            — a routed call's per-argument positions, or `:skip` (Resolve.RouteStamp, from the route registry)
   #   * `:mutare_route_piped`      — piped-value routing for a routed `|>` RHS         (Resolve.RouteStamp, from the route registry)
-  #   * `:mutare_route_call`       — resolved `{module_key, name, pipe_left}` routed-call identity (Resolve.RouteStamp, read through Meta.routed_call/1)
+  #   * `:mutare_route_call`       — resolved `{module_key, name, arity}` routed-call identity (Resolve.RouteStamp, read through Meta.routed_call/1)
   #   * `:mutare_use_directives`   — import/alias/require a `use` injects            (Uses)
   #   * `:mutare_use_behaviours`   — `@behaviour`s a `use` injects (on the `use`)    (Uses)
   #   * `:mutare_use_degraded`     — `{module, reason}` a `use` failed to expand     (Uses, read by `--check`)
@@ -65,11 +65,11 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_mark_call`        — `{module_key, fun, arity}` of a call some mark declaration matched (Resolve, read by ConfigMatches)
   #   * `:mutare_unit_tail`        — a unit-returning function's leaf return tail    (UnitReturns, read by Attach.offer + Analyze.Returns)
   #   * `:mutare_selector`         — marks a selector `case` the emit built           (Render.selector_case, read by PipeEmit.hoist)
-  #   * `:mutare_pipe_delivery`    — syntax-valued pipe's original left operand       (Analyze, read by PipeEmit.hoist)
+  #   * `:mutare_written_pipe`     — the `|>` a routed call was written as, before Resolve made it a direct call (Resolve, read through Meta.written_pipe/1)
   @bookkeeping_keys [
     tag_key: :mutare_tag,
     selector_key: :mutare_selector,
-    pipe_delivery_key: :mutare_pipe_delivery,
+    written_pipe_key: :mutare_written_pipe,
     nid_key: :mutare_nid,
     marks_key: :mutare_marks,
     mark_call_key: :mutare_mark_call,

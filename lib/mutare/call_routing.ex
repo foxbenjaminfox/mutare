@@ -32,10 +32,10 @@ defmodule Mutare.CallRouting do
   Both extensions and mutators may implement this behaviour. Enabling the module under `:extensions`
   or `:mutators` also enables its routes.
 
-  A piped first argument keeps the same treatment as a written one. When a whole-call mutant
-  changes the stage, only `:expression` and `:interior` arguments are evaluated into a temporary
-  value; all other treatments preserve the left operand as syntax in each branch. For example,
-  a `:raw` declaration `(p in Post) |> from(…)` still reaches `from` as `p in Post`.
+  A piped first argument is a first argument. Mutare rewrites a piped call that takes a
+  positional route into the direct call `Kernel.|>/2` would build, so a route, a classifier, a
+  host and a mutator all see `from(p in Post, …)` for `(p in Post) |> from(…)`, and a `:raw`
+  declaration reaches the macro as the syntax it is. Reports keep the pipe the user wrote.
 
       defmodule MyApp.EctoRouting do
         @behaviour Mutare.CallRouting
@@ -51,7 +51,7 @@ defmodule Mutare.CallRouting do
         @impl Mutare.CallRouting
         def route_arguments(call, _context) do
           routes = Enum.map(call.arguments, &classify/1)
-          Mutare.CallRouting.ArgumentRoutes.from_visible(call, routes)
+          Mutare.CallRouting.ArgumentRoutes.new(call, routes)
         end
       end
 
@@ -149,18 +149,19 @@ defmodule Mutare.CallRouting do
   `where(q, category: "Foo")` is plain data while `where(q, [u], u.x == u.y)` contains a DSL
   fragment. Return a `Mutare.CallRouting.ArgumentRoutes` value.
 
-  `context` is an opt-independent `t:routing_context/0` describing the call (currently its
-  `:pipe_mode`); it carries no mutator options, because routing is a global library fact. Match it
-  as a map (or `_context`) so a later field can't break your clause.
+  `context` is an opt-independent `t:routing_context/0`, currently empty; it carries no mutator
+  options, because routing is a global library fact. Match it as a map (or `_context`) so a
+  later field can't break your clause.
 
   The `call` is a stable `Mutare.CallRouting.Call`, already normalized across bare, qualified,
-  aliased, imported, and piped forms. A piped call's `pipe_left` holds the pipe's left side as
-  written, so the piped position can be routed by its shape like any visible argument
-  (`Post |> from(…)` and `build(x) |> from(…)` need not share a treatment).
-  `ArgumentRoutes.from_effective/2` uses the same effective
-  argument order as static declarations. `ArgumentRoutes.from_visible/3` is convenient when only
-  written arguments matter and makes the pipe-left treatment explicit. Returned treatments and
-  lengths are validated by the transform.
+  aliased, imported, and piped forms: a piped call arrives as the direct call, its piped operand
+  as argument 0, so that position is routed by its shape like any other (`Post |> from(…)` and
+  `build(x) |> from(…)` need not share a treatment). The arguments are **as written** — an
+  upstream stage in argument 0 is still the `|>` the user wrote, and
+  `Mutare.Calls.resolved_call/1` does not resolve calls inside them — whereas `host/2` and
+  `mutate/2` see them resolved. Return `ArgumentRoutes.new(call, treatments)`, one treatment
+  per argument, in the order a static declaration uses. Returned treatments and lengths are
+  validated by the transform.
 
     * `{:keyword, treatments}` — routes keyword values positionally while leaving
       keys unchanged; the list must name exactly one treatment per pair, and nested
@@ -224,11 +225,11 @@ defmodule Mutare.CallRouting do
               Mutare.CallRouting.ArgumentRoutes.t()
 
   @typedoc """
-  The opt-independent context `c:route_arguments/2` receives for a concrete call. Currently carries
-  the call's `:pipe_mode`; it may gain fields, so match it as a map rather than destructuring
-  exhaustively. It deliberately carries **no** mutator options — routing is a global library fact.
+  The opt-independent context `c:route_arguments/2` receives for a concrete call. Currently
+  empty; it may gain fields, so match it as a map rather than destructuring exhaustively. It
+  deliberately carries **no** mutator options — routing is a global library fact.
   """
-  @type routing_context :: %{pipe_mode: Mutare.Mutator.pipe_mode()}
+  @type routing_context :: %{}
 
   @typedoc """
   A treatment for one call argument or nested keyword value: an atom treatment, a `{:keyword, …}`

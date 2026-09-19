@@ -142,12 +142,12 @@ defmodule Mutare.Test.HostMutator do
         if keyword_list?(arg), do: {:keyword, value_treatments(arg)}, else: :expression
       end)
 
-    ArgumentRoutes.from_visible(call, routes)
+    ArgumentRoutes.new(call, routes)
   end
 
   def route_arguments(%Call{arguments: args} = call, _context) do
     routes = Enum.map(args, fn arg -> if comparison?(arg), do: :hosted, else: :expression end)
-    ArgumentRoutes.from_visible(call, routes)
+    ArgumentRoutes.new(call, routes)
   end
 
   # Per-pair value treatments for `set`'s keyword arg: a string value is mutated and delivered
@@ -260,7 +260,7 @@ defmodule Mutare.Test.SubcontractHostMutator do
   @impl Mutare.CallRouting
   def route_arguments(%Call{arguments: args} = call, _context) do
     routes = Enum.map(args, fn arg -> if comparison?(arg), do: :hosted, else: :expression end)
-    ArgumentRoutes.from_visible(call, routes)
+    ArgumentRoutes.new(call, routes)
   end
 
   # The condition is the last visible argument (index 1 direct, 0 piped).
@@ -340,7 +340,7 @@ defmodule Mutare.Test.HostNodeMutator do
   @impl Mutare.CallRouting
   def route_arguments(%Call{arguments: args} = call, _context) do
     routes = Enum.map(args, fn arg -> if comparison?(arg), do: :hosted, else: :expression end)
-    ArgumentRoutes.from_visible(call, routes)
+    ArgumentRoutes.new(call, routes)
   end
 
   # The node-level half: a whole-call `dyn` rewrite (its own comparison reversal) plus the
@@ -703,7 +703,7 @@ defmodule Mutare.Test.NoDeliveryHostMutator do
   @impl Mutare.CallRouting
   def route_arguments(%Mutare.CallRouting.Call{arguments: args} = call, _context) do
     routes = Enum.map(args, fn arg -> if comparison?(arg), do: :hosted, else: :expression end)
-    Mutare.CallRouting.ArgumentRoutes.from_visible(call, routes)
+    Mutare.CallRouting.ArgumentRoutes.new(call, routes)
   end
 end
 
@@ -762,14 +762,14 @@ defmodule Mutare.Test.KeywordHostedMutator do
         _context
       )
       when is_list(assigns) do
-    Mutare.CallRouting.ArgumentRoutes.from_visible(
+    Mutare.CallRouting.ArgumentRoutes.new(
       call,
       [:expression, {:keyword, value_treatments(assigns)}]
     )
   end
 
   def route_arguments(%Mutare.CallRouting.Call{arguments: args} = call, _context) do
-    Mutare.CallRouting.ArgumentRoutes.from_visible(
+    Mutare.CallRouting.ArgumentRoutes.new(
       call,
       Enum.map(args, fn _arg -> :expression end)
     )
@@ -871,7 +871,7 @@ defmodule Mutare.Test.UnknownTreatmentMutator do
   # Route the condition (visible arg 1) with a bogus treatment; the query stays an expression.
   @impl Mutare.CallRouting
   def route_arguments(%Mutare.CallRouting.Call{}, _context) do
-    %Mutare.CallRouting.ArgumentRoutes{visible: [:expression, :bogus], piped: nil}
+    %Mutare.CallRouting.ArgumentRoutes{treatments: [:expression, :bogus]}
   end
 end
 
@@ -900,7 +900,7 @@ defmodule Mutare.Test.MisroutedKeywordMutator do
   @impl Mutare.CallRouting
   def route_arguments(%Mutare.CallRouting.Call{} = call, _context),
     do:
-      Mutare.CallRouting.ArgumentRoutes.from_visible(
+      Mutare.CallRouting.ArgumentRoutes.new(
         call,
         [:expression, {:keyword, [:raw]}]
       )
@@ -933,14 +933,14 @@ defmodule Mutare.Test.CompoundInterpolatedMutator do
         _context
       )
       when is_list(assigns) do
-    Mutare.CallRouting.ArgumentRoutes.from_visible(
+    Mutare.CallRouting.ArgumentRoutes.new(
       call,
       [:expression, {:keyword, Enum.map(assigns, fn _pair -> :interpolated end)}]
     )
   end
 
   def route_arguments(%Mutare.CallRouting.Call{arguments: args} = call, _context) do
-    Mutare.CallRouting.ArgumentRoutes.from_visible(
+    Mutare.CallRouting.ArgumentRoutes.new(
       call,
       Enum.map(args, fn _arg -> :expression end)
     )
@@ -991,7 +991,7 @@ defmodule Mutare.Test.ArgInterpolatedMutator do
 
   @impl Mutare.CallRouting
   def route_arguments(%Mutare.CallRouting.Call{} = call, _context),
-    do: Mutare.CallRouting.ArgumentRoutes.from_visible(call, [:interpolated, :expression])
+    do: Mutare.CallRouting.ArgumentRoutes.new(call, [:interpolated, :expression])
 end
 
 defmodule Mutare.Test.DeadHostMutator do
@@ -1040,7 +1040,7 @@ defmodule Mutare.Test.DeadRouterMutator do
 
   @impl Mutare.CallRouting
   def route_arguments(call, _context),
-    do: Mutare.CallRouting.ArgumentRoutes.from_visible(call, [:expression, :expression])
+    do: Mutare.CallRouting.ArgumentRoutes.new(call, [:expression, :expression])
 end
 
 defmodule Mutare.Test.MalformedHost do

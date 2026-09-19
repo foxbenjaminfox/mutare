@@ -219,9 +219,14 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   to there; in a *body* (the coverage record, `Mutare.Coverage.Recorder.record_ast/3`) they are
   nested `case`s, because Elixir ≥ 1.21 accepts `:erlang.andalso` only in a guard — NOTES
   "Factor compiler input before rendering" and NOTES "`:erlang.andalso` is guard-only".
-- **Only `Kernel`'s `|>` is the pipe.** A module can displace the operator, and the hoisting
-  closure would then apply the custom one twice. Any code about to read a `{:|>, …}` node as a
-  pipe asks `Mutare.Transform.Calls.kernel_call?/1` first — NOTES "Only `Kernel`'s `|>` is the pipe".
+- **Only `Kernel`'s `|>` is the pipe, and a routed stage is not a pipe at all.** A module can
+  displace the operator, and the hoisting closure would then apply the custom one twice: any
+  code about to read a `{:|>, …}` node as a pipe asks `Mutare.Transform.Calls.kernel_call?/1`
+  first — NOTES "Only `Kernel`'s `|>` is the pipe". And `Resolve` rewrites a piped stage under a
+  positional route into the direct call, so routing, hosting, mutation and delivery never see
+  one; the `|>` nodes that survive have an unrouted or `:skip`ped right side, whose left side
+  is a value. `Mutare.Transform.WrittenPipe` is what keeps a rewritten call's Site in the
+  user's spelling and footprint — NOTES "A routed pipe stage becomes a direct call".
 - **Every delivery shape must be readable back.** `Mutare.Manifest` recognises what emission
   writes: selector clauses, `===` gates, `=/=` and range exclusions, coverage records. A new
   shape needs its reader in the same change: `verify_invariants` (the transform property soak,
@@ -267,7 +272,7 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 | Structural head pattern | `pattern_mutations/2` | (`PatternSwap`/`PatternWildcard`) |
 | Behaviour-gated | read `context.behaviours` (or the `+1`-arity structural callbacks) | `behaviour_mutator.ex` |
 | Call-matching (stdlib/remote) | resolve via `Mutare.Calls.resolved_call_to/3` | `resolved_call_mutator.ex` |
-| Call routing (static or shape-aware) | `Mutare.CallRouting.call_routes/0` + optional `route_arguments/2` (a piped call's left side is `call.pipe_left`) | `macro_mutator.ex` / `host_mutator.ex` / `pipe_left_probe.ex` |
+| Call routing (static or shape-aware) | `Mutare.CallRouting.call_routes/0` + optional `route_arguments/2` (a piped routed call is shown as the direct call — its piped operand is argument 0) | `macro_mutator.ex` / `host_mutator.ex` / `piped_call_probe.ex` |
 | Selector-hosting (mutate inside a DSL fragment) | subscribe via `Mutator.MacroHost.hosted_macros/0` + implement `host/2` | `host_mutator.ex` |
 | Sub-contract an Elixir island (pin interior) to core | `Mutare.Analyze.expression_mutations/3` over `context.mutators` (in `host/2`, or in `mutate/2` at a registered macro's whole-call offer), relayed with `producer:` | `host_mutator.ex` (`SubcontractHostMutator`) / `macro_mutator.ex` (`SubcontractNodeMutator`) |
 | Deployment requirement (routed library must be loadable) | `required_modules/0` (checked once at startup, on mutators and extensions) | `environment_fixtures.ex` |
