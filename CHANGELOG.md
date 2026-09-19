@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-19
+
 ### Added
 
 - **`--verify-invariants` (`verify_invariants:`) checks each transformed file
@@ -35,14 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: a hand-built `%Mutare.CallRouting.Call{}` must name `pipe_left`.** The key
+  is enforced, so a test that builds the struct literally stops compiling; build
+  it with `Call.new/5` instead. Matching on the struct is unaffected.
 - **`Mutare.Test`'s source helpers run the invariant checks by default.**
   `diffs/3`, `diffs_for/4`, `metamutant_source/3`,
   `assert_metamutant_compiles/3`, and `compile_metamutant/3` raise
   `Mutare.InvariantError` for a mutator that breaks the metamutant; pass
   `verify_invariants: false` to opt out.
-- **A hand-built `%Mutare.CallRouting.Call{}` must name `pipe_left`.** The key
-  is enforced, so a test that builds the struct literally stops compiling; build
-  it with `Call.new/5` instead. Matching on the struct is unaffected.
 - **Hosts that target the same fragment share one selector.** Inside a function
   body, a later `Mutare.Mutator.MacroHost`'s mutants join the earlier host's
   selector instead of nesting a second selector around it, and one coverage
@@ -51,6 +53,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs in order — a later one now receives the combined selector. Where no
   active-id binding is in scope (a default argument, a function of a module
   defined at runtime) the selectors nest as before.
+- **A lifted function's guard mutants share one clause.** Where a clause's
+  mutants change only its guard, they become `when` alternatives of a single
+  generated clause instead of each copying the clause body. On fixtures of
+  large-bodied clauses with several guard mutants this cut the generated source
+  by up to 4× and the compile's CPU time by up to half. Mutants and their results
+  are unchanged.
+
+### Fixed
+
+- **A `with`/`for`/`try` clause with alternative guards no longer crashes the
+  metamutant compile.** Mutating a guard such as `x when x > 10 when x < 0`
+  produced a nested `when` that the compiler's type checker rejected with no
+  file or line, so poison recovery could not drop the mutant and the whole run
+  aborted.
 
 ## [0.2.1] - 2026-09-17
 
@@ -304,7 +320,8 @@ Initial release.
   any label a mutator declares) to your own functions, with the mutators'
   value-aware reaction: `{MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout}`.
 
-[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/foxbenjaminfox/mutare/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/foxbenjaminfox/mutare/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/foxbenjaminfox/mutare/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/foxbenjaminfox/mutare/compare/v0.1.1...v0.1.2
