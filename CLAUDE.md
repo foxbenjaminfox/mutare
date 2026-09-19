@@ -222,11 +222,15 @@ These span modules, so no single moduledoc holds them. Internalize them before s
 - **Only `Kernel`'s `|>` is the pipe, and a routed stage is not a pipe at all.** A module can
   displace the operator, and the hoisting closure would then apply the custom one twice: any
   code about to read a `{:|>, …}` node as a pipe asks `Mutare.Transform.Calls.kernel_call?/1`
-  first — NOTES "Only `Kernel`'s `|>` is the pipe". And `Resolve` rewrites a piped stage under a
-  positional route into the direct call, so routing, hosting, mutation and delivery never see
-  one; the `|>` nodes that survive have an unrouted or `:skip`ped right side.
-  `Mutare.Transform.WrittenPipe` is what keeps a rewritten call's Site in the user's spelling
-  and footprint — NOTES "A routed pipe stage becomes a direct call".
+  first — NOTES "Only `Kernel`'s `|>` is the pipe". And a piped stage under a positional route
+  is *routed* as the direct call (`Resolve` stamps it so and marks it, but leaves the tree
+  alone) and *becomes* that call as `Analyze` reaches it (`WrittenPipe.direct/1`, at the
+  dispatcher's entry). So routing, hosting, mutation and delivery never see such a pipe, while
+  code Mutare never analyzes — a `:raw` argument, a `:skip`ped call, a clean copy — is never
+  rewritten. Anything that reads a statement or tail *before* `analyze/3` does must apply
+  `direct/1` first; a marked stage on its own is not a complete call.
+  `Mutare.Transform.WrittenPipe` also keeps a rewritten call's Site in the user's spelling and
+  footprint — NOTES "A routed pipe stage becomes a direct call".
 - **A call is a function in every respect its route does not address — evaluation included.**
   Routes are for functions and macros alike, and core never derives which a call is. So the
   hoisting closure, and the let-binding of a rewritten stage's piped value

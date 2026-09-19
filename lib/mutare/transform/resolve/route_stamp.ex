@@ -40,26 +40,19 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
         meta
 
       %Entry{spec: spec} = entry ->
-        cond do
-          # A positional route never meets a piped call: `Resolve` rewrites such a stage into a
-          # direct call before walking it (`positional?/4` is the question it asks). The one
-          # stage still walked piped under a positional route sits beneath a `|>` that is
-          # itself `:skip`ped — an inert leaf nothing will read — so it is left unstamped.
-          pipe_mode == :piped and not Spec.skip?(spec) ->
-            meta
-
-          StructuralForms.applies?(module_key, fun, spec) ->
-            stamp_matched(meta, entry, module_key, fun, call_node, arity, diag)
-
-          true ->
-            # A wildcard route (`{Kernel, :*, :raw}`, `{:*, :if, …}`) whose cascade reached a
-            # head its key never named and that cannot carry it: a positional route on a
-            # structural form (`if`, `and`, `case`, …), or any route on a declaration (`def`,
-            # `use`, …). The explicit key forms were rejected at
-            # `Mutare.CallRouting.Spec.new/4`; here the route's positions simply do not apply,
-            # so the head stays unstamped — analyzed as usual, and not counted among the
-            # route's matches (`Mutare.Transform.ConfigMatches`).
-            meta
+        # A positional route never meets a call walked *piped*: `Resolve` walks such a stage
+        # through its direct form (`positional?/4` is the question it asks), so only the
+        # call-level `:skip` is stamped on a stage that is still a pipe's right side.
+        if StructuralForms.applies?(module_key, fun, spec) do
+          stamp_matched(meta, entry, module_key, fun, call_node, arity, diag)
+        else
+          # A wildcard route (`{Kernel, :*, :raw}`, `{:*, :if, …}`) whose cascade reached a head
+          # its key never named and that cannot carry it: a positional route on a structural form
+          # (`if`, `and`, `case`, …), or any route on a declaration (`def`, `use`, …). The explicit
+          # key forms were rejected at `Mutare.CallRouting.Spec.new/4`; here the route's positions
+          # simply do not apply, so the head stays unstamped — analyzed as usual, and not counted
+          # among the route's matches (`Mutare.Transform.ConfigMatches`).
+          meta
         end
     end
   end

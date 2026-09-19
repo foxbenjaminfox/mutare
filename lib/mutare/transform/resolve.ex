@@ -121,8 +121,9 @@ defmodule Mutare.Transform.Resolve do
   # `:timer.sleep/1`, or a custom index-0 mark) `mark_pipe_receiver/3` marks the LHS — the piped
   # counterpart of the visible-arg stamping the RHS clause did.
   #
-  # That is an **unrouted** stage. A stage under a positional route stops being a pipe here
-  # (`direct_routed_call/4`).
+  # That is an **unrouted** stage. A stage under a positional route is resolved and routed as
+  # the direct call it is sugar for, and left in the tree as the pipe it was written as
+  # (`routed_stage/3`).
   #
   # All of that holds for `Kernel.|>/2` alone. A `|>` displaced out of `Kernel`
   # (`import Kernel, except: [|>: 2]` beside a custom operator) is somebody else's macro or
@@ -141,8 +142,8 @@ defmodule Mutare.Transform.Resolve do
       module_key != [:Kernel] ->
         {:|>, meta, descend_marked(args, module_key, :|>, unpiped)}
 
-      direct = direct_routed_call(meta, lhs, rhs, env) ->
-        walk(direct, unpiped)
+      operands = routed_stage(lhs, rhs, unpiped) ->
+        {:|>, meta, operands}
 
       true ->
         rhs = walk(rhs, %{env | pipe_mode: :piped})
@@ -426,32 +427,35 @@ defmodule Mutare.Transform.Resolve do
 
   # `left |> stage(args)` is sugar for `stage(left, args)`, and a **routed** stage is where the
   # sugar costs something: the route treats the call's argument positions, and the left side is
-  # position 0 without being an argument. Kept as a pipe, a classifier, host, or mutator would be
-  # shown a call missing the operand it may most need to read or rewrite, and a syntax-valued left
-  # side (`(p in Post) |> from(…)`) could not pass through the closure `PipeEmit.hoist/2` binds a
-  # piped *value* to. So a piped stage that takes a positional route is rewritten here, once, into
-  # the direct call `Kernel.|>/2` itself would build (`Macro.pipe/3`), and every later pass reads
-  # one call shape. The written `|>` rides along (`Meta.written_pipe/1`) for the one thing the
-  # rewrite must not change: the Site a user reads (`Mutare.Transform.WrittenPipe`).
+  # position 0 without being an argument. So such a stage is resolved, routed and stamped as the
+  # direct call `Kernel.|>/2` itself would build (`Macro.pipe/3`) — a classifier is shown that
+  # call, and the treatments stamped on the stage cover its left side too.
   #
-  # An unrouted stage stays a pipe — it is a function call as far as Mutare knows, so its left
-  # side is a value and the closure is sound. So does a stage under the call-level `:skip`, whose
-  # left side is documented as the skipped call's *sibling* and keeps its mutants, and a `|>` that
-  # is itself skipped. NOTES "A routed pipe stage becomes a direct call".
-  defp direct_routed_call(pipe_meta, lhs, rhs, env) do
-    with false <- Meta.routing(pipe_meta) == :skip,
-         {module_key, fun, arity} <- stage_target(rhs, env),
+  # The *tree* keeps the pipe. This pass walks everything, including what no later pass will
+  # touch: a `:raw` argument, the inside of a `:skip`ped call, a pattern, source copied verbatim
+  # into a clean region. Rewriting here would rewrite those too, and "as written" is the promise
+  # they carry. So the walked direct call is split back into `[left, stage]`, the stage marked
+  # (`Meta.routed_direct?/1`), and the rewrite itself is left to `Mutare.Transform.Analyze`, which
+  # performs it as part of analyzing a node (`Mutare.Transform.WrittenPipe.direct/1`) — so it
+  # happens exactly where Mutare reads code as Elixir, by construction rather than by a list of
+  # regions to avoid. NOTES "A routed pipe stage becomes a direct call".
+  #
+  # An unrouted stage is not marked (it is a function call as far as Mutare knows, and keeps the
+  # hoisting closure). Nor is a stage under the call-level `:skip`, whose left side is documented
+  # as the skipped call's *sibling* and keeps its mutants.
+  defp routed_stage(lhs, {_head, _meta, written_args} = rhs, env) do
+    with {module_key, fun, arity} <- stage_target(rhs, env),
          true <- RouteStamp.positional?(env.call_routes, module_key, fun, arity) do
-      {head, meta, args} = Macro.pipe(lhs, rhs, 0)
-      # The written pipe is stamped *unwalked*, which bounds it: a walked left side would carry
-      # the previous stage's stamp, which carries the stage before it, doubling per stage; as
-      # written, stage N's copy is the N-1 stages upstream and nothing more.
-      written = {:|>, pipe_meta, [lhs, rhs]}
-      {head, meta |> Keyword.delete(:no_parens) |> Meta.stamp_written_pipe(written), args}
+      {head, meta, [lhs | visible]} = walk(Macro.pipe(lhs, rhs, 0), env)
+      # A parenless stage (`x |> to_string`) keeps its written shape.
+      visible = if is_nil(written_args), do: nil, else: visible
+      [lhs, {head, Meta.stamp_routed_direct(meta), visible}]
     else
       _unrouted -> nil
     end
   end
+
+  defp routed_stage(_lhs, _rhs, _env), do: nil
 
   # What an **unwalked** pipe stage resolves to, at its effective arity: `{module_key, fun, arity}`
   # or `nil`. The head-only twin of the three call clauses below (`pipe_target/2` is the reader for

@@ -430,7 +430,7 @@ defmodule Mutare.Transform.Analyze.Routed do
   # displaced a code-provided route, `Resolve` recorded that route's position 0 on the stage as
   # `:mutare_route_piped` (only when it isn't the `:expression` default), and the left side is
   # routed by it — a skipped `1 |> match?(1)` keeps its LHS a `:pattern`. Any other LHS is
-  # ordinary runtime. (A stage under a positional route is not a pipe here: `Resolve` rewrote it.)
+  # ordinary runtime. (A stage under a positional route is not a pipe here: `Analyze` rewrote it.)
   def analyze_piped_value(lhs, {_form, rhs_meta, _args}, env)
       when is_list(rhs_meta) do
     case Meta.piped_routing(rhs_meta) do

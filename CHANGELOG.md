@@ -26,7 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   routed `:hosted` (previously a `ContractError`). Reports are unchanged — a mutant that leaves
   argument 0 alone is still located at, and diffed as, the stage the user wrote; one that
   rewrites it is reported over the whole pipe. Stages that take no positional route (an
-  ordinary function call, a `:skip`ped call) stay pipes. A rewritten stage whose first position
+  ordinary function call, a `:skip`ped call) stay pipes, and so does any pipe in code Mutare
+  leaves as written (a `:raw` argument, the inside of a `:skip`ped call). A rewritten stage whose first position
   is `:expression` or `:interior` still has its piped value evaluated once, as before; one
   routed `:lazy_expression`, or as syntax, never does. **Breaking for adapters:**
   - `Mutare.CallRouting.Call` loses `pipe_left`, `pipe_mode` and `effective_arity`, and its

@@ -65,10 +65,12 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_mark_call`        — `{module_key, fun, arity}` of a call some mark declaration matched (Resolve, read by ConfigMatches)
   #   * `:mutare_unit_tail`        — a unit-returning function's leaf return tail    (UnitReturns, read by Attach.offer + Analyze.Returns)
   #   * `:mutare_selector`         — marks a selector `case` the emit built           (Render.selector_case, read by PipeEmit.hoist)
-  #   * `:mutare_written_pipe`     — the `|>` a routed call was written as, before Resolve made it a direct call (Resolve, read through Meta.written_pipe/1)
+  #   * `:mutare_routed_direct`    — a `|>` stage resolved and routed as the direct call; its treatments cover the left side (Resolve, read by WrittenPipe.direct/1)
+  #   * `:mutare_written_pipe`     — the `|>` a routed call was written as, before Analyze made it a direct call (WrittenPipe.direct/1, read through Meta.written_pipe/1)
   @bookkeeping_keys [
     tag_key: :mutare_tag,
     selector_key: :mutare_selector,
+    routed_direct_key: :mutare_routed_direct,
     written_pipe_key: :mutare_written_pipe,
     nid_key: :mutare_nid,
     marks_key: :mutare_marks,

@@ -1,11 +1,16 @@
 defmodule Mutare.Transform.WrittenPipe do
   @moduledoc false
-  # `Mutare.Transform.Resolve` rewrites a piped **routed** stage into the direct call
-  # `Kernel.|>/2` would build (`left |> from(opts)` becomes `from(left, opts)`), so routing,
-  # hosting, mutation and delivery all read one call shape. The metamutant is free to keep that
-  # shape — it only has to compile. A `Mutare.Site` is not: it patches the user's source by range
-  # and shows them a diff, so it must keep the footprint and the spelling they wrote. This module
-  # is the whole of that obligation, read off the `Meta.written_pipe/1` stamp:
+  # `left |> stage(args)` is sugar for `stage(left, args)`. A piped stage under a positional call
+  # route is resolved and routed as that direct call (`Mutare.Transform.Resolve` marks it,
+  # `Meta.routed_direct?/1`), and `direct/1` is where it *becomes* one: applied by
+  # `Mutare.Transform.Analyze` as it reaches a node, so that routing, hosting, mutation and
+  # delivery all read one call shape — and so that code Mutare never analyzes (a `:raw` argument,
+  # a `:skip`ped call, a pattern, a verbatim clean copy) is never rewritten at all.
+  #
+  # The metamutant is free to keep the direct shape — it only has to compile. A `Mutare.Site` is
+  # not: it patches the user's source by range and shows them a diff, so it must keep the
+  # footprint and the spelling they wrote. The rest of this module is that obligation, read off
+  # the `Meta.written_pipe/1` stamp `direct/1` leaves:
   #
   #   * `range/1` — the rewritten call stands where the whole `left |> stage` stood. Its own
   #     meta would range only the stage (`Sourceror.get_range/1` starts a call at its head), and a
@@ -20,7 +25,42 @@ defmodule Mutare.Transform.WrittenPipe do
   # NOTES "A routed pipe stage becomes a direct call".
 
   alias Mutare.Mutator.Mutation
-  alias Mutare.Transform.Meta
+  alias Mutare.Transform.{Meta, MetaKeys}
+
+  @doc """
+  The direct call a marked pipe is sugar for — `Kernel.|>/2`'s own desugaring (`Macro.pipe/3`)
+  of `left |> stage(args)`, carrying the stage's resolution and route stamps and the pipe as it
+  stood (`Meta.written_pipe/1`). Any other node is returned untouched.
+
+  The stamp holds the pipe *before* analysis, so its left side carries no `written_pipe` stamp
+  of its own: a chain's stamps sum to its prefixes rather than doubling per stage.
+  """
+  @spec direct(Macro.t()) :: Macro.t()
+  def direct({:|>, pipe_meta, [left, {head, meta, args} = stage]} = pipe) when is_list(meta) do
+    if Meta.routed_direct?(stage) do
+      # The call stands where the pipe stood, so it answers to the pipe's node identity: a
+      # return tail recorded against the `|>` (`Mutare.Transform.Analyze.Returns` delivers by
+      # `:mutare_nid`) must find this node.
+      meta =
+        meta
+        |> Keyword.drop([MetaKeys.routed_direct_key(), MetaKeys.nid_key(), :no_parens])
+        |> put_identity(pipe_meta)
+        |> Meta.stamp_written_pipe(pipe)
+
+      {head, meta, [left | args || []]}
+    else
+      pipe
+    end
+  end
+
+  def direct(node), do: node
+
+  defp put_identity(meta, pipe_meta) do
+    case Keyword.fetch(pipe_meta, MetaKeys.nid_key()) do
+      {:ok, nid} -> Keyword.put(meta, MetaKeys.nid_key(), nid)
+      :error -> meta
+    end
+  end
 
   @doc "The source range of the `|>` a rewritten call was written as, or `nil` for any other node."
   @spec range(Macro.t()) :: Sourceror.Range.t() | nil

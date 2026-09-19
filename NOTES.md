@@ -11576,24 +11576,49 @@ binding reorders deferred. A writable-left API was sketched next (a `pipe_left:`
 `Mutation`, legal only under syntax delivery) and would have added a third.
 
 The cut that removes all of it: a piped left side can only be *syntax* when the right side is
-a macro Mutare knows about — a routed call. An unrouted stage is a function call as far as
-Mutare can tell, so its left side is a value and the hoisting closure is sound for it,
-unconditionally. So `Resolve`'s `|>` clause asks one question of the unwalked stage
-(`RouteStamp.positional?/4`: does it take a route that treats argument positions?) and, if so,
-replaces the pipe with `Macro.pipe(left, stage, 0)` — the function `Kernel.|>/2` itself calls,
-so the two agree by construction — and walks *that*. Every later pass reads one call shape:
-the classifier routes the piped operand as argument 0 by shape, `rebuild` rewrites it, `:hosted`
-applies to it, and delivery is the ordinary direct-call selector (mutant branches hold the
-as-written arguments, the catch-all the emitted ones — which is exactly what Part B of the
-pipe-left proposal had built by hand for pipes).
+a macro Mutare knows about — a routed call. So a piped stage under a positional route
+(`RouteStamp.positional?/4`, asked of the unwalked stage) is treated as
+`Macro.pipe(left, stage, 0)` — the function `Kernel.|>/2` itself calls, so the two agree by
+construction. Every pass that reads such a call reads one shape: the classifier routes the
+piped operand as argument 0 by shape, `rebuild` rewrites it, `:hosted` applies to it, and
+delivery is the ordinary direct-call selector (mutant branches hold the as-written arguments,
+the catch-all the emitted ones — which is exactly what Part B of the pipe-left proposal had
+built by hand for pipes).
+
+**Where the rewrite happens: in `Analyze`, not `Resolve`.** The first cut rewrote the tree in
+`Resolve`'s `|>` clause. `Resolve` walks *everything*, treatments unseen, so that also rewrote
+code nothing later touches: a pipe inside a `:raw` argument, inside a `:skip`ped call, in source
+copied verbatim into a clean region or a raw lifted body — and `:raw` promises "exactly as
+written". Teaching `Resolve` which regions are raw would have meant a second copy of the grammar
+`Routed.route_macro_arg/3` owns (keyed refinements, `{:keyword, …}`, `:hosted`, `:skip`) — a
+list of exclusions mirroring a classifier, which drifts. So the two halves were split:
+
+- `Resolve` *routes* the stage as the direct call and leaves the tree alone. It walks
+  `Macro.pipe(left, stage, 0)` through the ordinary call clauses — identity, treatments,
+  marks, the classifier's view all come out of the code that serves a written call — then
+  splits the walked call back into `[left, stage]` and marks the stage
+  (`Meta.routed_direct?/1`). The stage's route stamp therefore covers one position more than
+  the stage has arguments; a marked stage is never read on its own.
+- `Analyze` *performs* the rewrite as it reaches a runtime node (`WrittenPipe.direct/1`, at the
+  `analyze/3` entry every descent goes through). A region Mutare never analyzes is never
+  rewritten, by construction. The direct call takes the **pipe's** `:mutare_nid` — it stands
+  where the pipe stood, and `Returns` delivers a tail's candidates by that identity.
+
+Whatever reads a statement or tail before `analyze/3` applies `direct/1` itself:
+`MatchPatterns.analyze_statement/2` does (it looks for a `:binding_pattern` route first);
+`Returns` needs nothing (its raw tail is the `|>`, found by nid) and `QuoteEscape` only asks
+whether *any* position is a binding pattern. The public readers
+(`Calls.resolved_routed_call/1`, `routed_treatments/1`) read a marked `|>` as its direct call
+and a bare marked stage as nothing, so an adapter looking into an argument gets the right
+answer either way.
 
 **What stays a pipe.** An unrouted stage (closure delivery, `pipe_mode: :piped` to the
 arity-aware families). A stage under the call-level `:skip`: its left side is documented as the
 skipped call's *sibling* and keeps its mutants (`Repo.insert!(u) |> Mixpanel.track(…)`), which a
 rewrite would bury inside an inert leaf — so `:mutare_route_piped` survives for exactly one
 producer, `stamp_skipped_pipe`, answering for a displaced route's position 0. And a `|>` that
-is itself `:skip`ped, beneath which a positionally routed stage is walked piped and left
-unstamped (nothing reads inside an inert leaf).
+is itself `:skip`ped: its stage is marked like any other, and never becomes a call, because the
+dispatcher treats the skipped `|>` as a leaf before it looks at anything else.
 
 **The Site is where the rewrite must not show**, and `Mutare.Transform.WrittenPipe` is the
 whole of that obligation, read off one stamp (`:mutare_written_pipe`, the `|>` as written):
@@ -11620,13 +11645,10 @@ A rewritten stage therefore binds its piped value again where its route allows �
 sum-of-prefixes `pipe_left` was, for the same reason: it holds the pipe *unwalked*.
 
 **Known limits.**
-- The rewrite is not context-aware: a pipe inside another macro's `:raw` argument is rewritten
-  too, so that macro receives `stage(left, args)` where the user wrote `left |> stage(args)`.
-  Equivalent wherever the macro evaluates the argument as Elixir; observable only to a macro
-  that gives `|>` its own meaning *and* whose right side resolves to a routed call.
-- A classifier still sees its arguments as written (an upstream stage in argument 0 is a `|>`
-  node there) while `host/2`/`mutate/2` see them resolved. Unchanged from before, now pinned in
-  `piped_routed_call_test.exs`.
+- What sits inside a call's arguments is as written at every seam, so an upstream routed
+  stage in argument 0 is a `|>` node there (`resolved_routed_call/1` reads it as its direct
+  call). A classifier's arguments are additionally unresolved; a host's and a mutator's are
+  resolved. Pinned in `piped_routed_call_test.exs`, with the as-written regions.
 - `route_arguments/2` became `route_arguments/1`: its context carried only `:pipe_mode`.
 
 **Companions.** `mutare_ecto` and `mutare_phoenix_swoosh` must move to `ArgumentRoutes.new/2`

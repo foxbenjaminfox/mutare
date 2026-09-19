@@ -206,11 +206,27 @@ defmodule Mutare.Transform.Meta do
     do: [{MetaKeys.route_call_key(), identity} | meta]
 
   @doc """
+  Whether a `|>` stage was resolved and routed as the direct call it is sugar for
+  (`Mutare.Transform.Resolve`): its route stamp then carries one treatment more than the stage
+  has written arguments — the left side's, first. Such a stage is only ever read through
+  `Mutare.Transform.WrittenPipe.direct/1`, which makes it that call.
+  """
+  @spec routed_direct?(Macro.t()) :: boolean()
+  def routed_direct?({_form, meta, _args}) when is_list(meta),
+    do: Keyword.get(meta, MetaKeys.routed_direct_key(), false)
+
+  def routed_direct?(_node), do: false
+
+  @doc "Mark a `|>` stage as resolved and routed through its direct form (`routed_direct?/1`)."
+  @spec stamp_routed_direct(keyword()) :: keyword()
+  def stamp_routed_direct(meta), do: Keyword.put(meta, MetaKeys.routed_direct_key(), true)
+
+  @doc """
   The `|>` a routed call was written as — `{:|>, meta, [left, stage]}`, untouched by any pass —
-  or `nil` for a call written directly. `Mutare.Transform.Resolve` turns a piped routed call
-  into the direct call `Kernel.|>/2` would build, so everything downstream reads one call shape;
-  this stamp is what lets a Site keep the user's spelling and footprint
-  (`Mutare.Transform.WrittenPipe`).
+  or `nil` for a call written directly. Analysis turns a piped routed call into the direct call
+  `Kernel.|>/2` would build (`Mutare.Transform.WrittenPipe.direct/1`), so routing, hosting,
+  mutation and delivery read one call shape; this stamp is what lets a Site keep the user's
+  spelling and footprint.
   """
   @spec written_pipe(Macro.t()) :: Macro.t() | nil
   def written_pipe({_form, meta, args}) when is_list(meta) and is_list(args),

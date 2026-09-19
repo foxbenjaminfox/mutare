@@ -14,7 +14,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   #   * a `for` qualifier                                       → `analyze_match_statement/2`
 
   alias Mutare.AST
-  alias Mutare.Transform.{Calls, Candidate, Meta, NodeRange, PatternStructure}
+  alias Mutare.Transform.{Calls, Candidate, Meta, NodeRange, PatternStructure, WrittenPipe}
   alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.Attach
 
@@ -32,6 +32,10 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
     do: analyze_match_statement(match, env)
 
   def analyze_statement(node, env) do
+    # This reads the statement before the dispatcher does, so a piped routed stage is made the
+    # direct call here first — unless the `|>` is itself skipped, which keeps it a leaf.
+    node = if Meta.skipped?(node), do: node, else: WrittenPipe.direct(node)
+
     # A `:skip`-routed statement (`[x, y] |> destructure(v)` under `{Kernel, :|>, 2, :skip}`) is an
     # inert leaf: the dispatcher leaves it untouched, and the `:binding_pattern` route stamped on
     # its RHS *stage* must not be discovered past that boundary either.

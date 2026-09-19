@@ -3,7 +3,7 @@ defmodule Mutare.CallRouting.Call do
   Stable, resolved view of a known-macro call passed to routing and hosting callbacks.
 
   `arguments` are the call's arguments, all of them, however the call was written: Mutare
-  rewrites a piped routed call into the direct call `Kernel.|>/2` would build, so
+  treats a piped routed call as the direct call `Kernel.|>/2` would build, so
   `(p in Post) |> from(order_by: …)` is shown as `from(p in Post, order_by: …)`. A classifier
   routes the piped operand as the first argument it is, and a host or mutator can read and
   rewrite it like any other. `rebuild.(name, arguments)` preserves the source's bare,

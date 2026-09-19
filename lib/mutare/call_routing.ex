@@ -33,10 +33,12 @@ defmodule Mutare.CallRouting do
   Both extensions and mutators may implement this behaviour. Enabling the module under `:extensions`
   or `:mutators` also enables its routes.
 
-  A piped first argument is a first argument. Mutare rewrites a piped call that takes a
-  positional route into the direct call `Kernel.|>/2` would build, so a route, a classifier, a
+  A piped first argument is a first argument. Mutare treats a piped call that takes a
+  positional route as the direct call `Kernel.|>/2` would build, so a route, a classifier, a
   host and a mutator all see `from(p in Post, …)` for `(p in Post) |> from(…)`, and a `:raw`
-  declaration reaches the macro as the syntax it is. Reports keep the pipe the user wrote.
+  declaration reaches the macro as the syntax it is. Reports keep the pipe the user wrote, and
+  so does any code Mutare leaves alone: a pipe inside a `:raw` argument or a `:skip`ped call is
+  never rewritten.
 
       defmodule MyApp.EctoRouting do
         @behaviour Mutare.CallRouting
@@ -174,10 +176,12 @@ defmodule Mutare.CallRouting do
   The `call` is a stable `Mutare.CallRouting.Call`, already normalized across bare, qualified,
   aliased, imported, and piped forms: a piped call arrives as the direct call, its piped operand
   as argument 0, so that position is routed by its shape like any other (`Post |> from(…)` and
-  `build(x) |> from(…)` need not share a treatment). The arguments are **as written** — an
-  upstream stage in argument 0 is still the `|>` the user wrote, and
-  `Mutare.Calls.resolved_call/1` does not resolve calls inside them — whereas `host/2` and
-  `mutate/2` see them resolved. Return `ArgumentRoutes.new(call, treatments)`, one treatment
+  `build(x) |> from(…)` need not share a treatment). What sits *inside* the arguments
+  is as the user wrote it, here and in `host/2` and `mutate/2` alike: an upstream stage in
+  argument 0 is still a `|>` node, which `Mutare.Calls.resolved_routed_call/1` reads as its
+  direct call when you need to look into it. One difference remains between the seams: a
+  classifier's arguments are not yet resolved (`Mutare.Calls.resolved_call/1` returns `nil`
+  inside them), a host's and a mutator's are. Return `ArgumentRoutes.new(call, treatments)`, one treatment
   per argument, in the order a static declaration uses. Returned treatments and lengths are
   validated by the transform.
 

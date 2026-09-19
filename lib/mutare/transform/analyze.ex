@@ -24,7 +24,7 @@ defmodule Mutare.Transform.Analyze do
 
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Transform.{Calls, Candidate, Meta, Suppression}
+  alias Mutare.Transform.{Calls, Candidate, Meta, Suppression, WrittenPipe}
 
   # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
   # the body path's five equivalent-sibling clauses below match on these shared `defguard`s
@@ -151,8 +151,17 @@ defmodule Mutare.Transform.Analyze do
   # rejected or excluded upstream, `Mutare.Transform.StructuralForms`. `Mutare.Transform.Tag`
   # does the same at the head of its guard and pattern walks; `Analyze.Returns` treats a skipped
   # tail as one leaf.
+  #
+  # It is also where a piped stage under a positional route becomes the direct call it was routed
+  # as (`WrittenPipe.direct/1`): the rewrite is part of analyzing a runtime node, so it reaches
+  # exactly the code Mutare reads as Elixir and nothing it leaves as written. A skipped `|>` is
+  # a leaf first, and stays a pipe.
   defp analyze(node, context, env) do
-    if Meta.skipped?(node), do: node, else: analyze_form(node, context, env)
+    cond do
+      Meta.skipped?(node) -> node
+      context == :runtime -> node |> WrittenPipe.direct() |> analyze_form(:runtime, env)
+      true -> analyze_form(node, context, env)
+    end
   end
 
   # `when` guard (position-independent: also covers case/fn clause guards): the
@@ -550,7 +559,7 @@ defmodule Mutare.Transform.Analyze do
   # `:skip` whose skip displaced a code-provided route answers for its effective argument 0 by
   # that route's position 0 (`analyze_piped_value/3`) — a skipped `1 |> match?(1)` must not
   # have a selector `case` spliced into its pattern. (A stage under a *positional* route never
-  # arrives as a pipe: `Resolve` rewrote it into a direct call.)
+  # arrives as a pipe: `analyze/3` made it the direct call on the way in.)
   #
   # Only `Kernel.|>/2` is that pipe. A `|>` displaced out of `Kernel` is a call to somebody
   # else's operator, and the closure `PipeEmit.hoist/2` builds would apply that operator twice —
@@ -853,7 +862,7 @@ defmodule Mutare.Transform.Analyze do
   #
   # The stage is an **unrouted** call, or one under the call-level `:skip` (left alone by
   # `do_analyze_call_node/3`): a stage under a positional route is no longer a pipe by the time
-  # it gets here — `Resolve` rewrote it into a direct call.
+  # it gets here — `analyze/3` made it the direct call on the way in.
   defp analyze_pipe_stage({_form, _meta, args} = node, env) when is_list(args),
     do: do_analyze_call_node(node, env, %{pipe_mode: :piped})
 

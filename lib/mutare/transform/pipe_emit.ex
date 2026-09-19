@@ -23,8 +23,9 @@ defmodule Mutare.Transform.PipeEmit do
   # first argument, and a call is a function in every respect its route does not address
   # (`Mutare.CallRouting`, "Evaluation"). Core never derives whether a callee is a macro; a
   # callee that does not evaluate its operand eagerly says so with `:lazy_expression`. A stage
-  # under a positional route never reaches `hoist/2` as a pipe — `Mutare.Transform.Resolve`
-  # rewrote it into a direct call — and takes the binding from `bound_argument/2` below.
+  # under a positional route never reaches `hoist/2` as a pipe — analysis made it the direct
+  # call (`Mutare.Transform.WrittenPipe.direct/1`) — and takes the binding from
+  # `bound_argument/2` below.
 
   # All of it is `Kernel.|>/2`'s alone. A `|>` displaced out of `Kernel` is left exactly as
   # emitted: the closure would apply the custom operator twice (once to reach the closure, once
@@ -56,7 +57,7 @@ defmodule Mutare.Transform.PipeEmit do
 
   # --- a rewritten stage's piped value ----------------------------------------------------
   #
-  # A piped stage under a positional route is no `|>` by now (`Mutare.Transform.Resolve` made it
+  # A piped stage under a positional route is no `|>` by now (`WrittenPipe.direct/1` made it
   # the direct call), so its selector is the ordinary one, whose every mutant branch carries the
   # call's as-written arguments — argument 0, the whole upstream chain, included. Down a chain of
   # routed stages that is a copy of each prefix per mutant. The closure above answers the same

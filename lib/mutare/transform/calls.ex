@@ -32,7 +32,7 @@ defmodule Mutare.Transform.Calls do
   # *not* resolve is a bare `Kernel` call (`abs`, `min`) — those families key on effective
   # arity in their own clauses.
 
-  alias Mutare.Transform.{Aliases, Imports, Meta}
+  alias Mutare.Transform.{Aliases, Imports, Meta, WrittenPipe}
 
   # A resolved module: an Elixir-module path (`[:Enum]`, `[:String]`) or an Erlang-module atom
   # (`:binary`, `:string`). Defined once in `Mutare.Transform.Aliases` (the module-key
@@ -185,15 +185,21 @@ defmodule Mutare.Transform.Calls do
 
   # Return the stable call value for a node stamped by the known-macro resolver, or `nil` for
   # any other node. See `Mutare.Calls.resolved_routed_call/1` for the contract.
+  #
+  # A `|>` whose stage was routed as the direct call is read as that call. The bare stage is not:
+  # its route covers a left side it does not hold, so on its own it is no complete call.
   @spec resolved_routed_call(Macro.t()) :: Mutare.CallRouting.Call.t() | nil
-  def resolved_routed_call({head, meta, args} = node) when is_list(meta) and is_list(args) do
+  def resolved_routed_call(node), do: node |> WrittenPipe.direct() |> routed_call()
+
+  defp routed_call({head, meta, args} = node) when is_list(meta) and is_list(args) do
     # Stay **total**: the identity stamp is only ever placed (by `Mutare.Transform.Resolve`) on a
     # remote `Mod.fun`/`:mod.fun` or a bare `fun` head, the two shapes `macro_rebuild/4` handles —
     # so a node carrying the stamp on any *other* head (e.g. a `recv.()` anonymous-call head) is an
     # impossible state Mutare never produces. Rather than commit to a partial `macro_rebuild` that
     # would raise on it, degrade to `nil` (the documented "not a recognised known-macro call"), so a
     # caller handing in an arbitrary node can never crash here.
-    with {module_key, name, _arity} <- Meta.routed_call(meta),
+    with false <- Meta.routed_direct?(node),
+         {module_key, name, _arity} <- Meta.routed_call(meta),
          rebuild when is_function(rebuild, 2) <- macro_rebuild(head, meta, module_key, args) do
       Mutare.CallRouting.Call.new(node, natural_module(module_key), name, rebuild)
     else
@@ -201,7 +207,7 @@ defmodule Mutare.Transform.Calls do
     end
   end
 
-  def resolved_routed_call(_node), do: nil
+  defp routed_call(_node), do: nil
 
   # Returns the resolved treatment for each argument of a routed call, `:skip` for a
   # call routed as an inert leaf, or `nil` for an unrouted node. See
@@ -212,8 +218,12 @@ defmodule Mutare.Transform.Calls do
   # delivering mutator), normalizes a keyed refinement to `{:keyed, …}`, and recurses through
   # `{:keyword, …}` — so a mutator reading this sees the words it wrote, not Mutare's stamp shape.
   @spec routed_treatments(Macro.t()) :: [Mutare.CallRouting.routing_treatment()] | :skip | nil
-  def routed_treatments({_head, meta, _args}) when is_list(meta) do
-    case Meta.routing(meta) do
+  def routed_treatments(node), do: node |> WrittenPipe.direct() |> treatments()
+
+  defp treatments({_head, meta, _args} = node) when is_list(meta) do
+    routing = if Meta.routed_direct?(node), do: nil, else: Meta.routing(meta)
+
+    case routing do
       :skip ->
         :skip
 
@@ -225,7 +235,7 @@ defmodule Mutare.Transform.Calls do
     end
   end
 
-  def routed_treatments(_node), do: nil
+  defp treatments(_node), do: nil
 
   defp natural_module(nil), do: nil
   defp natural_module(module) when is_list(module), do: Module.concat(module)

@@ -62,27 +62,40 @@ defmodule Mutare.PipedRoutedCallTest do
     end
   end
 
-  test "a stage mid-chain holds the upstream chain as its argument 0" do
+  test "a stage mid-chain holds the upstream chain as its argument 0, as the user wrote it" do
     transform("n |> stage(x > 1) |> stage(x > 2) |> stage(x > 3)")
-    reported = reported()
 
-    # A classifier is shown the arguments as written, so an upstream stage is still the `|>` the
-    # user wrote; a host and a mutator are shown them resolved, the upstream stage rewritten too.
-    assert Enum.sort(reported.route_arguments) == [
-             ["n", "x > 1"],
-             ["n |> stage(x > 1)", "x > 2"],
-             ["n |> stage(x > 1) |> stage(x > 2)", "x > 3"]
-           ]
-
-    for seam <- [:host, :mutate] do
-      assert Enum.sort(reported[seam]) ==
+    # The call a seam is shown is the direct one; what sits *inside* its arguments is as written,
+    # at every seam alike — an upstream stage there is still the `|>` it was.
+    for {seam, calls} <- reported() do
+      assert Enum.sort(calls) ==
                [
                  ["n", "x > 1"],
-                 ["stage(n, x > 1)", "x > 2"],
-                 ["stage(stage(n, x > 1), x > 2)", "x > 3"]
+                 ["n |> stage(x > 1)", "x > 2"],
+                 ["n |> stage(x > 1) |> stage(x > 2)", "x > 3"]
                ],
              "at #{seam}"
     end
+  end
+
+  test "resolved_routed_call/1 reads a routed pipe nested in an argument as its direct call" do
+    defmodule NestedReader do
+      @behaviour Mutare.Mutator
+      def name, do: :nested_reader
+
+      def mutate(node, _context) do
+        with %Call{name: :stage, arguments: [{:|>, _, _} = upstream, _condition]} <-
+               Mutare.Calls.resolved_routed_call(node),
+             %Call{arguments: arguments} <- Mutare.Calls.resolved_routed_call(upstream) do
+          send(self(), {:nested, Enum.map(arguments, &Macro.to_string/1)})
+        end
+
+        :skip
+      end
+    end
+
+    transform("n |> stage(x > 1) |> stage(x > 2)", [NestedReader])
+    assert_received {:nested, ["n", "x > 1"]}
   end
 
   describe "routing a piped source by its shape" do
@@ -194,5 +207,47 @@ defmodule Mutare.PipedRoutedCallTest do
     )
 
     assert_received {:hosted_source, "n"}
+  end
+
+  describe "code Mutare does not analyze keeps the pipe it was written with" do
+    # `_ = 41` gives the function a mutant of its own, so it is re-rendered whatever the region
+    # under test contributes — an unmutated file is returned as source, which would prove nothing.
+    defp rendered(body, opts) do
+      result =
+        Mutare.Transform.transform_string_with_sites(
+          source("_ = 41\n    " <> body),
+          [file: "piped_call.ex", mutators: [PipedCallProbe, :integer]] ++ opts
+        )
+
+      assert Enum.any?(result.sites, &(&1.original_code == "41"))
+      result.metamutant
+    end
+
+    test "inside a :raw argument" do
+      emitted =
+        rendered("keep(n |> stage(x > 1), 5)",
+          call_routes: [{:*, :keep, 2, [:raw, :expression]}]
+        )
+
+      assert emitted =~ "n |> stage(x > 1)"
+      refute emitted =~ "stage(n, x > 1)"
+    end
+
+    test "inside a :skip'ped call" do
+      emitted = rendered("keep(n |> stage(x > 1), 5)", call_routes: [{:*, :keep, 2, :skip}])
+
+      assert emitted =~ "keep(n |> stage(x > 1), 5)"
+    end
+
+    test "inside a quote" do
+      emitted = rendered("quote(do: n |> stage(x > 1))", [])
+
+      assert emitted =~ "n |> stage(x > 1)"
+      refute emitted =~ "stage(n, x > 1)"
+    end
+
+    test "and where it is analyzed, it is the direct call" do
+      assert rendered("keep(n |> stage(x > 1), 5)", []) =~ "stage(n, x > 1)"
+    end
   end
 end
