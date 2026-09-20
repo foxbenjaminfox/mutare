@@ -261,24 +261,25 @@ defmodule Mutare.Transform.Meta do
   def stamp_routed_direct(meta), do: Keyword.put(meta, MetaKeys.routed_direct_key(), true)
 
   @doc """
-  The `|>` a routed call was written as — `{:|>, meta, [left, stage]}`, untouched by any pass —
-  or `nil` for a call written directly. Analysis turns a piped routed call into the direct call
-  `Kernel.|>/2` would build (`Mutare.Transform.WrittenPipe.direct/1`), so routing, hosting,
-  mutation and delivery read one call shape; this stamp is what lets a Site keep the user's
-  spelling and footprint.
+  The meta of the `|>` a call was written as, or `nil` for a call written directly. Analysis
+  turns a piped call into the direct call `Kernel.|>/2` would build
+  (`Mutare.Transform.WrittenPipe.direct/1`), so routing, hosting, mutation and delivery read one
+  call shape; this stamp is what lets a Site keep the user's spelling and footprint. It holds
+  the operator's meta alone — the call holds the operands — and
+  `Mutare.Transform.WrittenPipe.written/1` is the reader that puts the pipe back together.
   """
-  @spec written_pipe(Macro.t()) :: Macro.t() | nil
-  def written_pipe({_form, meta, args}) when is_list(meta) and is_list(args),
+  @spec written_pipe_meta(Macro.t()) :: keyword() | nil
+  def written_pipe_meta({_form, meta, args}) when is_list(meta) and is_list(args),
     do: Keyword.get(meta, MetaKeys.written_pipe_key())
 
-  def written_pipe(_node), do: nil
+  def written_pipe_meta(_node), do: nil
 
-  @doc "Stamp a direct call with the `|>` it was written as (`written_pipe/1`)."
-  @spec stamp_written_pipe(keyword(), Macro.t()) :: keyword()
-  def stamp_written_pipe(meta, {:|>, _pipe_meta, [_left, _stage]} = pipe),
-    do: [{MetaKeys.written_pipe_key(), pipe} | meta]
+  @doc "Stamp a direct call with the meta of the `|>` it was written as (`written_pipe_meta/1`)."
+  @spec stamp_written_pipe(keyword(), keyword()) :: keyword()
+  def stamp_written_pipe(meta, pipe_meta) when is_list(pipe_meta),
+    do: [{MetaKeys.written_pipe_key(), pipe_meta} | meta]
 
-  @doc "Drop the `written_pipe/1` stamp from a node's own meta."
+  @doc "Drop the `written_pipe_meta/1` stamp from a node's own meta."
   @spec drop_written_pipe(Macro.t()) :: Macro.t()
   def drop_written_pipe({form, meta, args}) when is_list(meta),
     do: {form, Keyword.delete(meta, MetaKeys.written_pipe_key()), args}

@@ -2,7 +2,7 @@ defmodule Mutare.Transform.Render do
   @moduledoc false
 
   alias Mutare.AST
-  alias Mutare.Transform.Meta
+  alias Mutare.Transform.{Meta, WrittenPipe}
 
   # Sourceror rendering workarounds for the metamutant, kept apart from the
   # semantic transform. The metamutant is a throwaway build artifact that only
@@ -132,7 +132,7 @@ defmodule Mutare.Transform.Render do
   # Analysis made every `Kernel.|>/2` stage the direct call it is sugar for
   # (`Mutare.Transform.WrittenPipe.direct/1`), and emission leaves that call wherever it stood:
   # a selector's branches, a stage with no selector, a mutant's operand. Each is spelled as the
-  # pipe it was written as (the `Meta.written_pipe/1` stamp), around whatever argument 0 it now
+  # pipe it was written as (`WrittenPipe.written/1`), around whatever argument 0 it now
   # holds, so a chain renders as flat as the user's source rather than one level deeper per
   # stage — NOTES "Evaluation is a route's to declare" measured 40 KB nested against 17 KB piped
   # at depth 32. The compiler desugars it again, so nothing depends on this. The `|>` is the
@@ -141,16 +141,8 @@ defmodule Mutare.Transform.Render do
   #
   # A generated pin over a selector stays the call's argument: Sourceror renders
   # `^case … end |> stage()`, which reparses as `^(case … end |> stage())`.
-  defp written_spelling({head, meta, [zero | rest]} = call) when is_list(meta) do
-    case Meta.written_pipe(call) do
-      {:|>, pipe_meta, _written} ->
-        if generated_pin?(zero),
-          do: call,
-          else: {:|>, pipe_meta, [zero, Meta.drop_written_pipe({head, meta, rest})]}
-
-      nil ->
-        call
-    end
+  defp written_spelling({_head, meta, [zero | _rest]} = call) when is_list(meta) do
+    if generated_pin?(zero), do: call, else: WrittenPipe.written(call) || call
   end
 
   defp written_spelling(node), do: node

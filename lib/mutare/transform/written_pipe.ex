@@ -13,8 +13,16 @@ defmodule Mutare.Transform.WrittenPipe do
   # The metamutant only has to compile (`Mutare.Transform.PipeEmit` spells the call as a pipe
   # again so a chain renders flat, nothing more). A `Mutare.Site` is held to more: it patches
   # the user's source by range and shows them a diff, so it must keep the footprint and the
-  # spelling they wrote. The rest of this module is that obligation, read off the
-  # `Meta.written_pipe/1` stamp `direct/1` leaves:
+  # spelling they wrote. The rest of this module is that obligation, read off the stamp
+  # `direct/1` leaves.
+  #
+  # The stamp is the `|>` node's **meta** and nothing else (`Meta.written_pipe_meta/1`). The
+  # call already holds the rest of the pipe — argument 0 is its left side, the call less that
+  # argument its stage — so `written/1` rebuilds the pipe from the call, and is the one inverse
+  # of `direct/1` that every reader of the spelling goes through (`resugar/1` here,
+  # `Mutare.Transform.Render` for the metamutant). A stamp that held the pipe itself would be a
+  # second copy of the left side, stale once analysis reaches argument 0, and a copy of every
+  # upstream prefix down a chain.
   #
   #   * `written/1` — the rewritten call stands where the whole `left |> stage` stood, so
   #     `Mutare.Transform.NodeRange.get/1` ranges the written pipe in its stead. The call's own
@@ -37,11 +45,9 @@ defmodule Mutare.Transform.WrittenPipe do
 
   @doc """
   The direct call a marked pipe is sugar for — `Kernel.|>/2`'s own desugaring (`Macro.pipe/3`)
-  of `left |> stage(args)`, carrying the stage's resolution and route stamps and the pipe as it
-  stood (`Meta.written_pipe/1`). Any other node is returned untouched.
-
-  The stamp holds the pipe *before* analysis, so its left side carries no `written_pipe` stamp
-  of its own: a chain's stamps sum to its prefixes rather than doubling per stage.
+  of `left |> stage(args)`, carrying the stage's resolution and route stamps and the `|>`'s own
+  meta (`Meta.written_pipe_meta/1`), which is all `written/1` needs to undo it. Any other node
+  is returned untouched.
   """
   @spec direct(Macro.t()) :: Macro.t()
   def direct({:|>, pipe_meta, [left, {head, meta, args} = stage]} = pipe) do
@@ -53,7 +59,7 @@ defmodule Mutare.Transform.WrittenPipe do
         meta
         |> Keyword.delete(MetaKeys.routed_direct_key())
         |> Keyword.put(MetaKeys.nid_key(), Keyword.fetch!(pipe_meta, MetaKeys.nid_key()))
-        |> Meta.stamp_written_pipe(pipe)
+        |> Meta.stamp_written_pipe(pipe_meta)
 
       {head, meta, [left | args || []]}
     else
@@ -64,12 +70,36 @@ defmodule Mutare.Transform.WrittenPipe do
   def direct(node), do: node
 
   @doc """
-  The `|>` a rewritten call was written as, or `nil` for any other node — what
+  The `|>` a rewritten call was written as — the inverse of `direct/1`, around whatever
+  argument 0 the call now holds — or `nil` for any other node. It is what
   `Mutare.Transform.NodeRange.get/1` ranges in the call's stead, since the call stands where the
   whole `left |> stage` stood.
+
+  The stage comes back marked (`Meta.routed_direct?/1`), as `direct/1` found it: its route stamp
+  still lists the direct call's positions, so it must not be read on its own. A stage written
+  without parentheses (`x |> to_string`) comes back without them.
   """
   @spec written(Macro.t()) :: Macro.t() | nil
-  def written(node), do: Meta.written_pipe(node)
+  def written({head, meta, [left | visible]} = call) when is_list(meta) do
+    case Meta.written_pipe_meta(call) do
+      nil ->
+        nil
+
+      pipe_meta ->
+        {_head, stage_meta, _args} = Meta.drop_written_pipe(call)
+        stage = {head, Meta.stamp_routed_direct(stage_meta), written_args(head, meta, visible)}
+        {:|>, pipe_meta, [left, stage]}
+    end
+  end
+
+  def written(_node), do: nil
+
+  # The parser gives every parenthesized call a `:closing`; a bare name that takes no written
+  # argument and has none was written `x |> name`, whose arguments are `nil`.
+  defp written_args(head, meta, []) when is_atom(head),
+    do: if(Keyword.has_key?(meta, :closing), do: [], else: nil)
+
+  defp written_args(_head, _meta, visible), do: visible
 
   @doc """
   The attribution that reports `mutated` — a replacement for the rewritten call `offered` — at
@@ -78,7 +108,7 @@ defmodule Mutare.Transform.WrittenPipe do
   """
   @spec stage_attribution(Macro.t(), Macro.t()) :: Mutation.Attribution.t() | nil
   def stage_attribution({_head, _meta, [left | _visible]} = offered, mutated) do
-    with {:|>, _pipe_meta, [_written_left, stage]} <- Meta.written_pipe(offered),
+    with {:|>, _pipe_meta, [^left, stage]} <- written(offered),
          {head, meta, [^left | visible]} <- mutated do
       Mutation.at(stage, Meta.drop_written_pipe({head, meta, visible}))
     else
@@ -97,7 +127,7 @@ defmodule Mutare.Transform.WrittenPipe do
   """
   @spec stage_position(Macro.t()) :: keyword() | nil
   def stage_position(node) do
-    with {:|>, _pipe_meta, [_left, stage]} <- Meta.written_pipe(node),
+    with {:|>, _pipe_meta, [_left, stage]} <- written(node),
          %{start: start} <- NodeRange.get(stage) do
       start
     else
@@ -107,19 +137,5 @@ defmodule Mutare.Transform.WrittenPipe do
 
   @doc "Render-side inverse of the rewrite: every rewritten call in `node` as the pipe it was."
   @spec resugar(Macro.t()) :: Macro.t()
-  def resugar(node) do
-    Macro.prewalk(node, fn
-      {head, meta, [left | visible]} = call ->
-        case Meta.written_pipe(call) do
-          {:|>, pipe_meta, _written} ->
-            {:|>, pipe_meta, [left, Meta.drop_written_pipe({head, meta, visible})]}
-
-          nil ->
-            call
-        end
-
-      other ->
-        other
-    end)
-  end
+  def resugar(node), do: Macro.prewalk(node, &(written(&1) || &1))
 end

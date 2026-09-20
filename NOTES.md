@@ -12202,8 +12202,9 @@ against 32,715 and 243.3 s, both compiling on the first attempt. Unrouted stages
 delivered through a closure, so binding every stage through `PipeEmit.delivery/2` changes the
 metamutant's spelling and not its size.
 
-**Not done.** The `written_pipe` stamp holds a whole unwalked pipe per stage, and now sits on
-every chain, not only routed ones. Measured since (`:erts_debug.size/1` against `flat_size/1`
+**Not done** *(done since — "The written-pipe stamp is the operator's meta")*. The
+`written_pipe` stamp holds a whole unwalked pipe per stage, and now sits on every chain, not
+only routed ones. Measured since (`:erts_debug.size/1` against `flat_size/1`
 over a rewritten chain of `|> Enum.map(…)` stages): the stamped pipes share their prefixes
 with one another on the heap, so the cost is linear — 28,015 words against 23,531 unstamped at
 64 stages, +19% — and it is a sum of prefixes only for a *copy*: 776,683 words flat. Nothing
@@ -12283,3 +12284,39 @@ The raise does not make the state unmisreadable, and nothing short of a separate
 would: a remote stage's module and name sit in its head, so a reader that pattern-matches
 `{{:., _, _}, _, args}` without going through `Calls` still counts one short. What the
 raise buys is that the two readers every family uses refuse.
+
+### The written-pipe stamp is the operator's meta `[done]` (2026-09-20)
+
+`WrittenPipe.direct/1` stamped the rewritten call with the whole `|>` node as it stood. Every
+reader used less: `PipeEmit`, `Render` and `resugar/1` took the operator's meta from it;
+`stage_attribution/2` and `stage_position/1` took the stage, which is the offered call less
+its argument 0; `NodeRange` and `Parenthesize` took the pipe, which is that stage under that
+meta beside that argument 0. The call already held every operand, so the stamp was a second
+copy of the left side — unwalked, hence stale once analysis reached argument 0, and the
+sum-of-prefixes "A pipe stage is the call it is sugar for" left under "Not done".
+
+The stamp is now the `|>`'s meta alone (`Meta.written_pipe_meta/1`), and
+`WrittenPipe.written/1` rebuilds the pipe from the call. It is the one inverse of `direct/1`:
+`resugar/1` is a prewalk of it and `Render` calls it, where each had spelled the pipe by hand.
+Ranges are taken from raw nodes (`Attach.build_candidates/2` and the rest), whose argument 0
+is the very term the old stamp held, so no range moves. Two details the inverse has to get
+right, both pinned in `written_pipe_test.exs` over every spelling `Kernel.|>/2` pipes into:
+
+- The rebuilt stage is marked again (`Meta.routed_direct?/1`). Its route stamp still lists the
+  direct call's positions, so it is the state "A marked stage cannot be misread" guards.
+- A bare stage written without parentheses (`x |> to_string`) has `nil` arguments, which
+  `direct/1` turns into `[x]`. The parser gives every parenthesized call a `:closing`, so an
+  atom-headed call left with no visible argument and no `:closing` was written bare.
+
+Measured as before (64 `|> Enum.map(…)` stages, resolved, every stage rewritten): 23,133
+words on the heap and 23,133 flat, against 23,517 for the chain as written — nothing is shared
+because nothing is held twice. The old stamp measured 28,015 and 776,683. The test asserts
+flat size under twice the written chain's.
+
+**No site moves.** Over Mutare's own `lib/` (219 files, `verify_invariants` on), this commit
+and its parent produce the same 32,405 Sites, struct for struct, and byte-identical
+metamutants (15,097,899 bytes).
+
+**Still open.** An emitter that builds a generated node on the user's meta inherits the stamp
+and must drop it (`CaseClauseEmit`, above). That is a convention, found by dogfooding when it
+was broken; building generated nodes on fresh meta would remove it, and has not been surveyed.

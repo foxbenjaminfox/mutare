@@ -17,7 +17,7 @@ defmodule Mutare.Transform.PipeEmit do
   #         end).()
   #
   # The upstream chain appears once and a chain of mutated stages renders flat, linear in its
-  # length. The `|>` is the user's own (its meta, from the `Meta.written_pipe/1` stamp), so it
+  # length. The `|>` is the user's own (its meta, the `Meta.written_pipe_meta/1` stamp), so it
   # resolves as it did in their source: to `Kernel`, or the stage would not have been rewritten.
   #
   # This is the one place a call's spelling and its route are read together, and both answer a
@@ -70,7 +70,7 @@ defmodule Mutare.Transform.PipeEmit do
   @doc "How `node`'s candidates are delivered — see the module header."
   @spec delivery(Macro.t(), [Candidate.t()]) :: t()
   def delivery({_head, meta, [_zero | _rest]} = node, [_ | _] = candidates) do
-    with {:|>, pipe_meta, _operands} <- Meta.written_pipe(node),
+    with pipe_meta when is_list(pipe_meta) <- Meta.written_pipe_meta(node),
          true <- value_position?(Meta.routing(meta)),
          [%Candidate.InPlace{original: {_h, _m, [written | _]} = original} | _] <- candidates do
       bind = {:bind, pipe_meta, written}

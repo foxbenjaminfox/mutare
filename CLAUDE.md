@@ -231,7 +231,7 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   (`mutate/1,2` and `variant/2` alike) and delivery never see a call one argument short — there
   is no `pipe_mode` — while code Mutare never analyzes (a `:raw` argument, a `:skip`ped call, a
   clean copy) is never rewritten. Past `direct/1`, three modules read that a call was written
-  as a pipe, each off the `Meta.written_pipe/1` stamp: `Mutare.Transform.WrittenPipe` keeps a
+  as a pipe, each off the `Meta.written_pipe_meta/1` stamp: `Mutare.Transform.WrittenPipe` keeps a
   Site in the user's spelling and footprint, `Mutare.Transform.PipeEmit` binds the piped value,
   and `Mutare.Transform.Render` spells every such call as a pipe again. A stage under the
   call-level `:skip` is no exception: its piped value is its *sibling* and keeps its mutants,
