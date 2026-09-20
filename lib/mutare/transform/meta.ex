@@ -127,10 +127,36 @@ defmodule Mutare.Transform.Meta do
   The routing `Mutare.Transform.Resolve` stamped on a call the route registry matched
   (`Mutare.CallRouting.Registry`): the per-argument position list, or the bare `:skip` for a call
   routed as an inert leaf. `nil` for an unrouted call. The reader of the `:mutare_route` contract key.
+
+  Raises for a `|>` stage routed as its direct call (`routed_direct?/1`): that stamp lists the
+  *direct* call's positions, the left side's first, so read against the stage's own arguments
+  every treatment would land one argument late. The caller forgot
+  `Mutare.Transform.WrittenPipe.direct/1`; a reader that really does want the direct call's
+  treatments off the bare stage asks `direct_routing/1`.
   """
   @spec routing(keyword() | term()) :: term()
-  def routing(meta) when is_list(meta), do: Keyword.get(meta, MetaKeys.route_key())
+  def routing(meta) when is_list(meta) do
+    if Keyword.get(meta, MetaKeys.routed_direct_key(), false) do
+      raise ArgumentError,
+            "Mutare.Transform.Meta.routing/1 read a `|>` stage routed as its direct call; " <>
+              "its treatments index that call's arguments, not the stage's. Apply " <>
+              "Mutare.Transform.WrittenPipe.direct/1 to the pipe first (or use direct_routing/1)."
+    else
+      Keyword.get(meta, MetaKeys.route_key())
+    end
+  end
+
   def routing(_meta), do: nil
+
+  @doc """
+  The routing of the **direct** call a node stands for — `routing/1` for any ordinary call, and
+  for a marked `|>` stage (`routed_direct?/1`) the same stamp, whose positions are then the
+  direct call's (the pipe's left side is position 0). For a reader that asks about the positions
+  as a set and never indexes the stage's arguments by them.
+  """
+  @spec direct_routing(keyword() | term()) :: term()
+  def direct_routing(meta) when is_list(meta), do: Keyword.get(meta, MetaKeys.route_key())
+  def direct_routing(_meta), do: nil
 
   @doc """
   Whether a node carries the call-level `:skip` route — an inert leaf to every walk: the
@@ -138,8 +164,11 @@ defmodule Mutare.Transform.Meta do
   the structural pattern discovery (through `contains_skipped?/1`).
   """
   @spec skipped?(Macro.t()) :: boolean()
+  # Asked of every node a walk passes, marked `|>` stages included, and indexes no argument —
+  # so it reads the stamp as `direct_routing/1` does. (A marked stage is under a positional
+  # route, never `:skip`.)
   def skipped?({_form, meta, args}) when is_list(meta) and is_list(args),
-    do: routing(meta) == :skip
+    do: direct_routing(meta) == :skip
 
   def skipped?(_node), do: false
 

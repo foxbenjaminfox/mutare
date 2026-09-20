@@ -232,7 +232,10 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   dispatcher's entry). So routing, hosting, mutation and delivery never see such a pipe, while
   code Mutare never analyzes — a `:raw` argument, a `:skip`ped call, a clean copy — is never
   rewritten. Anything that reads a statement or tail *before* `analyze/3` does must apply
-  `direct/1` first; a marked stage on its own is not a complete call.
+  `direct/1` first, and so must any other walk that reads code as Elixir (`Tag`'s guard walk
+  does, at its entry); a marked stage on its own is not a complete call, and `Meta.routing/1`
+  raises on one rather than answer one argument late — NOTES "A marked stage cannot be
+  misread".
   `Mutare.Transform.WrittenPipe` also keeps a rewritten call's Site in the user's spelling and
   footprint — NOTES "A routed pipe stage becomes a direct call".
 - **A call is a function in every respect its route does not address — evaluation included.**

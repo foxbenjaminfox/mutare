@@ -6,14 +6,16 @@ defmodule Mutare.Transform.WrittenPipe do
   # `Mutare.Transform.Analyze` and the guard walker `Tag` as they reach a node, so that routing,
   # hosting, mutation and delivery all read one call shape — and so that code Mutare never
   # analyzes (a `:raw` argument, a `:skip`ped call, a pattern, a verbatim clean copy) is never
-  # rewritten at all.
+  # rewritten at all. A reader that skips it does not get a misaligned answer:
+  # `Meta.routing/1` raises on a marked stage.
   #
   # The metamutant is free to keep the direct shape — it only has to compile. A `Mutare.Site` is
   # not: it patches the user's source by range and shows them a diff, so it must keep the
   # footprint and the spelling they wrote. The rest of this module is that obligation, read off
   # the `Meta.written_pipe/1` stamp `direct/1` leaves:
   #
-  #   * `range/1` — the rewritten call stands where the whole `left |> stage` stood. Its own
+  #   * `written/1` — the rewritten call stands where the whole `left |> stage` stood, so
+  #     `Mutare.Transform.NodeRange.get/1` ranges the written pipe in its stead. The call's own
   #     meta would range only the stage (`Sourceror.get_range/1` starts a call at its head), and a
   #     return-value replacement patched over that span would leave the `left |>` behind.
   #   * `stage_attribution/2` — a whole-call mutant that left argument 0 alone is a mutation of

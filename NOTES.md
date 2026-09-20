@@ -11880,6 +11880,28 @@ carry the selector builder's marker before expanding the pipe. A macro inspectin
 `(^x) |> stage()` therefore still receives that syntax; generated pinned selectors retain the
 precedence correction tested in `pipe_source_patch_test.exs`.
 
+### A marked stage cannot be misread `[done]` (2026-09-20)
+
+"A routed pipe stage becomes a direct call" left one thing to convention. Between `Resolve`
+and the walk that applies `WrittenPipe.direct/1`, a marked stage carries a route stamp one
+position longer than its written arguments, and `Meta.routing/1` handed that list to whoever
+asked: a reader that forgot `direct/1` got every treatment one argument late, silently.
+
+One had: `Mutare.Transform.Tag`'s guard walk reads code as Elixir exactly as `Analyze` does and
+did not apply it, so under `{Kernel, :rem, 2, [:raw, :expression]}` the guard
+`when n |> rem(2) == 0` held `2` back as `:raw` and offered `rem` at arity 1. That reader was
+found and fixed by hand ("Preserve routed pipe bindings and align guard argument routing",
+`routed_pipe_regression_test.exs`); what follows is so the next one is not left to be found.
+
+Now the misreading cannot happen quietly: `Meta.routing/1` raises on a marked stage. The two
+questions that are well defined for one without indexing its arguments have their own readers
+— `Meta.skipped?/1` (asked of every node a walk passes; a marked stage is never `:skip`) and
+`Meta.direct_routing/1` (`QuoteEscape` asks whether *any* position is a binding pattern).
+With the raise in place and `Tag`'s `direct/1` removed, `piped_guard_test.exs` fails at
+`tag_args/3` by name — it also checks the guard's sites through `SourcePatch`. A crash in a
+user's run is the price of a reader added later without it; the soak below is
+there so it is paid in CI.
+
 ### A range starts at a leading parenthesized callee `[fixed]` (2026-09-20)
 
 Sourceror ranges `(fn x -> x end).(1)` and `(a).b` from the callee's own position, *inside*
