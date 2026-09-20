@@ -82,6 +82,44 @@ defmodule Mutare.SourcePatchParensTest do
     assert patch(source, whole) =~ ~r/do\n\s+(nil|:mutare|"")\n\s+else/
   end
 
+  test "a node that ends with a parenthesized operand ends at that parenthesis" do
+    source = """
+    defmodule Fixture do
+      def run(a) do
+        if 0 == (if a > 0, do: 0, else: 1) do
+          -(a + 1)
+        else
+          a * (a - 1)
+        end
+      end
+    end
+    """
+
+    assert [_ | _] =
+             assert_patches(source, [:relational, :conditional, :arithmetic, :return_value],
+               run: [3],
+               run: [-3]
+             )
+  end
+
+  test "a bitstring that ends a clause body stops at its `>>`" do
+    # Sourceror ranges a `<<…>>` carrying `end_of_expression` meta one column too far — over
+    # the line break, so the patch joined the next clause onto this one.
+    source = """
+    defmodule Fixture do
+      def run(a) do
+        cond do
+          a -> <<0>>
+          true -> <<1, 2>>
+        end
+      end
+    end
+    """
+
+    sites = assert_patches(source, [:bitstring, :integer], run: [true], run: [false])
+    assert Enum.any?(sites, &(&1.mutator == :bitstring))
+  end
+
   test "a parenthesized pipe" do
     source = """
     defmodule Fixture do

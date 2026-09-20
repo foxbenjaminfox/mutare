@@ -1,8 +1,8 @@
 defmodule Mutare.Transform.NodeRange do
   @moduledoc """
   `Sourceror.get_range/1`, corrected where its answer would corrupt a survivor's reported
-  location or diff: surrounding parentheses, a leading parenthesized callee, and an
-  escaped-delimiter under-count.
+  location or diff: surrounding parentheses, a leading parenthesized callee, a bitstring's
+  over-counted end, and an escaped-delimiter under-count.
 
   **Surrounding parentheses.** Sourceror extends a parenthesized node's range over the
   parentheses written around it. The text a `Mutare.Site` renders for that node never includes
@@ -15,7 +15,9 @@ defmodule Mutare.Transform.NodeRange do
   `(a).b` from *inside* the callee's parentheses, and with them every node that begins with
   one. A whole-expression replacement over that span leaves the `(` behind —
   `(fn … end).(1) |> f()` → `nil` patched to the unparseable `(nil`. `get/1` starts the range at
-  the earliest start down the node's left spine.
+  the earliest start down the node's left spine — and, for the mirror image
+  (`0 == (if x do … end)`, ranged to inside the `)`), ends it at the latest end down the right
+  spine.
 
   **The escaped-delimiter under-count in sigils and interpolated strings.**
   Sourceror computes a sigil's end column from the **stored** content length
@@ -62,6 +64,7 @@ defmodule Mutare.Transform.NodeRange do
         |> unparenthesized()
         |> Sourceror.get_range()
         |> from_leading_parenthesis(node)
+        |> to_trailing_parenthesis(node)
         |> correct(node)
 
       pipe ->
@@ -109,6 +112,47 @@ defmodule Mutare.Transform.NodeRange do
 
   defp position(start), do: {start[:line], start[:column]}
 
+  # The mirror image, at the other end: a node ends where its rightmost piece ends, that piece's
+  # own parentheses included. `0 == (if x do … end)` is ranged to the `end`, inside the `)`, so a
+  # replacement of the comparison left it behind (`if false) do`). The end is the latest end
+  # found down the node's right spine — an operator's last operand.
+  defp to_trailing_parenthesis(%Sourceror.Range{} = range, node) do
+    case trailing_end(right_child(node)) do
+      nil -> range
+      finish -> %{range | end: Enum.max_by([range.end, finish], &position/1)}
+    end
+  end
+
+  defp to_trailing_parenthesis(nil, _node), do: nil
+
+  defp trailing_end({_form, meta, _args} = node) when is_list(meta) do
+    own =
+      case Sourceror.get_range(node) do
+        %Sourceror.Range{end: finish} -> finish
+        nil -> nil
+      end
+
+    # A range's end is exclusive: one column past the `)`.
+    closings =
+      for parens <- Keyword.get_values(meta, :parens),
+          closing = parens[:closing],
+          do: [line: closing[:line], column: closing[:column] + 1]
+
+    [own, trailing_end(right_child(node)) | closings]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max_by(&position/1, fn -> nil end)
+  end
+
+  defp trailing_end(_node), do: nil
+
+  defp right_child({operator, _meta, [operand]}) when is_atom(operator),
+    do: if(Macro.operator?(operator, 1), do: operand)
+
+  defp right_child({operator, _meta, [_left, right]}) when is_atom(operator) and operator != :.,
+    do: if(Macro.operator?(operator, 2), do: right)
+
+  defp right_child(_node), do: nil
+
   # The node without the parentheses written *around* it. `Sourceror.get_range/1` extends a
   # parenthesized node's range over its parentheses, but the text a Site renders for the node
   # never includes them (`(a + b) * c` records `a + b` → `a - b`). Patched over the wider span,
@@ -127,10 +171,17 @@ defmodule Mutare.Transform.NodeRange do
   end
 
   # An interpolated string: `{:<<>>, meta, segments}` carrying a `delimiter` meta
-  # key (a real `<<…>>` bitstring has none, and `interpolated_range/3` passes it
-  # through untouched).
+  # key. A real `<<…>>` bitstring has none, and ends just past its `>>`: Sourceror ranges one
+  # that carries `end_of_expression` meta (the last expression of a clause body) one column
+  # further, over the line break, so a patch there joined the next line onto this one.
   defp correct(%Sourceror.Range{} = range, {:<<>>, meta, segments}) when is_list(segments) do
-    interpolated_range(range, meta[:delimiter], segments)
+    case {meta[:delimiter], meta[:closing]} do
+      {nil, [_ | _] = closing} ->
+        %{range | end: [line: closing[:line], column: closing[:column] + 2]}
+
+      {delimiter, _closing} ->
+        interpolated_range(range, delimiter, segments)
+    end
   end
 
   # An interpolated charlist: `'a#{x}b'` parses to a `List.to_charlist` call whose
