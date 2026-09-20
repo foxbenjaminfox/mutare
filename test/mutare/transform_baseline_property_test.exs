@@ -67,7 +67,7 @@ defmodule Mutare.TransformBaselinePropertyTest do
       source = Macro.to_string(module_ast)
 
       %{metamutant: metamutant} =
-        Mutare.Transform.transform_string_with_sites(source, file: "prop.ex")
+        Mutare.Transform.transform_string_with_sites(source, Gen.transform_opts())
 
       Selector.put(Selector.baseline())
 

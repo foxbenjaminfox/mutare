@@ -43,8 +43,22 @@ defmodule Mutare.TransformPropertyGenerators do
   only: [reject: 2]` + `alias String, as: S`) arrive from *behind* a `use` rather than written
   inline, so the whole expand → harvest → stamp → resolve → rebuild path is exercised end to end
   (and the metamutant still parses / compiles / matches baseline). See `use_part_gen/0`.
+
+  And it emits calls under a **positional call route** (`routed_call_gen/1`), written directly
+  and as pipe stages — alone and chained — into `Mutare.Test.RoutedSoak`'s function and lazy
+  macro. A routed stage is resolved as the direct call it is sugar for and becomes that call
+  only where a walk reads it (`Mutare.Transform.WrittenPipe`), so this is the generator that
+  drives that rewrite, its bound and plain deliveries, and the Site's return to the user's
+  spelling under the stream. The routes are not the transform's defaults: every soak transforms
+  under `transform_opts/1`. `respell/2` rewrites a module's routed calls into one spelling, for
+  the property that the two spellings are the same program to Mutare
+  (`transform_routed_pipe_property_test.exs`).
   """
   use PropCheck
+
+  alias Mutare.Test.RoutedSoak
+
+  @routed_soak [:Mutare, :Test, :RoutedSoak]
 
   # === top level ============================================================
 
@@ -61,8 +75,56 @@ defmodule Mutare.TransformPropertyGenerators do
         |> Enum.with_index()
         |> Enum.flat_map(fn {clauses, i} -> rename_group(clauses, i) end)
 
-      {:defmodule, [], [{:__aliases__, [], [:Prop]}, [do: block(use_part ++ functions)]]}
+      # `RoutedSoak.pick/2` is a macro, called qualified.
+      require_soak = {:require, [], [aliases(@routed_soak)]}
+
+      {:defmodule, [],
+       [{:__aliases__, [], [:Prop]}, [do: block([require_soak | use_part] ++ functions)]]}
     end
+  end
+
+  @doc """
+  The options every transform soak runs under: the fixed file name plus the call routes of the
+  callees `routed_call_gen/1` emits (`Mutare.Test.RoutedSoak`) and the mutator that lands
+  whole-call mutants on them (`Mutare.Test.RoutedSoakMutator`), ahead of `extra`.
+  """
+  @spec transform_opts(keyword()) :: keyword()
+  def transform_opts(extra \\ []),
+    do:
+      [
+        file: "prop.ex",
+        call_routes: RoutedSoak.call_routes(),
+        # Whole-call mutants on the routed callees, which no built-in family produces.
+        mutators: [:builtins, Mutare.Test.RoutedSoakMutator]
+      ] ++ extra
+
+  @doc """
+  `module_ast` with every `Mutare.Test.RoutedSoak` call in one spelling: `:direct`
+  (`keep(a, raw, c)`) or `:piped` (`a |> keep(raw, c)`). The two are the same program.
+  """
+  @spec respell(Macro.t(), :direct | :piped) :: Macro.t()
+  def respell(module_ast, :direct) do
+    Macro.postwalk(module_ast, fn
+      {:|>, _meta, [left, {{:., _, [{:__aliases__, _, @routed_soak}, _fun]} = dot, meta, args}]} ->
+        {dot, meta, [left | args]}
+
+      node ->
+        node
+    end)
+  end
+
+  def respell(module_ast, :piped) do
+    # Bottom-up, a stage already written piped is met before the `|>` above it, and is told from
+    # a direct call by its arity.
+    Macro.postwalk(module_ast, fn
+      {{:., _, [{:__aliases__, _, @routed_soak}, fun]} = dot, meta, [first | rest] = args} = call ->
+        if length(args) == Map.fetch!(RoutedSoak.arities(), fun),
+          do: {:|>, [], [first, {dot, meta, rest}]},
+          else: call
+
+      node ->
+        node
+    end)
   end
 
   # Give each function *group* a module-unique name so independently-generated functions
@@ -210,6 +272,7 @@ defmodule Mutare.TransformPropertyGenerators do
       {2, case_gen(smaller)},
       {2, cond_gen(smaller)},
       {2, pipe_gen(smaller)},
+      {2, routed_call_gen(smaller)},
       {1, collection_gen(smaller)},
       {2, remote_call_gen(vars)},
       {1, sigil_gen()},
@@ -324,6 +387,35 @@ defmodule Mutare.TransformPropertyGenerators do
       do: {{:., [], [aliases([:Enum]), fun]}, [], []}
     )
   end
+
+  # A call under a **positional route** (`Mutare.Test.RoutedSoak`), written directly or piped,
+  # or a 2–3 stage chain of them. `keep/3`'s `:raw` middle argument is always the bait `1 < 2`:
+  # integer and relational mutants for any reader that lands the stage's treatments one argument
+  # late, none for one that reads the direct call. `keep/3` stages take the bound delivery
+  # (position 0 is a value), `pick/2` stages the plain one (`:lazy_expression`), and a chain
+  # mixes them, each stage holding the upstream chain as its argument 0.
+  defp routed_call_gen(sub) do
+    oneof([
+      let({call, left} <- {routed_stage_gen(sub), sub}, do: spell(call, left, :direct)),
+      let({call, left} <- {routed_stage_gen(sub), sub}, do: spell(call, left, :piped)),
+      let {left, stages} <- {sub, let(n <- integer(2, 3), do: vector(n, routed_stage_gen(sub)))} do
+        Enum.reduce(stages, left, &spell(&1, &2, :piped))
+      end
+    ])
+  end
+
+  # A routed callee and the arguments after its first: `{fun, rest}`.
+  defp routed_stage_gen(sub) do
+    oneof([
+      let(extra <- sub, do: {:keep, [{:<, [], [1, 2]}, extra]}),
+      let(on? <- sub, do: {:pick, [on?]})
+    ])
+  end
+
+  defp spell({fun, rest}, left, :direct), do: aliased_call(@routed_soak, fun, [left | rest])
+
+  defp spell({fun, rest}, left, :piped),
+    do: {:|>, [], [left, aliased_call(@routed_soak, fun, rest)]}
 
   # A small list, tuple, or keyword-syntax map literal of sub-expressions — exercises
   # the collection-literal families and key/value routing.

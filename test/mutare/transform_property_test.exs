@@ -70,9 +70,9 @@ defmodule Mutare.TransformPropertyTest do
           # `verify_invariants` adds the readback checks (every mutant selectable and covered,
           # nothing else named, a deterministic render); a violation raises and fails the case.
           %{metamutant: metamutant, sites: sites} =
-            Mutare.Transform.transform_string_with_sites(source,
-              file: "prop.ex",
-              verify_invariants: true
+            Mutare.Transform.transform_string_with_sites(
+              source,
+              Gen.transform_opts(verify_invariants: true)
             )
 
           renders_valid?(metamutant, source) and mutants_observable?(sites, source, metamutant)

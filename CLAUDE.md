@@ -42,8 +42,9 @@ mix run script.exs                    # ad-hoc exploration in the lib context (u
 `*_runner_test` — `poison_runner_test`, `ignore_runner_test`, …) shell out to real `mix test`
 subprocesses, and live in their own files so the pure tests beside them can stay `async: true`
 (NOTES "Test suite: async-safe compile helpers and the sync split"); `@moduletag :property`
-tests are PropCheck soaks that render/compile/run streams of generated modules. Both are slow —
-exclude them while iterating, run the full suite before committing. `mix run` uses `:dev`, where
+tests are PropCheck soaks that render/compile/run streams of generated modules (all under
+`Gen.transform_opts/1`, which carries the call routes the generated routed pipes need). Both
+are slow — exclude them while iterating, run the full suite before committing. `mix run` uses `:dev`, where
 `test/support/*.ex` fixtures (the custom-mutator examples) are **not** compiled — they exist only
 under `MIX_ENV=test`. Test-side helpers live there too: `Mutare.Test.Compile` (warning-swallowing,
 lock-serialized compile — never `capture_io(:stderr, …)` around a compile), `Mutare.Test.Metamutant`

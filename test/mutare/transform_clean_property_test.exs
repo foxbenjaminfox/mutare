@@ -51,10 +51,12 @@ defmodule Mutare.TransformCleanPropertyTest do
     max_size: @max_size do
     forall module_ast <- Gen.module_gen() do
       source = Macro.to_string(module_ast)
-      clean = Transform.transform_string_with_sites(source, file: "prop.ex", clean_threshold: 1)
+
+      clean =
+        Transform.transform_string_with_sites(source, Gen.transform_opts(clean_threshold: 1))
 
       control =
-        Transform.transform_string_with_sites(source, file: "prop.ex", clean_functions: false)
+        Transform.transform_string_with_sites(source, Gen.transform_opts(clean_functions: false))
 
       selections = [Selector.baseline(), clean.next_id + 1 | Enum.map(clean.sites, & &1.id)]
 
@@ -78,9 +80,9 @@ defmodule Mutare.TransformCleanPropertyTest do
       for seed <- 1..25,
           {:ok, module_ast} = PropCheck.produce(Gen.module_gen(), seed),
           decision <-
-            Transform.transform_string_with_sites(Macro.to_string(module_ast),
-              file: "prop.ex",
-              clean_threshold: 1
+            Transform.transform_string_with_sites(
+              Macro.to_string(module_ast),
+              Gen.transform_opts(clean_threshold: 1)
             ).clean_decisions,
           do: decision
 

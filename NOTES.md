@@ -11902,6 +11902,26 @@ With the raise in place and `Tag`'s `direct/1` removed, `piped_guard_test.exs` f
 user's run is the price of a reader added later without it; the soak below is
 there so it is paid in CI.
 
+**The soak drives routed pipes.** The generators emitted only unrouted `Enum`/`Kernel` stages
+and every soak transformed under default options, so none of the rewrite ran under the stream.
+`routed_call_gen/1` now emits `Mutare.Test.RoutedSoak`'s function (`[:expression, :raw,
+:expression]`, the `:raw` slot always the bait `1 < 2`) and lazy macro (`[:lazy_expression,
+:expression]`), written directly, piped, and chained; every soak transforms under
+`Gen.transform_opts/1`. No built-in family lands a whole-call mutant on a call outside the
+standard library, and that mutant is what makes `PipeEmit.bound_argument/2` and
+`WrittenPipe.stage_attribution/2` choose, so the options also enable
+`Mutare.Test.RoutedSoakMutator` (one candidate that keeps argument 0, and over a bare-variable
+argument 0 one that rewrites it).
+
+**Desugaring commutes with the transform** (`transform_routed_pipe_property_test.exs`): a
+module with its routed calls all piped and the same module with them all direct must get the
+same mutants, compared as the programs their sites promise — source patched at `site.range`,
+parsed, every `|>` desugared with `Macro.pipe/3`, metadata dropped. Going through the patch
+makes it blind to spelling and to stage-versus-pipe attribution while still checking ranges.
+It also makes it sensitive to every report defect that shows in an operator context and not
+in an argument list, since a pipe's left side is the former and a call's argument the latter.
+It found three on its first runs, none of them about routing — the next two entries.
+
 ### A range starts at a leading parenthesized callee `[fixed]` (2026-09-20)
 
 Sourceror ranges `(fn x -> x end).(1)` and `(a).b` from the callee's own position, *inside*
@@ -11913,3 +11933,26 @@ left side, a binary operator's left operand), reading each spine node's `:parens
 its meta — Sourceror extends some parenthesized nodes over their parentheses and not others
 (an `fn`). Pinned through `SourcePatch` in `source_patch_parens_test.exs`. The right spine was
 not audited.
+
+### A replacement is rendered without its context `[open]` (2026-09-20)
+
+Two survivor-diff defects, both older than the routed-pipe work, found by the commutation
+property and left open because each wants a decision about where a Site's text learns what
+surrounds it:
+
+- **A replacement that binds looser than what it replaced.** `logical` turns `!(a == 0)` into
+  `a == 0`, rendered bare. Beside a tighter operator the patch is a different program from the
+  mutant that ran: `!(a == 0) |> to_string()` is reported as `a == 0 |> to_string()`, which
+  parses as `a == (0 |> to_string())`. The metamutant is right (it is built from the AST); only
+  the diff and the machine reporters' text are wrong. The parentheses note above ("the rendered
+  replacement carries the parentheses it needs") holds for an operator swapped in place, not
+  for a node replaced by its own operand. Candidates: parenthesize `mutated_code` whenever the
+  mutated node is an operator form binding looser than the original (noisy at statement level:
+  `(a == 0)`), or let `Site` see its parent.
+- **A negative replacement under a written minus.** `float` turns the `0.75` of `-0.75` into
+  `-0.25` (`x - 1.0`); the site ranges `0.75`, so the patch reads `--0.25`, which does not
+  parse. `integer` avoids it only because its replacements of a small positive stay ≥ 0.
+
+Until then the commutation property patches replacements in parenthesized (`promise/2`), so it
+keeps testing what it is about. A soak of `SourcePatch`'s compile half over every generated
+site — the natural next property — would fail on both today.
