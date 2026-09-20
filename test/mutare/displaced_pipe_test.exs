@@ -123,7 +123,9 @@ defmodule Mutare.DisplacedPipeTest do
       end
       """
 
-      sites = assert_patches(source, @mutators, run: [{:ok, [1, 2, 3]}], run: [:error])
+      sites =
+        assert_patches(source, @mutators, [run: [{:ok, [1, 2, 3]}], run: [:error]], @bind_route)
+
       refute Enum.any?(sites, &(&1.mutator == :collection))
     end
 
@@ -141,10 +143,11 @@ defmodule Mutare.DisplacedPipeTest do
       """
 
       sites =
-        assert_patches(source, @mutators,
-          bound: [{:ok, [1, 2, 3]}],
-          bound: [:error],
-          plain: [[1, 2, 3]]
+        assert_patches(
+          source,
+          @mutators,
+          [bound: [{:ok, [1, 2, 3]}], bound: [:error], plain: [[1, 2, 3]]],
+          @bind_route
         )
 
       # Only `plain/1`'s stage is a pipe stage to Mutare, so only it gets the whole-call swap.
@@ -180,7 +183,10 @@ defmodule Mutare.DisplacedPipeTest do
       """
 
       sites = assert_patches(source, @mutators, run: [[1, 2, 3]])
-      refute Enum.any?(sites, &(&1.mutator == :collection))
+
+      # Unrouted, the operator is an ordinary call, so its right side is a value: `Enum.reject/2`
+      # as written, and the whole-call swap applies to it.
+      assert Enum.any?(sites, &(&1.mutator == :collection))
     end
 
     test "chained: each custom stage is applied once, in order" do
@@ -211,7 +217,10 @@ defmodule Mutare.DisplacedPipeTest do
       end
       """
 
-      routes = [{Mutare.Test.LazyDSL, :lazy, 2, [:lazy_expression, :expression]}]
+      routes = [
+        {BindPipe, :|>, 2, [:expression, :interior]},
+        {Mutare.Test.LazyDSL, :lazy, 2, [:lazy_expression, :expression]}
+      ]
 
       sites =
         assert_patches(source, [Mutare.Test.LazyStageMutator, :boolean], [run: [{:ok, 1}, true]],

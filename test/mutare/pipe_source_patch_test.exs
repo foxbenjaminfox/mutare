@@ -136,9 +136,11 @@ defmodule Mutare.PipeSourcePatchTest do
     """
 
     assert [_ | _] =
-             assert_patches(source, [:collection, :integer, :relational, :arithmetic],
-               run: [{:ok, [1, 2, 3]}],
-               run: [:error]
+             assert_patches(
+               source,
+               [:collection, :integer, :relational, :arithmetic],
+               [run: [{:ok, [1, 2, 3]}], run: [:error]],
+               call_routes: [{Mutare.Test.BindPipe, :|>, 2, [:expression, :interior]}]
              )
   end
 

@@ -143,7 +143,8 @@ defmodule Mutare.PipeSyntaxTest do
       # `f`'s three piped stages each bind; `g`'s directly written calls never do — a macro may
       # evaluate a written argument late, or not at all.
       assert length(Regex.scan(~r/fn mutare_piped ->/, emitted)) == 3
-      assert length(Regex.scan(~r/tick\(n, sink\)/, emitted)) == 2
+      # `tick/2`'s head, its one call in the instrumented chain, and `f`'s clean copy.
+      assert length(Regex.scan(~r/tick\(n, sink\)/, emitted)) == 3
     end
 
     test "falls back to plain delivery when a mutant does not keep the piped value" do
