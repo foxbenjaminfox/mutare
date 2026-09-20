@@ -48,6 +48,9 @@ exclude them while iterating, run the full suite before committing. `mix run` us
 under `MIX_ENV=test`. Test-side helpers live there too: `Mutare.Test.Compile` (warning-swallowing,
 lock-serialized compile — never `capture_io(:stderr, …)` around a compile), `Mutare.Test.Metamutant`
 (assertions and pins over emitted code, plus `family_sites/4` for one family's internal `%Site{}`s),
+`Mutare.Test.SourcePatch` (`assert_patches/4`: every site's source patch must behave as the
+metamutant does under that mutant — the way to test a delivery shape or a range, since string
+equality on `mutated_code` cannot see a wrong span),
 and the shipped `Mutare.Test` for diff-level checks; each says when it is safe under `async: true`.
 
 ## Architecture

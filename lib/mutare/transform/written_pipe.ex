@@ -62,14 +62,13 @@ defmodule Mutare.Transform.WrittenPipe do
     end
   end
 
-  @doc "The source range of the `|>` a rewritten call was written as, or `nil` for any other node."
-  @spec range(Macro.t()) :: Sourceror.Range.t() | nil
-  def range(node) do
-    case Meta.written_pipe(node) do
-      nil -> nil
-      pipe -> Sourceror.get_range(pipe)
-    end
-  end
+  @doc """
+  The `|>` a rewritten call was written as, or `nil` for any other node — what
+  `Mutare.Transform.NodeRange.get/1` ranges in the call's stead, since the call stands where the
+  whole `left |> stage` stood.
+  """
+  @spec written(Macro.t()) :: Macro.t() | nil
+  def written(node), do: Meta.written_pipe(node)
 
   @doc """
   The attribution that reports `mutated` — a replacement for the rewritten call `offered` — at

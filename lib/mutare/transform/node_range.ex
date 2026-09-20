@@ -1,7 +1,14 @@
 defmodule Mutare.Transform.NodeRange do
   @moduledoc """
-  `Sourceror.get_range/1` with a correction for one upstream quirk that would
-  otherwise corrupt a survivor's reported location.
+  `Sourceror.get_range/1`, corrected where its answer would corrupt a survivor's reported
+  location or diff: surrounding parentheses, and an escaped-delimiter under-count.
+
+  **Surrounding parentheses.** Sourceror extends a parenthesized node's range over the
+  parentheses written around it. The text a `Mutare.Site` renders for that node never includes
+  them — `(a + b) * c` records `a + b` → `a - b` — so patched over the wider span the report
+  would show `a - b * c`, a different program from the mutant that ran, and `&(&1 > 2)` would
+  become the unparseable `&&1 >= 2`. The parentheses belong to the context the node sits in, so
+  `get/1` ranges the node without them, however many layers or however spaced.
 
   **The escaped-delimiter under-count in sigils and interpolated strings.**
   Sourceror computes a sigil's end column from the **stored** content length
@@ -42,8 +49,20 @@ defmodule Mutare.Transform.NodeRange do
   def get(node) do
     # A routed call written as a pipe stands where the whole `left |> stage` stood
     # (`Mutare.Transform.WrittenPipe`); its own meta would range the stage alone.
-    Mutare.Transform.WrittenPipe.range(node) || node |> Sourceror.get_range() |> correct(node)
+    case Mutare.Transform.WrittenPipe.written(node) do
+      nil -> node |> unparenthesized() |> Sourceror.get_range() |> correct(node)
+      pipe -> get(pipe)
+    end
   end
+
+  # The node without the parentheses written *around* it. `Sourceror.get_range/1` extends a
+  # parenthesized node's range over its parentheses, but the text a Site renders for the node
+  # never includes them (`(a + b) * c` records `a + b` → `a - b`). Patched over the wider span,
+  # the report would show `a - b * c` — a different program from the mutant that ran — and
+  # `&(&1 > 2)` would become the unparseable `&&1 >= 2`. The parentheses belong to the context
+  # the node sits in, so the range stops inside them, however many layers or however spaced.
+  defp unparenthesized({form, meta, args}), do: {form, Keyword.delete(meta, :parens), args}
+  defp unparenthesized(node), do: node
 
   # A sigil: `{:sigil_x, meta, [{:<<>>, _, segments}, modifiers]}`. The head also
   # admits a plain `call(<<…>>, [..])` of the same shape, so `sigil_range/3`

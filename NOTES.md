@@ -11712,3 +11712,24 @@ on a stage reads a rule table keyed to stdlib modules. Piping all 237 macros of 
 `Integer.is_even/1`, `Integer.is_odd/1`, `Kernel.<>/2` — each of which evaluates its operand
 once and first. `pipe_macro_stage_test.exs` pins the contract in all three states: unrouted,
 routed `:expression`, routed `:lazy_expression`.
+
+### A site's range stops inside the parentheses around its node `[fixed]` (2026-09-20)
+
+Found by the first test that checked a site against the patch it promises
+(`Mutare.Test.SourcePatch`): patch the original source at `site.range` with
+`site.mutated_code`, compile it, and require it to behave as the metamutant does under that
+mutant. `Sourceror.get_range/1` extends a parenthesized node over its parentheses; the text a
+Site renders never includes them. So `(a + b) * c` with `a + b` → `a - b` patched to
+`a - b * c` — the report showing a *different program* from the one that ran — and
+`&(&1 > 2)` to the unparseable `&&1 >= 2`. `Mutare.Report.patch/2` does exactly that patch, so
+this was in every survivor diff whose node was parenthesized, and in the JSON/SARIF ranges.
+
+Fixed at the one place every range comes from: `NodeRange.get/1` ranges the node with its own
+`:parens` meta removed, which Sourceror then computes from the children — exact for doubled,
+padded and multi-line parentheses alike. Nothing in the suite had pinned the wider span.
+The opposite direction (a mutant that *lowers* precedence, `a - b * c` with `b * c` → `b + c`)
+was already right: the rendered replacement carries the parentheses it needs.
+
+String equality on `original_code`/`mutated_code`, which is what the suite asserted
+everywhere, cannot see this class of bug; `SourcePatch.assert_patches/4` can, and is cheap
+enough to be the default way to test a new delivery shape.
