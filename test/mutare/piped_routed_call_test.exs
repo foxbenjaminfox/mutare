@@ -153,6 +153,61 @@ defmodule Mutare.PipedRoutedCallTest do
     assert {site.line, site.original_code, site.mutated_code} == {6, "raw(x + 1)", "raw(0)"}
   end
 
+  # Swaps `Enum.take/2` for `Enum.drop/2`, and labels the mutant by the arity `variant/2` was
+  # shown: a stage-attributed site *reports* `Enum.take(2)`, a call one argument short, and the
+  # mutator must never be handed that.
+  defmodule TakeDropMutator do
+    @behaviour Mutare.Mutator
+
+    @impl true
+    def name, do: :take_drop
+
+    @impl true
+    def variants, do: ["arity_1", "arity_2"]
+
+    @impl true
+    def mutate(node) do
+      case Mutare.Calls.resolved_call_to(node, Enum, :take) do
+        {:ok, :take, [_enum, _count] = args, rebuild} -> [rebuild.(:drop, args)]
+        _other -> :skip
+      end
+    end
+
+    @impl true
+    def variant({_head, _meta, args}, _mutated), do: "arity_#{length(args)}"
+  end
+
+  test "variant/2 classifies the call the mutator was offered, not the written stage" do
+    labels = fn body ->
+      source = "defmodule TakeFixture do\n  def run(xs), do: #{body}\nend\n"
+
+      %{sites: [site]} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: [TakeDropMutator])
+
+      {site.original_code, site.mutated_code, site.variant}
+    end
+
+    assert labels.("Enum.take(xs, 2)") == {"Enum.take(xs, 2)", "Enum.drop(xs, 2)", ["arity_2"]}
+    assert labels.("xs |> Enum.take(2)") == {"Enum.take(2)", "Enum.drop(2)", ["arity_2"]}
+  end
+
+  test "resolved_call/1 refuses a |> stage read on its own" do
+    {:|>, _meta, [_left, stage]} =
+      pipe =
+      "xs |> Enum.take(2)"
+      |> Sourceror.parse_string!()
+      |> Mutare.Transform.Resolve.annotate()
+
+    assert_raise ArgumentError, ~r/one argument short/, fn ->
+      Mutare.Transform.Calls.resolved_call(stage)
+    end
+
+    assert {[:Enum], :take, [_xs, _count], _rebuild} =
+             pipe
+             |> Mutare.Transform.WrittenPipe.direct()
+             |> Mutare.Transform.Calls.resolved_call()
+  end
+
   test "a replacement of the whole expression covers the whole pipe" do
     source = """
     defmodule PipedCallFixture do

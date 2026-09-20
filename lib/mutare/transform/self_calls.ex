@@ -73,7 +73,8 @@ defmodule Mutare.Transform.SelfCalls do
 
   defp self_call?({name, meta, args} = node, {name, arity}, extra)
        when is_list(args) and length(args) + extra == arity,
-       do: is_nil(Calls.resolved_call(node)) and not Imports.kernel_displaced?(meta)
+       # `node` may be a bare `|>` stage (`extra` is 1), whose stamps describe the direct call.
+       do: is_nil(Calls.direct_resolved_call(node)) and not Imports.kernel_displaced?(meta)
 
   defp self_call?(_node, _self_call, _extra), do: false
 end

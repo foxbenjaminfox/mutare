@@ -82,6 +82,13 @@ defmodule Mutare.Transform.Candidate do
     # range starts: a pipe stage's mutant that moves the piped value patches the whole pipe, but
     # is a mutation of the stage, and it is the stage's line a `# mutare:ignore` or a `--line`
     # names (`Mutare.Transform.WrittenPipe.stage_position/1`). `nil` keys the site at its range.
+    #
+    # `classified` is the `{original, mutated}` pair `c:Mutare.Mutator.variant/2` derives labels
+    # from when that is not the pair the site reports. Core's own stage attribution
+    # (`Mutare.Transform.WrittenPipe.stage_attribution/2`) reports the *written stage* — a call
+    # one argument short, which no mutator is ever shown — so the mutator classifies the call it
+    # was offered and the replacement it returned. `nil` classifies the reported pair, as a
+    # mutator's own attribution does.
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
@@ -94,7 +101,8 @@ defmodule Mutare.Transform.Candidate do
             variant: Mutare.Mutator.Mutation.variant(),
             attribution: Mutare.Mutator.Mutation.Attribution.t() | nil,
             attribution_range: Sourceror.Range.t() | nil,
-            position: keyword() | nil
+            position: keyword() | nil,
+            classified: {Macro.t(), Macro.t()} | nil
           }
 
     defstruct [
@@ -108,7 +116,8 @@ defmodule Mutare.Transform.Candidate do
       variant: nil,
       attribution: nil,
       attribution_range: nil,
-      position: nil
+      position: nil,
+      classified: nil
     ]
   end
 

@@ -44,13 +44,37 @@ defmodule Mutare.Transform.Calls do
   @spec resolved_call(Macro.t()) ::
           {module_key(), atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | nil
 
+  # A marked `|>` stage (`Meta.routed_direct?/1`) is refused, as `Meta.routing/1` refuses it:
+  # it was resolved as the direct call it is sugar for, so read on its own it answers one
+  # argument short — a `{Enum, :take}` call of one argument for `xs |> Enum.take(2)`. The
+  # caller forgot `Mutare.Transform.WrittenPipe.direct/1`.
+  def resolved_call(node) do
+    if Meta.routed_direct?(node) do
+      raise ArgumentError,
+            "Mutare.Transform.Calls.resolved_call/1 read a `|>` stage on its own: " <>
+              "`#{Macro.to_string(node)}` is the call it is sugar for, one argument short. " <>
+              "Apply Mutare.Transform.WrittenPipe.direct/1 to the pipe first."
+    else
+      read_resolved_call(node)
+    end
+  end
+
+  # `resolved_call/1` of the **direct** call a node stands for: the same answer for an ordinary
+  # call, and for a marked `|>` stage the resolution its stamps record, which is the direct
+  # call's. The arguments returned are then the stage's own, one short — so this is for a
+  # reader that knows it may hold a stage and asks only *whether and to what* the call
+  # resolves (`Mutare.Transform.SelfCalls`), the counterpart of `Meta.direct_routing/1`.
+  @spec direct_resolved_call(Macro.t()) ::
+          {module_key(), atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | nil
+  def direct_resolved_call(node), do: read_resolved_call(node)
+
   # An Elixir remote call `Mod.fun(args)` — alias-resolved, rebuilt reusing the written node.
   # `Mod` resolves to an Elixir path, or to an Erlang atom when it is an aliased atom module
   # (`alias :binary, as: B; B.split(...)`), via the `:mutare_alias` stamp.
-  def resolved_call(
-        {{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args}
-      )
-      when is_list(args) do
+  defp read_resolved_call(
+         {{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args}
+       )
+       when is_list(args) do
     rebuild = fn new_fun, new_args ->
       {{:., dot_meta, [aliases, new_fun]}, call_meta, new_args}
     end
@@ -63,8 +87,8 @@ defmodule Mutare.Transform.Calls do
   # `__aliases__` (Elixir) shape was handled by the clause above, so `Aliases.resolve_node/2`
   # (env-free — a direct remote carries no alias) only ever sees the bare/wrapped-atom shapes
   # here, returning the atom (or `nil` for a non-module receiver).
-  def resolved_call({{:., dot_meta, [mod, fun]}, call_meta, args})
-      when is_atom(fun) and is_list(args) do
+  defp read_resolved_call({{:., dot_meta, [mod, fun]}, call_meta, args})
+       when is_atom(fun) and is_list(args) do
     case Aliases.resolve_node(mod, %{}) do
       nil ->
         nil
@@ -79,7 +103,7 @@ defmodule Mutare.Transform.Calls do
   end
 
   # A bare call `fun(args)` stamped with the module it was imported from (Elixir or Erlang).
-  def resolved_call({fun, meta, args}) when is_atom(fun) and is_list(args) do
+  defp read_resolved_call({fun, meta, args}) when is_atom(fun) and is_list(args) do
     case Imports.resolved_import(meta) do
       {module, :bare} ->
         rebuild = fn new_fun, new_args ->
@@ -112,7 +136,7 @@ defmodule Mutare.Transform.Calls do
     end
   end
 
-  def resolved_call(_node), do: nil
+  defp read_resolved_call(_node), do: nil
 
   # The resolved-call key for a concrete module atom. See `Mutare.Calls.module_key/1`
   # for the contract; the encoding lives with the key operations in `Aliases`.

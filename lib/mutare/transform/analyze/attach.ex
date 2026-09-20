@@ -60,9 +60,12 @@ defmodule Mutare.Transform.Analyze.Attach do
 
     Enum.map(muts, fn %Dispatch.Result{} = result ->
       # A mutator's own attribution wins; failing one, a rewritten pipe stage's mutant is
-      # reported at the stage the user wrote (`WrittenPipe.stage_attribution/2`).
-      attribution = result.attribution || WrittenPipe.stage_attribution(node, result.node)
-      {attribution, attribution_range} = checked_attribution(attribution, node, range)
+      # reported at the stage the user wrote (`WrittenPipe.stage_attribution/2`) — and still
+      # classified as the call the mutator was offered, never as that stage.
+      stage = is_nil(result.attribution) && WrittenPipe.stage_attribution(node, result.node)
+
+      {attribution, attribution_range} =
+        checked_attribution(result.attribution || stage || nil, node, range)
 
       %Candidate.InPlace{
         mutator: result.spec,
@@ -74,7 +77,8 @@ defmodule Mutare.Transform.Analyze.Attach do
         attribution: attribution,
         attribution_range: attribution_range,
         # Reported over the whole pipe (no narrower attribution), but keyed at its stage.
-        position: if(is_nil(attribution), do: WrittenPipe.stage_position(node))
+        position: if(is_nil(attribution), do: WrittenPipe.stage_position(node)),
+        classified: if(stage && attribution, do: {node, result.node})
       }
     end)
   end

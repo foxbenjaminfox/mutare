@@ -109,6 +109,8 @@ defmodule Mutare.Site do
       `range` starts
     * `:variant` — one or more ignore labels; when absent, the mutator callback
       derives the variant
+    * `:classified` — the `{original, mutated}` pair that callback derives it from, when that
+      is not the reported pair
     * `:render?` — render `original_code` and `mutated_code` immediately; defaults
       to `true`
     * `:summary?` — build the lightweight live-progress summary; defaults to
@@ -385,6 +387,7 @@ defmodule Mutare.Site do
   # rendered code, and the optional `:note`/`:variant` the delivery layer threads through.
   defp replace(id, file, range, original_node, mutated_node, mutator, kind, opts) do
     variant = opts[:variant]
+    {classified, classified_as} = opts[:classified] || {original_node, mutated_node}
     render? = Keyword.get(opts, :render?, true)
     summary? = Keyword.get(opts, :summary?, false)
 
@@ -416,7 +419,7 @@ defmodule Mutare.Site do
           |> Parenthesize.in_position(original_node, mutated_node),
         summary: replace_summary(mutator.name, original_shown, mutated_shown, summary?),
         note: opts[:note],
-        variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node, variant)
+        variant: Mutare.Mutator.Dispatch.variant(mutator, classified, classified_as, variant)
     }
   end
 

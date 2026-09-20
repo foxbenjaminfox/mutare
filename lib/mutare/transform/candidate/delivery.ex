@@ -268,6 +268,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
         Site.in_place(id, file, range, attribution.original, mutated, c.mutator,
           note: note(c),
           variant: variant(c),
+          classified: c.classified,
           render?: render?,
           summary?: summary?
         )
