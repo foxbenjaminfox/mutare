@@ -225,27 +225,25 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   nested `case`s, because Elixir ≥ 1.21 accepts `:erlang.andalso` only in a guard — NOTES
   "Factor compiler input before rendering" and NOTES "`:erlang.andalso` is guard-only".
 - **A pipe stage is the call it is sugar for; only `Kernel`'s `|>` is the pipe.**
-  `left |> stage(args)` is *resolved* as `stage(left, args)` (`Resolve` walks the direct form,
-  marks the stage, and leaves the tree alone) and *becomes* that call as `Analyze` reaches it
-  (`WrittenPipe.direct/1`, at the dispatcher's entry). So routing, marks, hosting, mutators
-  (`mutate/1,2` and `variant/2` alike) and delivery never see a call one argument short — there
-  is no `pipe_mode` — while code Mutare never analyzes (a `:raw` argument, a `:skip`ped call, a
-  clean copy) is never rewritten. Past `direct/1`, three modules read that a call was written
-  as a pipe, each off the `Meta.written_pipe_meta/1` stamp: `Mutare.Transform.WrittenPipe` keeps a
-  Site in the user's spelling and footprint, `Mutare.Transform.PipeEmit` binds the piped value,
-  and `Mutare.Transform.Render` spells every such call as a pipe again. A stage under the
-  call-level `:skip` is no exception: its piped value is its *sibling* and keeps its mutants,
-  so `Resolve` restamps the stage *withheld* (`Meta.withheld?/1`), honoured where `:skip` is —
-  at the entry of `Analyze`'s dispatcher and of `Tag`'s walk. Anything that reads a
-  statement or tail *before* `analyze/3` does must apply `direct/1` first, and so must any
-  other walk that reads code as Elixir (`Tag`'s guard walk does, at its entry) or reads a
-  candidate's as-written operands (`BindingEscapeEmit`); a marked stage on its own is not a
-  complete call, and `Meta.routing/1` and `Calls.resolved_call/1` raise on one rather than
-  answer one argument short (a reader that means to hold a stage asks `Meta.direct_routing/1`
-  or `Calls.direct_resolved_call/1`). A module can displace the operator, so any code about to
-  read a `{:|>, …}` node as a pipe asks `Mutare.Transform.Calls.kernel_call?/1` first. NOTES "A
-  pipe stage is the call it is sugar for", "A skipped stage is a withheld call; spelling is
-  render's", "A marked stage cannot be misread", "Only `Kernel`'s `|>` is the pipe".
+  `Resolve` turns every `left |> stage(args)` into `stage(left, args)`, across the whole tree,
+  so after it no pass, mutator or host meets a pipe or a call one argument short, at any depth
+  — there is no `pipe_mode`, and nothing to apply before reading a node. The one seam that
+  still sees pipes is a routing classifier, which is handed a call's arguments unresolved and
+  as written. That a call was written as a pipe is the `|>`'s meta, stamped on the call
+  (`Meta.written_pipe_meta/1`); `WrittenPipe.written/1` is the one inverse, and three modules
+  read the spelling through it: `Mutare.Transform.WrittenPipe` keeps a Site in the user's
+  spelling and footprint, `Mutare.Transform.PipeEmit` binds the piped value, and
+  `Mutare.Transform.Render` spells every such call as a pipe again — which is how a `:raw`
+  argument, a `:skip`ped call and a clean copy still reach the compiler as written. So **an
+  emitter that builds a generated node on the user's meta must drop the stamp**
+  (`Meta.drop_written_pipe/1`), or its node is rendered as their pipe. Two `:skip`s read the
+  spelling, both in `Resolve`: a skipped *stage*'s piped value is its sibling and keeps its
+  mutants, so the call is restamped *withheld* (`Meta.withheld?/1`), honoured where `:skip` is
+  — at the entry of `Analyze`'s dispatcher and of `Tag`'s walk; a skipped `|>` makes the call
+  it becomes the inert leaf. A `|>` node that survives `Resolve` is one `Kernel` could not
+  expand, or a displaced operator: ask `Mutare.Transform.Calls.kernel_call?/1`. NOTES "A pipe
+  stage is the call it is sugar for", "The rewrite is Resolve's", "A skipped stage is a
+  withheld call; spelling is render's", "Only `Kernel`'s `|>` is the pipe".
 - **A call is ordinary in every respect its route does not address — evaluation included.**
   Routes are for functions and macros alike, and core never derives which a call is, nor holds
   a mutant back because a callee might be a macro. A call that seems to need special handling

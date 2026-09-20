@@ -1,8 +1,8 @@
 defmodule Mutare.Transform.PipeEmit do
   @moduledoc false
 
-  # Delivery for a call **written as a pipe**. Analysis made every `Kernel.|>/2` stage the direct
-  # call it is sugar for (`Mutare.Transform.WrittenPipe.direct/1`), so a stage's selector is the
+  # Delivery for a call **written as a pipe**. `Mutare.Transform.Resolve` made every
+  # `Kernel.|>/2` stage the direct call it is sugar for, so a stage's selector is the
   # ordinary one, whose every mutant branch carries the call's as-written arguments — argument
   # 0, the whole upstream chain, included, while its catch-all nests the emitted chain. Down a
   # chain that is a copy of each prefix per mutant, and a `case` nested per stage. So the piped

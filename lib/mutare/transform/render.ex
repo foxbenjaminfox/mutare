@@ -129,8 +129,9 @@ defmodule Mutare.Transform.Render do
 
   defp strip_annotations(other), do: other
 
-  # Analysis made every `Kernel.|>/2` stage the direct call it is sugar for
-  # (`Mutare.Transform.WrittenPipe.direct/1`), and emission leaves that call wherever it stood:
+  # `Mutare.Transform.Resolve` made every `Kernel.|>/2` stage the direct call it is sugar for,
+  # across the whole tree, and emission leaves that call wherever it stood — an argument no
+  # pass touched (`:raw`, a `:skip`ped call, a clean copy), where the spelling is a promise, and
   # a selector's branches, a stage with no selector, a mutant's operand. Each is spelled as the
   # pipe it was written as (`WrittenPipe.written/1`), around whatever argument 0 it now
   # holds, so a chain renders as flat as the user's source rather than one level deeper per

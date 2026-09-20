@@ -25,7 +25,7 @@ defmodule Mutare.Transform.SelfCalls do
   # recursion and is redirected to a clean `min/2` that does not exist. A matched stage
   # becomes an ordinary call first, so leading arguments stay ahead of the receiver.
 
-  alias Mutare.Transform.{Calls, Imports}
+  alias Mutare.Transform.{Calls, Imports, Meta}
 
   @doc """
   Redirect every full-arity self-call of `self_call` in `body` to `replacement`, passing
@@ -33,25 +33,17 @@ defmodule Mutare.Transform.SelfCalls do
   """
   @spec redirect(Macro.t(), {atom(), arity()}, atom(), [Macro.t()]) :: {Macro.t(), boolean()}
   def redirect(body, self_call, replacement, leading_args) do
-    walk(body, self_call, false, fn {_name, meta, args}, _redirected? ->
+    walk(body, self_call, false, fn {_name, _meta, args} = call, _redirected? ->
+      # The redirected call is generated: with `leading_args` ahead of the user's own, its
+      # argument 0 is no longer what they piped in, so it is not spelled as their pipe.
+      {_name, meta, _args} = Meta.drop_written_pipe(call)
       {{replacement, meta, leading_args ++ args}, true}
     end)
   end
 
-  defp walk({:|>, meta, [left, right]}, self_call, acc, fun) do
-    {left, acc} = walk(left, self_call, acc, fun)
-    {right, acc} = walk_children(right, self_call, acc, fun)
-
-    if self_call?(right, self_call, 1) do
-      fun.(Macro.pipe(left, right, 0), acc)
-    else
-      {{:|>, meta, [left, right]}, acc}
-    end
-  end
-
   defp walk(node, self_call, acc, fun) do
     {node, acc} = walk_children(node, self_call, acc, fun)
-    if self_call?(node, self_call, 0), do: fun.(node, acc), else: {node, acc}
+    if self_call?(node, self_call), do: fun.(node, acc), else: {node, acc}
   end
 
   defp walk_children({form, meta, args}, self_call, acc, fun) when is_list(args) do
@@ -71,10 +63,9 @@ defmodule Mutare.Transform.SelfCalls do
 
   defp walk_children(node, _self_call, acc, _fun), do: {node, acc}
 
-  defp self_call?({name, meta, args} = node, {name, arity}, extra)
-       when is_list(args) and length(args) + extra == arity,
-       # `node` may be a bare `|>` stage (`extra` is 1), whose stamps describe the direct call.
-       do: is_nil(Calls.direct_resolved_call(node)) and not Imports.kernel_displaced?(meta)
+  defp self_call?({name, meta, args} = node, {name, arity})
+       when is_list(args) and length(args) == arity,
+       do: is_nil(Calls.resolved_call(node)) and not Imports.kernel_displaced?(meta)
 
-  defp self_call?(_node, _self_call, _extra), do: false
+  defp self_call?(_node, _self_call), do: false
 end

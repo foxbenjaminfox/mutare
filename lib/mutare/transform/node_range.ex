@@ -56,20 +56,17 @@ defmodule Mutare.Transform.NodeRange do
   @doc "Like `Sourceror.get_range/1`, correcting the sigil/interpolated-string under-count."
   @spec get(Macro.t()) :: Sourceror.Range.t() | nil
   def get(node) do
-    # A routed call written as a pipe stands where the whole `left |> stage` stood
-    # (`Mutare.Transform.WrittenPipe`); its own meta would range the stage alone.
-    case Mutare.Transform.WrittenPipe.written(node) do
-      nil ->
-        node
-        |> unparenthesized()
-        |> Sourceror.get_range()
-        |> from_leading_parenthesis(node)
-        |> to_trailing_parenthesis(node)
-        |> correct(node)
+    # A call written as a pipe stands where the whole `left |> stage` stood, and so does every
+    # such call down the node's spines (`Mutare.Transform.WrittenPipe`); read as the call, each
+    # would range from its head, leaving the `left |>` out.
+    node = Mutare.Transform.WrittenPipe.resugar(node)
 
-      pipe ->
-        get(pipe)
-    end
+    node
+    |> unparenthesized()
+    |> Sourceror.get_range()
+    |> from_leading_parenthesis(node)
+    |> to_trailing_parenthesis(node)
+    |> correct(node)
   end
 
   # A node begins where its leftmost piece begins, that piece's own parentheses included.

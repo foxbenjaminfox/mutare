@@ -62,31 +62,41 @@ defmodule Mutare.PipedRoutedCallTest do
     end
   end
 
-  test "a stage mid-chain holds the upstream chain as its argument 0, as the user wrote it" do
+  test "a stage mid-chain holds the upstream chain as its argument 0: the call it is, below the classifier" do
     transform("n |> stage(x > 1) |> stage(x > 2) |> stage(x > 3)")
+    reported = reported()
 
-    # The call a seam is shown is the direct one; what sits *inside* its arguments is as written,
-    # at every seam alike — an upstream stage there is still the `|>` it was.
-    for {seam, calls} <- reported() do
-      assert Enum.sort(calls) ==
+    # A classifier routes a call before `Resolve` descends its arguments, so what sits inside
+    # them is source: unresolved, and as written.
+    assert Enum.sort(reported.route_arguments) == [
+             ["n", "x > 1"],
+             ["n |> stage(x > 1)", "x > 2"],
+             ["n |> stage(x > 1) |> stage(x > 2)", "x > 3"]
+           ]
+
+    # A host and a mutator read resolved code, where a pipe is the call it is sugar for at
+    # every depth — an upstream stage in argument 0 included.
+    for seam <- [:host, :mutate] do
+      assert Enum.sort(reported[seam]) ==
                [
                  ["n", "x > 1"],
-                 ["n |> stage(x > 1)", "x > 2"],
-                 ["n |> stage(x > 1) |> stage(x > 2)", "x > 3"]
+                 ["stage(n, x > 1)", "x > 2"],
+                 ["stage(stage(n, x > 1), x > 2)", "x > 3"]
                ],
              "at #{seam}"
     end
   end
 
-  test "resolved_routed_call/1 reads a routed pipe nested in an argument as its direct call" do
+  test "a routed call nested in an argument reads the same however it was spelled" do
     defmodule NestedReader do
       @behaviour Mutare.Mutator
       def name, do: :nested_reader
 
       def mutate(node, _context) do
-        with %Call{name: :stage, arguments: [{:|>, _, _} = upstream, _condition]} <-
+        with %Call{name: :stage, arguments: [upstream, _condition]} <-
                Mutare.Calls.resolved_routed_call(node),
-             %Call{arguments: arguments} <- Mutare.Calls.resolved_routed_call(upstream) do
+             %Call{name: :stage, arguments: arguments} <-
+               Mutare.Calls.resolved_routed_call(upstream) do
           send(self(), {:nested, Enum.map(arguments, &Macro.to_string/1)})
         end
 
@@ -95,6 +105,9 @@ defmodule Mutare.PipedRoutedCallTest do
     end
 
     transform("n |> stage(x > 1) |> stage(x > 2)", [NestedReader])
+    assert_received {:nested, ["n", "x > 1"]}
+
+    transform("stage(stage(n, x > 1), x > 2)", [NestedReader])
     assert_received {:nested, ["n", "x > 1"]}
   end
 
@@ -191,20 +204,43 @@ defmodule Mutare.PipedRoutedCallTest do
     assert labels.("xs |> Enum.take(2)") == {"Enum.take(2)", "Enum.drop(2)", ["arity_2"]}
   end
 
-  test "resolved_call/1 refuses a |> stage read on its own" do
-    {:|>, _meta, [_left, stage]} =
-      pipe =
-      "xs |> Enum.take(2)"
-      |> Sourceror.parse_string!()
-      |> Mutare.Transform.Resolve.annotate()
+  test "a piped call resolves as the call it is, at the root of an offered node and beneath it" do
+    # The operands of a node a mutator is offered are resolved code too: a mutator asking
+    # whether an operand is a call to `Enum.count/1` gets one answer for both spellings.
+    defmodule OperandReader do
+      @behaviour Mutare.Mutator
+      def name, do: :operand_reader
 
-    assert_raise ArgumentError, ~r/one argument short/, fn ->
-      Mutare.Transform.Calls.resolved_call(stage)
+      def mutate({:+, _meta, operands}) do
+        resolved =
+          for operand <- operands do
+            {module, fun, arguments, _rebuild} = Mutare.Calls.resolved_call(operand)
+            {module, fun, length(arguments)}
+          end
+
+        send(self(), {:operands, resolved})
+        []
+      end
+
+      def mutate(_node), do: []
     end
 
+    Mutare.Transform.transform_string_with_sites(
+      """
+      defmodule OperandFixture do
+        def run(xs, ys), do: (xs |> Enum.count()) + Enum.count(ys)
+      end
+      """,
+      file: "operand.ex",
+      mutators: [OperandReader]
+    )
+
+    assert_received {:operands, [{[:Enum], :count, 1}, {[:Enum], :count, 1}]}
+
     assert {[:Enum], :take, [_xs, _count], _rebuild} =
-             pipe
-             |> Mutare.Transform.WrittenPipe.direct()
+             "xs |> Enum.take(2)"
+             |> Sourceror.parse_string!()
+             |> Mutare.Transform.Resolve.annotate()
              |> Mutare.Transform.Calls.resolved_call()
   end
 
@@ -257,6 +293,8 @@ defmodule Mutare.PipedRoutedCallTest do
     assert_received {:hosted_source, "n"}
   end
 
+  # `Resolve` rewrites these pipes like any other; what the compiler — and so any macro handed
+  # the region — is given is the source `Render` spells back, which is the pipe.
   describe "code Mutare does not analyze keeps the pipe it was written with" do
     # `_ = 41` gives the function a mutant of its own, so it is re-rendered whatever the region
     # under test contributes — an unmutated file is returned as source, which would prove nothing.

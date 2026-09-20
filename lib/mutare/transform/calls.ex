@@ -32,7 +32,7 @@ defmodule Mutare.Transform.Calls do
   # *not* resolve is a bare `Kernel` call (`abs`, `min`) — those families key on effective
   # arity in their own clauses.
 
-  alias Mutare.Transform.{Aliases, Imports, Meta, WrittenPipe}
+  alias Mutare.Transform.{Aliases, Imports, Meta}
 
   # A resolved module: an Elixir-module path (`[:Enum]`, `[:String]`) or an Erlang-module atom
   # (`:binary`, `:string`). Defined once in `Mutare.Transform.Aliases` (the module-key
@@ -44,29 +44,7 @@ defmodule Mutare.Transform.Calls do
   @spec resolved_call(Macro.t()) ::
           {module_key(), atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | nil
 
-  # A marked `|>` stage (`Meta.routed_direct?/1`) is refused, as `Meta.routing/1` refuses it:
-  # it was resolved as the direct call it is sugar for, so read on its own it answers one
-  # argument short — a `{Enum, :take}` call of one argument for `xs |> Enum.take(2)`. The
-  # caller forgot `Mutare.Transform.WrittenPipe.direct/1`.
-  def resolved_call(node) do
-    if Meta.routed_direct?(node) do
-      raise ArgumentError,
-            "Mutare.Transform.Calls.resolved_call/1 read a `|>` stage on its own: " <>
-              "`#{Macro.to_string(node)}` is the call it is sugar for, one argument short. " <>
-              "Apply Mutare.Transform.WrittenPipe.direct/1 to the pipe first."
-    else
-      read_resolved_call(node)
-    end
-  end
-
-  # `resolved_call/1` of the **direct** call a node stands for: the same answer for an ordinary
-  # call, and for a marked `|>` stage the resolution its stamps record, which is the direct
-  # call's. The arguments returned are then the stage's own, one short — so this is for a
-  # reader that knows it may hold a stage and asks only *whether and to what* the call
-  # resolves (`Mutare.Transform.SelfCalls`), the counterpart of `Meta.direct_routing/1`.
-  @spec direct_resolved_call(Macro.t()) ::
-          {module_key(), atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | nil
-  def direct_resolved_call(node), do: read_resolved_call(node)
+  def resolved_call(node), do: read_resolved_call(node)
 
   # An Elixir remote call `Mod.fun(args)` — alias-resolved, rebuilt reusing the written node.
   # `Mod` resolves to an Elixir path, or to an Erlang atom when it is an aliased atom module
@@ -209,11 +187,8 @@ defmodule Mutare.Transform.Calls do
 
   # Return the stable call value for a node stamped by the known-macro resolver, or `nil` for
   # any other node. See `Mutare.Calls.resolved_routed_call/1` for the contract.
-  #
-  # A `|>` whose stage was routed as the direct call is read as that call. The bare stage is not:
-  # its route covers a left side it does not hold, so on its own it is no complete call.
   @spec resolved_routed_call(Macro.t()) :: Mutare.CallRouting.Call.t() | nil
-  def resolved_routed_call(node), do: node |> WrittenPipe.direct() |> routed_call()
+  def resolved_routed_call(node), do: routed_call(node)
 
   defp routed_call({head, meta, args} = node) when is_list(meta) and is_list(args) do
     # Stay **total**: the identity stamp is only ever placed (by `Mutare.Transform.Resolve`) on a
@@ -222,8 +197,7 @@ defmodule Mutare.Transform.Calls do
     # impossible state Mutare never produces. Rather than commit to a partial `macro_rebuild` that
     # would raise on it, degrade to `nil` (the documented "not a recognised known-macro call"), so a
     # caller handing in an arbitrary node can never crash here.
-    with false <- Meta.routed_direct?(node),
-         {module_key, name, _arity} <- Meta.routed_call(meta),
+    with {module_key, name, _arity} <- Meta.routed_call(meta),
          rebuild when is_function(rebuild, 2) <- macro_rebuild(head, meta, module_key, args) do
       Mutare.CallRouting.Call.new(node, natural_module(module_key), name, rebuild)
     else
@@ -242,16 +216,11 @@ defmodule Mutare.Transform.Calls do
   # delivering mutator), normalizes a keyed refinement to `{:keyed, …}`, and recurses through
   # `{:keyword, …}` — so a mutator reading this sees the words it wrote, not Mutare's stamp shape.
   @spec routed_treatments(Macro.t()) :: [Mutare.CallRouting.routing_treatment()] | :skip | nil
-  def routed_treatments(node), do: node |> WrittenPipe.direct() |> treatments()
+  def routed_treatments(node), do: treatments(node)
 
   defp treatments({_head, meta, _args} = node) when is_list(meta) do
     # A withheld call is a `:skip`ped one written as a pipe stage, and answers as it was routed.
-    routing =
-      cond do
-        Meta.routed_direct?(node) -> nil
-        Meta.withheld?(node) -> :skip
-        true -> Meta.routing(meta)
-      end
+    routing = if Meta.withheld?(node), do: :skip, else: Meta.routing(meta)
 
     case routing do
       :skip ->

@@ -235,8 +235,6 @@ defmodule Mutare.Site do
   # an optional already-normalized `:variant`/`:note` an attribution drop threads through (a plain
   # clause/rescue drop passes neither, keeping the pre-attribution `variant: []`, `note: nil`).
   defp delete_site(id, file, range, clause_node, mutator_name, kind, opts) do
-    clause_node = WrittenPipe.resugar(clause_node)
-
     %{
       base_site(id, file, range)
       | mutator: mutator_name,
@@ -269,10 +267,14 @@ defmodule Mutare.Site do
   # (`do`/`end`, clauses) still break. A multi-line range keeps the default — Sourceror can't
   # reproduce the original's operator-chain breaks at any width, so neither choice is exact
   # there, and the default at least matches how the source was formatted.
+  #
+  # Every renderer spells a call written as a pipe as that pipe again
+  # (`Mutare.Transform.WrittenPipe`): a Site shows the user's source, whichever constructor
+  # built it and however deep in the node the call sits.
   defp code_renderer(range) do
     if range.start[:line] == range.end[:line],
-      do: &AST.to_string(&1, line_length: :infinity),
-      else: &AST.to_string/1
+      do: &(&1 |> WrittenPipe.resugar() |> AST.to_string(line_length: :infinity)),
+      else: &(&1 |> WrittenPipe.resugar() |> AST.to_string())
   end
 
   # Render a clause-shaped node to a one-line source fragment with the given `renderer`
@@ -310,7 +312,7 @@ defmodule Mutare.Site do
   # `Sourceror.to_string/1` and fine for an ephemeral one-liner (it normalises formatting, which
   # the report/JSON/SARIF can't tolerate but a spinner line can). Shares `clause_form/2` with
   # `clause_code/2` so the `->`/keyword-pair shape handling can't drift between the two.
-  defp macro(node), do: clause_form(node, &Macro.to_string/1)
+  defp macro(node), do: clause_form(node, &(&1 |> WrittenPipe.resugar() |> Macro.to_string()))
 
   # A Sourceror keyword pair: a two-tuple whose key node carries `format: :keyword`.
   # This is the shape an attributed whole-clause replace/delete takes. Render it as
@@ -400,10 +402,6 @@ defmodule Mutare.Site do
     keyword_key? = keyword_key?(original_node)
     renderer = code_renderer(range)
 
-    # A routed call written as a pipe reads as that pipe (`Mutare.Transform.WrittenPipe`).
-    original_shown = WrittenPipe.resugar(original_node)
-    mutated_shown = WrittenPipe.resugar(mutated_node)
-
     %{
       (id
        |> base_site(file, range)
@@ -412,12 +410,12 @@ defmodule Mutare.Site do
         kind: kind,
         original_form: node_form(original_node),
         mutated_form: node_form(mutated_node),
-        original_code: render_code(original_shown, keyword_key?, render?, renderer),
+        original_code: render_code(original_node, keyword_key?, render?, renderer),
         mutated_code:
-          mutated_shown
+          mutated_node
           |> render_code(keyword_key?, render?, renderer)
           |> Parenthesize.in_position(original_node, mutated_node),
-        summary: replace_summary(mutator.name, original_shown, mutated_shown, summary?),
+        summary: replace_summary(mutator.name, original_node, mutated_node, summary?),
         note: opts[:note],
         variant: Mutare.Mutator.Dispatch.variant(mutator, classified, classified_as, variant)
     }

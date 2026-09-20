@@ -36,7 +36,12 @@ defmodule Mutare.Transform.ConfigMatches do
     {_ast, acc} =
       Macro.prewalk(ast, %__MODULE__{}, fn
         {_head, meta, args} = node, acc when is_list(meta) and (is_list(args) or is_nil(args)) ->
-          {node, acc |> add_route(meta, registry) |> add_mark(meta)}
+          # A call written as a pipe holds that `|>`'s meta, and the `|>` is a routable call too
+          # (`{Kernel, :|>, 2, :skip}`).
+          pipe_meta = Meta.written_pipe_meta(node)
+
+          {node,
+           acc |> add_route(meta, registry) |> add_route(pipe_meta, registry) |> add_mark(meta)}
 
         node, acc ->
           {node, acc}

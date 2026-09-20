@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `bnot` is stripped, and the explicit `Kernel.++(a, b)` call form is transposed when written
     directly as well.
 
+  The same holds beneath the node a mutator is offered: its operands are resolved code too, so
+  `Mutare.Calls.resolved_call/1` answers `Enum.count/1` for `xs |> Enum.count()` found as an
+  operand, where it answered `nil` for the pipe. A routing classifier is the one reader that
+  still sees a pipe there: its arguments are unresolved source, as written. A function tail
+  written `… |> case do … end` gets the return-value mutants of its clauses, as the same
+  `case` written directly always has, in place of `nil`/`:mutare` over the whole pipe.
+
   A routed call gains what 0.3.1 withheld from a piped one: a classifier routes the piped
   operand by shape, `call.rebuild` can rewrite it, and it may be routed `:hosted` (previously a
   `ContractError`). `c:Mutare.Mutator.variant/2` is shown the direct call too, for a mutant

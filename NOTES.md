@@ -11596,7 +11596,7 @@ delivery is the ordinary direct-call selector (mutant branches hold the as-writt
 the catch-all the emitted ones — which is exactly what Part B of the pipe-left proposal had
 built by hand for pipes).
 
-**Where the rewrite happens: in `Analyze`, not `Resolve`.** The first cut rewrote the tree in
+**Where the rewrite happens: in `Analyze`, not `Resolve`** *(reversed since — "The rewrite is Resolve's")*. The first cut rewrote the tree in
 `Resolve`'s `|>` clause. `Resolve` walks *everything*, treatments unseen, so that also rewrote
 code nothing later touches: a pipe inside a `:raw` argument, inside a `:skip`ped call, in source
 copied verbatim into a clean region or a raw lifted body — and `:raw` promises "exactly as
@@ -11883,7 +11883,7 @@ carry the selector builder's marker before expanding the pipe. A macro inspectin
 `(^x) |> stage()` therefore still receives that syntax; generated pinned selectors retain the
 precedence correction tested in `pipe_source_patch_test.exs`.
 
-### A marked stage cannot be misread `[done]` (2026-09-20)
+### A marked stage cannot be misread `[superseded — no stage is marked: see "The rewrite is Resolve's"]` (2026-09-20)
 
 "A routed pipe stage becomes a direct call" left one thing to convention. Between `Resolve`
 and the walk that applies `WrittenPipe.direct/1`, a marked stage carries a route stamp one
@@ -12358,4 +12358,79 @@ separate feature.
 function twice. `pipe_spelling_property_test.exs` gained an `abs` stage and `:call_removal`;
 with `leaf?/1` disabled it shrinks to `[abs, abs]`, `[:piped, :piped]` against
 `[:direct, :piped]`. `transform_redundancy_test.exs` pins the `upcase` pair in both spellings.
+
+### The rewrite is Resolve's `[done]` (2026-09-20)
+
+"A routed pipe stage becomes a direct call" moved the rewrite out of `Resolve` and into
+`Analyze`, for a sound reason at the time: `Resolve` walks everything, a rewritten pipe inside
+a `:raw` argument or a `:skip`ped call was rendered into the metamutant as a direct call, and
+`:raw` promises "exactly as written". The price was a state between the two passes — a stage
+*marked* as resolved through its direct form and not yet rewritten — and everything built to
+keep it from being misread: `Meta.routing/1` and `Calls.resolved_call/1` raising on one,
+`direct_routing/1` and `direct_resolved_call/1` to get past the raises, `direct/1` at six call
+sites, a `|>` clause in `SelfCalls`, `Resolve` splitting its walked call back into a pipe, and
+a paragraph in CLAUDE.md telling the next reader what to remember. "A marked stage cannot be
+misread" concedes that nothing short of a separate node type closes it.
+
+**It also stopped at the root.** A mutator is offered the raw node, whose operands were still
+pipes. For `(xs |> Enum.count()) + Enum.count(ys)`, `Mutare.Calls.resolved_call/1` answered
+`{[:Enum], :count, 1}` for the right operand, `nil` for the left, and raised on the left's
+stage — through the public facade, in a user's run. "Is an operand a call to X?" silently
+missed the piped spelling: the defect the desugaring removed from `mutate/1`, one level down.
+
+**What changed the trade.** "A skipped stage is a withheld call; spelling is render's" made
+`Render` spell *every* stamped call as a pipe again, wherever it sits. From then on a rewrite
+inside a `:raw` region is undone before the compiler, or any macro, sees it. So `Resolve`'s
+`|>` clause now returns the direct call, and there is no marked state: `routed_direct`, the
+raises, both escape-hatch readers, all six `direct/1` call sites and `SelfCalls`' pipe clause
+are gone. "As written" is kept where it is observable — rendered source — and rests on
+`WrittenPipe.written/1` being an exact inverse, which is why "The written-pipe stamp is the
+operator's meta" restores a bare stage's `nil` arguments.
+`resolve_pipe_roundtrip_property_test.exs` holds it: for a generated module, in either
+spelling, `resugar(annotate(m))` is `m`, Mutare's stamps aside.
+
+**`NodeIds` and `OperandPositions` now run before the walk.** `OperandPositions` has to see
+the `|>` to stamp its left operand, and the call takes the pipe's node id, so both must
+precede the rewrite. Measured on its own over Mutare's `lib/` (219 files): the same Sites and
+byte-identical metamutants; only the key order of meta inside `original_form` moved.
+
+**Two `:skip`s read the spelling, both in `Resolve`.** A skipped *stage* is restamped
+withheld, as before. A skipped `|>` (`{Kernel, :|>, 2, :skip}`) used to stay a pipe, a leaf
+before anything read its marked stage; now the call it becomes carries the `:skip`
+(`Meta.stamp_skip/1`), whatever route its own head took. The `|>`'s routed identity then
+lives in the stamp, so `ConfigMatches.collect/2` reads a call's written-pipe meta too, or a
+`{Kernel, :|>, 2, :skip}` entry would be reported as reaching nothing.
+
+**What else had to move.**
+- `NodeRange.get/1` ranges `resugar(node)`. A raw node's operands are rewritten calls now, and
+  Sourceror ranges a call from its head, so a chain's range started at its last stage.
+- `Site`'s renderers resugar, not its constructors: a return tail's Site was built by a
+  constructor that never did, because its raw node used to be the `|>` itself.
+- `SelfCalls.redirect/4` drops the stamp from the call it generates — with `leading_args`
+  ahead of the user's, argument 0 is no longer what they piped in. The instance of the
+  standing hazard below.
+
+**One site change, and it is the rule's.** A function tail `… |> case do … end` was an opaque
+leaf to `Returns`, which put `nil`/`:mutare` over the whole pipe. It is the `case` it is sugar
+for, so `Returns` descends its clauses, exactly as for `case … do` written directly — the two
+spellings now get identical Sites. Over `lib/`: 32,423 Sites against 32,413, every difference
+in the four files with such a tail; metamutants differ in those files only.
+
+**The seam that did not unify.** `Resolve` classifies a call before it descends the call's
+arguments, so `route_arguments/1` sees them unresolved and as written: an upstream stage in
+argument 0 is still a `|>` there, and a direct call to a host and a mutator
+(`piped_routed_call_test.exs` pins both). A pass ahead of the walk cannot fix it — whether a
+`|>` is `Kernel`'s is known only inside the walk, from the import environment. Classifying
+after descent would, and would also hand classifiers resolved arguments: a contract change
+for `mutare_ecto`, not made here.
+
+**Standing hazard.** The stamp lives in meta, and meta is copied by whoever rebuilds a node.
+An emitter that builds a *generated* node on the user's meta must drop it
+(`Meta.drop_written_pipe/1`): `CaseClauseEmit` was found by dogfooding, `SelfCalls` by this
+change's tests. Building generated nodes on fresh meta would remove the convention; not
+surveyed.
+
+**Not checked.** A host reads `f(a, b)` inside its fragment where the user wrote `a |> f(b)`.
+That is wrong only for a DSL that gives `|>` its own meaning inside a hosted fragment; neither
+companion was audited for one.
 

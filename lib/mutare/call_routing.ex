@@ -37,9 +37,11 @@ defmodule Mutare.CallRouting do
   `Kernel.|>/2` would build, so a route, a classifier, a host and a mutator all see
   `from(p in Post, …)` for `(p in Post) |> from(…)`, and a `:raw` declaration reaches the macro
   as the syntax it is. (The exception is a call routed `:skip`: a value piped *into* it is not
-  part of the skipped call, and still mutates.) Reports keep the pipe the user wrote, and
-  so does any code Mutare leaves alone: a pipe inside a `:raw` argument or a `:skip`ped call is
-  never rewritten.
+  part of the skipped call, and still mutates.) A classifier's arguments are the exception in
+  depth: they are unresolved source, so a pipe *inside* one of them is still a pipe there, and
+  a call to a host and a mutator. Reports keep the pipe the user wrote, and so does any code
+  Mutare leaves alone: a pipe inside a `:raw` argument or a `:skip`ped call reaches the macro
+  as the pipe it was written as.
 
       defmodule MyApp.EctoRouting do
         @behaviour Mutare.CallRouting

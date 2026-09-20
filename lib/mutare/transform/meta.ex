@@ -127,36 +127,10 @@ defmodule Mutare.Transform.Meta do
   The routing `Mutare.Transform.Resolve` stamped on a call the route registry matched
   (`Mutare.CallRouting.Registry`): the per-argument position list, or the bare `:skip` for a call
   routed as an inert leaf. `nil` for an unrouted call. The reader of the `:mutare_route` contract key.
-
-  Raises for a `|>` stage routed as its direct call (`routed_direct?/1`): that stamp lists the
-  *direct* call's positions, the left side's first, so read against the stage's own arguments
-  every treatment would land one argument late. The caller forgot
-  `Mutare.Transform.WrittenPipe.direct/1`; a reader that really does want the direct call's
-  treatments off the bare stage asks `direct_routing/1`.
   """
   @spec routing(keyword() | term()) :: term()
-  def routing(meta) when is_list(meta) do
-    if Keyword.get(meta, MetaKeys.routed_direct_key(), false) do
-      raise ArgumentError,
-            "Mutare.Transform.Meta.routing/1 read a `|>` stage routed as its direct call; " <>
-              "its treatments index that call's arguments, not the stage's. Apply " <>
-              "Mutare.Transform.WrittenPipe.direct/1 to the pipe first (or use direct_routing/1)."
-    else
-      Keyword.get(meta, MetaKeys.route_key())
-    end
-  end
-
+  def routing(meta) when is_list(meta), do: Keyword.get(meta, MetaKeys.route_key())
   def routing(_meta), do: nil
-
-  @doc """
-  The routing of the **direct** call a node stands for — `routing/1` for any ordinary call, and
-  for a marked `|>` stage (`routed_direct?/1`) the same stamp, whose positions are then the
-  direct call's (the pipe's left side is position 0). For a reader that asks about the positions
-  as a set and never indexes the stage's arguments by them.
-  """
-  @spec direct_routing(keyword() | term()) :: term()
-  def direct_routing(meta) when is_list(meta), do: Keyword.get(meta, MetaKeys.route_key())
-  def direct_routing(_meta), do: nil
 
   @doc """
   Whether a node carries the call-level `:skip` route — an inert leaf to every walk: the
@@ -164,11 +138,8 @@ defmodule Mutare.Transform.Meta do
   the structural pattern discovery (through `contains_skipped?/1`).
   """
   @spec skipped?(Macro.t()) :: boolean()
-  # Asked of every node a walk passes, marked `|>` stages included, and indexes no argument —
-  # so it reads the stamp as `direct_routing/1` does. (A marked stage never carries `:skip`: a
-  # skipped one is restamped `withheld?/1`.)
   def skipped?({_form, meta, args}) when is_list(meta) and is_list(args),
-    do: direct_routing(meta) == :skip
+    do: routing(meta) == :skip
 
   def skipped?(_node), do: false
 
@@ -200,8 +171,7 @@ defmodule Mutare.Transform.Meta do
 
   @typedoc """
   A routed call's resolved identity: the module key (`nil` for a name-only match whose module the
-  resolver could not see), the name, and the arity the route matched at — the direct call's, so one more
-  than the written arguments on a marked `|>` stage (`routed_direct?/1`).
+  resolver could not see), the name, and the arity the route matched at.
   """
   @type routed_call :: {Mutare.CallRouting.Spec.module_key() | nil, atom(), non_neg_integer()}
 
@@ -239,31 +209,26 @@ defmodule Mutare.Transform.Meta do
     |> Keyword.put(MetaKeys.route_withheld_key(), true)
   end
 
+  @doc """
+  Make a call the call-level `:skip`'s inert leaf, whatever route its own head took — for the
+  call a skipped `Kernel.|>/2` becomes (`Mutare.Transform.Resolve`).
+  """
+  @spec stamp_skip(keyword()) :: keyword()
+  def stamp_skip(meta) do
+    meta
+    |> Keyword.drop([MetaKeys.route_key(), MetaKeys.route_withheld_key()])
+    |> stamp_routing(:skip)
+  end
+
   @doc "Stamp the `t:routed_call/0` identity onto a call's meta (`:mutare_route_call`)."
   @spec stamp_routed_call(keyword(), routed_call()) :: keyword()
   def stamp_routed_call(meta, {_module_key, _name, _arity} = identity),
     do: [{MetaKeys.route_call_key(), identity} | meta]
 
   @doc """
-  Whether a `|>` stage was resolved and routed as the direct call it is sugar for
-  (`Mutare.Transform.Resolve`): its route stamp then carries one treatment more than the stage
-  has written arguments — the left side's, first. Such a stage is only ever read through
-  `Mutare.Transform.WrittenPipe.direct/1`, which makes it that call.
-  """
-  @spec routed_direct?(Macro.t()) :: boolean()
-  def routed_direct?({_form, meta, _args}) when is_list(meta),
-    do: Keyword.get(meta, MetaKeys.routed_direct_key(), false)
-
-  def routed_direct?(_node), do: false
-
-  @doc "Mark a `|>` stage as resolved and routed through its direct form (`routed_direct?/1`)."
-  @spec stamp_routed_direct(keyword()) :: keyword()
-  def stamp_routed_direct(meta), do: Keyword.put(meta, MetaKeys.routed_direct_key(), true)
-
-  @doc """
-  The meta of the `|>` a call was written as, or `nil` for a call written directly. Analysis
-  turns a piped call into the direct call `Kernel.|>/2` would build
-  (`Mutare.Transform.WrittenPipe.direct/1`), so routing, hosting, mutation and delivery read one
+  The meta of the `|>` a call was written as, or `nil` for a call written directly.
+  `Mutare.Transform.Resolve` turns a piped call into the direct call `Kernel.|>/2` would build
+  (`Mutare.Transform.WrittenPipe.direct/2`), so routing, hosting, mutation and delivery read one
   call shape; this stamp is what lets a Site keep the user's spelling and footprint. It holds
   the operator's meta alone — the call holds the operands — and
   `Mutare.Transform.WrittenPipe.written/1` is the reader that puts the pipe back together.

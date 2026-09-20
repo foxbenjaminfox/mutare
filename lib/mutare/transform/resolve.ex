@@ -36,7 +36,7 @@ defmodule Mutare.Transform.Resolve do
 
   alias Mutare.AST
   alias Mutare.CallRouting.Registry, as: Routes
-  alias Mutare.Transform.{Aliases, Imports, Meta, MetaKeys, ModuleScope, Uses}
+  alias Mutare.Transform.{Aliases, Imports, Meta, MetaKeys, ModuleScope, Uses, WrittenPipe}
   alias Mutare.Transform.Resolve.{ArgumentMarks, NodeIds, OperandPositions, RouteStamp}
   alias Mutare.Transform.StructuralForms
 
@@ -59,6 +59,8 @@ defmodule Mutare.Transform.Resolve do
   @spec annotate(Macro.t(), Routes.registry(), keyword()) :: Macro.t()
   def annotate(ast, registry, opts \\ []) do
     ast
+    |> NodeIds.stamp()
+    |> OperandPositions.stamp()
     |> walk(%{
       aliases: %{},
       imports: %{},
@@ -74,8 +76,6 @@ defmodule Mutare.Transform.Resolve do
         file: Keyword.get(opts, :file, "nofile")
       }
     })
-    |> NodeIds.stamp()
-    |> OperandPositions.stamp()
   end
 
   @doc """
@@ -111,10 +111,14 @@ defmodule Mutare.Transform.Resolve do
     {:quote, meta, walk_live_quote_args(args, env)}
   end
 
-  # `left |> stage(args)` is sugar for `stage(left, args)`, and it is resolved, routed and marked
-  # as that call — `Kernel.|>/2`'s own desugaring (`direct_stage/3`). Nothing in this pass knows a
-  # call "one argument short": the stage's arity, import, route and argument marks all come out of
-  # the clauses that serve a written call, with the left side as argument 0.
+  # `left |> stage(args)` is sugar for `stage(left, args)`, and from here on it *is* that call —
+  # `Kernel.|>/2`'s own desugaring (`direct_stage/4`). Nothing in this pass, or after it, knows a
+  # call "one argument short": the stage's arity, import, route and argument marks all come out
+  # of the clauses that serve a written call, with the left side as argument 0, and every later
+  # reader — a walk, a mutator looking into its node's operands, a host — finds the one shape.
+  # That the user wrote a pipe is kept as the operator's meta on the call
+  # (`Mutare.Transform.WrittenPipe`), which is what a Site and the rendered metamutant spell it
+  # back from.
   #
   # That holds for `Kernel.|>/2` alone. A `|>` displaced out of `Kernel`
   # (`import Kernel, except: [|>: 2]` beside a custom operator) is somebody else's macro or
@@ -132,8 +136,8 @@ defmodule Mutare.Transform.Resolve do
       module_key != [:Kernel] ->
         {:|>, meta, descend_marked(args, module_key, :|>, env)}
 
-      operands = direct_stage(lhs, rhs, env) ->
-        {:|>, meta, operands}
+      direct = direct_stage(meta, lhs, rhs, env) ->
+        direct
 
       # Nothing `Kernel.|>/2` could pipe into (`x |> unquote(stage)` inside a `quote`, or
       # source that does not compile): two expressions.
@@ -351,42 +355,44 @@ defmodule Mutare.Transform.Resolve do
     ArgumentMarks.stamp_call(meta, module_key, fun, arity, env.marks)
   end
 
-  # The stage of a `Kernel.|>/2`, walked as the direct call `Macro.pipe/3` makes of it and split
-  # back into `[left, stage]`.
+  # A `Kernel.|>/2` as the direct call `Macro.pipe/3` makes of it, walked as any written call
+  # is, or `nil` for a right side `Kernel.|>/2` cannot pipe into.
   #
-  # The *tree* keeps the pipe. This pass walks everything, including what no later pass will
-  # touch: a `:raw` argument, the inside of a `:skip`ped call, a pattern, source copied verbatim
-  # into a clean region. Rewriting here would rewrite those too, and "as written" is the promise
-  # they carry. So the stage is marked (`Meta.routed_direct?/1`) and the rewrite itself is left
-  # to `Mutare.Transform.Analyze`, which performs it as part of analyzing a node
-  # (`Mutare.Transform.WrittenPipe.direct/1`) — so it happens exactly where Mutare reads code as
-  # Elixir, by construction rather than by a list of regions to avoid. NOTES "A pipe stage is
-  # the call it is sugar for".
+  # The rewrite reaches everything this pass walks, which includes what no later pass touches:
+  # a `:raw` argument, the inside of a `:skip`ped call, a clean copy. "As written" is the
+  # promise those carry, and it is kept where it is observable — in the source the compiler is
+  # handed: `Mutare.Transform.Render` spells every call that carries the pipe's meta as that
+  # pipe again, and `WrittenPipe.written/1` is an exact inverse
+  # (`resolve_pipe_roundtrip_property_test.exs`). NOTES "The rewrite is Resolve's".
   #
-  # A stage under the call-level `:skip` is marked like any other, restamped *withheld*: its
-  # left side is documented as the skipped call's *sibling*, which keeps its mutants
-  # (`Repo.insert!(u) |> Mixpanel.track(…)`) — `RouteStamp.withhold_stage/2`.
-  defp direct_stage(lhs, {head, _meta, written_args} = rhs, env)
+  # Two `:skip`s read the spelling, both here:
+  #
+  #   * A **stage** under the call-level `:skip` is restamped *withheld*: its left side is
+  #     documented as the skipped call's *sibling*, which keeps its mutants
+  #     (`Repo.insert!(u) |> Mixpanel.track(…)`) — `RouteStamp.withhold_stage/2`.
+  #   * A skipped **`|>`** (`{Kernel, :|>, 2, :skip}`) is an inert leaf, stage and all: the call
+  #     it becomes carries the `:skip`, whatever route its own head took.
+  defp direct_stage(pipe_meta, lhs, {head, _meta, _written_args} = rhs, env)
        when head not in [:unquote, :unquote_splicing] do
     case direct_call(lhs, rhs) do
       nil ->
         nil
 
       direct ->
-        {head, meta, [lhs | visible]} = walk(direct, env)
-        # A parenless stage (`x |> to_string`) keeps its written shape.
-        visible = if is_nil(written_args), do: nil, else: visible
+        {head, meta, args} = walk(direct, env)
 
         meta =
-          if Meta.direct_routing(meta) == :skip,
-            do: RouteStamp.withhold_stage(meta, env.call_routes),
-            else: meta
+          cond do
+            Meta.routing(pipe_meta) == :skip -> Meta.stamp_skip(meta)
+            Meta.routing(meta) == :skip -> RouteStamp.withhold_stage(meta, env.call_routes)
+            true -> meta
+          end
 
-        [lhs, {head, Meta.stamp_routed_direct(meta), visible}]
+        WrittenPipe.direct(pipe_meta, {head, meta, args})
     end
   end
 
-  defp direct_stage(_lhs, _rhs, _env), do: nil
+  defp direct_stage(_pipe_meta, _lhs, _rhs, _env), do: nil
 
   # `Kernel.|>/2`'s own desugaring. It refuses what cannot be piped into (a literal, a `fn`, a
   # capture, a unary operator) — source that does not compile, left exactly as written.

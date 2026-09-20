@@ -24,7 +24,7 @@ defmodule Mutare.Transform.Analyze do
 
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Transform.{Calls, Candidate, Meta, Suppression, WrittenPipe}
+  alias Mutare.Transform.{Calls, Candidate, Meta, Suppression}
 
   # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
   # the body path's five equivalent-sibling clauses below match on these shared `defguard`s
@@ -152,18 +152,13 @@ defmodule Mutare.Transform.Analyze do
   # does the same at the head of its guard and pattern walks; `Analyze.Returns` treats a skipped
   # tail as one leaf.
   #
-  # It is also where a `Kernel.|>/2` stage becomes the direct call it is sugar for
-  # (`WrittenPipe.direct/1`): the rewrite is part of analyzing a runtime node, so it reaches
-  # exactly the code Mutare reads as Elixir and nothing it leaves as written. A `|>` that is
-  # itself skipped (`{Kernel, :|>, 2, :skip}`) is a leaf first, and is never rewritten.
-  #
   # A **withheld** call (`Meta.withheld?/1` — a `:skip`ped call written as a pipe stage) is
   # honoured here for the reason `:skip` is: its head may be one with a clause of its own below
   # (`x |> if(do: …)` under `{Kernel, :if, 2, :skip}`), which would descend what the skip covers.
   defp analyze(node, context, env) do
     cond do
       Meta.skipped?(node) -> node
-      context == :runtime -> node |> WrittenPipe.direct() |> analyze_runtime(env)
+      context == :runtime -> analyze_runtime(node, env)
       true -> analyze_form(node, context, env)
     end
   end
@@ -559,7 +554,7 @@ defmodule Mutare.Transform.Analyze do
   end
 
   # A `|>` that is still a pipe here. Every stage `Kernel.|>/2` can pipe into became the direct
-  # call on the way in (`analyze/3`, `WrittenPipe.direct/1`), so a `Kernel` pipe that arrives is
+  # call in `Mutare.Transform.Resolve`, so a `Kernel` pipe that arrives is
   # one `Kernel` could not expand (`x |> unquote(stage)`, or source that does not compile): two
   # expressions, the node itself never offered.
   #

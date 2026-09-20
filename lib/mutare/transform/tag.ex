@@ -26,7 +26,7 @@ defmodule Mutare.Transform.Tag do
 
   alias Mutare.{AST, Mutator}
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Transform.{Meta, NodeRange, Suppression, WrittenPipe}
+  alias Mutare.Transform.{Meta, NodeRange, Suppression}
   alias Mutare.Transform.Analyze.{CallOptions, Syntax}
 
   # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
@@ -117,14 +117,12 @@ defmodule Mutare.Transform.Tag do
   # below — is honoured first: the node is an inert leaf, nothing offered, nothing descended.
   # Mirrors `Mutare.Transform.Analyze.analyze/3`'s dispatcher (and, like it, the negation
   # clauses check their inner operand, so a skipped `in` under `not` is a leaf too).
-  # A routed pipe becomes its complete call here, before `tag_args/3` consumes treatments:
-  # the marked stage's position 0 describes the piped operand, not its first visible argument.
   # A withheld call (`Meta.withheld?/1`, a `:skip`ped call written as a pipe stage) is honoured
   # here too: its arguments by their positions, the node itself never offered.
   defp tag_walk(node, acc, mutators) do
     if Meta.skipped?(node),
       do: {node, acc},
-      else: node |> WrittenPipe.direct() |> tag_walk_direct(acc, mutators)
+      else: tag_walk_direct(node, acc, mutators)
   end
 
   defp tag_walk_direct({form, meta, _args} = node, acc, mutators) do

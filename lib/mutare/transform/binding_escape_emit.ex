@@ -20,15 +20,13 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   alias Mutare.Coverage.Recorder
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Delivery
-  alias Mutare.Transform.{CoverageEmit, Ctx, Meta, PatternStructure, SelectorEmit, WrittenPipe}
+  alias Mutare.Transform.{CoverageEmit, Ctx, Meta, PatternStructure, SelectorEmit}
 
   @doc "Bindings guaranteed to escape an expression, in their source order."
   @spec expression_bindings(Macro.t()) :: [atom()]
   def expression_bindings(node), do: node |> bound_names() |> Enum.uniq()
 
-  # Candidate operands are still as written: read a routed pipe as its complete call before
-  # consuming the stage's positional treatments (especially a syntax-valued operand zero).
-  defp bound_names(node), do: node |> WrittenPipe.direct() |> collect_bindings()
+  defp bound_names(node), do: collect_bindings(node)
 
   # Only unconditional expression positions export bindings. Clause bodies, short-circuit
   # right operands, and syntax-routed arguments have their own scopes or evaluation rules.

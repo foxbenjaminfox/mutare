@@ -130,7 +130,7 @@ defmodule Mutare.Calls do
   re-classifying the call.
 
   A keyed refinement reads back in the author form it was written in (`[:expression, timeout: :raw]`).
-  For a piped call, the left side of the pipe is not included. A call routed `:skip` returns the
+  A piped call's operand is position 0, as in the direct call it is. A call routed `:skip` returns the
   bare `:skip`; a call that has no registered route returns `nil`.
 
   ## Routing describes arguments; registration identifies ownership
