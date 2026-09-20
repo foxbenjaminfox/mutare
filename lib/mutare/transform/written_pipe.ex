@@ -2,8 +2,8 @@ defmodule Mutare.Transform.WrittenPipe do
   @moduledoc false
   # `left |> stage(args)` is sugar for `stage(left, args)`. Every stage `Kernel.|>/2` can pipe
   # into is resolved and routed as that direct call (`Mutare.Transform.Resolve` marks it,
-  # `Meta.routed_direct?/1`; a stage under the call-level `:skip` is the one exception, and
-  # stays a pipe), and `direct/1` is where it *becomes* one: applied by
+  # `Meta.routed_direct?/1` — a stage under the call-level `:skip` included, restamped
+  # `Meta.withheld?/1`), and `direct/1` is where it *becomes* one: applied by
   # `Mutare.Transform.Analyze` and the guard walker `Tag` as they reach a node, so that routing,
   # hosting, mutation and delivery all read one call shape — and so that code Mutare never
   # analyzes (a `:raw` argument, a `:skip`ped call, a pattern, a verbatim clean copy) is never
@@ -11,9 +11,10 @@ defmodule Mutare.Transform.WrittenPipe do
   # `Meta.routing/1` raises on a marked stage.
   #
   # The metamutant only has to compile (`Mutare.Transform.PipeEmit` spells the call as a pipe
-  # again so a chain renders flat, nothing more). A `Mutare.Site` is held to more: it patches the user's source by range and shows them a diff, so it must keep the
-  # footprint and the spelling they wrote. The rest of this module is that obligation, read off
-  # the `Meta.written_pipe/1` stamp `direct/1` leaves:
+  # again so a chain renders flat, nothing more). A `Mutare.Site` is held to more: it patches
+  # the user's source by range and shows them a diff, so it must keep the footprint and the
+  # spelling they wrote. The rest of this module is that obligation, read off the
+  # `Meta.written_pipe/1` stamp `direct/1` leaves:
   #
   #   * `written/1` — the rewritten call stands where the whole `left |> stage` stood, so
   #     `Mutare.Transform.NodeRange.get/1` ranges the written pipe in its stead. The call's own

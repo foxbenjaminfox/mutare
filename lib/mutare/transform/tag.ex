@@ -119,11 +119,24 @@ defmodule Mutare.Transform.Tag do
   # clauses check their inner operand, so a skipped `in` under `not` is a leaf too).
   # A routed pipe becomes its complete call here, before `tag_args/3` consumes treatments:
   # the marked stage's position 0 describes the piped operand, not its first visible argument.
+  # A withheld call (`Meta.withheld?/1`, a `:skip`ped call written as a pipe stage) is honoured
+  # here too: its arguments by their positions, the node itself never offered.
   defp tag_walk(node, acc, mutators) do
     if Meta.skipped?(node),
       do: {node, acc},
-      else: node |> WrittenPipe.direct() |> tag_walk_form(acc, mutators)
+      else: node |> WrittenPipe.direct() |> tag_walk_direct(acc, mutators)
   end
+
+  defp tag_walk_direct({form, meta, _args} = node, acc, mutators) do
+    if Meta.withheld?(node) do
+      {args, acc} = tag_args(node, acc, mutators)
+      {{form, meta, args}, acc}
+    else
+      tag_walk_form(node, acc, mutators)
+    end
+  end
+
+  defp tag_walk_direct(node, acc, mutators), do: tag_walk_form(node, acc, mutators)
 
   # Redundancy suppression in guards — the guard-legal subset of the in-place analyzer's
   # equivalent-sibling clauses (`Mutare.Transform.Analyze`). The shared move is identical:

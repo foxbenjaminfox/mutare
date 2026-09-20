@@ -152,16 +152,26 @@ defmodule Mutare.Transform.Analyze do
   # does the same at the head of its guard and pattern walks; `Analyze.Returns` treats a skipped
   # tail as one leaf.
   #
-  # It is also where a piped stage under a positional route becomes the direct call it was routed
-  # as (`WrittenPipe.direct/1`): the rewrite is part of analyzing a runtime node, so it reaches
-  # exactly the code Mutare reads as Elixir and nothing it leaves as written. A skipped `|>` is
-  # a leaf first, and stays a pipe.
+  # It is also where a `Kernel.|>/2` stage becomes the direct call it is sugar for
+  # (`WrittenPipe.direct/1`): the rewrite is part of analyzing a runtime node, so it reaches
+  # exactly the code Mutare reads as Elixir and nothing it leaves as written. A `|>` that is
+  # itself skipped (`{Kernel, :|>, 2, :skip}`) is a leaf first, and is never rewritten.
+  #
+  # A **withheld** call (`Meta.withheld?/1` — a `:skip`ped call written as a pipe stage) is
+  # honoured here for the reason `:skip` is: its head may be one with a clause of its own below
+  # (`x |> if(do: …)` under `{Kernel, :if, 2, :skip}`), which would descend what the skip covers.
   defp analyze(node, context, env) do
     cond do
       Meta.skipped?(node) -> node
-      context == :runtime -> node |> WrittenPipe.direct() |> analyze_form(:runtime, env)
+      context == :runtime -> node |> WrittenPipe.direct() |> analyze_runtime(env)
       true -> analyze_form(node, context, env)
     end
+  end
+
+  defp analyze_runtime(node, env) do
+    if Meta.withheld?(node),
+      do: Routed.analyze_withheld_call(node, env),
+      else: analyze_form(node, :runtime, env)
   end
 
   # `when` guard (position-independent: also covers case/fn clause guards): the
@@ -548,26 +558,17 @@ defmodule Mutare.Transform.Analyze do
     {:\\, meta, [analyze(var, :pattern, env), analyze(default, :runtime, env)]}
   end
 
-  # A `Kernel.|>/2` that is still a pipe here. Every stage `Kernel` can pipe into became the
-  # direct call on the way in (`analyze/3`, `WrittenPipe.direct/1`), so what arrives is a stage
-  # under the call-level `:skip` — an inert leaf, whose left side is its *sibling* and keeps its
-  # mutants. That left side is still the skipped call's argument 0: when the skip displaced a
-  # code-provided route it is analyzed by that route's position 0
-  # (`Routed.analyze_piped_value/3`), so a skipped `1 |> match?(1)` gets no selector `case`
-  # spliced into its pattern.
+  # A `|>` that is still a pipe here. Every stage `Kernel.|>/2` can pipe into became the direct
+  # call on the way in (`analyze/3`, `WrittenPipe.direct/1`), so a `Kernel` pipe that arrives is
+  # one `Kernel` could not expand (`x |> unquote(stage)`, or source that does not compile): two
+  # expressions, the node itself never offered.
   #
   # Only `Kernel.|>/2` is that pipe. A `|>` displaced out of `Kernel` is a call to somebody
   # else's operator, analyzed as the call it is (`analyze_foreign_pipe/2`).
   defp analyze_form({:|>, meta, [lhs, rhs]} = node, :runtime, env) do
-    if Calls.kernel_call?(node) do
-      {:|>, meta,
-       [
-         Routed.analyze_piped_value(lhs, rhs, env),
-         analyze(rhs, :runtime, env)
-       ]}
-    else
-      analyze_foreign_pipe(node, env)
-    end
+    if Calls.kernel_call?(node),
+      do: {:|>, meta, [analyze(lhs, :runtime, env), analyze(rhs, :runtime, env)]},
+      else: analyze_foreign_pipe(node, env)
   end
 
   # `for` comprehension: its generators (`<-`), filters, `:into`/`:reduce` options
@@ -919,8 +920,8 @@ defmodule Mutare.Transform.Analyze do
   # === known macros ==========================================================
 
   # The known-macro argument *routing* lives in `Mutare.Transform.Analyze.Routed`:
-  # `Routed.analyze_routed_call/4` (a written/piped stage) and `Routed.analyze_piped_value/3`
-  # (the `|>` LHS reaching back into a macro's argument-0 treatment) route each argument by its
+  # `Routed.analyze_routed_call/4` (and `Routed.analyze_withheld_call/2`, for a `:skip`ped call
+  # written as a pipe stage) route each argument by its
   # declared treatment — a pattern, an opaque `:raw` DSL body, a `:hosted` fragment — driving the
   # descent back through `annotate/2`/`pattern/2`/`offer/4`. The core walk reads the stamp via
   # `Mutare.Transform.Meta.routing/1` and dispatches there.

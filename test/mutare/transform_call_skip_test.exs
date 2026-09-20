@@ -36,6 +36,18 @@ defmodule Mutare.TransformCallSkipTest do
     end
   end
 
+  # The guard twin: rewrites the whole `is_integer/1` call node.
+  defmodule IsIntegerMutator do
+    @behaviour Mutare.Mutator
+
+    @impl true
+    def name, do: :is_integer_swap
+
+    @impl true
+    def mutate({:is_integer, meta, [arg]}), do: [{:is_float, meta, [arg]}]
+    def mutate(_node), do: :skip
+  end
+
   @values [
     Mutare.Mutators.IntegerLiteral,
     Mutare.Mutators.StringLiteral,
@@ -1186,6 +1198,78 @@ defmodule Mutare.TransformCallSkipTest do
                Enum.map(default, &{&1.mutator, &1.mutated_code})
 
       assert_compiles(skipped_meta)
+    end
+
+    # A skipped stage is the direct call like any other, so its head may be one the analyzer
+    # has a clause of its own for. The skip still covers everything written in the parentheses.
+    test "a skipped structural head written as a stage keeps its body inert" do
+      source = """
+      defmodule PipedIf do
+        def f(x, a) do
+          (x + 1 > 0)
+          |> if(do: a + 2, else: a + 3)
+        end
+      end
+      """
+
+      %{metamutant: meta, sites: sites} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.IntegerLiteral],
+          call_routes: [{Kernel, :if, 2, :skip}]
+        )
+
+      assert sites != []
+      assert Enum.map(sites, & &1.line) |> Enum.uniq() == [3]
+      assert_compiles(meta)
+    end
+
+    test "a skipped call written as a stage in a guard keeps its piped value's mutants" do
+      source = """
+      defmodule PipedGuard do
+        def f(x) when (x + 1) |> is_integer(), do: :yes
+        def f(_x), do: :no
+      end
+      """
+
+      %{metamutant: meta, sites: sites} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.Arithmetic, IsIntegerMutator],
+          call_routes: [{Kernel, :is_integer, 1, :skip}]
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic and &1.original_code == "x + 1"))
+      refute Enum.any?(sites, &(&1.mutator == :is_integer_swap))
+      assert_compiles(meta)
+
+      # The mutator does fire on the stage once the route is gone.
+      %{sites: unrouted} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: [IsIntegerMutator])
+
+      assert Enum.any?(unrouted, &(&1.mutator == :is_integer_swap))
+    end
+
+    test "a skipped call written as a stage is offered to no mutator" do
+      source = """
+      defmodule PipedOffer do
+        def f(u) do
+          (u + 1) |> Mixpanel.track("e", %{})
+          :ok
+        end
+      end
+      """
+
+      transform = fn routes ->
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.Arithmetic, TrackMutator],
+          call_routes: routes
+        ).sites
+      end
+
+      assert Enum.any?(transform.([]), &(&1.mutator == :track))
+
+      skipped = transform.([{Mixpanel, :track, 3, :skip}])
+      refute Enum.any?(skipped, &(&1.mutator == :track))
+      assert Enum.any?(skipped, &(&1.mutator == :arithmetic))
     end
 
     test "the same holds for a binding-pattern macro" do

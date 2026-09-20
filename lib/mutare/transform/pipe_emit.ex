@@ -46,7 +46,7 @@ defmodule Mutare.Transform.PipeEmit do
   # `sugar/1` spells a rewritten call as the pipe it was wherever emission leaves one bare, so
   # the metamutant is as deep as the user's source, not one level deeper per stage.
 
-  alias Mutare.Transform.{BindingEscapeEmit, Calls, Candidate, Ctx, Meta, Render}
+  alias Mutare.Transform.{BindingEscapeEmit, Candidate, Ctx, Meta, Render}
   alias Mutare.Transform.Candidate.Delivery
 
   @typedoc "How one selector treats what its branches share: nothing, exported bindings, or a bound operand."
@@ -185,20 +185,6 @@ defmodule Mutare.Transform.PipeEmit do
   end
 
   def sugar(node), do: node
-
-  @doc """
-  A `Kernel.|>/2` that reaches emission still a pipe — its stage is under the call-level
-  `:skip` — whose left side is a generated pin over a selector (a skip that displaced an
-  `:interpolated` route): expanded as `Kernel` would, so the pin stays the call's argument.
-  Emission also visits untouched `:raw` and skipped syntax, where a pinned pipe is the user's
-  and stays as written; the selector marker tells the two apart.
-  """
-  @spec expand_pinned(Macro.t()) :: Macro.t()
-  def expand_pinned({:|>, _meta, [lhs, stage]} = pipe) do
-    if generated_pin?(lhs) and Calls.kernel_call?(pipe), do: Macro.pipe(lhs, stage, 0), else: pipe
-  end
-
-  def expand_pinned(node), do: node
 
   defp generated_pin?({:^, _meta, [expression]}),
     do: match?({:ok, _subject, _clauses}, Render.selector_case_parts(expression))

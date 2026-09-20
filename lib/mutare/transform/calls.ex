@@ -221,7 +221,13 @@ defmodule Mutare.Transform.Calls do
   def routed_treatments(node), do: node |> WrittenPipe.direct() |> treatments()
 
   defp treatments({_head, meta, _args} = node) when is_list(meta) do
-    routing = if Meta.routed_direct?(node), do: nil, else: Meta.routing(meta)
+    # A withheld call is a `:skip`ped one written as a pipe stage, and answers as it was routed.
+    routing =
+      cond do
+        Meta.routed_direct?(node) -> nil
+        Meta.withheld?(node) -> :skip
+        true -> Meta.routing(meta)
+      end
 
     case routing do
       :skip ->

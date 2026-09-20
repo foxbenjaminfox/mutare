@@ -32,7 +32,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
     do: analyze_match_statement(match, env)
 
   def analyze_statement(node, env) do
-    # This reads the statement before the dispatcher does, so a piped routed stage is made the
+    # This reads the statement before the dispatcher does, so a piped stage is made the
     # direct call here first — unless the `|>` is itself skipped, which keeps it a leaf.
     node = if Meta.skipped?(node), do: node, else: WrittenPipe.direct(node)
 
@@ -114,52 +114,26 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # bindings escape** (`:binding_pattern` — `Kernel.destructure`, or a user-registered macro),
   # returning `{raw_pattern, rebuild_mutant}` — the raw pattern node and a closure that rebuilds
   # the *raw* macro call with a (mutated) pattern in its place — or `nil` for anything else.
-  # The written shapes resolve to a binding-pattern arg (`Mutare.Transform.Resolve` stamps each):
-  #
-  #   * **direct** `destructure([x, y], v)` — the pattern is the first arg whose routing
-  #     (`meta[:mutare_route]`) is `:binding_pattern`. Rebuilds the call with that arg replaced.
-  #   * **piped, the LHS** `[x, y] |> destructure(v)` — the piped value is effective arg 0; when
-  #     *its* treatment is `:binding_pattern` (stamped `:mutare_route_piped`) the pattern is the
-  #     `|>` LHS. Rebuilds `<mutated> |> rhs`.
-  #   * **piped, a visible arg** `value |> unpack([x, y])` with routing `[:expression,
-  #     :binding_pattern]` — the binding pattern is a *written* arg of the stage, not the piped
-  #     value, so it lives in the stage's own `meta[:mutare_route]` (the visible routing). The
-  #     piped-value check misses it; fall through to the stage's visible args, rebuilding the
-  #     stage with that arg replaced and re-piping the LHS. (The equivalent direct call resolves
-  #     via the direct clause — the two stayed asymmetric until this clause looked past the LHS.)
+  # The pattern is the first argument whose routing (`meta[:mutare_route]`) is
+  # `:binding_pattern`, and the call is rebuilt with that argument replaced. A piped statement
+  # (`[x, y] |> destructure(v)`, `value |> unpack([x, y])`) arrives as the direct call
+  # (`analyze_statement/2`), so its piped value is argument 0 like any other.
   #
   # The other args are kept *raw* (the mutant branch runs the baseline value; the catch-all
   # runs the emitted one, so a nested mutation there still fires — see
   # `BindingEscapeEmit.macro_pattern_site/3`).
-  # NOTE (equivalent survivors, deliberately not `# mutare:ignore`d so the killed
-  # `-> false` siblings stay counted): the `is_list/1` checks are defensive — a `|>` RHS
-  # call node always has keyword-list meta and a list of args — so loosening the guard
-  # (forcing it `true`, weakening `and` to `or`) is equivalent; forcing it `false` is killed.
   #
-  # The pipe reading is `Kernel.|>/2`'s alone: a `|>` displaced out of `Kernel` is a call to a
-  # custom operator, read by its own route like any other call (`written_binding_pattern/1`).
-  defp binding_pattern_macro({:|>, _meta, [_lhs, {_form, rhs_meta, args}]} = node)
-       when is_list(rhs_meta) and is_list(args) do
-    if Calls.kernel_call?(node),
-      do: piped_binding_pattern(node),
-      else: written_binding_pattern(node)
-  end
+  # A `|>` that is still one here is either a `Kernel` pipe nothing could expand
+  # (`x |> unquote(stage)`), which is no macro call, or a `|>` displaced out of `Kernel`: a call
+  # to a custom operator, read by its own route like any other call.
+  defp binding_pattern_macro({:|>, _meta, [_lhs, _rhs]} = node),
+    do: if(Calls.kernel_call?(node), do: nil, else: written_binding_pattern(node))
 
   defp binding_pattern_macro({_form, meta, args} = node) when is_list(meta) and is_list(args),
     do: written_binding_pattern(node)
 
   defp binding_pattern_macro(_node), do: nil
 
-  defp piped_binding_pattern({:|>, meta, [lhs, {_form, rhs_meta, _args} = rhs]}) do
-    case Meta.piped_routing(rhs_meta) do
-      :binding_pattern -> {lhs, fn mutated -> {:|>, meta, [mutated, rhs]} end}
-      _other -> nil
-    end
-  end
-
-  # NOTE (equivalent survivors, deliberately not `# mutare:ignore`d so the killed
-  # `-> false` siblings stay counted): same defensive `is_list/1` checks as above — a real
-  # call node always satisfies them — so loosening this guard is equivalent.
   defp written_binding_pattern({form, meta, args}) do
     case binding_pattern_index(meta) do
       nil ->
@@ -224,17 +198,6 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # hosts as extra branches, and return the node with them stripped (so emission doesn't *also*
   # wrap the call in a standalone selector).
   #
-  # A `Kernel.|>/2` that is still a pipe here has a stage under the call-level `:skip`
-  # (`piped_binding_pattern/1`): an inert leaf, never offered, so it carries no whole-call
-  # mutation to re-home.
-  # mutare:ignore[guard_drop] equivalent — a `|>` RHS call node always has keyword-list meta, so the guard never excludes a real stage.
-  defp rehome_call_mutations({:|>, _meta, [_lhs, {_form, rhs_meta, _args}]} = node, export)
-       when is_list(rhs_meta) do
-    if Calls.kernel_call?(node),
-      do: {node, []},
-      else: rehome_written_call_mutations(node, export)
-  end
-
   # A directly-written call carries its mutations on its own meta — re-home them with
   # `mutant_expr` the mutated call itself. (A `|>` displaced out of `Kernel` is one too.)
   # mutare:ignore[guard_drop] equivalent — a call node always has keyword-list meta, so the guard never excludes a real call.

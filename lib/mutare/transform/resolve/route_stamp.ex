@@ -100,7 +100,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   # per-position list) so every reader sees one distinguished value — `Mutare.Transform.Analyze`
   # leaves the node raw without offering it, `Mutare.Transform.Tag` does the same in a guard, and
   # `Mutare.Transform.Calls.routed_treatments/1` reports `:skip`. Written as a pipe stage, the
-  # call's piped operand is answered for separately (`stamp_skipped_receiver/2`).
+  # call is restamped withheld, so its piped value keeps its mutants (`withhold_stage/2`).
   defp stamp_spec(
          meta,
          %Entry{spec: %Spec{args: :skip}},
@@ -116,44 +116,46 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
     stamp_routes(meta, attach_hosts!(routes, entry))
   end
 
-  # The one position a bare `:skip` still has to answer for, and the one place a call's spelling
-  # carries the user's intent: the left side of a pipe into a skipped call is that call's
-  # *sibling*, not part of it, and keeps its mutants (`Repo.insert!(u) |> Mixpanel.track(…)`). It
-  # is still the call's argument 0, so when the skip displaced a code-provided
-  # route, that route's position 0 governs it — otherwise `--skip-call Kernel.match?/2` would
-  # route `1 |> match?(x)`'s receiver as runtime and splice a selector `case` into a match, which
-  # the displaced `[:pattern, :expression]` route forbids. A `:skip` must not route a position
-  # less safely than the route it replaced.
+  # The one place a call's spelling carries the user's intent. A call under the call-level
+  # `:skip` is an inert leaf, its arguments included — but the left side of a pipe into one is
+  # documented as that call's *sibling*, which keeps its mutants
+  # (`Repo.insert!(u) |> Mixpanel.track(…)`). So a skipped call **written as a pipe stage** is
+  # stamped *withheld* instead (`Meta.withheld?/1`): its own node is offered to nobody, every
+  # written argument is `:raw`, and position 0 — the piped value — is analyzed. The stage is then
+  # the direct call it is sugar for, like every other stage, and no later pass reads the
+  # spelling to honour the skip.
+  #
+  # Position 0 is `:expression` unless the skip displaced a code-provided route, whose position
+  # 0 then governs it — otherwise `--skip-call Kernel.match?/2` would route `1 |> match?(x)`'s
+  # piped value as runtime and splice a selector `case` into a match, which the displaced
+  # `[:pattern, :expression]` route forbids. A `:skip` must not route a position less safely
+  # than the route it replaced.
   #
   # A displaced *classifier* is answered `:raw`: its treatments are computed per call node by a
   # router the user just skipped, so the position's shape is unknowable here and the adapter-grade
-  # DSLs classifiers describe are exactly where a spliced `case` is illegal. Displacing nothing
-  # keeps the documented default — an unrouted receiver is ordinary runtime, so
-  # `Repo.insert!(u) |> Mixpanel.track(…)` keeps its `Repo.insert!(u)` mutants.
+  # DSLs classifiers describe are exactly where a spliced `case` is illegal.
   @doc """
-  Stamp a `:skip`ped call **written as a pipe stage** with the treatment its piped operand
-  takes (`Meta.piped_routing/1`). `meta` is the skipped call's, as `stamp/6` left it on the
-  direct form `Mutare.Transform.Resolve` walked.
+  Restamp a `:skip`ped call **written as a pipe stage** as withheld (`Meta.withheld?/1`).
+  `meta` is the skipped call's, as `stamp/6` left it on the direct form
+  `Mutare.Transform.Resolve` walked.
   """
-  @spec stamp_skipped_receiver(keyword(), Routes.registry()) :: keyword()
-  def stamp_skipped_receiver(meta, registry) do
+  @spec withhold_stage(keyword(), Routes.registry()) :: keyword()
+  def withhold_stage(meta, registry) do
     {module_key, fun, arity} = Meta.routed_call(meta)
 
-    case Routes.lookup(registry, module_key, fun, arity) do
-      %Entry{displaced: %Spec{} = displaced} -> stamp_displaced(meta, displaced, arity)
-      %Entry{displaced: nil} -> meta
-    end
+    piped =
+      case Routes.lookup(registry, module_key, fun, arity) do
+        %Entry{displaced: %Spec{} = displaced} -> displaced_position(displaced, arity)
+        %Entry{displaced: nil} -> :expression
+      end
+
+    Meta.stamp_withheld(meta, [piped | List.duplicate(:raw, arity - 1)])
   end
 
-  defp stamp_displaced(meta, displaced, arity) do
-    if Spec.classifier?(displaced) do
-      Meta.stamp_piped_routing(meta, :raw)
-    else
-      case displaced |> Spec.routing(arity) |> hd() |> Spec.normalize_position!() do
-        :expression -> meta
-        treatment -> Meta.stamp_piped_routing(meta, treatment)
-      end
-    end
+  defp displaced_position(displaced, arity) do
+    if Spec.classifier?(displaced),
+      do: :raw,
+      else: displaced |> Spec.routing(arity) |> hd() |> Spec.normalize_position!()
   end
 
   # Advisory (dynamic path only): a `:routing` classifier that returns `{:keyword, …}` for an

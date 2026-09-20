@@ -88,11 +88,12 @@ defmodule Mutare.Transform.MetaTest do
       assert Meta.routing(meta) == [:pattern, :expression]
     end
 
-    test "piped_routing round-trips through the stamp writer" do
-      assert Meta.piped_routing([]) == nil
-
-      meta = Meta.stamp_piped_routing([], :binding_pattern)
-      assert Meta.piped_routing(meta) == :binding_pattern
+    test "stamp_withheld replaces the :skip stamp with positions" do
+      meta = [] |> Meta.stamp_routing(:skip) |> Meta.stamp_withheld([:pattern, :raw])
+      assert Meta.routing(meta) == [:pattern, :raw]
+      assert Meta.withheld?({:match?, meta, []})
+      refute Meta.skipped?({:match?, meta, []})
+      refute Meta.withheld?({:match?, [], []})
     end
 
     test "routed_call round-trips the resolved identity, with the arity it matched at" do

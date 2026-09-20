@@ -362,8 +362,7 @@ defmodule Mutare.Transform.Analyze.QuoteEscape do
   end
 
   defp quote_escape_binding_pattern_macro?(meta) do
-    binding_pattern_treatment?(Meta.piped_routing(meta)) or
-      binding_pattern_treatment?(Meta.direct_routing(meta))
+    binding_pattern_treatment?(Meta.direct_routing(meta))
   end
 
   defp binding_pattern_treatment?(:binding_pattern), do: true

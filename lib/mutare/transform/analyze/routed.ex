@@ -9,9 +9,8 @@ defmodule Mutare.Transform.Analyze.Routed do
   # to the registering mutator's selector host.
   #
   # `Mutare.Transform.Analyze` reads the stamp (`Meta.routing/1`, the shared `:mutare_route`
-  # contract reader) and routes a recognised call here: `analyze_routed_call/4` for a
-  # written/piped stage, `analyze_piped_value/3` for the `|>` LHS that reaches back into a known
-  # macro's argument-0 treatment. It drives the descent back through `Analyze.annotate/2` /
+  # contract reader) and routes a recognised call here (`analyze_routed_call/4`; a `|>` stage
+  # arrives as the direct call it is sugar for). It drives the descent back through `Analyze.annotate/2` /
   # `Analyze.pattern/2`, with the whole-node offer on `Attach`.
 
   alias Mutare.AST
@@ -135,9 +134,7 @@ defmodule Mutare.Transform.Analyze.Routed do
     end)
   end
 
-  # Route one argument by its declared treatment — shared by the visible-arg routing
-  # (`route_macro_args/3`) and the piped-value reach-back (`analyze_piped_value/3`), so the
-  # piped LHS is treated identically to a written first argument: `:expression` → ordinary
+  # Route one argument by its declared treatment: `:expression` → ordinary
   # runtime (mutate); `:pattern`/`:binding_pattern` → a match context (descend for nested
   # runtime escapes, never mutate the pattern *in place*); `:raw` → leave the argument **as
   # written** (no descent, no mutation — an opaque DSL value the macro accepts even though it is
@@ -424,19 +421,10 @@ defmodule Mutare.Transform.Analyze.Routed do
     end
   end
 
-  # The left side of a `|>` whose right side is a call under the call-level `:skip`. The skipped
-  # call is an inert leaf, but the piped value is its argument 0: when the skip
-  # displaced a code-provided route, `Resolve` recorded that route's position 0 on the stage as
-  # `:mutare_route_piped` (only when it isn't the `:expression` default), and the left side is
-  # routed by it — a skipped `1 |> match?(1)` keeps its LHS a `:pattern`. Any other LHS is
-  # ordinary runtime. (A stage under a positional route is not a pipe here: `Analyze` rewrote it.)
-  def analyze_piped_value(lhs, {_form, rhs_meta, _args}, env)
-      when is_list(rhs_meta) do
-    case Meta.piped_routing(rhs_meta) do
-      nil -> Analyze.annotate(lhs, env)
-      treatment -> route_macro_arg(lhs, treatment, env)
-    end
-  end
-
-  def analyze_piped_value(lhs, _rhs, env), do: Analyze.annotate(lhs, env)
+  # A **withheld** call (`Meta.withheld?/1`): a call under the call-level `:skip` that was written
+  # as a pipe stage. The skip covers the call — offered to no mutator, hosted by no host — and
+  # every argument the user wrote in its parentheses (`:raw`); the piped value is its sibling,
+  # analyzed by position 0 (`RouteStamp.withhold_stage/2`).
+  def analyze_withheld_call({form, meta, args}, env),
+    do: {form, meta, route_macro_args(args, Meta.routing(meta), env)}
 end

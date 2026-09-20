@@ -363,10 +363,9 @@ defmodule Mutare.Transform.Resolve do
   # Elixir, by construction rather than by a list of regions to avoid. NOTES "A pipe stage is
   # the call it is sugar for".
   #
-  # One stage is not marked: a call under the call-level `:skip`. Its left side is documented
-  # as the skipped call's *sibling*, which keeps its mutants (`Repo.insert!(u) |>
-  # Mixpanel.track(…)`), so the pipe stays, and the stage records what its piped operand may
-  # take (`RouteStamp.stamp_skipped_receiver/2`).
+  # A stage under the call-level `:skip` is marked like any other, restamped *withheld*: its
+  # left side is documented as the skipped call's *sibling*, which keeps its mutants
+  # (`Repo.insert!(u) |> Mixpanel.track(…)`) — `RouteStamp.withhold_stage/2`.
   defp direct_stage(lhs, {head, _meta, written_args} = rhs, env)
        when head not in [:unquote, :unquote_splicing] do
     case direct_call(lhs, rhs) do
@@ -378,11 +377,12 @@ defmodule Mutare.Transform.Resolve do
         # A parenless stage (`x |> to_string`) keeps its written shape.
         visible = if is_nil(written_args), do: nil, else: visible
 
-        if Meta.direct_routing(meta) == :skip do
-          [lhs, {head, RouteStamp.stamp_skipped_receiver(meta, env.call_routes), visible}]
-        else
-          [lhs, {head, Meta.stamp_routed_direct(meta), visible}]
-        end
+        meta =
+          if Meta.direct_routing(meta) == :skip,
+            do: RouteStamp.withhold_stage(meta, env.call_routes),
+            else: meta
+
+        [lhs, {head, Meta.stamp_routed_direct(meta), visible}]
     end
   end
 

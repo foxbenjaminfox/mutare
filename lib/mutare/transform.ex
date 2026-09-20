@@ -1304,7 +1304,7 @@ defmodule Mutare.Transform do
       # gate dropped (a no-op when there were none), so the node renders clean; a call written
       # as a pipe is spelled as one again, around whatever its piped value became.
       :none ->
-        {current |> Meta.strip_delivery() |> PipeEmit.expand_pinned() |> PipeEmit.sugar(), ctx}
+        {current |> Meta.strip_delivery() |> PipeEmit.sugar(), ctx}
     end
   end
 
@@ -1357,9 +1357,7 @@ defmodule Mutare.Transform do
           ]}}
       end)
 
-    # A `|>` that is still a pipe here has a `:skip`ped stage; only a generated pin on its left
-    # needs anything (`PipeEmit.expand_pinned/1`). A no-op for every other node shape.
-    default = node |> Meta.strip_delivery() |> PipeEmit.expand_pinned()
+    default = Meta.strip_delivery(node)
 
     # A layer whose mutations were all skipped has no selector; the node passes through it.
     Enum.reduce([:inner, :outer], {default, ctx}, fn layer, {default, ctx} ->

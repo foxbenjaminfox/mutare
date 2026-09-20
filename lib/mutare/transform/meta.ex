@@ -165,8 +165,8 @@ defmodule Mutare.Transform.Meta do
   """
   @spec skipped?(Macro.t()) :: boolean()
   # Asked of every node a walk passes, marked `|>` stages included, and indexes no argument —
-  # so it reads the stamp as `direct_routing/1` does. (A marked stage is under a positional
-  # route, never `:skip`.)
+  # so it reads the stamp as `direct_routing/1` does. (A marked stage never carries `:skip`: a
+  # skipped one is restamped `withheld?/1`.)
   def skipped?({_form, meta, args}) when is_list(meta) and is_list(args),
     do: direct_routing(meta) == :skip
 
@@ -184,20 +184,24 @@ defmodule Mutare.Transform.Meta do
   end
 
   @doc """
-  The piped-value routing for a known-macro `|>` RHS (`:mutare_route_piped`), stamped only when the
-  effective-argument-0 treatment isn't the `:expression` default — so the common runtime LHS
-  carries no stamp and this reads `nil`.
+  Whether a call is **withheld**: its own node is offered to no mutator and hosted by no host,
+  while its arguments are still analyzed by the positions of its route. What
+  `Mutare.Transform.Resolve.RouteStamp.withhold_stage/2` makes of a call under the call-level
+  `:skip` that was written as a pipe stage, whose piped value is the skipped call's *sibling* and
+  keeps its mutants. Honoured where `skipped?/1` is: at the entry of
+  `Mutare.Transform.Analyze`'s dispatcher and of `Mutare.Transform.Tag`'s walk, ahead of any
+  form-specific clause.
   """
-  @spec piped_routing(keyword() | term()) :: term()
-  def piped_routing(meta) when is_list(meta),
-    do: Keyword.get(meta, MetaKeys.piped_route_key())
+  @spec withheld?(Macro.t()) :: boolean()
+  def withheld?({_form, meta, args}) when is_list(meta) and is_list(args),
+    do: Keyword.get(meta, MetaKeys.route_withheld_key(), false)
 
-  def piped_routing(_meta), do: nil
+  def withheld?(_node), do: false
 
   @typedoc """
   A routed call's resolved identity: the module key (`nil` for a name-only match whose module the
   resolver could not see), the name, and the arity the route matched at — the direct call's, so one more
-  than the written arguments for a `:skip`ped stage still written as a pipe's right side.
+  than the written arguments on a marked `|>` stage (`routed_direct?/1`).
   """
   @type routed_call :: {Mutare.CallRouting.Spec.module_key() | nil, atom(), non_neg_integer()}
 
@@ -224,10 +228,16 @@ defmodule Mutare.Transform.Meta do
   @spec stamp_routing(keyword(), term()) :: keyword()
   def stamp_routing(meta, routing), do: [{MetaKeys.route_key(), routing} | meta]
 
-  @doc "Stamp the piped-value routing onto a piped known-macro stage's meta (`:mutare_route_piped`)."
-  @spec stamp_piped_routing(keyword(), term()) :: keyword()
-  def stamp_piped_routing(meta, routing),
-    do: [{MetaKeys.piped_route_key(), routing} | meta]
+  @doc """
+  Replace a call's `:skip` stamp with `positions`, and mark the call `withheld?/1`.
+  """
+  @spec stamp_withheld(keyword(), nonempty_list()) :: keyword()
+  def stamp_withheld(meta, [_ | _] = positions) do
+    meta
+    |> Keyword.delete(MetaKeys.route_key())
+    |> stamp_routing(positions)
+    |> Keyword.put(MetaKeys.route_withheld_key(), true)
+  end
 
   @doc "Stamp the `t:routed_call/0` identity onto a call's meta (`:mutare_route_call`)."
   @spec stamp_routed_call(keyword(), routed_call()) :: keyword()

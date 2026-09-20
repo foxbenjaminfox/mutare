@@ -54,7 +54,7 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_import_witness`   — dead-code import-witness payload                (Imports, spliced by ImportWitness)
   #   * `:mutare_kernel_displaced` — a Kernel fn displaced by `import …, except:`    (Imports)
   #   * `:mutare_route`            — a routed call's per-argument positions, or `:skip` (Resolve.RouteStamp, from the route registry)
-  #   * `:mutare_route_piped`      — piped-value routing for a routed `|>` RHS         (Resolve.RouteStamp, from the route registry)
+  #   * `:mutare_route_withheld`   — a call whose own node is withheld while its arguments are routed: a `:skip`ped call written as a pipe stage (Resolve.RouteStamp, read through Meta.withheld?/1)
   #   * `:mutare_route_call`       — resolved `{module_key, name, arity}` routed-call identity (Resolve.RouteStamp, read through Meta.routed_call/1)
   #   * `:mutare_use_directives`   — import/alias/require a `use` injects            (Uses)
   #   * `:mutare_use_behaviours`   — `@behaviour`s a `use` injects (on the `use`)    (Uses)
@@ -83,7 +83,7 @@ defmodule Mutare.Transform.MetaKeys do
     import_witness_key: :mutare_import_witness,
     kernel_displaced_key: :mutare_kernel_displaced,
     route_key: :mutare_route,
-    piped_route_key: :mutare_route_piped,
+    route_withheld_key: :mutare_route_withheld,
     route_call_key: :mutare_route_call,
     use_directives_key: :mutare_use_directives,
     use_behaviours_key: :mutare_use_behaviours,
