@@ -12416,13 +12416,26 @@ for, so `Returns` descends its clauses, exactly as for `case … do` written dir
 spellings now get identical Sites. Over `lib/`: 32,423 Sites against 32,413, every difference
 in the four files with such a tail; metamutants differ in those files only.
 
-**The seam that did not unify.** `Resolve` classifies a call before it descends the call's
-arguments, so `route_arguments/1` sees them unresolved and as written: an upstream stage in
-argument 0 is still a `|>` there, and a direct call to a host and a mutator
-(`piped_routed_call_test.exs` pins both). A pass ahead of the walk cannot fix it — whether a
-`|>` is `Kernel`'s is known only inside the walk, from the import environment. Classifying
-after descent would, and would also hand classifiers resolved arguments: a contract change
-for `mutare_ecto`, not made here.
+**The classifier seam, unified in a second step.** `Resolve` classified a call *before* it
+descended the call's arguments, so `route_arguments/1` saw them unresolved and as written: an
+upstream stage in argument 0 was still a `|>` there, and an aliased call in an argument did not
+resolve through `Mutare.Calls`. A pass ahead of the walk could not fix it — whether a `|>` is
+`Kernel`'s is known only inside the walk, from the import environment. So the order was
+swapped: every call clause (`Mod.fun`, `:mod.fun`, a bare call, a displaced `|>`) walks the
+arguments first and routes the call with the walked ones. Nothing in the walk reads a route —
+`Resolve` walks everything, treatments unseen — so the swap changes what a classifier is
+handed and nothing else: over `lib/`, the same Sites and metamutants. The heads whose clauses
+walk their arguments their own way (`defmodule`, `defimpl`, `quote`, `Kernel.|>/2`) are still
+routed as written; they are structural forms, which take `:skip` alone, so no classifier reads
+their arguments. (A *displaced* `defmodule`/`defimpl` under a classifier route is the residue,
+and is handed arguments as written.)
+
+This breaks the classifier contract for adapters, deliberately and in the release that already
+breaks `Call` and `ArgumentRoutes`: arguments carry Mutare's metadata, and a pipe in one is a
+direct call. A classifier that matches argument *shapes* is unaffected; one that matched a
+`{:|>, …}` inside an argument, or compared nodes for equality, must change.
+`piped_routed_call_test.exs` pins the three seams reading one call, and an aliased call in a
+classifier's argument resolving.
 
 **Standing hazard.** The stamp lives in meta, and meta is copied by whoever rebuilds a node.
 An emitter that builds a *generated* node on the user's meta must drop it
@@ -12430,7 +12443,10 @@ An emitter that builds a *generated* node on the user's meta must drop it
 change's tests. Building generated nodes on fresh meta would remove the convention; not
 surveyed.
 
-**Not checked.** A host reads `f(a, b)` inside its fragment where the user wrote `a |> f(b)`.
-That is wrong only for a DSL that gives `|>` its own meaning inside a hosted fragment; neither
-companion was audited for one.
+**Hosts read what their DSL will.** A host finds `f(a, b)` inside its fragment where the user
+wrote `a |> f(b)`, which would be wrong for a DSL that gave `|>` a meaning of its own there.
+`mutare_ecto` is the only companion that hosts (or classifies), and Ecto does not:
+`Ecto.Query.Builder` hands a form it does not know to `Macro.expand_once/2` in the caller's
+env (`try_expansion/5`), so a `|>` in a query expression is `Kernel`'s, expanded to the very
+call the host is shown.
 

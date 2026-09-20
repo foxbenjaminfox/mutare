@@ -227,9 +227,10 @@ These span modules, so no single moduledoc holds them. Internalize them before s
 - **A pipe stage is the call it is sugar for; only `Kernel`'s `|>` is the pipe.**
   `Resolve` turns every `left |> stage(args)` into `stage(left, args)`, across the whole tree,
   so after it no pass, mutator or host meets a pipe or a call one argument short, at any depth
-  — there is no `pipe_mode`, and nothing to apply before reading a node. The one seam that
-  still sees pipes is a routing classifier, which is handed a call's arguments unresolved and
-  as written. That a call was written as a pipe is the `|>`'s meta, stamped on the call
+  — there is no `pipe_mode`, and nothing to apply before reading a node. A routing classifier
+  is no exception: every call clause in `Resolve` walks the arguments *first* and routes the
+  call after, so `route_arguments/1` reads the resolved code a host and a mutator do. That a
+  call was written as a pipe is the `|>`'s meta, stamped on the call
   (`Meta.written_pipe_meta/1`); `WrittenPipe.written/1` is the one inverse, and three modules
   read the spelling through it: `Mutare.Transform.WrittenPipe` keeps a Site in the user's
   spelling and footprint, `Mutare.Transform.PipeEmit` binds the piped value, and

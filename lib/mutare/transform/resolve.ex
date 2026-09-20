@@ -130,11 +130,12 @@ defmodule Mutare.Transform.Resolve do
   defp walk({:|>, meta, [lhs, rhs] = args}, env) do
     # The pipe head is a resolvable call too (`Kernel.|>/2`): stamp it so a `:skip` route on it is
     # honoured (a positional route never applies — `Mutare.Transform.StructuralForms`).
-    {meta, module_key} = stamp_bare_call(:|>, meta, args, env)
+    {resolved_meta, module_key} = resolve_bare_call(:|>, meta, args, env)
+    meta = stamp_routed(resolved_meta, module_key, :|>, args, env)
 
     cond do
       module_key != [:Kernel] ->
-        {:|>, meta, descend_marked(args, module_key, :|>, env)}
+        walk_bare_call(:|>, resolved_meta, module_key, args, env)
 
       direct = direct_stage(meta, lhs, rhs, env) ->
         direct
@@ -181,11 +182,12 @@ defmodule Mutare.Transform.Resolve do
        when is_list(args) do
     stamped = Aliases.stamp_module(aliases, env.aliases)
     module_key = Aliases.resolve_path(path, env.aliases)
-    call_node = {{:., dot_meta, [aliases, fun]}, call_meta, args}
+    walked = descend_marked(args, module_key, fun, env)
+    call_node = {{:., dot_meta, [stamped, fun]}, call_meta, walked}
 
-    call_meta = RouteStamp.stamp(call_meta, module_key, fun, args, call_node, env)
+    call_meta = RouteStamp.stamp(call_meta, module_key, fun, walked, call_node, env)
     call_meta = stamp_mark_call(call_meta, module_key, fun, args, env)
-    {{:., dot_meta, [stamped, fun]}, call_meta, descend_marked(args, module_key, fun, env)}
+    {{:., dot_meta, [stamped, fun]}, call_meta, walked}
   end
 
   # A direct Erlang/atom-module remote call `:mod.fun(...)`: the receiver is a bare (or Sourceror-
@@ -214,10 +216,11 @@ defmodule Mutare.Transform.Resolve do
         {{:., dot_meta, [walked, fun]}, call_meta, descend(args, env)}
 
       module_key ->
-        call_node = {{:., dot_meta, [mod, fun]}, call_meta, args}
-        call_meta = RouteStamp.stamp(call_meta, module_key, fun, args, call_node, env)
+        walked = descend_marked(args, module_key, fun, env)
+        call_node = {{:., dot_meta, [mod, fun]}, call_meta, walked}
+        call_meta = RouteStamp.stamp(call_meta, module_key, fun, walked, call_node, env)
         call_meta = stamp_mark_call(call_meta, module_key, fun, args, env)
-        {{:., dot_meta, [mod, fun]}, call_meta, descend_marked(args, module_key, fun, env)}
+        {{:., dot_meta, [mod, fun]}, call_meta, walked}
     end
   end
 
@@ -284,8 +287,8 @@ defmodule Mutare.Transform.Resolve do
   # A bare call `fun(...)`: stamp it with its resolved import (or Kernel-displacement), then —
   # when it resolves to a known macro — its argument routing, then descend the arguments.
   defp walk({fun, meta, args}, env) when is_atom(fun) and is_list(args) do
-    {meta, module_key} = stamp_bare_call(fun, meta, args, env)
-    {fun, meta, descend_marked(args, module_key, fun, env)}
+    {meta, module_key} = resolve_bare_call(fun, meta, args, env)
+    walk_bare_call(fun, meta, module_key, args, env)
   end
 
   # Any other n-ary node (`__aliases__`, operators with a tuple form, …): nothing to stamp —
@@ -301,12 +304,32 @@ defmodule Mutare.Transform.Resolve do
   # known macro — its argument routing. The macro stamp runs *after* `Imports.stamp` so it can read the just-applied
   # import / Kernel-displacement marks. Returns `{meta, module_key}` so the caller can also
   # stamp any argument marks the resolved module/function carries (`descend_marked/4`).
+  #
+  # This one routes the call with its arguments **as written**, for the heads whose clause walks
+  # them its own way (`defmodule`, `defimpl`, `quote`, `Kernel.|>/2`): structural forms, which
+  # take `:skip` alone, so no classifier reads those arguments.
   defp stamp_bare_call(fun, meta, args, env) do
+    {meta, module_key} = resolve_bare_call(fun, meta, args, env)
+    {stamp_routed(meta, module_key, fun, args, env), module_key}
+  end
+
+  # The generic bare call: arguments first, then the route. **A call is routed after its
+  # arguments are walked**, in every call clause, so a `:routing` classifier
+  # (`c:Mutare.CallRouting.route_arguments/1`) is handed what a host and a mutator are: resolved
+  # code, in which a pipe is the call it is sugar for at every depth.
+  defp walk_bare_call(fun, meta, module_key, args, env) do
+    walked = descend_marked(args, module_key, fun, env)
+    {fun, stamp_routed(meta, module_key, fun, walked, env), walked}
+  end
+
+  defp resolve_bare_call(fun, meta, args, env) do
     meta = Imports.stamp(fun, meta, args, env.imports, env.kernel)
-    arity = length(args)
-    module_key = bare_module_key(fun, arity, meta, env)
+    {meta, bare_module_key(fun, length(args), meta, env)}
+  end
+
+  defp stamp_routed(meta, module_key, fun, args, env) do
     meta = RouteStamp.stamp(meta, module_key, fun, args, {fun, meta, args}, env)
-    {stamp_mark_call(meta, module_key, fun, args, env), module_key}
+    stamp_mark_call(meta, module_key, fun, args, env)
   end
 
   defp descend(args, env), do: Enum.map(args, &walk(&1, env))

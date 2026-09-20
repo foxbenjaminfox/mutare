@@ -39,8 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The same holds beneath the node a mutator is offered: its operands are resolved code too, so
   `Mutare.Calls.resolved_call/1` answers `Enum.count/1` for `xs |> Enum.count()` found as an
-  operand, where it answered `nil` for the pipe. A routing classifier is the one reader that
-  still sees a pipe there: its arguments are unresolved source, as written. A function tail
+  operand, where it answered `nil` for the pipe. **A routing classifier reads the same code**
+  (breaking for adapters): a call is now routed after its arguments are resolved, so
+  `route_arguments/1` is handed arguments that carry Mutare's metadata, in which
+  `Mutare.Calls` resolves an aliased or imported call and a pipe is the direct call. A
+  classifier that matches argument shapes is unaffected; one that matched a `|>` inside an
+  argument, or compared argument nodes for equality, must change. A function tail
   written `… |> case do … end` gets the return-value mutants of its clauses, as the same
   `case` written directly always has, in place of `nil`/`:mutare` over the whole pipe.
 

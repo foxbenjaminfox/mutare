@@ -37,11 +37,11 @@ defmodule Mutare.CallRouting do
   `Kernel.|>/2` would build, so a route, a classifier, a host and a mutator all see
   `from(p in Post, …)` for `(p in Post) |> from(…)`, and a `:raw` declaration reaches the macro
   as the syntax it is. (The exception is a call routed `:skip`: a value piped *into* it is not
-  part of the skipped call, and still mutates.) A classifier's arguments are the exception in
-  depth: they are unresolved source, so a pipe *inside* one of them is still a pipe there, and
-  a call to a host and a mutator. Reports keep the pipe the user wrote, and so does any code
-  Mutare leaves alone: a pipe inside a `:raw` argument or a `:skip`ped call reaches the macro
-  as the pipe it was written as.
+  part of the skipped call, and still mutates.) That holds at every depth, and for all three
+  readers alike: a call is routed after its arguments are resolved, so a pipe *inside* an
+  argument is a call there too, and `Mutare.Calls` resolves an aliased or imported call found in
+  one. Reports keep the pipe the user wrote, and so does any code Mutare leaves alone: a pipe
+  inside a `:raw` argument or a `:skip`ped call reaches the macro as the pipe it was written as.
 
       defmodule MyApp.EctoRouting do
         @behaviour Mutare.CallRouting
@@ -254,6 +254,12 @@ defmodule Mutare.CallRouting do
 
   Returning `:hosted` leaves that position raw for core and offers the call to every subscribed
   host mutator.
+
+  `call.arguments` are resolved code, the same a host and a mutator are shown: read a call
+  inside one through `Mutare.Calls`, which sees through an alias or an import, and expect a
+  pipe there to be the direct call it is sugar for (`a |> f(b)` is `f(a, b)`). Classify by the
+  *shape* of an argument, which resolution never changes; don't compare nodes for equality
+  with hand-built ones, since resolved nodes carry Mutare's own metadata.
 
   The motivating keyword case is `where(q, category: "Foo", deleted_at: nil)`, classified as
   `{:keyword, [:interpolated, :raw]}`: mutate `"Foo"` through a `^`-pinned selector, keep the column-name
