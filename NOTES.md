@@ -12202,7 +12202,84 @@ against 32,715 and 243.3 s, both compiling on the first attempt. Unrouted stages
 delivered through a closure, so binding every stage through `PipeEmit.delivery/2` changes the
 metamutant's spelling and not its size.
 
-**Not done.** The `written_pipe` stamp holds a whole unwalked pipe per stage — a sum of
-prefixes — and now sits on every chain, not only routed ones. Its readers appear to need only
-the pipe's meta; `resugar/1` could rebuild the rest from the live node. Unverified, and left
-until a measurement asks for it.
+**Not done.** The `written_pipe` stamp holds a whole unwalked pipe per stage, and now sits on
+every chain, not only routed ones. Measured since (`:erts_debug.size/1` against `flat_size/1`
+over a rewritten chain of `|> Enum.map(…)` stages): the stamped pipes share their prefixes
+with one another on the heap, so the cost is linear — 28,015 words against 23,531 unstamped at
+64 stages, +19% — and it is a sum of prefixes only for a *copy*: 776,683 words flat. Nothing
+copies a stamped tree today (the workers' ASTs die with them; Sites are strings). Anything
+that came to — a message, ETS, `:persistent_term`, `term_to_binary` — should slim the stamp
+first: its readers need the pipe's meta, the pipe's range and the written stage, no more.
+
+Superseded in part by the next entry: a `:skip`ped stage is no longer left a pipe ("What
+stays a pipe"), and the respelling moved from `PipeEmit.sugar/1` to `Render` ("The metamutant
+spells pipes as pipes").
+
+### A skipped stage is a withheld call; spelling is render's `[done]` (2026-09-20)
+
+A review of the desugaring found the rule sound and the machinery around it still carrying
+two regimes. Four changes, none of which moves a site.
+
+**A `:skip`ped stage desugars too.** Leaving it a pipe kept the documented promise (the piped
+value is the skipped call's *sibling*) by keeping the old regime alive for it: the
+`:mutare_route_piped` stamp, `Routed.analyze_piped_value/3`, the `Kernel` branch of
+`Analyze`'s `|>` clause, `MatchPatterns`' piped binding-pattern reading and its stage
+re-homing (already unreachable — a skipped stage is never offered, so it carried nothing to
+re-home), a second routing check in `QuoteEscape`, `PipeEmit.expand_pinned/1`. The previous
+entry named the alternative, a routing word for "withhold this call's node, descend its
+arguments". It needs no user-facing word to exist: `RouteStamp.withhold_stage/2` restamps a
+skipped call *written as a stage* with positions — position 0 by the displaced route (a
+classifier's is `:raw`), else `:expression`; every written argument `:raw` — and
+`Meta.withheld?/1`. The stage is marked and rewritten like any other, and `Resolve` is the
+one pass that reads the spelling to honour the skip. `Entry.displaced` stays: it is the fact
+the position comes from.
+
+Withheld is honoured where `:skip` is, at the entry of `Analyze`'s dispatcher and of `Tag`'s
+walk, and for `:skip`'s reason: the head may be one with a clause of its own.
+`x |> if(do: …)` under `{Kernel, :if, 2, :skip}`, once direct, would reach the `if` clause and
+have its body descended (`transform_call_skip_test.exs` fails that way with the check off).
+`Calls.routed_treatments/1` still answers `:skip` for such a call: that is how it was routed,
+and the positions are core's reading of the spelling, not the author's words. A skipped
+piped tail keeps its return-value mutants as before — they attach by the pipe's node id,
+which the direct call takes.
+
+A user-facing word for the same thing would let the *direct* spelling say it
+(`Mixpanel.track(Repo.insert!(u), …)` still buries the insert). Not added: nobody has asked,
+and `[:expression, :raw, :raw]` plus `# mutare:ignore` covers it today.
+
+**Spelling is `Render`'s.** The emitter called `PipeEmit.sugar/1` at four sites and sequenced
+`delivery`/`layer`/`binding`/`rebind`/`close` in a required order. That a call reads as a
+pipe again is a property of the rendered text, so it happens once, in the prewalk
+`Render.to_source/1` already made to strip annotations, over every call still carrying the
+`written_pipe` stamp — which also reaches branches built by the other emitters
+(`BindingEscapeEmit`, a mutant that nests the offered call). `Manifest` reads the rendered
+source and the determinism check compares emitted trees, so neither sees a difference.
+`PipeEmit` is `delivery/2`, `branch/3`, `layers/5`. Over Mutare's own `lib/` (219 files): the
+same 32,372 sites, 15,076,792 metamutant bytes against 15,080,546.
+
+The stamp now means something to every emitter: "this node is the user's call, written as a
+pipe". An emitter that builds a *generated* structure on the user's meta must drop it
+(`Meta.drop_written_pipe/1`). `CaseClauseEmit` did not: `xs |> case do … end` with a clause
+mutant rendered its gated `case {active, subject} do` as `{…} |> case do` — the same program,
+but not a shape `Manifest` reads, so each clause mutant had "no branch". The suite and the
+soaks passed; dogfooding under `--verify-invariants` found it (`lib/mutare/coverage.ex`). No
+generator wrote a structural head as a stage, so `pipe_spelling_property_test.exs` gained a
+`case` stage, which fails on the unfixed emitter. `case` is the one structural head that is
+both idiomatic as a stage and delivered by rebuilding the node; the clause emitters for
+`fn`/`receive`/`try` rebuild nodes `Kernel.|>/2` cannot pipe into.
+
+**`Calls.resolved_call/1` raises on a marked stage**, as `Meta.routing/1` does ("A marked
+stage cannot be misread" guarded one reader of several: `xs |> Enum.take(2)`'s bare stage
+resolved as `{Enum, :take}` with one argument, quietly). The raise found two readers on its
+first run. `SelfCalls` holds a stage on purpose and asks only what the direct call resolves
+to; it says so through `Calls.direct_resolved_call/1`. The other was a leak in the public
+contract: a stage-attributed site handed `c:Mutare.Mutator.variant/2` the written stage, so a
+`variant/2` that read its arguments saw the piped spelling one short — what the desugaring
+had removed from `mutate/1`. `Candidate.InPlace`'s `:classified` now carries the offered
+pair beside the reported one. `Bitwise.variant/2` had been resolving a bare stage, harmless
+only because its rename is arity-blind.
+
+The raise does not make the state unmisreadable, and nothing short of a separate node type
+would: a remote stage's module and name sit in its head, so a reader that pattern-matches
+`{{:., _, _}, _, args}` without going through `Calls` still counts one short. What the
+raise buys is that the two readers every family uses refuse.

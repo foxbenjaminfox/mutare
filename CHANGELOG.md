@@ -39,9 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   A routed call gains what 0.3.1 withheld from a piped one: a classifier routes the piped
   operand by shape, `call.rebuild` can rewrite it, and it may be routed `:hosted` (previously a
-  `ContractError`). Two stages stay pipes: a call under the call-level `:skip`, whose piped
-  value is not part of the skipped call and keeps its mutants, and any pipe in code Mutare
-  leaves as written (a `:raw` argument, the inside of a `:skip`ped call). A stage whose first
+  `ContractError`). `c:Mutare.Mutator.variant/2` is shown the direct call too, for a mutant
+  reported at the stage as for any other. The piped value of a call under the call-level
+  `:skip` is still not part of the skipped call and keeps its mutants, and a pipe in code
+  Mutare leaves as written (a `:raw` argument, the inside of a `:skip`ped call) is left a pipe. A stage whose first
   position is a value — unrouted, or routed `:expression` or `:interior` — has its piped value
   evaluated once, ahead of the stage, as before; one routed `:lazy_expression`, or as syntax,
   never does. **Breaking:**

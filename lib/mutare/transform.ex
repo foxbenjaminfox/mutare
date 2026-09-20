@@ -90,17 +90,15 @@ defmodule Mutare.Transform do
 
   The closure evaluates the piped value ahead of the stage, as an ordinary call does its first
   argument — and a call is ordinary in every respect its route does not address
-  (`Mutare.CallRouting`, "Ordinary calls"). A stage under a positional route never reaches
-  emission as a pipe: the resolve pass routes a piped call under a positional route as the
-  direct call `Kernel.|>/2` would build, and analysis makes it that call where it reaches the
-  node (so code left as written — a `:raw` argument, a `:skip`ped call — keeps its pipe),
-  delivered like any direct call (its mutant branches hold the as-written arguments, the
-  catch-all the emitted ones). Such a stage still binds its
-  piped value once, through the same closure, when its first position is `:expression` or
-  `:interior` and every mutant there keeps that argument — so a chain of routed stages stays
-  linear too. A first position routed `:lazy_expression`, or as syntax, is never evaluated ahead
-  of the call. Only `Kernel`'s `|>` is treated as a pipe at all; one a module displaced is a
-  call to that module's operator.
+  (`Mutare.CallRouting`, "Ordinary calls"). So it is used when the stage's first position is a
+  value (unrouted, `:expression` or `:interior`); one routed `:lazy_expression`, or as syntax,
+  is never evaluated ahead of the call. A mutant that moves or drops the piped value goes in a
+  selector around the closure instead, evaluating its own expression in its own order. No
+  stage reaches emission as a pipe: the rewritten calls are direct calls in the emitted tree
+  (their mutant branches hold the as-written arguments, the catch-all the emitted ones), and
+  `Render` spells each as the pipe it was written as. Code left as written — a `:raw`
+  argument, a `:skip`ped call — keeps its pipe untouched. Only `Kernel`'s `|>` is treated as a
+  pipe at all; one a module displaced is a call to that module's operator.
 
   ## Function lifting + dispatcher (guards, dispatch)
 

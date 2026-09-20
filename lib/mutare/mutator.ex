@@ -345,6 +345,11 @@ defmodule Mutare.Mutator do
   Return one label, a list of labels, or `nil`. Labels must be members of
   `c:variants/0` and are matched case-insensitively by ignore directives.
 
+  The pair is the node the mutator was offered and the replacement it returned, unless the
+  mutation carries its own attribution (`Mutare.Mutator.Mutation.at/2`), whose clause pair is
+  classified instead. A call written as a pipe stage arrives as the direct call, as it does in
+  `c:mutate/1`, even where the report shows the stage alone.
+
   Classify from both nodes, not the mutated node alone. For example, a strip
   mutation such as `-(a + b)` → `a + b` emits a `+` node but is not an operator
   swap. Operator families can use `op_swap_variant/3` for this pattern:
