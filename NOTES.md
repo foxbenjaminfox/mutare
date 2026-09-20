@@ -11879,3 +11879,15 @@ calls, because emission visits those trees. `pipe_into/3` now requires the pin's
 carry the selector builder's marker before expanding the pipe. A macro inspecting a raw
 `(^x) |> stage()` therefore still receives that syntax; generated pinned selectors retain the
 precedence correction tested in `pipe_source_patch_test.exs`.
+
+### A range starts at a leading parenthesized callee `[fixed]` (2026-09-20)
+
+Sourceror ranges `(fn x -> x end).(1)` and `(a).b` from the callee's own position, *inside*
+its parentheses (`(a + b).(0)` from the `+`), and so every node that begins with one. A
+whole-expression replacement of `(fn … end).(1) |> f()` patched to the unparseable `(nil`.
+Independent of routing and of the parentheses fix above, which strips only the node's *own*
+layers. `NodeRange.get/1` now takes the earliest start down the node's left spine (a dot's
+left side, a binary operator's left operand), reading each spine node's `:parens` layers from
+its meta — Sourceror extends some parenthesized nodes over their parentheses and not others
+(an `fn`). Pinned through `SourcePatch` in `source_patch_parens_test.exs`. The right spine was
+not audited.

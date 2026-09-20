@@ -61,6 +61,27 @@ defmodule Mutare.SourcePatchParensTest do
     assert [_ | _] = assert_patches(source, [:arithmetic], run: [20, 3, 4])
   end
 
+  test "a node that begins with a call on a parenthesized callee starts at that parenthesis" do
+    # Sourceror ranges `(callee).(args)` from *inside* the callee's parentheses, and so every
+    # node that begins with one: a whole-expression replacement would leave the `(` behind.
+    source = """
+    defmodule Fixture do
+      def run(a) do
+        if a > 0 do
+          (fn x -> x + a end).(1) |> Integer.to_string()
+        else
+          (&(&1 * a)).(2) + 1
+        end
+      end
+    end
+    """
+
+    sites = assert_patches(source, [:return_value, :arithmetic], run: [3], run: [-3])
+
+    whole = Enum.find(sites, &(&1.mutator == :return_value and &1.original_code =~ "|>"))
+    assert patch(source, whole) =~ ~r/do\n\s+(nil|:mutare|"")\n\s+else/
+  end
+
   test "a parenthesized pipe" do
     source = """
     defmodule Fixture do

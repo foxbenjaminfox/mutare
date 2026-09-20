@@ -45,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(a + b) * c` with `a + b` → `a - b` was reported — in the human diff and in the JSON/SARIF
   range — as `a - b * c`, a different program from the mutant that ran, and a mutant inside
   `&(&1 > 2)` as the unparseable `&&1 >= 2`. The range now stops inside the parentheses.
+- **A survivor's diff no longer loses the `(` of a leading parenthesized callee.** Every site
+  whose text begins with a call on a parenthesized callee — `(fn x -> … end).(1) |> f()`,
+  `(a).b` — was ranged from inside those parentheses, so a whole-expression replacement was
+  reported as the unparseable `(nil`, in the diff and in the JSON/SARIF range alike.
 - **A `|>` displaced out of `Kernel` is no longer treated as the pipe.** In a module that
   writes `import Kernel, except: [|>: 2]` beside its own operator, Mutare read every `|>` as
   `Kernel.|>/2`: a mutated stage was lifted into a closure that applied the custom operator

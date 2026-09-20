@@ -1,7 +1,8 @@
 defmodule Mutare.Transform.NodeRange do
   @moduledoc """
   `Sourceror.get_range/1`, corrected where its answer would corrupt a survivor's reported
-  location or diff: surrounding parentheses, and an escaped-delimiter under-count.
+  location or diff: surrounding parentheses, a leading parenthesized callee, and an
+  escaped-delimiter under-count.
 
   **Surrounding parentheses.** Sourceror extends a parenthesized node's range over the
   parentheses written around it. The text a `Mutare.Site` renders for that node never includes
@@ -9,6 +10,12 @@ defmodule Mutare.Transform.NodeRange do
   would show `a - b * c`, a different program from the mutant that ran, and `&(&1 > 2)` would
   become the unparseable `&&1 >= 2`. The parentheses belong to the context the node sits in, so
   `get/1` ranges the node without them, however many layers or however spaced.
+
+  **A leading call on a parenthesized callee.** Sourceror ranges `(fn x -> x end).(1)` and
+  `(a).b` from *inside* the callee's parentheses, and with them every node that begins with
+  one. A whole-expression replacement over that span leaves the `(` behind —
+  `(fn … end).(1) |> f()` → `nil` patched to the unparseable `(nil`. `get/1` starts the range at
+  the earliest start down the node's left spine.
 
   **The escaped-delimiter under-count in sigils and interpolated strings.**
   Sourceror computes a sigil's end column from the **stored** content length
@@ -50,10 +57,57 @@ defmodule Mutare.Transform.NodeRange do
     # A routed call written as a pipe stands where the whole `left |> stage` stood
     # (`Mutare.Transform.WrittenPipe`); its own meta would range the stage alone.
     case Mutare.Transform.WrittenPipe.written(node) do
-      nil -> node |> unparenthesized() |> Sourceror.get_range() |> correct(node)
-      pipe -> get(pipe)
+      nil ->
+        node
+        |> unparenthesized()
+        |> Sourceror.get_range()
+        |> from_leading_parenthesis(node)
+        |> correct(node)
+
+      pipe ->
+        get(pipe)
     end
   end
+
+  # A node begins where its leftmost piece begins, that piece's own parentheses included.
+  # Sourceror gets this right for an operator's left operand and wrong for a dot's: it ranges
+  # `(fn x -> x end).(1)` and `(a).b` from the callee's own position, *inside* the parentheses,
+  # and so every node that begins with one (`(fn … end).(1) |> f()`). The start is therefore
+  # taken as the earliest start found down the node's left spine.
+  defp from_leading_parenthesis(%Sourceror.Range{} = range, node) do
+    case leading_start(left_child(node)) do
+      nil -> range
+      start -> %{range | start: Enum.min_by([range.start, start], &position/1)}
+    end
+  end
+
+  defp from_leading_parenthesis(nil, _node), do: nil
+
+  defp leading_start({_form, meta, _args} = node) when is_list(meta) do
+    own =
+      case Sourceror.get_range(node) do
+        %Sourceror.Range{start: start} -> start
+        nil -> nil
+      end
+
+    # Sourceror extends some parenthesized nodes over their parentheses and not others (an
+    # `fn`), so the node's own layers are read from its meta — one `:parens` entry per layer.
+    [own, leading_start(left_child(node)) | Keyword.get_values(meta, :parens)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.min_by(&position/1, fn -> nil end)
+  end
+
+  defp leading_start(_node), do: nil
+
+  # The child a node's source text begins with, where that is not the node's own head.
+  defp left_child({{:., _dot_meta, [left | _name]}, _meta, args}) when is_list(args), do: left
+
+  defp left_child({operator, _meta, [left, _right]}) when is_atom(operator),
+    do: if(Macro.operator?(operator, 2), do: left)
+
+  defp left_child(_node), do: nil
+
+  defp position(start), do: {start[:line], start[:column]}
 
   # The node without the parentheses written *around* it. `Sourceror.get_range/1` extends a
   # parenthesized node's range over its parentheses, but the text a Site renders for the node
