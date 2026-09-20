@@ -5048,6 +5048,8 @@ built-ins that need mixed context-free/context-aware production (`Arithmetic`, `
 `OperandSwap`) as local, visible composition.
 
 ### Overlap resolution — diff-derived, replacing `owned_args` `[done]`
+*(What counts as covering was narrowed since: "Overlap covers leaves only".)*
+
 A *call-rewriting* mutator (`ModeSwap`) and a *leaf* mutator (`AtomLiteral`) can target the
 same node: `DateTime.truncate(dt, :second)` → ModeSwap rewrites the call to `:millisecond`
 (a useful mutant), while AtomLiteral would *also* turn `:second` into the sentinel `:mutare`
@@ -12320,3 +12322,40 @@ metamutants (15,097,899 bytes).
 **Still open.** An emitter that builds a generated node on the user's meta inherits the stamp
 and must drop it (`CaseClauseEmit`, above). That is a convention, found by dogfooding when it
 was broken; building generated nodes on fresh meta would remove it, and has not been surveyed.
+
+### Overlap covers leaves only `[fixed]` (2026-09-20)
+
+Found while spiking the eager pipe rewrite: `xs |> Enum.reverse() |> Enum.reverse()` lost its
+first stage's removal once the chain was direct calls all the way down. The rewrite was not
+at fault. `Enum.reverse(Enum.reverse(xs))`, written directly, had always lost it.
+
+"Overlap resolution" derives a *covering* rewrite from the mutation itself: the mutant is the
+original with one nid-bearing proper descendant replaced, and every other candidate hosted on
+that descendant is dropped as redundant. `CallRemoval` over the same head nested twice has
+that shape by accident — `String.upcase(String.upcase(s))` → `String.upcase(s)` diffs, in
+lockstep, as the inner call replaced by `s`. So the inner call lost its removal (a true
+duplicate: either removal leaves `String.upcase(s)`) and its `StringCall` rename
+(`String.upcase(String.downcase(s))`, which duplicates nothing). A mutant never generated is
+reported nowhere. The piped spelling escaped only because a raw argument 0 was a `|>` node,
+which made the diff a change of form.
+
+**The fix is the rule's own premise, stated.** A rewrite makes a footprint's candidates
+redundant only when they are all swaps of the one value the rewrite already replaced — which
+is true of a literal or a module alias (every footprint `ModeSwap` produces, and the custom
+`CallRewriteMutator`'s) and false of a call, which has behaviour of its own. A footprint
+covers only when it is such a leaf (`Overlap.leaf?/1`). With that, the old "never drop a
+covering candidate" guard in `drop?/2` is vacuous — nothing hosted on a leaf can rewrite a
+proper descendant of it — and is gone.
+
+**Rejected: drop by program equality** (drop a footprint-hosted candidate only when its
+mutant equals the covering one's). It would remove the duplicate removal properly, but
+`ModeSwap`'s case is not a duplicate — the sentinel is a different, zero-signal program — so
+the old rule would have had to stay beside it. The duplicate removal stays, in both
+spellings now, as it always had in the piped one. Deduplicating equal mutants in general is a
+separate feature.
+
+**Why the commutation property missed it.** Its generators never nested one removable
+function twice. `pipe_spelling_property_test.exs` gained an `abs` stage and `:call_removal`;
+with `leaf?/1` disabled it shrinks to `[abs, abs]`, `[:piped, :piped]` against
+`[:direct, :piped]`. `transform_redundancy_test.exs` pins the `upcase` pair in both spellings.
+

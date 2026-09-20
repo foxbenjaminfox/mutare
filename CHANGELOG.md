@@ -61,6 +61,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A call nested under the same function keeps its mutants.** Removing the outer call of
+  `String.upcase(String.upcase(s))` leaves the program that replacing the inner call with `s`
+  would, and overlap resolution took that for a rewrite that made the inner call's mutants
+  redundant: its own removal, and its `upcase` → `downcase` rename, which duplicates nothing.
+  Only a literal or a module alias is now treated as covered by a call rewrite. The piped
+  spelling was never affected.
+
 - **A survivor's diff no longer swallows the parentheses around the mutated node.** A site's
   range covered the parentheses written around its node while its rendered text did not, so
   `(a + b) * c` with `a + b` → `a - b` was reported — in the human diff and in the JSON/SARIF

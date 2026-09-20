@@ -12,13 +12,18 @@ defmodule Mutare.PipeSpellingPropertyTest do
 
   # `:numeric` and `:operand_swap` key on a call's arity and move its first operand: the
   # families that once read a pipe stage one argument short, and answered differently for it.
+  # `:call_removal` returns a call's first operand, so over the same head nested twice (two
+  # `abs` stages) its mutant is the host with its inner call replaced — which
+  # `Mutare.Transform.Overlap` once took for a rewrite covering that call, in the direct
+  # spelling only.
   @mutators [
     Mutare.Test.PipeSyntaxMutator,
     :integer,
     :arithmetic,
     :return_value,
     :numeric,
-    :operand_swap
+    :operand_swap,
+    :call_removal
   ]
 
   # Routes that say of a function only what is already true of it.
@@ -75,8 +80,9 @@ defmodule Mutare.PipeSpellingPropertyTest do
   # Never 0: the fixture mutator's one mutation rewrites a stage's last argument *to* 0.
   # `:case` is a structural head as a stage (`… |> case do k -> k + 1; other -> other end`):
   # its clause mutants are delivered by rebuilding the `case`, not by a selector around it.
+  # `:abs` takes no written argument; its `k` is unused.
   defp stage,
-    do: {elements([:plus, :lazy_plus, :max, :div, :case]), elements([-2, -1, 1, 2, 3, 5])}
+    do: {elements([:plus, :lazy_plus, :max, :div, :case, :abs]), elements([-2, -1, 1, 2, 3, 5])}
 
   # What a spelling amounts to: per mutator, the multiset of "what this mutant does" — its
   # results and head-evaluation counts over the inputs — beside the baseline's. Ids and source
@@ -139,6 +145,8 @@ defmodule Mutare.PipeSpellingPropertyTest do
     |> Enum.reduce("tick(n, sink)", fn
       {{:case, k}, :piped}, acc -> "(#{acc} |> case do\n#{case_clauses(k)}\nend)"
       {{:case, k}, :direct}, acc -> "(case #{acc} do\n#{case_clauses(k)}\nend)"
+      {{:abs, _k}, :piped}, acc -> "(#{acc} |> abs())"
+      {{:abs, _k}, :direct}, acc -> "abs(#{acc})"
       {{name, k}, :piped}, acc -> "(#{acc} |> #{name}(#{k}))"
       {{name, k}, :direct}, acc -> "#{name}(#{acc}, #{k})"
     end)

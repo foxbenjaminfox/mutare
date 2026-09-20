@@ -88,41 +88,38 @@ defmodule Mutare.OverlapTest do
           do: {Resolve.nid(o), Resolve.nid(m)}
     end
 
-    test "a covering candidate is never dropped, even when its host is itself a covering footprint" do
-      # The documented footgun: a *second* call-rewriter whose footprint equals another's host.
-      # `outer` rewrites its child `inner` (a different-form node) → footprint nid 100 ∈ covered.
-      # `inner` is itself covering — it rewrites its own leaf 101 → footprint nid 101 — and its
-      # host nid is 100. The `footprint_nid(o, m) == nil` guard (non-covering) is what keeps the
-      # covering `inner` alive; mutating it to `true` would wrongly drop it.
-      inner_orig =
-        node(100, [leaf(101, 1)], [
-          in_place(node(100, [leaf(101, 1)]), node(100, [leaf(101, 2)]))
-        ])
+    test "a changed call is not a covering footprint: the call's own candidates survive" do
+      # The shape a removal has when the same head is nested (`f(f(x))` → `f(x)`): the lockstep
+      # diff bottoms out at the inner call (nid 100), a proper nid-bearing descendant. It is not
+      # a leaf, so it covers nothing, and the candidate hosted on the inner call is kept.
+      inner = node(100, [leaf(101, 1)])
+      inner_host = node(100, [leaf(101, 1)], [in_place(inner, leaf(102, 0))])
 
-      # `outer`'s rewrite replaces the whole `inner` (nid 100) with a *differently-shaped* node
-      # (a 2-tuple), so `diff` bottoms out at the nid-100 node itself (none of its structural
-      # branches match a node-vs-pair) → covering footprint 100. (Replacing only the form atom
-      # would bottom out at a bare, nid-less atom → non-covering, and the prune would never run.)
       outer =
-        node(200, [inner_orig, leaf(300, :x)], [
-          in_place(
-            node(200, [node(100, [leaf(101, 1)]), leaf(300, :x)]),
-            node(200, [{leaf(101, 1), leaf(300, :x)}, leaf(300, :x)])
-          )
+        node(200, [inner_host, leaf(300, :x)], [
+          in_place(node(200, [inner, leaf(300, :x)]), node(200, [leaf(101, 1), leaf(300, :x)]))
         ])
 
-      survivors = surviving(Overlap.resolve(outer))
+      assert {100, 102} in surviving(Overlap.resolve(outer))
+    end
 
-      # The covering `inner` candidate (100 → 100) survives; only it lives on the nid-100 node.
-      assert {100, 100} in survivors
+    test "a changed leaf is a covering footprint: the leaf's own candidate is dropped" do
+      swapped = in_place(node(200, [leaf(101, :a)]), node(200, [leaf(101, :b)]))
+
+      leaf_host =
+        {:__block__, [mutare_nid: 101, mutare: [in_place(leaf(101, :a), leaf(101, :z))]], [:a]}
+
+      survivors = surviving(Overlap.resolve(node(200, [leaf_host], [swapped])))
+
+      assert survivors == [{200, 200}]
     end
 
     test "a single changed variable node is recursed (its bare-atom name has no nid) — not treated as covering" do
-      # `ast_node?` must recurse into a variable node `{:x, meta, ctx}` (its 3rd element is a
-      # context atom, not a list). If it stopped (`elem(t, 2)` instead of `elem(t, 1)`), the whole
-      # variable node would be the footprint (nid 50, covering) and the sibling leaf candidate at
-      # nid 50 would be wrongly dropped. Original: the change descends to the bare name atom
-      # `:x`/`:y` (no nid) → non-covering, so the sibling survives.
+      # A variable that a rewrite renames is no covering footprint, so a candidate hosted on it
+      # survives. Two things each ensure it: `ast_node?` recurses into a variable node
+      # `{:x, meta, ctx}` (its third element is a context atom, not a list), so the change
+      # descends to the bare name atom, which carries no nid; and a variable is not a leaf
+      # (`leaf?/1` admits literals and aliases), so it would cover nothing even as the footprint.
       var_a = {:x, [mutare_nid: 50], nil}
       var_b = {:y, [mutare_nid: 50], nil}
 

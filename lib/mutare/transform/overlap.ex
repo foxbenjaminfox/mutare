@@ -55,7 +55,12 @@ defmodule Mutare.Transform.Overlap do
   # ## What is "covering", precisely — and what each mutator does
   #
   # Covering hinges on the minimal changed subtree being a *proper, **nid-bearing** descendant*
-  # of the host. Exactly **one** built-in mutator produces one:
+  # of the host **that is a leaf** — a literal or a module alias, a node that evaluates nothing.
+  # The leaf condition is the rule's premise made explicit: a rewrite makes a candidate hosted
+  # at its footprint redundant only when every such candidate is another swap of the value the
+  # rewrite already replaced. A footprint that is a *call* has behaviour of its own, and its
+  # mutants are not the rewrite's to stand in for — see "A removal is not a rewrite of its
+  # operand" below. Exactly **one** built-in mutator produces a covering footprint:
   #
   #   * **ModeSwap** — substitutes one arg/key in place. The footprint is that node, which
   #     carries a nid *and* is where a leaf mutator hosts its candidate → the **only covering
@@ -79,11 +84,9 @@ defmodule Mutare.Transform.Overlap do
   #     → non-covering, so the reused args keep their own leaf mutants (a literal `"x"` in
   #     `String.equivalent?(a, "x")` keeps both StringLiteral mutants). The *absolute* qualifier is
   #     what lands this here: a bare `a == b` would instead replace the whole callee with one atom
-  #     — a `.`-node footprint that is **covering yet inert** (its nid spans `Mod.fun`, a form
-  #     position no value mutator hosts a candidate at, so it suppresses nothing anyway) — but the
-  #     absolute `Elixir.Kernel.==` is required for shadow-safety (see `Mutare.Mutators.StringCall`),
-  #     and changing both module and fun makes the footprint a nid-less list. Either way it prunes
-  #     nothing; the list footprint is simply the more direct route to that.
+  #     — a `.`-node footprint, which is no leaf and so covers nothing either — but the absolute
+  #     `Elixir.Kernel.==` is required for shadow-safety (see `Mutare.Mutators.StringCall`), and
+  #     changing both module and fun makes the footprint a nid-less list.
   #   * **Whole-node replacements** (a literal family, a boolean→`true`) — the minimal subtree
   #     *is* the host, so footprint nid == host nid → non-covering (a leaf swap is redundant with
   #     nothing).
@@ -95,6 +98,18 @@ defmodule Mutare.Transform.Overlap do
   #     (`xs |> List.first(0)` → `List.first()`) from pruning the `Literal 0` mutant — both of
   #     which a range-based pass got wrong (the args list shares a range with the infix node /
   #     its lone element) and had to special-case.
+  #
+  # ## A removal is not a rewrite of its operand
+  #
+  # `CallRemoval` turns `String.upcase(String.upcase(s))` into `String.upcase(s)`, and the
+  # lockstep diff reads that as "the inner `String.upcase(s)` replaced by `s`": one nid-bearing
+  # proper descendant, the shape of a covering rewrite. Read so, it dropped every other mutant
+  # of the inner call — its own removal, which happens to yield the same program, and its
+  # `StringCall` rename (`String.upcase(String.downcase(s))`), which yields a different one and
+  # was lost for nothing. Any mutant that returns one of its host's arguments nested under the
+  # same head has that shape, so the leaf condition refuses all of them: a call is never a
+  # covering footprint. The duplicate removal stays, as it always has for a chain written with
+  # `|>` — NOTES "Overlap covers leaves only".
   #
   # So: **ModeSwap is the only covering footprint, and the only place a leaf is ever dropped**
   # (the redundant AtomLiteral on a swapped mode atom, or the redundant AliasLiteral on a wrapped
@@ -108,15 +123,12 @@ defmodule Mutare.Transform.Overlap do
   alias Mutare.Transform.{Candidate, Meta, Resolve}
 
   @doc """
-  Drop each non-covering `Candidate.InPlace` whose host node is some other candidate's
-  minimal-rewrite footprint, matched by `meta[:mutare_nid]` identity. The footprint scan always
-  runs — one prewalk plus a structural diff per candidate — and the *prune* postwalk is skipped
-  when nothing is covering, leaving the tree unchanged. Two built-ins produce a covering
-  footprint (see the moduledoc): a ModeSwap rewrite (which drops the redundant AtomLiteral on a
-  swapped mode atom, or the redundant AliasLiteral on a wrapped sort module) and the direct
-  `String.equivalent?/2` → `==` rewrite (covering but inert — its `.`-node nid matches no
-  candidate). So the prune postwalk runs on subtrees containing either, but only the ModeSwap
-  rewrite actually drops anything.
+  Drop each `Candidate.InPlace` whose host node is some other candidate's minimal-rewrite
+  footprint — a leaf: a literal or a module alias — matched by `meta[:mutare_nid]` identity.
+  The footprint scan always runs — one prewalk plus a structural diff per candidate — and the
+  *prune* postwalk is skipped when nothing is covering, leaving the tree unchanged. One built-in
+  produces a covering footprint (see the header): a ModeSwap rewrite, which drops the redundant
+  AtomLiteral on a swapped mode atom, or the redundant AliasLiteral on a wrapped sort module.
   """
   @spec resolve(Macro.t()) :: Macro.t()
   def resolve(tree) do
@@ -156,21 +168,21 @@ defmodule Mutare.Transform.Overlap do
     end)
   end
 
-  # Drop only a *non-covering* candidate (its footprint is the whole host — `footprint_nid` is
-  # `nil`) whose host node id is some covering candidate's footprint. The "non-covering" guard is
-  # what keeps a covering candidate from ever being dropped (a latent footgun if a second
-  # call-rewriter ever produced a footprint equal to another's host).
-  defp drop?(%Candidate.InPlace{original: o, mutated: m}, covered) do
-    # `covered` holds only non-nil nids (`collect/2` filters them), so membership already
-    # implies a real host nid — a nil `Resolve.nid(o)` is simply not a member, no guard needed.
-    MapSet.member?(covered, Resolve.nid(o)) and footprint_nid(o, m) == nil
-  end
+  # Drop a candidate whose host node is some covering candidate's footprint. A footprint is a
+  # leaf (`leaf?/1`), and a leaf has no proper descendant for a candidate hosted on it to
+  # rewrite — so every candidate found there is a whole-host swap, never a covering one, and no
+  # rewrite can be dropped by another. (`covered` holds only non-nil nids, so a nid-less host is
+  # simply not a member.)
+  defp drop?(%Candidate.InPlace{original: o}, covered),
+    do: MapSet.member?(covered, Resolve.nid(o))
 
   defp drop?(_other, _covered), do: false
 
   # The node id of the minimal subtree that differs between `original` and `mutated`, **only
   # when it is a genuine single-node substitution within the host** — a proper, nid-bearing
-  # descendant. `nil` otherwise, in three cases that node identity unifies:
+  # descendant — **of a leaf** (`leaf?/1`). `nil` otherwise: for a changed subtree that is not
+  # a leaf (a call has mutants of its own, which no rewrite around it makes redundant), and in
+  # three cases that node identity unifies:
   #
   #   * **No nid** — the changed subtree is a bare operator/function-name atom (an operator swap
   #     or rename) or an argument list (an arity change / operand permutation). Neither shape
@@ -186,9 +198,13 @@ defmodule Mutare.Transform.Overlap do
 
       {:diff, sub} ->
         sub_nid = Resolve.nid(sub)
-        if sub_nid && sub_nid != Resolve.nid(original), do: sub_nid, else: nil
+        if sub_nid && sub_nid != Resolve.nid(original) && leaf?(sub), do: sub_nid, else: nil
     end
   end
+
+  # A node that evaluates nothing: a literal, or a module alias.
+  defp leaf?({:__aliases__, meta, segments}) when is_list(meta) and is_list(segments), do: true
+  defp leaf?(node), do: scalar_wrapper?(node)
 
   # Structural diff returning `:equal` or `{:diff, minimal_original_subtree}`. Unchanged
   # subtrees are caught by `===` (the mutators reuse the original AST verbatim except the one

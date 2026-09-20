@@ -38,6 +38,31 @@ defmodule Mutare.TransformRedundancyTest do
     Mutare.Mutators.Logical
   ]
 
+  describe "a removal is not a rewrite of its operand (`Transform.Overlap`)" do
+    # `String.upcase(String.upcase(s))` with its outer call removed is the host with its inner
+    # call replaced by `s` — the shape of a covering rewrite, were a call a footprint. It is
+    # not: the inner call keeps its removal and its rename, however the nesting is spelled.
+    for {spelling, body} <- [
+          direct: "String.upcase(String.upcase(s))",
+          piped: "s |> String.upcase() |> String.upcase()"
+        ] do
+      test "the inner call of a nested same-head call keeps its mutants, #{spelling}" do
+        %{sites: sites} =
+          Mutare.Transform.transform_string_with_sites(
+            """
+            defmodule M do
+              def f(s), do: #{unquote(body)}
+            end
+            """,
+            mutators: [:call_removal, :string_call]
+          )
+
+        assert sites |> Enum.map(& &1.mutator) |> Enum.sort() ==
+                 [:call_removal, :call_removal, :string_call, :string_call]
+      end
+    end
+  end
+
   describe "cross-mutator overlap is mutator-agnostic (`Transform.Overlap`)" do
     test "a custom call-rewriting mutator covers its swapped leaf for free, sparing siblings" do
       # `Mutare.Test.CallRewriteMutator` is a third-party mutator — not ModeSwap — that
