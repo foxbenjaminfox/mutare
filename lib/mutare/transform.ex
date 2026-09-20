@@ -1339,7 +1339,8 @@ defmodule Mutare.Transform do
 
   defp emit_selector_site(node, candidates, ctx) do
     # A rewritten pipe stage whose piped value every mutant keeps binds it once, so a chain of
-    # routed stages stays linear — `PipeEmit.bound_argument/2`. `:inline` for every other site.
+    # routed stages stays linear — `PipeEmit.bound_argument/2`. If a mutant moves that operand,
+    # inline branches export their shared bindings so they still reach the enclosing scope.
     binding = PipeEmit.bound_argument(node, candidates)
 
     {clauses, ctx} =

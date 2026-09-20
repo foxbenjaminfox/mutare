@@ -11861,3 +11861,21 @@ that avoids exotic macros; the recovery path is what covers the rest.
 **Four structural pins moved**, none behavioural: functions `CleanPath` used to refuse (a
 caller-binding macro, `Macro.Env.vars(__CALLER__)` probes, `super`) now carry a copy, so
 two tests count one more occurrence and two opt out with `clean_functions: false`.
+
+### Routed-pipe fallback exports bindings; pin correction requires a selector `[fixed]` (2026-09-20)
+
+An operand swap can move a routed pipe's argument zero, so `PipeEmit.bound_argument/2` must
+decline the shared-operand closure. Its ordinary selector fallback trapped assignments such
+as `(left = x) |> MapSet.difference(y)`, leaving a subsequent `left` undefined. Inline delivery
+now returns the result and bindings common to every branch as a tuple, then rebinds them
+outside the selector. Each branch still evaluates its own expression in its own order;
+hoisting the original operand ahead of a swapped call would change that order.
+`BindingEscapeEmit.expression_bindings/1` reads unconditional expression positions and excludes
+clause-local and syntax-routed bindings. `routed_pipe_regression_test.exs` compares the baseline
+and mutants to source patches, including evaluation order and bindings from both operands.
+
+The pinned-pipe precedence correction also ran inside untouched `:raw` arguments and skipped
+calls, because emission visits those trees. `pipe_into/3` now requires the pin's expression to
+carry the selector builder's marker before expanding the pipe. A macro inspecting a raw
+`(^x) |> stage()` therefore still receives that syntax; generated pinned selectors retain the
+precedence correction tested in `pipe_source_patch_test.exs`.

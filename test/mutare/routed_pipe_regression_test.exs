@@ -4,6 +4,120 @@ defmodule Mutare.RoutedPipeRegressionTest do
   import Mutare.Test
   import Mutare.Test.SourcePatch
 
+  test "operand swapping exports bindings from inline routed-pipe branches" do
+    source = """
+    defmodule Binding do
+      def run(x, y) do
+        result = (left = x) |> MapSet.difference(right = y)
+        {result, left, right}
+      end
+    end
+    """
+
+    for treatment <- [:expression, :interior] do
+      assert [%{mutator: :operand_swap}] =
+               assert_patches(
+                 source,
+                 [:operand_swap],
+                 [{:run, [MapSet.new([1, 2]), MapSet.new([2, 3])]}],
+                 call_routes: [{MapSet, :difference, 2, treatment}]
+               )
+    end
+  end
+
+  test "inline routed-pipe branches retain each mutant's evaluation order" do
+    source = """
+    defmodule Binding do
+      def run(x, y) do
+        Process.put(:pipe_order, [])
+        result = (left = tick(x, :left)) |> MapSet.difference(tick(y, :right))
+        {result, left, Process.delete(:pipe_order)}
+      end
+
+      defp tick(value, label) do
+        Process.put(:pipe_order, [label | Process.get(:pipe_order)])
+        value
+      end
+    end
+    """
+
+    assert [%{mutator: :operand_swap}] =
+             assert_patches(
+               source,
+               [:operand_swap],
+               [{:run, [MapSet.new([1, 2]), MapSet.new([2, 3])]}],
+               call_routes: [{MapSet, :difference, 2, :expression}]
+             )
+  end
+
+  test "inline exports include nested matches and scrutinees, but exclude clause bindings" do
+    source = """
+    defmodule Binding do
+      def run(x, y) do
+        result =
+          MapSet.new(case {left, copy} = {x, x} do
+            {local, _} -> local
+          end)
+          |> MapSet.difference(y)
+          |> MapSet.difference(y)
+
+        {result, left, copy}
+      end
+    end
+    """
+
+    sites =
+      assert_patches(
+        source,
+        [:operand_swap],
+        [{:run, [MapSet.new([1, 2]), MapSet.new([2, 3])]}],
+        call_routes: [{MapSet, :difference, 2, :expression}]
+      )
+
+    assert length(sites) == 2
+  end
+
+  test "raw arguments and skipped calls preserve a pinned pipe's syntax" do
+    source = """
+    defmodule Syntax do
+      defmacrop opaque({:|>, _, [{:^, _, [_]}, {:stage, _, []}]}), do: :pipe
+      defmacrop opaque(_), do: :rewritten
+      def run, do: {opaque((^x) |> stage()), 42}
+    end
+    """
+
+    for treatment <- [:raw, :skip] do
+      sites =
+        assert_patches(source, [:integer], [run: []], call_routes: [{:*, :opaque, 1, treatment}])
+
+      assert length(sites) == 3
+    end
+  end
+
+  test "inline exports leave binding-shaped syntax inside routed operands alone" do
+    source = """
+    defmodule Binding do
+      defmacrop opaque({:=, _, [_pattern, value]}), do: value
+
+      def run(x, y) do
+        result = ((hidden = x) |> opaque()) |> MapSet.difference(right = y)
+        {result, right}
+      end
+    end
+    """
+
+    assert [%{mutator: :operand_swap}] =
+             assert_patches(
+               source,
+               [:operand_swap],
+               [{:run, [MapSet.new([1, 2]), MapSet.new([2, 3])]}],
+               call_routes: [
+                 {:*, :opaque, 1, :raw},
+                 {MapSet, :difference, 2, :expression}
+               ]
+             )
+  end
+
   test "call removal preserves a piped assignment's escaping binding" do
     source = """
     defmodule Binding do

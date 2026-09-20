@@ -31,7 +31,8 @@ defmodule Mutare.Transform.PipeEmit do
   # emitted: the closure would apply the custom operator twice (once to reach the closure, once
   # inside each branch), and expanding a pinned left side would assume `Kernel`'s desugaring.
 
-  alias Mutare.Transform.{Calls, Candidate, Ctx, Meta, Render}
+  alias Mutare.Transform.{BindingEscapeEmit, Calls, Candidate, Ctx, Meta, Render}
+  alias Mutare.Transform.Candidate.Delivery
 
   @doc """
   Hoist a selector out of a pipe's RHS and preserve a pinned LHS's rendering precedence.
@@ -87,30 +88,51 @@ defmodule Mutare.Transform.PipeEmit do
   #     outside the selector so they reach later statements. A mutant that rewrote or dropped it —
   #     a return-value constant standing in for the whole call among them — would either ignore
   #     the binding or run the original operand beside its own, so one such candidate sends the
-  #     whole site back to plain delivery.
+  #     whole site back to inline delivery, exporting any bindings shared by its branches.
   #
   # Only a call *written as a pipe* is bound. The contract would allow binding a directly
   # written call's argument 0 just as well; nothing asks for it — the binding exists so that a
   # pipe chain costs the same whether or not its stages are routed, and directly nested calls
   # are not written thirty deep.
 
-  @typedoc "The written `|>`'s meta and operand, for a site that binds argument 0 — or `:inline`."
-  @type binding :: {:bind, keyword(), Macro.t()} | :inline
+  @typedoc "Shared operand binding, inline binding export, or ordinary inline delivery."
+  @type binding :: {:bind, keyword(), Macro.t()} | {:export, nonempty_list(atom())} | :inline
 
-  @doc "Whether `node`'s selector binds its argument 0 once (see above), and to what."
+  @doc "How the selector preserves bindings: a shared operand, branch exports, or neither."
   @spec bound_argument(Macro.t(), [Candidate.t()]) :: binding()
   def bound_argument({_head, meta, [_zero | _rest]} = node, [_ | _] = candidates) do
     with {:|>, pipe_meta, _operands} <- Meta.written_pipe(node),
          [zero | _] when zero in [:expression, :interior] <- Meta.routing(meta),
-         [%Candidate.InPlace{original: {_h, _m, [written | _]}} | _] <- candidates,
-         true <- Enum.all?(candidates, &keeps_argument?(&1, written)) do
-      {:bind, pipe_meta, written}
+         [%Candidate.InPlace{original: {_h, _m, [written | _]} = original} | _] <- candidates do
+      if Enum.all?(candidates, &keeps_argument?(&1, written)) do
+        {:bind, pipe_meta, written}
+      else
+        inline_binding(original, candidates)
+      end
     else
       _plain -> :inline
     end
   end
 
   def bound_argument(_node, _candidates), do: :inline
+
+  defp inline_binding(original, candidates) do
+    names = BindingEscapeEmit.expression_bindings(original)
+
+    # Moving an operand must retain the mutant's evaluation order. Return the result and
+    # bindings from each branch instead of evaluating the original operand ahead of them.
+    # Only bindings present in every branch can be exported (a whole-call constant has none).
+    shared =
+      Enum.reduce(candidates, names, fn candidate, names ->
+        bound = candidate |> Delivery.selector_branch() |> BindingEscapeEmit.expression_bindings()
+        Enum.filter(names, &(&1 in bound))
+      end)
+
+    case shared do
+      [] -> :inline
+      names -> {:export, names}
+    end
+  end
 
   defp keeps_argument?(%Candidate.InPlace{pin?: false, mutated: written}, written), do: true
 
@@ -119,18 +141,28 @@ defmodule Mutare.Transform.PipeEmit do
 
   defp keeps_argument?(_candidate, _written), do: false
 
-  @doc "A selector branch with its retained or directly returned operand replaced by the piped variable."
+  @doc "Rebind a retained operand, or append the branch's result and escaping bindings."
   @spec rebind(Macro.t(), binding(), Ctx.t()) :: Macro.t()
   def rebind(branch, :inline, _ctx), do: branch
+
+  def rebind(branch, {:export, names}, ctx) do
+    value = piped_var(ctx)
+    {:__block__, [], [{:=, [], [value, branch]}, export_tuple(value, names)]}
+  end
 
   def rebind(written, {:bind, _pipe_meta, written}, ctx), do: piped_var(ctx)
 
   def rebind({head, meta, [_zero | rest]}, {:bind, _pipe_meta, _written}, ctx),
     do: {head, meta, [piped_var(ctx) | rest]}
 
-  @doc "Close a rebound selector over `argument`, the emitted argument 0."
+  @doc "Close over the shared operand, or rebind an inline selector's exported variables."
   @spec close(Macro.t(), binding(), Macro.t(), Ctx.t()) :: Macro.t()
   def close(selector, :inline, _argument, _ctx), do: selector
+
+  def close(selector, {:export, names}, _argument, ctx) do
+    value = piped_var(ctx)
+    {:__block__, [], [{:=, [], [export_tuple(value, names), selector]}, value]}
+  end
 
   def close(selector, {:bind, pipe_meta, _written}, argument, ctx) do
     closure = {:fn, [], [{:->, [], [[piped_var(ctx)], selector]}]}
@@ -138,6 +170,9 @@ defmodule Mutare.Transform.PipeEmit do
   end
 
   defp piped_var(ctx), do: {ctx.config.piped_var, [], nil}
+
+  defp export_tuple(value, names),
+    do: {:{}, [], [value | Enum.map(names, &{&1, [], nil})]}
 
   defp value_pipe(lhs, meta, subject, clauses, ctx) do
     var = piped_var(ctx)
@@ -161,8 +196,15 @@ defmodule Mutare.Transform.PipeEmit do
   # Sourceror renders a generated pin over a selector as `^case … end |> stage()`,
   # which reparses as `^(case … end |> stage())`. Expand just this pipe as Kernel would,
   # so the pin stays the macro's argument. This also applies when only the LHS mutates.
+  # The selector marker is essential: emission also visits untouched raw/skipped syntax.
   defp pipe_into(lhs, stage, meta \\ [])
-  defp pipe_into({:^, _, [_]} = lhs, stage, _meta), do: Macro.pipe(lhs, stage, 0)
+
+  defp pipe_into({:^, _, [expression]} = lhs, stage, meta) do
+    case Render.selector_case_parts(expression) do
+      {:ok, _subject, _clauses} -> Macro.pipe(lhs, stage, 0)
+      :error -> {:|>, meta, [lhs, stage]}
+    end
+  end
 
   defp pipe_into(lhs, stage, meta), do: {:|>, meta, [lhs, stage]}
 end

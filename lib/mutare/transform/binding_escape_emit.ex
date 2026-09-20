@@ -13,13 +13,56 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   # and the escaping variables are re-exported through the shared `export` tuple and rebound
   # outside. This module owns the small stateful orchestration for that delivery: claiming ids
   # via `Ctx`, choosing the selector subject, preserving the all-poisoned fallback, and building
-  # the per-branch bodies.
+  # the per-branch bodies. `expression_bindings/1` also supplies the common export set when a
+  # routed pipe's expression selector cannot bind its operand ahead of the call.
 
   alias Mutare.AST
   alias Mutare.Coverage.Recorder
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Delivery
-  alias Mutare.Transform.{CoverageEmit, Ctx, Meta, SelectorEmit}
+  alias Mutare.Transform.{CoverageEmit, Ctx, Meta, PatternStructure, SelectorEmit, WrittenPipe}
+
+  @doc "Bindings guaranteed to escape an expression, in their source order."
+  @spec expression_bindings(Macro.t()) :: [atom()]
+  def expression_bindings(node), do: node |> bound_names() |> Enum.uniq()
+
+  # Candidate operands are still as written: read a routed pipe as its complete call before
+  # consuming the stage's positional treatments (especially a syntax-valued operand zero).
+  defp bound_names(node), do: node |> WrittenPipe.direct() |> collect_bindings()
+
+  # Only unconditional expression positions export bindings. Clause bodies, short-circuit
+  # right operands, and syntax-routed arguments have their own scopes or evaluation rules.
+  defp collect_bindings({:=, _, [pattern, rhs]}),
+    do: bound_names(rhs) ++ PatternStructure.bound_var_names(pattern)
+
+  defp collect_bindings({form, _, [first | _]})
+       when form in [:case, :if, :unless, :and, :or, :&&, :||],
+       do: bound_names(first)
+
+  defp collect_bindings({form, _, _})
+       when form in [:fn, :for, :with, :try, :quote, :cond, :receive, :->, :&],
+       do: []
+
+  defp collect_bindings({_form, meta, args}) when is_list(args) do
+    case Meta.routing(meta) do
+      nil ->
+        Enum.flat_map(args, &bound_names/1)
+
+      treatments when is_list(treatments) ->
+        Enum.zip(args, treatments)
+        |> Enum.flat_map(fn
+          {arg, treatment} when treatment in [:expression, :interior] -> bound_names(arg)
+          _ -> []
+        end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp collect_bindings({left, right}), do: bound_names(left) ++ bound_names(right)
+  defp collect_bindings(list) when is_list(list), do: Enum.flat_map(list, &bound_names/1)
+  defp collect_bindings(_), do: []
 
   # === binding-escaping `=` match: tuple re-export =====================================
 
