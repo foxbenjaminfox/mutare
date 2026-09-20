@@ -128,8 +128,10 @@ defmodule Mutare.NegativeFloatTest do
       assert F.f(-0.5) == :a
       assert F.f(0.5) == :b
 
-      # Mutant: `0.5 → -0.5` makes the guard `x == -(-0.5)` (== `x == 0.5`), flipping it.
-      Selector.put(float_id(g.sites, "-0.5"))
+      # Mutant: `0.5 → -0.5` makes the guard `x == -(-0.5)` (== `x == 0.5`), flipping it. The
+      # Site says so too: its replacement lands right after the written minus, so it is
+      # parenthesized (`Mutare.Site.Parenthesize`) — bare, the diff would read `--0.5`.
+      Selector.put(float_id(g.sites, "(-0.5)"))
       assert F.f(-0.5) == :b
       assert F.f(0.5) == :a
     end

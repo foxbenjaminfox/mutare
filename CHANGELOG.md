@@ -45,6 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(a + b) * c` with `a + b` → `a - b` was reported — in the human diff and in the JSON/SARIF
   range — as `a - b * c`, a different program from the mutant that ran, and a mutant inside
   `&(&1 > 2)` as the unparseable `&&1 >= 2`. The range now stops inside the parentheses.
+- **A survivor's replacement is parenthesized where its position needs it.** A Site renders
+  its replacement alone, and patched into the source that text could be a different program
+  from the mutant that ran: `!(a == 0) |> f()` with the negation removed was reported as
+  `a == 0 |> f()` (that is, `a == (0 |> f())`), the `0.75` of `-0.75` → `-0.25` as the
+  unparseable `--0.25`, and `case 0 + (if … end) do` with `+` → `-` as `case 0 - if … end do`.
+  `mutated_code` now carries parentheses in exactly those places — `(a == 0)`, `(-0.25)` —
+  and nowhere else: a statement, a call argument and `x == -1` read as before.
 - **A survivor's range no longer stops short of a trailing `)` or runs past a bitstring.** A
   node ending in a parenthesized operand (`0 == (if … end)`) was ranged to inside the `)`, and a
   `<<…>>` that ends a clause body one column too far, over the line break.

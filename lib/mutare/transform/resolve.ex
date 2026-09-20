@@ -40,7 +40,7 @@ defmodule Mutare.Transform.Resolve do
   alias Mutare.CallRouting.Registry, as: Routes
   alias Mutare.Mutator
   alias Mutare.Transform.{Aliases, Calls, Imports, Meta, MetaKeys, ModuleScope, Uses}
-  alias Mutare.Transform.Resolve.{ArgumentMarks, RouteStamp, NodeIds}
+  alias Mutare.Transform.Resolve.{ArgumentMarks, NodeIds, OperandPositions, RouteStamp}
   alias Mutare.Transform.StructuralForms
 
   @doc "Stamp remote calls, bare imported calls, and bare imported captures with their resolved module."
@@ -79,6 +79,7 @@ defmodule Mutare.Transform.Resolve do
       }
     })
     |> NodeIds.stamp()
+    |> OperandPositions.stamp()
   end
 
   @doc """

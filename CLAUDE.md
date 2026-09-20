@@ -255,6 +255,13 @@ These span modules, so no single moduledoc holds them. Internalize them before s
 - **Two renderers, on purpose.** The metamutant is a build artifact (AST rewrite via
   `Sourceror.to_string`, only needs to compile); the report patches the original source. Don't try
   to make one serve both.
+- **A Site's text is patched into the source, so it must read there as it reads alone.**
+  `mutated_code` is rendered from the node by itself and spliced over `site.range`. Both halves
+  have to hold: the range is the node's exact footprint (`Mutare.Transform.NodeRange` corrects
+  Sourceror where it is not), and the text is parenthesized where its position would reread it
+  (`Mutare.Site.Parenthesize`, from the operator position `Resolve.OperandPositions` stamps).
+  Check either with `SourcePatch.assert_patches/4`, never by string equality — NOTES "A
+  replacement is rendered without its context".
 - **Two line spaces, decoupled.** Poison works in metamutant-line space (via `Manifest`); the report
   works in original-line space. They never need relating — don't reintroduce a mapping. (Coverage
   uses neither; it keys by mutant id.)

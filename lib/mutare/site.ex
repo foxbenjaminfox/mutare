@@ -13,6 +13,7 @@ defmodule Mutare.Site do
   """
 
   alias Mutare.AST
+  alias Mutare.Site.Parenthesize
   alias Mutare.Transform.WrittenPipe
 
   @type t :: %__MODULE__{
@@ -357,7 +358,10 @@ defmodule Mutare.Site do
         original_form: nil,
         mutated_form: nil,
         original_code: maybe_render(original_node, render?, range),
-        mutated_code: maybe_render(mutated_node, render?, range),
+        mutated_code:
+          mutated_node
+          |> maybe_render(render?, range)
+          |> Parenthesize.in_position(original_node, mutated_node),
         summary: replace_summary(mutator.name, original_node, mutated_node, summary?),
         variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node)
     }
@@ -397,7 +401,10 @@ defmodule Mutare.Site do
         original_form: node_form(original_node),
         mutated_form: node_form(mutated_node),
         original_code: render_code(original_shown, keyword_key?, render?, renderer),
-        mutated_code: render_code(mutated_shown, keyword_key?, render?, renderer),
+        mutated_code:
+          mutated_shown
+          |> render_code(keyword_key?, render?, renderer)
+          |> Parenthesize.in_position(original_node, mutated_node),
         summary: replace_summary(mutator.name, original_shown, mutated_shown, summary?),
         note: opts[:note],
         variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node, variant)

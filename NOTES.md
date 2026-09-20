@@ -11934,25 +11934,75 @@ its meta — Sourceror extends some parenthesized nodes over their parentheses a
 (an `fn`). Pinned through `SourcePatch` in `source_patch_parens_test.exs`. The right spine was
 not audited.
 
-### A replacement is rendered without its context `[open]` (2026-09-20)
+### A replacement is rendered without its context `[fixed]` (2026-09-20)
 
-Two survivor-diff defects, both older than the routed-pipe work, found by the commutation
-property and left open because each wants a decision about where a Site's text learns what
-surrounds it:
+A Site renders its replacement alone and the report patches that text over the node's range
+(`Report.patch/2`; the JSON/SARIF consumers do the same), so text that is right on its own can
+be a different program where it lands. Found by the commutation property; all older than the
+routed-pipe work, and none touches the metamutant, which is built from the AST.
 
 - **A replacement that binds looser than what it replaced.** `logical` turns `!(a == 0)` into
-  `a == 0`, rendered bare. Beside a tighter operator the patch is a different program from the
-  mutant that ran: `!(a == 0) |> to_string()` is reported as `a == 0 |> to_string()`, which
-  parses as `a == (0 |> to_string())`. The metamutant is right (it is built from the AST); only
-  the diff and the machine reporters' text are wrong. The parentheses note above ("the rendered
-  replacement carries the parentheses it needs") holds for an operator swapped in place, not
-  for a node replaced by its own operand. Candidates: parenthesize `mutated_code` whenever the
-  mutated node is an operator form binding looser than the original (noisy at statement level:
-  `(a == 0)`), or let `Site` see its parent.
+  `a == 0`; beside a tighter operator, `!(a == 0) |> f()` was reported as `a == 0 |> f()`,
+  which parses as `a == (0 |> f())`. Likewise `call_removal`'s `to_string(a + b) <> "!"`. The
+  parentheses note above ("the rendered replacement carries the parentheses it needs") holds
+  for an operator swapped in place, not for a node replaced by its own operand.
 - **A negative replacement under a written minus.** `float` turns the `0.75` of `-0.75` into
-  `-0.25` (`x - 1.0`); the site ranges `0.75`, so the patch reads `--0.25`, which does not
-  parse. `integer` avoids it only because its replacements of a small positive stay ≥ 0.
+  `-0.25`; the site ranges `0.75`, so the patch read `--0.25`, which does not parse.
+- **A `do`-block call the user had parenthesized.** `case 0 + (if … end) do` with `+` → `-`
+  renders alone as `0 - if … end` — legal, and unparseable before the `case`'s own `do`, before
+  a clause's `->`, and under an operator in either.
 
-Until then the commutation property patches replacements in parenthesized (`promise/2`), so it
-keeps testing what it is about. A soak of `SourcePatch`'s compile half over every generated
-site — the natural next property — would fail on both today.
+**The fix, and why it is two rules.** A Site sees only its node, so it needed one fact about
+where the node stands. `Resolve.OperandPositions` (a pre-pass beside `NodeIds`) stamps every
+operand with the operator position it was *written* in, and `Mutare.Site.Parenthesize` asks
+the parser, not a precedence table: write the bare replacement in that position beside a
+placeholder, and parenthesize it unless that parses to the operator applied to the
+replacement. That settles the first two defects with no noise elsewhere — a statement, a call
+argument, `x - -1`, and the ubiquitous `0 → -1` all stay bare. A context-free precedence rule
+was the alternative, and would have written `(-1)` for every one of those.
+
+The third was first modelled the same way (a `:do_head` position, then `:arrow_head`, then
+both inherited down the right spine for `with x <- a + b do`), and each run of the property
+found the next place a bare `do`-block call cannot stand — finally the *left* operand of an
+operator inside a clause head, which no single-slot model reproduces. The property they share
+is in the node, not the position: the user parenthesized that call because it had to be, and
+the renderer, judging the replacement alone, dropped the parentheses. So a replacement that
+holds a node with both `:parens` and `:do` meta is parenthesized wherever it stands. It costs
+a redundant pair where the renderer did keep them; such operands are rare.
+
+A slot the user already parenthesized needs neither rule: the range stops inside those
+parentheses, so they survive the patch.
+
+**Two more ranges**, found once the property treated an unparseable patch as a failure:
+
+- A node that *ends* with a parenthesized operand was ranged to inside the `)` —
+  `0 == (if … end)` → `false)`. The mirror of "A range starts at a leading parenthesized
+  callee", fixed the same way: the latest end down the right spine, `:parens` closings read
+  from meta.
+- Sourceror ranges a real `<<…>>` bitstring that carries `end_of_expression` meta (the last
+  expression of a clause body) one column too far, over the line break, so the patch joined
+  the next clause onto it. `NodeRange` ends it at its `:closing` + 2.
+
+**Known limits.**
+- Elixir's parser records no `:parens` meta for a parenthesized *unary* operand: `not (!a)`
+  parses exactly as `not !a` would, so a range cannot be told to cover that `)`, and a
+  replacement of the outer node leaves it behind. `NodeRange` has no source text to look at.
+  The property exempts exactly this (the text its range covers has an unclosed parenthesis).
+- `Parenthesize` models a binary operator with spaces around it, as `mix format` writes it:
+  `a-0` → `a--1` in unformatted source is not caught.
+
+### A unary operator over a selector `[upstream]` (2026-09-20)
+
+Not a report defect: a **baseline** one. `Code.format_string!/1` and `Macro.to_string/1`
+(Elixir 1.19.6) render `-(case x do … end) + a` as `-case x do … end + a`, which parses as
+`-(case … end + a)`; Sourceror renders through the same algebra. So when a unary operator's
+operand gets a selector and the unary node gets none of its own, and that node is the left
+operand of a binary operator, the *unmutated* metamutant computes something else: under
+`--mutators integer`, `-3 + a` ran as `-(3 + a)`. The default set hides it — `arithmetic` and
+`logical` give nearly every unary node a selector, which moves the `case` outward — but a
+restricted `--mutators`, a `# mutare:ignore[arithmetic]`, or a poison-dropped mutant exposes it.
+`PipeEmit.pipe_into/3` works around the same misrendering for one shape (`^case … end |> f()`).
+
+Deliberately not worked around: reported upstream as elixir-lang/elixir#15849 and fixed on the
+development branch (2e9ce85), unreleased as of this entry. `source_patch_parens_test.exs`
+steers its one affected fixture around it and says so.

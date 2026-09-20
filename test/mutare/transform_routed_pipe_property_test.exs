@@ -10,8 +10,7 @@ defmodule Mutare.TransformRoutedPipePropertyTest do
       programs the sites of `respell(m, :direct)` promise.
 
   "The program a site promises" is the report's own contract (`Mutare.Test.SourcePatch`): the
-  source patched at `site.range` with `site.mutated_code` (parenthesized — see `promise/2`).
-  Both sides are parsed, every `|>`
+  source patched at `site.range` with `site.mutated_code`. Both sides are parsed, every `|>`
   desugared with `Macro.pipe/3`, and metadata dropped, so the comparison is blind to spelling,
   to the span a site chose (a stage, or the whole pipe), and to parentheses — and sees only
   which programs the mutants are.
@@ -49,7 +48,7 @@ defmodule Mutare.TransformRoutedPipePropertyTest do
         piped = promised(piped_source)
         direct = promised(direct_source)
 
-        if piped == direct do
+        if piped == direct and not Enum.any?(piped ++ direct, &match?({_, {:unparseable, _}}, &1)) do
           true
         else
           report_failure(module_ast, piped, direct)
@@ -86,28 +85,39 @@ defmodule Mutare.TransformRoutedPipePropertyTest do
     |> Enum.sort()
   end
 
-  # The program a site promises, spelling-blind. The replacement is patched in **parenthesized**
-  # where that parses: a pipe's left side is an operator context and a call's argument is not,
-  # so a replacement that binds looser than what it replaced (`!(a == 0)` → `a == 0`, patched to
-  # `a == 0 |> f()`) reads differently in the two spellings. That is a defect in how a Site
-  # renders its replacement — NOTES "A replacement is rendered without its context" — and not
-  # what this property is about, which is *which* node a site names and what it becomes. A patch
-  # that parses neither way (a whole clause, the same NOTES entry's `--0.25`) is compared by
-  # its replacement alone.
+  # The program a site promises, spelling-blind: the source patched at the site's range, as the
+  # report patches it. A patch that does not parse is a failure in its own right — it is the
+  # diff a user would be shown — with one known exception (`unrecorded_parentheses?/2`).
   defp promise(source, site) do
-    with :error <- normalize(patch(source, site, &"(#{&1})")),
-         :error <- normalize(patch(source, site, & &1)),
-         :error <- normalize(site.mutated_code) do
-      {:unparseable, site.mutated_code}
-    else
-      {:ok, program} -> program
+    patched = SourcePatch.patch(source, site)
+
+    case normalize(patched) do
+      {:ok, program} ->
+        program
+
+      :error ->
+        if unrecorded_parentheses?(source, site), do: :known_limit, else: {:unparseable, patched}
     end
   end
 
-  defp patch(source, %{operation: :delete} = site, _wrap), do: SourcePatch.patch(source, site)
+  # Elixir's parser records no `:parens` meta for a parenthesized *unary* operand — `not (!a)`
+  # parses exactly as `not !a` would — so no range can be told to cover that `)`
+  # (NOTES "A replacement is rendered without its context"). The symptom is unmistakable: the
+  # text the range covers has an unclosed parenthesis.
+  defp unrecorded_parentheses?(source, %{range: range}) do
+    covered =
+      source |> Sourceror.patch_string([%{range: range, change: "\u0000"}]) |> covered_by(source)
 
-  defp patch(source, site, wrap),
-    do: SourcePatch.patch(source, %{site | mutated_code: wrap.(site.mutated_code)})
+    count(covered, "(") > count(covered, ")")
+  end
+
+  # What a patch replaced: the source minus the prefix and suffix it shares with the patched text.
+  defp covered_by(patched, source) do
+    [prefix, suffix] = String.split(patched, "\u0000", parts: 2)
+    source |> String.replace_prefix(prefix, "") |> String.replace_suffix(suffix, "")
+  end
+
+  defp count(text, part), do: text |> String.split(part) |> length() |> Kernel.-(1)
 
   defp normalize(code) do
     case Code.string_to_quoted(code) do
@@ -130,20 +140,22 @@ defmodule Mutare.TransformRoutedPipePropertyTest do
   defp report_failure(module_ast, piped, direct) do
     IO.puts("""
 
-    ROUTED PIPE PROPERTY FAILURE: the two spellings got different mutants.
+    ROUTED PIPE PROPERTY FAILURE: the two spellings' mutants differ, or a patch does not parse.
     === module (as generated) ===
     #{Macro.to_string(module_ast)}
     === only the piped spelling promises ===
     #{render(piped -- direct)}
     === only the direct spelling promises ===
     #{render(direct -- piped)}
+    === patches that do not parse ===
+    #{render(Enum.filter(piped ++ direct, &match?({_, {:unparseable, _}}, &1)))}
     """)
   end
 
   defp render(programs) do
     Enum.map_join(programs, "\n---\n", fn
-      {mutator, {:unparseable, mutated_code}} ->
-        "#{mutator}: UNPARSEABLE replacement #{inspect(mutated_code)}"
+      {mutator, {:unparseable, patched}} ->
+        "#{mutator}: UNPARSEABLE\n#{patched}"
 
       {mutator, program} ->
         "#{mutator}:\n#{program}"
