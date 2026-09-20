@@ -12496,3 +12496,31 @@ What this does not catch: a generated node that *is* a legal stage and is not th
 (`Manifest`, under `verify_invariants`); the soak generators now write a `case` stage, which
 is what would have caught `CaseClauseEmit`.
 
+### The test compile lock queues its waiters `[fixed]` (2026-09-20)
+
+"Test suite: async-safe compile helpers and the sync split" serialized every test-side compile
+behind `:global.trans/2`, so that `async: true` files could keep compiling same-named
+throwaway fixtures. `:global` does not queue. A caller that finds the lock taken sleeps a
+random time and tries again (`:global.random_sleep/1`), and the sleep grows to as much as
+eight seconds once it has missed five times — sized for locks held across a cluster, not for
+a 50 ms compile asked for by dozens of tests at once. Waiters slept through most of the time
+the lock was free.
+
+**How it showed.** A full run that normally takes ten minutes ran 52 at about one core, and
+was killed without output (piped through `tail`). A loop of full runs under a formatter that
+logs each test's start and finish caught the next one: 1,290 s and two failures, both 60 s
+timeouts — a growth property that takes 5.5 s alone, and a test whose stack was
+`:global.set_lock → random_sleep`. The machine was carrying other load (load average 9 on 16
+cores), which is what makes it bite: slower compiles mean more misses and longer sleeps. The
+52-minute run fits this and was not proven to be it.
+
+**Measured** over the fast loop, 1,143 compiles: 54 s holding the lock against 196 s waiting
+for it, longest single wait 20.4 s. With `Mutare.Test.Compile.Lock` — a GenServer that grants
+in arrival order the moment the lock frees, releases a holder that dies, and skips a waiter
+that died queued — 58 s holding, 112 s waiting, longest wait 4.0 s. What remains is queueing
+behind real compiles. Four full runs in a row then passed under the same load (801–1,193 s).
+
+**Left alone.** The compile is still one serial resource, and the soaks lean on it hardest;
+unique fixture module names would remove the lock altogether, at the cost of renaming every
+throwaway `defmodule M`. Not needed at these numbers.
+

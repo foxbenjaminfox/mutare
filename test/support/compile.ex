@@ -14,8 +14,7 @@ defmodule Mutare.Test.Compile do
   `ExUnit.CaptureIO.capture_io(:stderr, …)` it never touches the global
   `:standard_error` device and is safe under `async: true`.
 
-  The compile itself is serialized suite-wide behind a global lock (see
-  `locked_compile/2`): two `async: true` test modules compiling a same-named
+  The compile itself is serialized suite-wide behind a lock (`Mutare.Test.Compile.Lock`): two `async: true` test modules compiling a same-named
   throwaway fixture (`defmodule M`, …) concurrently would otherwise abort the
   parallel checker. The lock only spans the brief compile call.
 
@@ -68,11 +67,11 @@ defmodule Mutare.Test.Compile do
   # table, so two *different* async test modules compiling a same-named throwaway
   # fixture (`defmodule M`, …) at the same instant make the checker abort with
   # "cannot compile module M". The throwaway names collide freely across files, so we
-  # serialize the compile step suite-wide with a global lock — letting the (split)
-  # transform test files stay `async: true` without renaming every fixture. The lock is
-  # node-local (one node) and only spans the brief compile call, so concurrency elsewhere
-  # is unaffected; `:global.trans/2` releases it even if the compile raises.
+  # serialize the compile step suite-wide — letting the (split) transform test files stay
+  # `async: true` without renaming every fixture. The lock only spans the brief compile
+  # call, is released even if the compile raises, and queues its waiters
+  # (`Mutare.Test.Compile.Lock`, which says why `:global.trans/2` was not enough).
   defp locked_compile(compile) when is_function(compile, 0) do
-    :global.trans({__MODULE__, self()}, fn -> Code.with_diagnostics(compile) end)
+    Mutare.Test.Compile.Lock.with_lock(fn -> Code.with_diagnostics(compile) end)
   end
 end
