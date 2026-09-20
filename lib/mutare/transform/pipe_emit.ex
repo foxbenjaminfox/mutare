@@ -82,7 +82,9 @@ defmodule Mutare.Transform.PipeEmit do
   #     evaluate as a function would. `:lazy_expression` is the route's way of saying it does
   #     not, and every other treatment says the macro reads the argument as syntax, which a
   #     variable would hide.
-  #   * **every** candidate kept argument 0 where it was. A mutant that rewrote or dropped it —
+  #   * **every** candidate kept argument 0 where it was, or returns that operand directly
+  #     (call removal). Both shapes evaluate the operand once, and its bindings must stay
+  #     outside the selector so they reach later statements. A mutant that rewrote or dropped it —
   #     a return-value constant standing in for the whole call among them — would either ignore
   #     the binding or run the original operand beside its own, so one such candidate sends the
   #     whole site back to plain delivery.
@@ -92,8 +94,8 @@ defmodule Mutare.Transform.PipeEmit do
   # pipe chain costs the same whether or not its stages are routed, and directly nested calls
   # are not written thirty deep.
 
-  @typedoc "The written `|>`'s meta, for a site that binds its argument 0 — or `:inline`."
-  @type binding :: {:bind, keyword()} | :inline
+  @typedoc "The written `|>`'s meta and operand, for a site that binds argument 0 — or `:inline`."
+  @type binding :: {:bind, keyword(), Macro.t()} | :inline
 
   @doc "Whether `node`'s selector binds its argument 0 once (see above), and to what."
   @spec bound_argument(Macro.t(), [Candidate.t()]) :: binding()
@@ -102,7 +104,7 @@ defmodule Mutare.Transform.PipeEmit do
          [zero | _] when zero in [:expression, :interior] <- Meta.routing(meta),
          [%Candidate.InPlace{original: {_h, _m, [written | _]}} | _] <- candidates,
          true <- Enum.all?(candidates, &keeps_argument?(&1, written)) do
-      {:bind, pipe_meta}
+      {:bind, pipe_meta, written}
     else
       _plain -> :inline
     end
@@ -110,23 +112,27 @@ defmodule Mutare.Transform.PipeEmit do
 
   def bound_argument(_node, _candidates), do: :inline
 
+  defp keeps_argument?(%Candidate.InPlace{pin?: false, mutated: written}, written), do: true
+
   defp keeps_argument?(%Candidate.InPlace{pin?: false, mutated: {_h, _m, [zero | _]}}, written),
     do: zero == written
 
   defp keeps_argument?(_candidate, _written), do: false
 
-  @doc "A selector branch (mutant or default) with its argument 0 replaced by the piped variable."
+  @doc "A selector branch with its retained or directly returned operand replaced by the piped variable."
   @spec rebind(Macro.t(), binding(), Ctx.t()) :: Macro.t()
   def rebind(branch, :inline, _ctx), do: branch
 
-  def rebind({head, meta, [_zero | rest]}, {:bind, _pipe_meta}, ctx),
+  def rebind(written, {:bind, _pipe_meta, written}, ctx), do: piped_var(ctx)
+
+  def rebind({head, meta, [_zero | rest]}, {:bind, _pipe_meta, _written}, ctx),
     do: {head, meta, [piped_var(ctx) | rest]}
 
   @doc "Close a rebound selector over `argument`, the emitted argument 0."
   @spec close(Macro.t(), binding(), Macro.t(), Ctx.t()) :: Macro.t()
   def close(selector, :inline, _argument, _ctx), do: selector
 
-  def close(selector, {:bind, pipe_meta}, argument, ctx) do
+  def close(selector, {:bind, pipe_meta, _written}, argument, ctx) do
     closure = {:fn, [], [{:->, [], [[piped_var(ctx)], selector]}]}
     {:|>, pipe_meta, [argument, {{:., [], [closure]}, [], []}]}
   end

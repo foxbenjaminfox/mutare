@@ -3,9 +3,10 @@ defmodule Mutare.Transform.WrittenPipe do
   # `left |> stage(args)` is sugar for `stage(left, args)`. A piped stage under a positional call
   # route is resolved and routed as that direct call (`Mutare.Transform.Resolve` marks it,
   # `Meta.routed_direct?/1`), and `direct/1` is where it *becomes* one: applied by
-  # `Mutare.Transform.Analyze` as it reaches a node, so that routing, hosting, mutation and
-  # delivery all read one call shape — and so that code Mutare never analyzes (a `:raw` argument,
-  # a `:skip`ped call, a pattern, a verbatim clean copy) is never rewritten at all.
+  # `Mutare.Transform.Analyze` and the guard walker `Tag` as they reach a node, so that routing,
+  # hosting, mutation and delivery all read one call shape — and so that code Mutare never
+  # analyzes (a `:raw` argument, a `:skip`ped call, a pattern, a verbatim clean copy) is never
+  # rewritten at all.
   #
   # The metamutant is free to keep the direct shape — it only has to compile. A `Mutare.Site` is
   # not: it patches the user's source by range and shows them a diff, so it must keep the

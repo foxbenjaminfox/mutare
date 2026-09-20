@@ -11603,6 +11603,8 @@ list of exclusions mirroring a classifier, which drifts. So the two halves were 
   `analyze/3` entry every descent goes through). A region Mutare never analyzes is never
   rewritten, by construction. The direct call takes the **pipe's** `:mutare_nid` — it stands
   where the pipe stood, and `Returns` delivers a tail's candidates by that identity.
+  The guard walker `Tag` applies the same rewrite at its entry: consuming the marked stage's
+  treatments without its piped operand shifts every visible argument's treatment by one.
 
 Whatever reads a statement or tail before `analyze/3` applies `direct/1` itself:
 `MatchPatterns.analyze_statement/2` does (it looks for a `:binding_pattern` route first);
@@ -11693,8 +11695,10 @@ per-argument; no `:interior` counterpart until something needs one.
 Delivery then reads the route and nothing else. An unrouted stage keeps the closure. A
 rewritten routed stage binds its piped value through the same closure
 (`PipeEmit.bound_argument/2`, applied in `emit_selector_site`) when it was written as a pipe,
-position 0 is `:expression`/`:interior`, and every candidate kept argument 0 — the structural
-test `WrittenPipe.stage_attribution/2` also uses. It renders under the user's own `|>`
+position 0 is `:expression`/`:interior`, and every candidate kept argument 0, either inside the
+call or as the whole replacement (call removal). Returning the operand still evaluates it once;
+it must share the binding path so an assignment there escapes to later statements instead of
+being trapped in the selector's branches. It renders under the user's own `|>`
 (`<emitted arg 0> |> (fn mutare_piped -> … end).()`): applying the closure to the argument
 directly is linear in nodes but nests each stage inside the next, 40 KB at depth 32 against
 17 KB piped. A candidate that rewrites or drops argument 0 (a binding reorder; a return-value
