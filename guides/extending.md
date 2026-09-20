@@ -17,7 +17,7 @@ under `test/support/` in the Mutare repository.
 | You want to… | Implement | Read next |
 | --- | --- | --- |
 | Swap one AST node for another (`and` → `or`) | `Mutare.Mutator` with `mutate/1` | `Mutare.Mutator` |
-| Make a mutator configurable, pipe-aware, or gated on the module's `@behaviour`s | `mutate/2` | `Mutare.Mutator` |
+| Make a mutator configurable, or gated on the module's `@behaviour`s | `mutate/2` | `Mutare.Mutator` |
 | Mutate a *position*: a clause's return value, an `if` condition, a head pattern | `Mutare.Mutator.Structural` | `Mutare.Mutator.Structural` |
 | Match calls to a specific library or stdlib function | `mutate/1,2` + `Mutare.Calls.resolved_call_to/3` | `Mutare.Calls` |
 | Skip a call, or keep a macro's arguments from being mutated | no code — `call_routes:` (and `argument_marks:`) in `.mutare.exs` | the README's "Routing calls" section |
@@ -86,7 +86,7 @@ If you find yourself building a raw `{:__block__, meta, [value]}` tuple in a
 mutator, one of these is missing from your toolkit — or from `Mutare.AST`, in
 which case that's a bug report.
 
-### Context: configuration, pipes, and behaviours
+### Context: configuration and behaviours
 
 Implement `mutate/2` instead of `mutate/1` when the mutation depends on
 context. (If both are exported, Mutare calls only `mutate/2` — compose them
@@ -95,11 +95,13 @@ yourself by calling `mutate/1` from it.) The second argument carries:
 - `:opts` — per-instance options, when the mutator is registered as
   `{MyApp.Mutators.MagicNumber, swaps: %{200 => 500}}`. The reserved `:as`
   option renames the family, so one module can run twice under two names.
-- `:pipe_mode` — whether the call sits on the right of a `|>` (its first
-  argument is then implicit; helpers `Mutare.Mutator.effective_arity/2` and
-  `visible_index/2` do the arithmetic).
 - `:behaviours` — the enclosing module's `@behaviour` set, for mutators that
   should only fire in, say, a `GenServer`.
+
+Pipes need nothing from you. `xs |> Enum.sort(:desc)` is offered as the call it
+is sugar for, `Enum.sort(xs, :desc)`, so a clause matching the call's arguments
+matches both spellings; the report shows the mutant in the spelling the user
+wrote.
 
 ### Structural positions
 
@@ -226,10 +228,9 @@ position to a host mutator — below). The `:routing` sentinel defers to
 `route_arguments/1` when the right treatment depends on the call's shape —
 `where(q, category: "Foo")` is data, `where(q, [u], u.x == u.y)` is a DSL
 fragment. Return the treatments as `ArgumentRoutes.new(call, treatments)`, one
-per entry of `call.arguments`. A piped routed call needs no special handling:
-Mutare rewrites it into the direct call `Kernel.|>/2` would build, so
-`(p in Post) |> from(order_by: …)` is shown — to a classifier, a host, and a
-mutator alike — as `from(p in Post, order_by: …)`. The piped operand is
+per entry of `call.arguments`. A piped call needs no special handling here
+either: `(p in Post) |> from(order_by: …)` is shown — to a classifier, a host,
+and a mutator alike — as `from(p in Post, order_by: …)`. The piped operand is
 argument 0: routed by its shape, rewritable through `call.rebuild`, and
 hostable like any other position. Reports keep the pipe the user wrote.
 

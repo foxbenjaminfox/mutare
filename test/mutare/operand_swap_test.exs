@@ -21,10 +21,6 @@ defmodule Mutare.OperandSwapTest do
   # Isolate the family: with only OperandSwap enabled, every site is a transpose.
   @only [OperandSwap]
 
-  test "does not expose mutate/1" do
-    refute function_exported?(OperandSwap, :mutate, 1)
-  end
-
   # operand_swap sites for a one-line function body `def f(a, b), do: <expr>`.
   defp swap_sites(expr),
     do: family_sites("defmodule T do\n  def f(a, b), do: #{expr}\nend\n", @only, :operand_swap)
@@ -49,24 +45,24 @@ defmodule Mutare.OperandSwapTest do
       assert mutated_codes("rem(a, b)") == ["rem(b, a)"]
     end
 
-    test "div/rem are swapped only at effective arity 2 (the bare-Kernel safeguard)" do
+    test "div/rem are swapped only at arity 2 (the bare-Kernel safeguard)" do
       # A same-named user call at another arity is left alone (not Kernel's div/2).
       assert swap_sites("div(a, b, c)") == []
       assert swap_sites("rem(a, b, c)") == []
     end
 
-    test "a bare piped div/rem is skipped — a bare Kernel call is not resolved" do
-      # `a |> div(b)` is `div(a, b)`; a *bare* `Kernel` call carries no import stamp, so
-      # `Calls` does not resolve it (as it never has), and there is nothing to transpose.
-      assert swap_sites("a |> div(b)") == []
-      assert swap_sites("a |> rem(b)") == []
+    test "a piped div/rem is the call it is sugar for, bare or qualified" do
+      # `a |> div(b)` is `div(a, b)`: the piped value is the first operand, and the transpose
+      # moves it, reported in the spelling the user wrote.
+      assert mutated_codes("a |> div(b)") == ["b |> div(a)"]
+      assert mutated_codes("a |> rem(b)") == ["b |> rem(a)"]
+      assert mutated_codes("a |> Kernel.div(b)") == ["b |> Kernel.div(a)"]
+      assert mutated_codes("a |> Kernel.rem(b)") == ["b |> Kernel.rem(a)"]
     end
 
-    test "an explicit piped Kernel.div/rem transposes via a capture on the piped value" do
-      # `a |> Kernel.div(b)` is `Kernel.div(a, b)`; the piped `a` is routed to the second
-      # position by the capture, so the mutant computes `Kernel.div(b, a)`.
-      assert mutated_codes("a |> Kernel.div(b)") == ["(&Kernel.div(b, &1)).()"]
-      assert mutated_codes("a |> Kernel.rem(b)") == ["(&Kernel.rem(b, &1)).()"]
+    test "the explicit Kernel call form transposes written directly too" do
+      assert mutated_codes("Kernel.div(a, b)") == ["Kernel.div(b, a)"]
+      assert mutated_codes("Kernel.--(a, b)") == ["Kernel.--(b, a)"]
     end
 
     test "describe/1 renders the transpose" do
@@ -95,11 +91,11 @@ defmodule Mutare.OperandSwapTest do
       assert mutated_codes("Date.diff(a, b)") == ["Date.diff(b, a)"]
     end
 
-    test "a piped stage transposes via a capture, keeping any trailing unit" do
-      assert mutated_codes("a |> DateTime.before?(b)") == ["(&DateTime.before?(b, &1)).()"]
+    test "a piped stage transposes its piped value, keeping any trailing unit" do
+      assert mutated_codes("a |> DateTime.before?(b)") == ["b |> DateTime.before?(a)"]
 
       assert mutated_codes("a |> DateTime.diff(b, :second)") ==
-               ["(&DateTime.diff(b, &1, :second)).()"]
+               ["b |> DateTime.diff(a, :second)"]
     end
 
     test "structurally identical first two operands are not swapped" do
@@ -165,9 +161,9 @@ defmodule Mutare.OperandSwapTest do
       assert swap_sites("MapSet.intersection(a, b)") == []
     end
 
-    test "a piped stage transposes via a capture on the piped value" do
-      assert mutated_codes("a |> Version.compare(b)") == ["(&Version.compare(b, &1)).()"]
-      assert mutated_codes("a |> MapSet.difference(b)") == ["(&MapSet.difference(b, &1)).()"]
+    test "a piped stage transposes its piped value" do
+      assert mutated_codes("a |> Version.compare(b)") == ["b |> Version.compare(a)"]
+      assert mutated_codes("a |> MapSet.difference(b)") == ["b |> MapSet.difference(a)"]
     end
 
     test "structurally identical operands are not swapped" do
@@ -233,18 +229,18 @@ defmodule Mutare.OperandSwapTest do
   end
 
   describe "swaps piped operator forms (a pipe expresses an operator as its Kernel call)" do
-    test "each operator's Kernel call form transposes via a capture on the piped value" do
-      # `foo |> Kernel.++(bar)` is `Kernel.++(foo, bar)`; the capture routes the piped `foo`
-      # into the second position, so the mutant computes `Kernel.++(bar, foo)`.
-      assert mutated_codes("foo |> Kernel.++(bar)") == ["(&Kernel.++(bar, &1)).()"]
-      assert mutated_codes("foo |> Kernel.--(bar)") == ["(&Kernel.--(bar, &1)).()"]
-      assert mutated_codes("foo |> Kernel.<>(bar)") == ["(&Kernel.<>(bar, &1)).()"]
-      assert mutated_codes("foo |> Kernel.-(bar)") == ["(&Kernel.-(bar, &1)).()"]
-      assert mutated_codes("foo |> Kernel./(bar)") == ["(&Kernel./(bar, &1)).()"]
-      assert mutated_codes("foo |> Kernel.**(bar)") == ["(&Kernel.**(bar, &1)).()"]
+    test "each operator's Kernel call form transposes its piped value" do
+      # `foo |> Kernel.++(bar)` is `Kernel.++(foo, bar)`, so the mutant computes
+      # `Kernel.++(bar, foo)`.
+      assert mutated_codes("foo |> Kernel.++(bar)") == ["bar |> Kernel.++(foo)"]
+      assert mutated_codes("foo |> Kernel.--(bar)") == ["bar |> Kernel.--(foo)"]
+      assert mutated_codes("foo |> Kernel.<>(bar)") == ["bar |> Kernel.<>(foo)"]
+      assert mutated_codes("foo |> Kernel.-(bar)") == ["bar |> Kernel.-(foo)"]
+      assert mutated_codes("foo |> Kernel./(bar)") == ["bar |> Kernel./(foo)"]
+      assert mutated_codes("foo |> Kernel.**(bar)") == ["bar |> Kernel.**(foo)"]
     end
 
-    test "a piped swap is delivered in place (as an in-pipe selector, hoisted at emit)" do
+    test "a piped swap is delivered in place" do
       assert [%Site{kind: :in_place}] = swap_sites("foo |> Kernel.++(bar)")
     end
 
@@ -260,7 +256,7 @@ defmodule Mutare.OperandSwapTest do
           mutators: @only
         )
 
-      assert [%Site{mutated_code: "(&K.++(bar, &1)).()"}] =
+      assert [%Site{mutated_code: "bar |> K.++(foo)"}] =
                Enum.filter(sites, &(&1.mutator == :operand_swap))
     end
 

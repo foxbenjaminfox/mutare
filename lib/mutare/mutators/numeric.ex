@@ -18,7 +18,7 @@ defmodule Mutare.Mutators.Numeric do
 
   alias Mutare.Mutators.Helpers
 
-  # Bare `Kernel` calls keyed on {name, effective_arity} => [sibling names]. The arity
+  # Bare `Kernel` calls keyed on {name, arity} => [sibling names]. The arity
   # is what proves a bare `floor`/`max` is the Kernel one (and not a same-named user
   # function at a different arity), so each entry pins it: min/max are /2, the rounding
   # coercions /1.
@@ -68,13 +68,13 @@ defmodule Mutare.Mutators.Numeric do
   # mutations explicitly in the single exported mutation callback.
   #
   # Bare `Kernel` `min`/`max`/`round`/`trunc`/`ceil`/`floor`: the swap is offered only at the
-  # function's true (effective) arity, and a `Kernel`-displaced call is skipped — the shared
-  # bare-`Kernel` safeguard (`Helpers.swap_bare_kernel/3`, also used by `Arithmetic`'s div/rem).
+  # function's true arity, and a `Kernel`-displaced call is skipped — the shared
+  # bare-`Kernel` safeguard (`Helpers.swap_bare_kernel/2`, also used by `Arithmetic`'s div/rem).
   @impl Mutare.Mutator
-  def mutate(node, %{pipe_mode: pipe_mode}),
+  def mutate(node),
     do:
       Helpers.combine_mutations(
         qualified_mutations(node),
-        Helpers.swap_bare_kernel(node, pipe_mode, @kernel_swaps)
+        Helpers.swap_bare_kernel(node, @kernel_swaps)
       )
 end

@@ -9,7 +9,7 @@ defmodule Mutare.Test.RoutedSoak do
       is the generator's bait (`1 < 2`, which several families would mutate if offered), so a
       reading of a piped stage that lands the treatments one argument late shows up as a mutant
       inside it. Position 0 is a value, so a stage written as a pipe takes the bound delivery
-      (`Mutare.Transform.PipeEmit.bound_argument/2`).
+      (`Mutare.Transform.PipeEmit.delivery/2`).
     * `pick/2` — a **macro** that evaluates its first argument only when the second holds,
       routed `[:lazy_expression, :expression]`: never evaluated ahead of the call, so a piped
       stage takes plain direct delivery.
@@ -44,7 +44,7 @@ defmodule Mutare.Test.RoutedSoakMutator do
   @moduledoc """
   Whole-call mutants on `Mutare.Test.RoutedSoak`'s callees. No built-in family lands one on a
   call outside the standard library, and a whole-call mutant is what puts a selector *on* a
-  rewritten stage — the only thing that makes `Mutare.Transform.PipeEmit.bound_argument/2`
+  rewritten stage — the only thing that makes `Mutare.Transform.PipeEmit.delivery/2`
   choose between the bound and the plain delivery, and
   `Mutare.Transform.WrittenPipe.stage_attribution/2` between the stage and the whole pipe.
 

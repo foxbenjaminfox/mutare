@@ -168,6 +168,8 @@ defmodule Mutare.Transform.Candidate.Delivery do
   line number.
   """
   @spec line(Candidate.t()) :: pos_integer() | nil
+  def line(%Candidate.InPlace{position: [_ | _] = position}), do: position[:line]
+
   def line(candidate) do
     case range(candidate) do
       %{start: start} -> start[:line]
@@ -277,6 +279,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
       Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator,
         note: note(c),
         variant: variant(c),
+        position: position(c),
         render?: render?,
         summary?: summary?
       )
@@ -323,6 +326,11 @@ defmodule Mutare.Transform.Candidate.Delivery do
   # `Site` then derives the label via `c:Mutare.Mutator.variant/2`.
   defp variant(%{variant: variant}), do: variant
   defp variant(_candidate), do: nil
+
+  # Where the site is keyed when that is not its range's start (`Candidate.InPlace`'s
+  # `:position`); `line/1` reads the same field, so the two cannot disagree.
+  defp position(%{position: position}), do: position
+  defp position(_candidate), do: nil
 
   # A candidate's node-local route, raising for the lifted / hosted kinds that have no place in
   # the node-local classifier (matching `classify_node_candidates/1`'s contract).

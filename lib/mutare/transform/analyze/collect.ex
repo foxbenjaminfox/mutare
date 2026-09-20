@@ -67,8 +67,7 @@ defmodule Mutare.Transform.Analyze.Collect do
 
   @structural_callbacks Mutare.Mutator.Structural.behaviour_info(:callbacks)
 
-  # `context` is accepted for call-site symmetry with the mutator callbacks (`map()`, not
-  # `Mutare.Mutator.context()`, so the bare default doesn't have to fake a `:pipe_mode`).
+  # `context` is accepted for call-site symmetry with the mutator callbacks.
   @spec expression_mutations(Macro.t(), [Spec.t() | module()], map()) ::
           [{Spec.t(), Macro.t(), String.t() | nil, Mutation.variant()}]
   def expression_mutations(subtree, mutators, _context \\ %{}) do

@@ -200,7 +200,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # vars alone — **independent of whether any structural swap/wildcard mutant fires** — so a
   # whole-call mutation is re-homed even when no pattern mutant is produced (the user enabled
   # only their `call_routes/0` mutator, or the pattern admits no swap/wildcard). Without that the
-  # whole-call `Candidate.InPlace` would survive as an ordinary hoisted-pipe selector and
+  # whole-call `Candidate.InPlace` would survive as an ordinary selector and
   # poison the build. When the pattern binds nothing (or isn't rangeable) there is no escape to
   # re-export, so an in-place selector is already safe and `analyzed` is left untouched.
   defp attach_macro_pattern_candidates(analyzed, raw_pattern, rebuild_mutant, env) do

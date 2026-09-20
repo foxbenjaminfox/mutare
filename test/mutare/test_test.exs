@@ -11,7 +11,7 @@ defmodule Mutare.TestTest do
 
   doctest Mutare.Test
 
-  describe "node_mutations/3" do
+  describe "node_mutations/2" do
     test "renders the mutations a single mutator offers for a node" do
       assert node_mutations("1 + 2", Arithmetic) == ["1 - 2"]
     end
@@ -25,13 +25,13 @@ defmodule Mutare.TestTest do
       assert node_mutations("a >= b", Arithmetic) == []
     end
 
-    test "pipe_mode recovers the effective arity of a pipe stage" do
-      # The written call and the equivalent pipe stage produce the same mutant: the
-      # piped value is an implicit extra arg, so `Enum.sort()` piped == `Enum.sort(x)`.
+    test "a pipe stage is tested as the direct call it is sugar for" do
+      # A mutator never sees a piped node: core hands it the direct call, so
+      # `coll |> Enum.sort(:desc)` is tested by writing `Enum.sort(coll, :desc)`.
+      assert node_mutations("Enum.sort(coll, :desc)", CollectionArity) == ["Enum.reverse(coll)"]
       assert node_mutations("Enum.sort(coll)", CollectionArity) == ["Enum.reverse(coll)"]
-      assert node_mutations("Enum.sort()", CollectionArity, :piped) == ["Enum.reverse()"]
 
-      # Without the flag the stage reads as arity 0, which matches nothing.
+      # The stage as written — one argument short — is a different, unmatched arity.
       assert node_mutations("Enum.sort()", CollectionArity) == []
     end
   end

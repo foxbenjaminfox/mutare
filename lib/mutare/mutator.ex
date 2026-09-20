@@ -4,7 +4,7 @@ defmodule Mutare.Mutator do
 
   A mutator examines an AST node and returns either `:skip` or a list of mutations to generate at that site. Every mutator defines `name/0` and at least one mutation-producing callback.
 
-  You must define `name/0` to identify the mutator in reports, and at least one mutation-producing callback. The usual producer is `mutate/1` (or the pipe-aware/configurable `mutate/2`), but a `Mutare.Mutator.Structural` hook or a `c:Mutare.Mutator.MacroHost.host/2` selector host counts too — a mutator that produces *only* through one of those needs no `mutate/1`. Optionally, you may implement `variants/0` and `variant/2` to classify your mutations into kinds, `mutate_call_option_keys?/1` to control mutations of call-option names, and `argument_marks/1` to have the transform *mark* specific call-argument positions (e.g. timeout literals) that you then recognise with `marked?/2` in `mutate/2` and skip.
+  You must define `name/0` to identify the mutator in reports, and at least one mutation-producing callback. The usual producer is `mutate/1` (or the configurable `mutate/2`), but a `Mutare.Mutator.Structural` hook or a `c:Mutare.Mutator.MacroHost.host/2` selector host counts too — a mutator that produces *only* through one of those needs no `mutate/1`. Optionally, you may implement `variants/0` and `variant/2` to classify your mutations into kinds, `mutate_call_option_keys?/1` to control mutations of call-option names, and `argument_marks/1` to have the transform *mark* specific call-argument positions (e.g. timeout literals) that you then recognise with `marked?/2` in `mutate/2` and skip.
 
   When both `mutate/1` and `mutate/2` are exported, Mutare calls `mutate/2`. If a mutator needs both context-free and context-aware production, call the context-free helper explicitly from `mutate/2`.
 
@@ -143,8 +143,6 @@ defmodule Mutare.Mutator do
   @typedoc """
   Context passed to `mutate/2` at each runtime call site.
 
-    * `:pipe_mode` — `:piped` or `:unpiped`; when piped, the effective first
-      argument is the pipe's left side and is not present in the node's own args.
     * `:opts` — the configured mutator's per-instance options (the `opts` of a
       `{module, opts}` entry in `:mutators`, with any `:as` name override
       stripped), or `[]` for an unconfigured mutator.
@@ -165,13 +163,15 @@ defmodule Mutare.Mutator do
       descends an unregistered node itself, so sub-contracting there would produce the same
       mutant twice.
 
-  The keys other than `:pipe_mode` are optional in the type because the base context
-  carries only `:pipe_mode`; dispatch injects the configured options, the normalized
-  configuration, and the behaviour set (and, at the sub-contract seams above, the enabled
-  specs) before calling a mutator.
+  Every key is optional in the type because the base context is empty; dispatch injects the
+  configured options, the normalized configuration, and the behaviour set (and, at the
+  sub-contract seams above, the enabled specs) before calling a mutator.
+
+  Nothing here says whether a call was written as a pipe stage: `left |> stage(args)` is
+  offered as `stage(left, args)`, the call it is sugar for, so no node is ever one argument
+  short.
   """
   @type context :: %{
-          :pipe_mode => pipe_mode(),
           optional(:name) => atom(),
           optional(:opts) => term(),
           optional(:config) => term(),
@@ -303,10 +303,9 @@ defmodule Mutare.Mutator do
   @doc """
   Produces context-aware mutations for `node`.
 
-  This callback is used for pipe-aware, configurable, and behaviour-targeted
-  mutators. `context.pipe_mode` lets a mutator compute effective arity for piped
-  calls; `context.opts` carries per-instance configuration; `context.behaviours`
-  carries the enclosing module's behaviour set.
+  This callback is used for configurable, mark-reading, and behaviour-targeted
+  mutators: `context.opts` carries per-instance configuration, `context.marks` the labels on
+  the offered position, and `context.behaviours` the enclosing module's behaviour set.
 
   When both `mutate/1` and `mutate/2` are exported, this callback takes
   precedence. Mutare does not also call `mutate/1`. To compose them, call
@@ -392,9 +391,10 @@ defmodule Mutare.Mutator do
       @impl true
       def argument_marks(_config), do: timeout_marks()
 
-  A declaration is `{module, function, arity, positions, label}`. A `position` is an **effective**
-  argument index (a piped receiver counts as index 0) or a `{:keyword, key}` for a trailing-options
-  key. Arity is effective too, so an option-bearing arity (`Task.async_stream/3`, `/5`) can be
+  A declaration is `{module, function, arity, positions, label}`. A `position` is an argument
+  index or a `{:keyword, key}` for a trailing-options key. A call written as a pipe stage is the
+  call it is sugar for, so its piped value is index 0 and counts toward the arity. Arity is part
+  of the key, so an option-bearing arity (`Task.async_stream/3`, `/5`) can be
   marked while a same-named arity whose trailing argument is ordinary data (`/4`, the MFA
   callback-args list) is left alone. Marks are resolved through the same alias/import machinery as
   call matching, so aliased and imported forms are covered and a shadowing alias is not. Only the
@@ -413,7 +413,7 @@ defmodule Mutare.Mutator do
   @typedoc """
   One argument-mark declaration: `{module, function, arity, positions, label}` — the shape
   `c:argument_marks/1` returns and the `argument_marks:` option accepts. `positions` lists
-  effective argument indices and `{:keyword, key}` trailing-option keys.
+  argument indices and `{:keyword, key}` trailing-option keys.
   """
   @type mark_declaration ::
           {module(), atom(), arity(), [non_neg_integer() | {:keyword, atom()}], atom()}
@@ -427,50 +427,6 @@ defmodule Mutare.Mutator do
                       required_modules: 0,
                       variants: 0,
                       variant: 2
-
-  @typedoc """
-  A call node's pipe context, as an atom: `:piped` (the node is a `|>` right-hand
-  side, so its effective first argument is the pipe's left side) or `:unpiped`.
-  It is what the `mutate/2` context's `:pipe_mode` carries, and the form
-  `effective_arity/2` and `visible_index/2` take.
-  """
-  @type pipe_mode :: :piped | :unpiped
-
-  @doc """
-  Returns the effective arity of a call under its pipe context.
-
-  A piped call stage has one implicit argument: the left side of the pipe. That
-  argument is not present in the call node's own argument list, so piped arity is
-  `length(args) + 1`.
-
-      iex> Mutare.Mutator.effective_arity([:a, :b], :unpiped)
-      2
-      iex> Mutare.Mutator.effective_arity([:b], :piped)
-      2
-  """
-  @spec effective_arity([Macro.t()], pipe_mode()) :: non_neg_integer()
-  def effective_arity(args, :piped) when is_list(args), do: length(args) + 1
-  def effective_arity(args, :unpiped) when is_list(args), do: length(args)
-
-  @doc """
-  Converts an effective argument index to the index in the call node's visible
-  argument list.
-
-  In piped calls, effective index `0` is the pipe's left side and has no visible
-  index, so the function returns `nil`. Later indexes shift down by one. In
-  unpiped calls, effective and visible indexes are the same.
-
-      iex> Mutare.Mutator.visible_index(2, :unpiped)
-      2
-      iex> Mutare.Mutator.visible_index(0, :piped)
-      nil
-      iex> Mutare.Mutator.visible_index(1, :piped)
-      0
-  """
-  @spec visible_index(non_neg_integer(), pipe_mode()) :: non_neg_integer() | nil
-  def visible_index(pos, :unpiped), do: pos
-  def visible_index(0, :piped), do: nil
-  def visible_index(pos, :piped), do: pos - 1
 
   @doc """
   Whether the node being offered carries the position mark `label` — i.e. sits at a position some
@@ -548,7 +504,7 @@ defmodule Mutare.Mutator do
 
   @doc """
   Turns a list of `{module, function, arity, positions}` entries into `c:argument_marks/1`
-  declarations under `label`. `positions` is a list of effective argument indices and
+  declarations under `label`. `positions` is a list of argument indices and
   `{:keyword, key}` option keys, exactly as in a declaration; an index is validated against the
   declared arity. Raises `ArgumentError` with a pointed message on a malformed entry, so a typo fails
   at startup rather than silently marking nothing. The one-liner for a mutator that exposes its own
@@ -577,8 +533,9 @@ defmodule Mutare.Mutator do
             "{module, function, arity, positions}"
   end
 
-  # Positions are *effective* indices, so a valid one is `0..arity-1` — a one-based typo like index
-  # `3` for an arity-3 call would silently mark nothing, so reject it here.
+  # A position indexes the call's arguments (a piped value is index 0), so a valid one is
+  # `0..arity-1` — a one-based typo like index `3` for an arity-3 call would silently mark
+  # nothing, so reject it here.
   defp valid_position!(index, arity, _entry)
        when is_integer(index) and index >= 0 and index < arity,
        do: :ok

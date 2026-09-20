@@ -19,9 +19,7 @@ defmodule Mutare.Mutators.CollectionArity do
 
   alias Mutare.Mutators.Helpers
 
-  # {alias_path, function, effective_arity} => {new_function, kept_effective_indices}.
-  # Every rule keeps effective index 0 (the enumerable); in a pipe that index is the
-  # `|>` left side, supplied by the pipe, so it drops out of the *visible* args.
+  # {alias_path, function, arity} => {new_function, kept_argument_indices}.
   @rules %{
     {[:Enum], :sort, 1} => {:reverse, [0]},
     {[:Enum], :sort, 2} => {:reverse, [0]},
@@ -30,8 +28,8 @@ defmodule Mutare.Mutators.CollectionArity do
     {[:Enum], :sort_by, 3} => {:reverse, [0]},
     {[:Enum], :count, 2} => {:count, [0]},
     {[:Enum], :count_until, 3} => {:count_until, [0, 2]},
-    # `Access.get_and_update/3` → `Access.get/2`: keep the container + key (effective
-    # indices 0, 1), drop the update function. `Access.get/2` exists, so it compiles.
+    # `Access.get_and_update/3` → `Access.get/2`: keep the container + key
+    # (indices 0, 1), drop the update function. `Access.get/2` exists, so it compiles.
     {[:Access], :get_and_update, 3} => {:get, [0, 1]}
   }
 
@@ -39,20 +37,11 @@ defmodule Mutare.Mutators.CollectionArity do
   def name, do: :collection_arity
 
   @impl Mutare.Mutator
-  def mutate(node, %{pipe_mode: pipe_mode}) do
+  def mutate(node) do
     with {:ok, {new_fun, keep}, {_module, _fun, args, rebuild}} <-
-           Helpers.lookup_resolved_arity(node, pipe_mode, @rules) do
+           Helpers.lookup_resolved_arity(node, @rules) do
       # `rebuild` reuses the written alias node (every rule stays within `Enum`).
-      [rebuild.(new_fun, kept_visible_args(args, keep, pipe_mode))]
+      [rebuild.(new_fun, Enum.map(keep, &Enum.fetch!(args, &1)))]
     end
-  end
-
-  # Translate kept *effective* indices to the *visible* argument list, dropping any
-  # that map to the (absent) piped value — see `Mutare.Mutator.visible_index/2`.
-  defp kept_visible_args(args, keep, pipe_mode) do
-    keep
-    |> Enum.map(&Mutare.Mutator.visible_index(&1, pipe_mode))
-    |> Enum.reject(&is_nil/1)
-    |> Enum.map(&Enum.fetch!(args, &1))
   end
 end

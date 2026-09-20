@@ -196,7 +196,7 @@ defmodule Mutare.Transform.Meta do
 
   @typedoc """
   A routed call's resolved identity: the module key (`nil` for a name-only match whose module the
-  resolver could not see), the name, and the **effective arity** the route matched at — one more
+  resolver could not see), the name, and the arity the route matched at — the direct call's, so one more
   than the written arguments for a `:skip`ped stage still written as a pipe's right side.
   """
   @type routed_call :: {Mutare.CallRouting.Spec.module_key() | nil, atom(), non_neg_integer()}
@@ -302,8 +302,9 @@ defmodule Mutare.Transform.Meta do
 
   @doc """
   Mark a `case` node as a selector the emit built (`:mutare_selector`), so a later emit step
-  that must reach back into it — `Mutare.Transform.PipeEmit.hoist/2`, lifting a selector out of
-  an illegal pipe-RHS position — recognises it by this handoff rather than by its shape. Stamped
+  that must tell it from a user's own `case` — `Mutare.Transform.PipeEmit`, keeping a generated
+  pin over a selector the argument of its call — recognises it by this handoff rather than by
+  its shape. Stamped
   by the one builder, `Mutare.Transform.Render.selector_case/2`; total over a bare literal.
   """
   @spec put_selector(Macro.t()) :: Macro.t()
@@ -353,7 +354,7 @@ defmodule Mutare.Transform.Meta do
   def add_marks(node, _labels), do: node
 
   @doc """
-  The `{module_key, fun, effective_arity}` of a call some argument-mark declaration matched
+  The `{module_key, fun, arity}` of a call some argument-mark declaration matched
   (`:mutare_mark_call`), or `nil`. Stamped by `Mutare.Transform.Resolve` on the call node (and on a
   pipe's RHS when a receiver mark applied) purely so `Mutare.Transform.ConfigMatches` can tell which
   configured `argument_marks:` entries reached a call — the ineffective-entry diagnostic.

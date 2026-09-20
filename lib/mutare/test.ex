@@ -69,27 +69,25 @@ defmodule Mutare.Test do
   structural mutations. `mutators` must therefore be a module, a resolved
   `Mutare.Mutator.Spec`, or a list of either; family atoms are not accepted.
 
-  `pipe_mode` defaults to `:unpiped`. Use `:piped` when the snippet represents the
-  right side of a pipe and therefore has one implicit argument.
+  A pipe stage reaches a mutator as the direct call it is sugar for, so write the snippet
+  that way: `Enum.sort(xs)` stands for `xs |> Enum.sort()` too.
 
       iex> import Mutare.Test
       iex> node_mutations("1 + 2", Mutare.Mutators.Arithmetic)
       ["1 - 2"]
 
-      iex> node_mutations("Enum.sort()", Mutare.Mutators.CollectionArity, :piped)
-      ["Enum.reverse()"]
+      iex> node_mutations("Enum.sort(xs, :desc)", Mutare.Mutators.CollectionArity)
+      ["Enum.reverse(xs)"]
   """
   @spec node_mutations(
           String.t(),
-          module() | Mutare.Mutator.Spec.t() | [module() | Mutare.Mutator.Spec.t()],
-          :piped | :unpiped
+          module() | Mutare.Mutator.Spec.t() | [module() | Mutare.Mutator.Spec.t()]
         ) :: [String.t()]
-  def node_mutations(snippet, mutators, pipe_mode \\ :unpiped) do
+  def node_mutations(snippet, mutators) do
     node = Mutare.AST.parse!(snippet)
-    context = %{pipe_mode: pipe_mode}
 
     for %Mutare.Mutator.Dispatch.Result{node: mutated} <-
-          Mutare.Mutator.Dispatch.mutations(node, List.wrap(mutators), context),
+          Mutare.Mutator.Dispatch.mutations(node, List.wrap(mutators)),
         do: Mutare.AST.to_string(mutated)
   end
 

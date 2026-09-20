@@ -33,10 +33,11 @@ defmodule Mutare.CallRouting do
   Both extensions and mutators may implement this behaviour. Enabling the module under `:extensions`
   or `:mutators` also enables its routes.
 
-  A piped first argument is a first argument. Mutare treats a piped call that takes a
-  positional route as the direct call `Kernel.|>/2` would build, so a route, a classifier, a
-  host and a mutator all see `from(p in Post, …)` for `(p in Post) |> from(…)`, and a `:raw`
-  declaration reaches the macro as the syntax it is. Reports keep the pipe the user wrote, and
+  A piped first argument is a first argument. Mutare treats a piped call as the direct call
+  `Kernel.|>/2` would build, so a route, a classifier, a host and a mutator all see
+  `from(p in Post, …)` for `(p in Post) |> from(…)`, and a `:raw` declaration reaches the macro
+  as the syntax it is. (The exception is a call routed `:skip`: a value piped *into* it is not
+  part of the skipped call, and still mutates.) Reports keep the pipe the user wrote, and
   so does any code Mutare leaves alone: a pipe inside a `:raw` argument or a `:skip`ped call is
   never rewritten.
 
@@ -80,7 +81,8 @@ defmodule Mutare.CallRouting do
   Ordinary includes *when a call's arguments run*, and to deliver a whole-call mutant on a pipe
   stage Mutare relies on it, evaluating the piped value once and handing every branch the
   result. It does so whenever the stage's first position is `:expression` or `:interior`,
-  routed or not (and, for a routed stage, no mutant there rewrites that argument).
+  routed or not. (A mutant that itself moves or replaces that argument evaluates its own
+  expression, in its own order.)
 
   A macro need not evaluate its arguments that way (`value |> lazy(enabled?)` may expand to
   `if enabled?, do: value`), and nothing in `:expression` says it does. Route such a position

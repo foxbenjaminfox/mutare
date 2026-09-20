@@ -1061,17 +1061,13 @@ defmodule Mutare.HostedTest do
 
     test "a non-1-arity :wrap raises (not a raw FunctionClauseError)" do
       assert_raise Mutare.CallRouting.ContractError, ~r/:wrap must be a 1-arity function/, fn ->
-        Dispatch.host_targets(malformed_spec(), malformed_call({:bad_wrap, [], []}), %{
-          pipe_mode: :unpiped
-        })
+        Dispatch.host_targets(malformed_spec(), malformed_call({:bad_wrap, [], []}), %{})
       end
     end
 
     test "a non-string mutant :note raises (not a silently dropped note)" do
       assert_raise Mutare.CallRouting.ContractError, ~r/:note must be a string or nil/, fn ->
-        Dispatch.host_targets(malformed_spec(), malformed_call({:bad_note, [], []}), %{
-          pipe_mode: :unpiped
-        })
+        Dispatch.host_targets(malformed_spec(), malformed_call({:bad_note, [], []}), %{})
       end
     end
 
@@ -1082,9 +1078,7 @@ defmodule Mutare.HostedTest do
                      Dispatch.host_targets(
                        malformed_spec(),
                        malformed_call({:bad_range, [], []}),
-                       %{
-                         pipe_mode: :unpiped
-                       }
+                       %{}
                      )
                    end
     end
@@ -1096,9 +1090,7 @@ defmodule Mutare.HostedTest do
                      Dispatch.host_targets(
                        malformed_spec(),
                        malformed_call({:bare_map, [], []}),
-                       %{
-                         pipe_mode: :unpiped
-                       }
+                       %{}
                      )
                    end
     end

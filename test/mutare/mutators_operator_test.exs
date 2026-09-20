@@ -21,18 +21,16 @@ defmodule Mutare.MutatorsOperatorTest do
       assert arithmetic({:/, [], [1, 2]}) == [{:*, [], [1, 2]}]
     end
 
-    test "swaps div/rem (call form) only at effective arity 2, pipe-aware" do
-      # div/rem are bare Kernel calls handled only with pipe context.
-      assert arithmetic({:div, [], [1, 2]}, %{pipe_mode: :unpiped}) == [{:rem, [], [1, 2]}]
-      assert arithmetic({:rem, [], [1, 2]}, %{pipe_mode: :unpiped}) == [{:div, [], [1, 2]}]
-
-      # Piped: the stage carries one fewer arg (`x |> div(2)` is div/2), so a 1-arg
-      # node at piped effective-arity 2 still swaps (the rename keeps the arg list).
-      assert arithmetic({:div, [], [2]}, %{pipe_mode: :piped}) == [{:rem, [], [2]}]
+    test "swaps div/rem (call form) only at arity 2" do
+      # div/rem are bare Kernel calls: the arity is the only evidence they are Kernel's.
+      # A `|>` stage reaches us as the direct call it is sugar for, so `x |> div(2)` is
+      # the 2-arg node below.
+      assert arithmetic({:div, [], [1, 2]}) == [{:rem, [], [1, 2]}]
+      assert arithmetic({:rem, [], [1, 2]}) == [{:div, [], [1, 2]}]
 
       # A same-named user call at another arity is left alone (not Kernel's div/2).
-      assert arithmetic({:div, [], [1, 2, 3]}, %{pipe_mode: :unpiped}) == :skip
-      assert arithmetic({:div, [], [2]}, %{pipe_mode: :unpiped}) == :skip
+      assert arithmetic({:div, [], [1, 2, 3]}) == :skip
+      assert arithmetic({:div, [], [2]}) == :skip
     end
 
     test "skips a div/rem call displaced from Kernel by `import Kernel, except:`" do
@@ -40,14 +38,14 @@ defmodule Mutare.MutatorsOperatorTest do
       # module's function, so the Kernel `div`↔`rem` swap must NOT fire — it would rewrite to a
       # sibling that may not exist (poisoning the single build) or mean something else. The
       # displacement is stamped on the call meta by `Mutare.Transform.Imports`; Arithmetic honors
-      # it via `Helpers.swap_bare_kernel/3`. (Before that guard a displaced `div` was wrongly
+      # it via `Helpers.swap_bare_kernel/2`. (Before that guard a displaced `div` was wrongly
       # swapped to `rem` — the bug this pins.)
       displaced = [mutare_kernel_displaced: true]
-      assert arithmetic({:div, displaced, [1, 2]}, %{pipe_mode: :unpiped}) == :skip
-      assert arithmetic({:rem, displaced, [1, 2]}, %{pipe_mode: :unpiped}) == :skip
+      assert arithmetic({:div, displaced, [1, 2]}) == :skip
+      assert arithmetic({:rem, displaced, [1, 2]}) == :skip
 
       # Without the stamp the same call still swaps — the displacement guard is the only difference.
-      assert arithmetic({:div, [], [1, 2]}, %{pipe_mode: :unpiped}) == [{:rem, [], [1, 2]}]
+      assert arithmetic({:div, [], [1, 2]}) == [{:rem, [], [1, 2]}]
     end
 
     test "preserves operand AST and operator metadata" do
@@ -83,10 +81,6 @@ defmodule Mutare.MutatorsOperatorTest do
       assert Arithmetic.name() == :arithmetic
     end
 
-    test "does not expose mutate/1" do
-      refute function_exported?(Arithmetic, :mutate, 1)
-    end
-
     test "skips a multiplicative identity right operand (a * 1, a / 1)" do
       a = {:a, [], nil}
 
@@ -118,8 +112,8 @@ defmodule Mutare.MutatorsOperatorTest do
 
     test "div/rem are never treated as identity (rem(a, 1) is 0, not a)" do
       a = {:a, [], nil}
-      assert arithmetic({:div, [], [a, 1]}, %{pipe_mode: :unpiped}) == [{:rem, [], [a, 1]}]
-      assert arithmetic({:rem, [], [a, 1]}, %{pipe_mode: :unpiped}) == [{:div, [], [a, 1]}]
+      assert arithmetic({:div, [], [a, 1]}) == [{:rem, [], [a, 1]}]
+      assert arithmetic({:rem, [], [a, 1]}) == [{:div, [], [a, 1]}]
     end
 
     test "a non-identity literal (e.g. * 2) still mutates" do
@@ -244,8 +238,7 @@ defmodule Mutare.MutatorsOperatorTest do
     end
   end
 
-  defp arithmetic(node), do: arithmetic(node, %{pipe_mode: :unpiped})
-  defp arithmetic(node, context), do: Arithmetic.mutate(node, context)
+  defp arithmetic(node), do: Arithmetic.mutate(node)
 
   defp parse(source), do: Sourceror.parse_string!(source)
   defp render(nodes), do: Enum.map(nodes, &Sourceror.to_string/1)

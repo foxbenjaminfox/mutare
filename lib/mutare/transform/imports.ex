@@ -71,7 +71,6 @@ defmodule Mutare.Transform.Imports do
   #     compile error instead of a wrong surviving mutant.
 
   alias Mutare.AST
-  alias Mutare.Mutator
   alias Mutare.Transform.{Aliases, MetaKeys}
 
   @import_key MetaKeys.import_key()
@@ -111,12 +110,12 @@ defmodule Mutare.Transform.Imports do
   The metadata for a bare call, stamped with the module it resolves to (`:mutare_import` —
   the useful, positive resolution) or marked `:mutare_kernel_displaced` (a `Kernel` name no
   longer in `Kernel`, so the bare-`Kernel` families skip it), or returned unchanged for a
-  local/default-`Kernel` call. `pipe_mode` (`:piped`/`:unpiped`) recovers the effective arity
-  (a pipe stage carries one fewer written arg than the source reads).
+  local/default-`Kernel` call. A `|>` stage is stamped through its direct form
+  (`Mutare.Transform.Resolve`), so `args` are always the call's whole argument list.
   """
-  @spec stamp(atom(), keyword(), [Macro.t()], map(), selector(), Mutator.pipe_mode()) :: keyword()
-  def stamp(fun, meta, args, imports, kernel, pipe_mode) do
-    arity = Mutator.effective_arity(args, pipe_mode)
+  @spec stamp(atom(), keyword(), [Macro.t()], map(), selector()) :: keyword()
+  def stamp(fun, meta, args, imports, kernel) do
+    arity = length(args)
 
     case resolve_import(imports, fun, arity) do
       {module_key, selector} ->
@@ -177,7 +176,7 @@ defmodule Mutare.Transform.Imports do
   def resolved_import(_meta), do: nil
 
   @doc """
-  A compile-time witness for a stamped bare import: `{module, fun, effective_arity}`.
+  A compile-time witness for a stamped bare import: `{module, fun, arity}`.
 
   Emission can splice this into a generated mutant branch as an unreachable import/call check.
   If macro expansion has secretly removed `fun/arity` from `module` and supplied it from another

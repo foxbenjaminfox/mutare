@@ -280,7 +280,7 @@ argument_marks: [
 ]
 ```
 
-An entry is `{Module, :function, arity, positions, label}`; `positions` lists effective argument indices (a piped receiver is index 0) and `{:keyword, key}` option keys. The label must be one an enabled mutator declares — `:timeout` is built in, and a companion package documents its own — so a typo fails at startup. Reach for a route when a position should simply not mutate; reach for a mark when the reaction should depend on the value.
+An entry is `{Module, :function, arity, positions, label}`; `positions` lists argument indices (a value piped into the call is index 0) and `{:keyword, key}` option keys. The label must be one an enabled mutator declares — `:timeout` is built in, and a companion package documents its own — so a typo fails at startup. Reach for a route when a position should simply not mutate; reach for a mark when the reaction should depend on the value.
 
 ### Choosing which mutators run
 

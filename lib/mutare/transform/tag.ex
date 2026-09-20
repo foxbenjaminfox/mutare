@@ -438,7 +438,7 @@ defmodule Mutare.Transform.Tag do
   # patterns are never pipe stages, so the base context is `:unpiped`; a leaf that carries no marks
   # (the overwhelming majority) is dispatched with that base untouched.
   defp mutations(node, mutators),
-    do: Dispatch.mutations(node, mutators, Meta.context_with_marks(%{pipe_mode: :unpiped}, node))
+    do: Dispatch.mutations(node, mutators, Meta.context_with_marks(%{}, node))
 
   defp offer_target(node, acc, mutators),
     do: tag_node(node, mutations(node, mutators), acc)

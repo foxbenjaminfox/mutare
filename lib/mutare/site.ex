@@ -105,6 +105,8 @@ defmodule Mutare.Site do
   Options:
 
     * `:note` — advisory text shown in reports
+    * `:position` — `[line:, column:]` to key the site at, when that is not where
+      `range` starts
     * `:variant` — one or more ignore labels; when absent, the mutator callback
       derives the variant
     * `:render?` — render `original_code` and `mutated_code` immediately; defaults
@@ -156,6 +158,11 @@ defmodule Mutare.Site do
       range: range
     }
   end
+
+  # A site keyed somewhere other than where its range starts: a pipe stage's mutant that patches
+  # the whole pipe is located, for `# mutare:ignore` and `--line`, at the stage.
+  defp keyed_at(site, nil), do: site
+  defp keyed_at(site, position), do: %{site | line: position[:line], column: position[:column]}
 
   @doc """
   Builds a lifted deletion site for a function clause.
@@ -395,7 +402,9 @@ defmodule Mutare.Site do
     mutated_shown = WrittenPipe.resugar(mutated_node)
 
     %{
-      base_site(id, file, range)
+      (id
+       |> base_site(file, range)
+       |> keyed_at(opts[:position]))
       | mutator: mutator.name,
         kind: kind,
         original_form: node_form(original_node),

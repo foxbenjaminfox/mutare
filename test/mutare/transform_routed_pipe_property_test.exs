@@ -66,12 +66,13 @@ defmodule Mutare.TransformRoutedPipePropertyTest do
           do:
             Mutare.Transform.transform_string_with_sites(source, Gen.transform_opts()).metamutant
 
-    # Rewritten: the routed stage is emitted as the direct call.
+    # The `:raw` slot reaches the metamutant as written.
     assert Enum.any?(metamutants, &(&1 =~ ~r/RoutedSoak\.keep\([^|]*1 < 2/s))
     # Bound: a `keep/3` stage's selector closes over its piped value, under the user's `|>`.
-    assert Enum.any?(metamutants, &(&1 =~ ~r/RoutedSoak\.keep\(\s*mutare_piped\w*,/))
+    assert Enum.any?(metamutants, &(&1 =~ ~r/mutare_piped\w*\s*\|> [\w.]*RoutedSoak\.keep\(/))
     # Plain: a `:lazy_expression` position is never bound.
     assert Enum.any?(metamutants, &(&1 =~ "RoutedSoak.pick("))
+    refute Enum.any?(metamutants, &(&1 =~ ~r/mutare_piped\w*\s*\|> [\w.]*RoutedSoak\.pick\(/))
     refute Enum.any?(metamutants, &(&1 =~ ~r/RoutedSoak\.pick\(\s*mutare_piped/))
   end
 

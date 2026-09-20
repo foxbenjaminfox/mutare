@@ -43,7 +43,7 @@ defmodule Mutare.Mutators.DefaultDrop do
   alias Mutare.AST
   alias Mutare.Mutators.Helpers
 
-  # {alias_path, function, effective_arity} => {base_function, equivalent_defaults}.
+  # {alias_path, function, arity} => {base_function, equivalent_defaults}.
   # The operation is uniform: drop the trailing (optional) argument and rename to the
   # base function. `equivalent_defaults` lists the literal value(s) the argument may hold
   # that are equivalent to the implicit default — dropping one of those is a no-op, so it
@@ -93,9 +93,9 @@ defmodule Mutare.Mutators.DefaultDrop do
   def name, do: :default_drop
 
   @impl Mutare.Mutator
-  def mutate(node, %{pipe_mode: pipe_mode}) do
+  def mutate(node) do
     with {:ok, {new_fun, equivalent_defaults}, {_module, _fun, args, rebuild}} <-
-           Helpers.lookup_resolved_arity(node, pipe_mode, @rules),
+           Helpers.lookup_resolved_arity(node, @rules),
          {dropped, kept} = List.pop_at(args, -1),
          # Skipped when the explicit trailing arg already equals the implicit default.
          false <- equivalent_default?(dropped, equivalent_defaults) do

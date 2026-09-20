@@ -29,7 +29,7 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
   defmodule StageSwap do
     @behaviour Mutare.Mutator
     def name, do: :stage_swap
-    def mutate({:stage, _, []}), do: [quote(do: List.wrap())]
+    def mutate({:stage, _, [value]}), do: [quote(do: List.wrap(unquote(value)))]
     def mutate(_), do: :skip
   end
 

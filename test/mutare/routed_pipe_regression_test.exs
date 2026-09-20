@@ -25,6 +25,80 @@ defmodule Mutare.RoutedPipeRegressionTest do
     end
   end
 
+  # A stage whose candidates disagree about argument 0: the ones that keep it ride inside the
+  # bound closure, the ones that move or drop it in a selector around it
+  # (`Mutare.Transform.PipeEmit`, `{:split, …}`). Unrouted, so this is every user's delivery.
+  test "a split stage keeps bindings, evaluation order and evaluation count under every mutant" do
+    source = """
+    defmodule Split do
+      def run(a, b) do
+        Process.put(:pipe_order, [])
+        result = (left = tick(a, :left)) |> DateTime.diff(tick(b, :right), :second)
+        {result, left, Process.delete(:pipe_order)}
+      end
+
+      defp tick(value, label) do
+        Process.put(:pipe_order, [label | Process.get(:pipe_order)])
+        value
+      end
+    end
+    """
+
+    sites =
+      assert_patches(source, [:operand_swap, :mode_swap], [
+        {:run, [~U[2024-01-01 00:00:00Z], ~U[2024-01-01 00:01:00Z]]}
+      ])
+
+    assert Enum.any?(sites, &(&1.mutator == :operand_swap))
+    assert Enum.any?(sites, &(&1.mutator == :mode_swap))
+  end
+
+  test "a tail stage's return-value mutants sit around its bound stage mutants" do
+    source = """
+    defmodule Tail do
+      def run(xs, sink), do: tick(xs, sink) |> Enum.map(&(&1 + 1)) |> Enum.sort(:desc)
+
+      defp tick(xs, sink) do
+        send(sink, :evaluated)
+        xs
+      end
+    end
+    """
+
+    sites =
+      assert_patches(source, [:return_value, :collection_arity, :call_removal, :arithmetic], [
+        {:run, [[1, 3, 2], self()]}
+      ])
+
+    for family <- [:return_value, :collection_arity, :call_removal, :arithmetic],
+        do: assert(Enum.any?(sites, &(&1.mutator == family)), "no #{family} site")
+
+    {[module], sites} =
+      compile_metamutant(source, [:return_value, :collection_arity, :call_removal])
+
+    # A mutant that keeps the chain evaluates its head once; one that replaces the whole
+    # expression never evaluates it. (The patch runs above left their own ticks behind.)
+    drain()
+
+    # `run/2` is line 2; `tick/2`'s own return-value mutants are not the subject.
+    for site <- sites, site.line == 2 do
+      with_active_mutant(site.id, fn -> module.run([1, 3, 2], self()) end)
+      evaluations = drain()
+
+      if site.mutator == :return_value,
+        do: assert(evaluations == 0, "#{site.mutated_code} evaluated the chain"),
+        else: assert(evaluations == 1, "#{site.mutated_code}: #{evaluations} evaluations")
+    end
+  end
+
+  defp drain(count \\ 0) do
+    receive do
+      :evaluated -> drain(count + 1)
+    after
+      0 -> count
+    end
+  end
+
   test "inline routed-pipe branches retain each mutant's evaluation order" do
     source = """
     defmodule Binding do

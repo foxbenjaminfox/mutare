@@ -310,6 +310,31 @@ defmodule Mutare.SchemaTest do
     :code.delete(module)
   end
 
+  test "a line selection reaches a pipe stage's mutant that is reported over the whole pipe",
+       %{root: root} do
+    # The transposed stage patches lines 3–5 but is keyed at its own line, 5.
+    write(root, "lib/a.ex", """
+    defmodule StageLine do
+      def f(xs, ys) do
+        xs
+        |> Enum.uniq()
+        |> Kernel.--(ys)
+      end
+    end
+    """)
+
+    mutators = [Mutare.Mutators.OperandSwap, Mutare.Mutators.CallRemoval]
+    select = fn line -> MapSet.new([{"lib/a.ex", line}]) end
+
+    assert [%{mutator: :operand_swap, line: 5}] =
+             Schema.build(root, mutators: mutators, only_lines: select.(5)).sites
+
+    assert [%{mutator: :call_removal, line: 4}] =
+             Schema.build(root, mutators: mutators, only_lines: select.(4)).sites
+
+    assert Schema.build(root, mutators: mutators, only_lines: select.(3)).sites == []
+  end
+
   test "withheld lifted functions collapse while selected siblings retain their selectors",
        %{root: root} do
     write(root, "lib/a.ex", """

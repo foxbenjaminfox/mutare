@@ -11573,7 +11573,7 @@ every other `Kernel` name (`Imports`, "Scope and limits"). The other structural 
 heads (`if`/`unless`, the connectives, `in`) still dispatch in `Analyze` by shape; they were
 not audited here.
 
-### A routed pipe stage becomes a direct call `[done]` (2026-09-19)
+### A routed pipe stage becomes a direct call `[done — extended to every stage: see "A pipe stage is the call it is sugar for"]` (2026-09-19)
 
 `left |> stage(args)` is sugar for `stage(left, args)`, and core had stopped treating it as
 sugar. Two releases of machinery followed from keeping the `|>` node around a *routed* stage:
@@ -12110,3 +12110,99 @@ mutants). No new facility is owed for this.
 not by adding one. The line is
 cost: leaving source as written is the default; machinery whose only purpose is to fool
 reflection is not built.
+
+### A pipe stage is the call it is sugar for `[done]` (2026-09-20)
+
+"A routed pipe stage becomes a direct call" applied `left |> stage(args)` ≡ `stage(left, args)`
+to stages under a positional route only. That condition was where the pain had shown (Ecto),
+not a property of pipes, and it left two regimes whose boundary a route moved: adding
+`{MyApp.Audit, :log, 2, [:raw, :expression]}` — which says nothing about pipes — changed what
+mutators were offered for `x |> Audit.log(y)`, the text of its reports (`CallRemoval`:
+`Function.identity()` against `x`; `OperandSwap`: the `(&f(b, &1)).()` capture against a plain
+transpose), a mutant's evaluation order, and the mutant *set* (the piped path could not prune
+identical operands and skipped a bare `a |> div(b)`). Unrouted, every mutator author still had
+to remember pipes: `pipe_mode`, `effective_arity/2`, `visible_index/2`, and a custom `mutate/1`
+matching `[enum, fun]` that silently missed the piped spelling.
+
+**The rule now.** In code Mutare analyzes, a `Kernel.|>/2` stage *is* the call `Macro.pipe/3`
+makes of it. That the user wrote a pipe is a fact about spelling, read by the two layers that
+touch spelling: the Site (`WrittenPipe`: range, stage attribution, resugaring) and delivery
+(`PipeEmit`: bind the piped value, spell the call as a pipe again). `Resolve.routed_stage/3`
+(now `direct_stage/3`) lost its `RouteStamp.positional?/4` gate and walks every stage through its direct form, so
+the stage's arity, import, route and argument marks come out of the clauses that serve a
+written call. Gone with the gate: `env.pipe_mode` and its resets, `Imports.stamp/6`'s pipe
+argument, the head-only resolver `stage_target/2` (it existed to ask "routed?" before
+walking), `pipe_target/2`, the whole piped-receiver path of `ArgumentMarks`
+(`receiver_funs`, `stamp_receiver/5` — argument 0 is marked like any argument),
+`Analyze.analyze_pipe_stage/2`, `PipeEmit.hoist/2`, `Mutare.Mutator`'s `pipe_mode`,
+`effective_arity/2` and `visible_index/2`, and the pipe branch of every built-in family.
+Removed outright, with no deprecation period: the release already breaks `Call` and
+`ArgumentRoutes` for adapters, and one migration is cheaper than two.
+
+**What stays a pipe: a stage under the call-level `:skip`.** Read strictly as sugar,
+`Repo.insert!(u) |> Mixpanel.track(…)` under `:skip` would bury the insert in an inert leaf, as
+the direct spelling does — and so would a skipped `|> IO.inspect()` bury everything upstream of
+it in a chain. The documented behaviour (the piped value is the skipped call's *sibling*)
+is kept, as the one place a call's spelling carries the user's intent. `Resolve` walks the
+direct form like any other, finds `:skip` on it, and leaves the stage unmarked, answering for
+its piped operand by the displaced route's position 0 as before
+(`RouteStamp.stamp_skipped_receiver/2`). The cleaner long-term answer is a routing word for
+"withhold this call's node, descend its arguments", which would let the direct spelling say
+the same; none exists.
+
+**Delivery still reads the spelling and the route together, and should.** The first plan was
+to make the binding rule spelling-free ("bind argument 0 when it carries candidates"). It does
+not survive contact: for a directly nested call the closure nests as deep as the call does, so
+it buys nothing there, and it would wrap a closure around every nested arithmetic operator.
+The closure pays only where it renders under a `|>`. So `PipeEmit.delivery/2` asks "written as
+a pipe?" (can the binding render flat) and "is position 0 a value?" (may it be evaluated
+early — unrouted now counts, by "a call is ordinary in every respect its route does not
+address"). Both are delivery questions; neither reaches a mutator, a report, or a function's
+behaviour. The known residue is unchanged from 0.3.1: an unrouted *macro* that evaluates its
+first argument lazily is evaluated eagerly when piped and mutated whole, and says otherwise
+with `:lazy_expression`.
+
+**Split delivery.** With every tail pipe rewritten, a tail stage's return-value constants land
+on the same node as its stage mutants (the direct call takes the pipe's nid), and a constant
+does not keep argument 0. Under the old all-or-nothing rule one such candidate sent the whole
+site to inline delivery. `delivery/2` now partitions: candidates that keep argument 0 go in the
+bound closure, the rest in a selector around it (`{:split, bind, outer}`), which exports the
+bindings its branches share with argument 0. That is the two-selector shape an unrouted tail
+pipe always had (return values on the `|>`, the stage hoisted), so `Manifest` reads it
+unchanged. Ids are claimed in candidate order across both layers.
+
+**The metamutant spells pipes as pipes** (`PipeEmit.sugar/1`): a rewritten call left bare — a
+selector branch, a stage with no selector — is emitted as `arg0' |> stage(rest)`. The compiler
+desugars it again, so this costs nothing at compile time; it keeps the rendered chain flat
+("Evaluation is a route's to declare" measured 40 KB nested against 17 KB piped at depth 32). Sourceror parenthesizes a
+looser-binding generated left side (`(n + 100) |> bump(1)`); a generated pin stays the call's
+argument, as `pipe_into/3` had it.
+
+**A whole-pipe site is keyed at its stage** (`Candidate.InPlace`'s `:position`,
+`WrittenPipe.stage_position/1`). Found by dogfooding: two `# mutare:ignore[call_removal]`
+directives over a `|> Enum.uniq()` and a `|> Enum.sort_by(…)` in Mutare's own source stopped
+suppressing anything. The old `Function.identity()` and capture mutants kept the piped value,
+so they were attributed to the stage; a removal or a transpose moves it, has no narrower home
+than the pipe, and a pipe's range starts at the top of a multi-line chain — lines above the
+directive. The patch needs the pipe; the *mutation* is of the stage. So such a site keeps its
+range and diff over the pipe and takes the stage's line and column. `Delivery.line/1` reads the
+same field, so `--line`/`--since` select it by the stage's line too (`schema_test.exs`,
+`pipe_stage_line_test.exs`). A mutator's own attribution still wins, and a tail pipe's
+return-value sites are keyed at the pipe's first line, as they always were.
+
+**Evidence.** `pipe_spelling_property_test.exs` gained a `div` stage and the `:numeric` and
+`:operand_swap` families, and a second property: a route that says of a function only what is
+already true changes no mutant. Both fail at `1c7ad275` (counterexample `[div: -2]`, piped
+against direct) and pass here. `routed_pipe_regression_test.exs` checks a split site's
+bindings, evaluation order and evaluation count through `SourcePatch`.
+
+**Cost, measured.** `mix mutare --check --verify-invariants` over the source tree of
+`1c7ad275` (204 files), by that commit's tool and by this one: 32,717 mutants and 243.2 s of CPU
+against 32,715 and 243.3 s, both compiling on the first attempt. Unrouted stages were already
+delivered through a closure, so binding every stage through `PipeEmit.delivery/2` changes the
+metamutant's spelling and not its size.
+
+**Not done.** The `written_pipe` stamp holds a whole unwalked pipe per stage — a sum of
+prefixes — and now sits on every chain, not only routed ones. Its readers appear to need only
+the pipe's meta; `resugar/1` could rebuild the rest from the live node. Unverified, and left
+until a measurement asks for it.

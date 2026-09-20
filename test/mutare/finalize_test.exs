@@ -178,7 +178,7 @@ defmodule Mutare.FinalizeTest do
     test "finalize/2 runs on each target mutant, dropping skips and enriching the rest" do
       spec = Spec.configured(FinalizeHost, keep: ["a"])
 
-      assert [target] = Dispatch.host_targets(spec, call(), %{pipe_mode: :unpiped})
+      assert [target] = Dispatch.host_targets(spec, call(), %{})
 
       assert [%Dispatch.Result{spec: ^spec, node: {:a, [], nil}, note: "kept a", variant: ["a"]}] =
                target.mutants
@@ -187,7 +187,7 @@ defmodule Mutare.FinalizeTest do
     test "a target whose mutants all skip is dropped" do
       spec = Spec.configured(FinalizeHost, keep: [])
 
-      assert Dispatch.host_targets(spec, call(), %{pipe_mode: :unpiped}) == []
+      assert Dispatch.host_targets(spec, call(), %{}) == []
     end
   end
 

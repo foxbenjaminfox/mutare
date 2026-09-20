@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`:lazy_expression`, a position treatment for a callee that may not evaluate an argument
-  eagerly.** Mutare treats every call as a function in every respect its route does not address,
+  eagerly.** Mutare treats every call as ordinary in every respect its route does not address,
   including when its arguments run: to deliver a whole-call mutant on a pipe stage it evaluates
   the piped value once, ahead of the stage. A macro that evaluates that operand late,
   conditionally, or never (`value |> lazy(enabled?)`) routes the position `:lazy_expression`.
@@ -19,24 +19,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **A piped routed call is shown, mutated and delivered as the direct call it is sugar for.**
-  `(p in Post) |> from(order_by: …)` reaches `route_arguments/2`, `host/2`, `mutate/2` and
-  `Mutare.Calls.resolved_routed_call/1` as `from(p in Post, order_by: …)`. The piped operand is
-  argument 0: a classifier routes it by shape, `call.rebuild` can rewrite it, and it may be
-  routed `:hosted` (previously a `ContractError`). Reports are unchanged — a mutant that leaves
-  argument 0 alone is still located at, and diffed as, the stage the user wrote; one that
-  rewrites it is reported over the whole pipe. Stages that take no positional route (an
-  ordinary function call, a `:skip`ped call) stay pipes, and so does any pipe in code Mutare
-  leaves as written (a `:raw` argument, the inside of a `:skip`ped call). A rewritten stage whose first position
-  is `:expression` or `:interior` still has its piped value evaluated once, as before; one
-  routed `:lazy_expression`, or as syntax, never does. **Breaking for adapters:**
+- **A pipe stage is the call it is sugar for, everywhere Mutare reads code.**
+  `left |> stage(args)` is resolved, routed, marked, offered to mutators and delivered as
+  `stage(left, args)` — `Kernel.|>/2`'s own desugaring — whether or not the call has a route.
+  A mutator is never shown a call one argument short, so a custom `mutate/1` that matches
+  `Enum.map(enum, fun)` now matches the piped spelling too, and no family needs to know about
+  pipes. Reports keep the spelling the user wrote: a mutant that leaves the piped value alone is
+  located at, and diffed as, the stage; one that moves or drops it is diffed over the whole
+  pipe, and still located at the stage's line, so a `# mutare:ignore` over the stage and a
+  `--line` naming it keep working in a multi-line chain. What changes in a report:
+  - A removed stage reads `xs |> Enum.sort()` → `xs` (was `Enum.sort()` →
+    `Elixir.Function.identity()`).
+  - A transposed stage reads `foo |> Kernel.++(bar)` → `bar |> Kernel.++(foo)` (was
+    `(&Kernel.++(bar, &1)).()`), and evaluates its operands in that order.
+  - Piped and direct spellings now yield the same mutants. A piped bare `a |> div(b)` is
+    transposed like `div(a, b)`, a pipe of identical operands is no longer transposed, a piped
+    `bnot` is stripped, and the explicit `Kernel.++(a, b)` call form is transposed when written
+    directly as well.
+
+  A routed call gains what 0.3.1 withheld from a piped one: a classifier routes the piped
+  operand by shape, `call.rebuild` can rewrite it, and it may be routed `:hosted` (previously a
+  `ContractError`). Two stages stay pipes: a call under the call-level `:skip`, whose piped
+  value is not part of the skipped call and keeps its mutants, and any pipe in code Mutare
+  leaves as written (a `:raw` argument, the inside of a `:skip`ped call). A stage whose first
+  position is a value — unrouted, or routed `:expression` or `:interior` — has its piped value
+  evaluated once, ahead of the stage, as before; one routed `:lazy_expression`, or as syntax,
+  never does. **Breaking:**
+  - The `mutate/2` context loses `:pipe_mode`, and `Mutare.Mutator` loses the `pipe_mode` type,
+    `effective_arity/2` and `visible_index/2`. A clause matching `%{pipe_mode: mode}` no longer
+    matches anything; read `length(args)` and index the arguments directly.
+  - `Mutare.Test.node_mutations/2` replaces the three-argument form, which took a pipe mode.
+    Test a pipe stage by writing the direct call.
   - `Mutare.CallRouting.Call` loses `pipe_left`, `pipe_mode` and `effective_arity`, and its
     five-argument `new` becomes `new/4` (`node, module, name, rebuild`).
   - `Mutare.CallRouting.ArgumentRoutes`' `from_effective` and `from_visible` constructors are
     replaced by `new/2` (one treatment per argument), and its `visible`/`piped` readers by
     `treatments/1`.
   - `c:Mutare.CallRouting.route_arguments/1` replaces `route_arguments/2`: its context
-    argument carried only `:pipe_mode`, which a call shown unpiped no longer has.
+    argument carried only `:pipe_mode`.
 
 ### Fixed
 

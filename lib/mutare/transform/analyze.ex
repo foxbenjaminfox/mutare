@@ -273,7 +273,7 @@ defmodule Mutare.Transform.Analyze do
   # with the hoists folded into the condition (`Conditions.fold_hoist_into_condition/1`) — a
   # legal, semantically identical position — before the capture is rebuilt.
   defp analyze_form({:&, _meta, [_body]} = node, :runtime, env) do
-    case do_analyze_call_node(node, env, %{pipe_mode: :unpiped}) do
+    case do_analyze_call_node(node, env) do
       {:&, amp_meta, [child]} ->
         {:&, amp_meta, [Conditions.fold_hoist_into_condition(child)]}
 
@@ -548,28 +548,22 @@ defmodule Mutare.Transform.Analyze do
     {:\\, meta, [analyze(var, :pattern, env), analyze(default, :runtime, env)]}
   end
 
-  # `|>` pipe: the right side is a call whose *effective* first argument is the piped
-  # left side — which is the `|>` node's LHS, **not** present in the call's own args.
-  # So a pipe stage carries one fewer argument than the source reads, which makes a
-  # node-local mutator misjudge its arity. Route the RHS through `analyze_pipe_stage/2`
-  # so an arity-changing mutator (`CollectionArity`) is offered the node *as piped*
-  # and sees the true arity. (Arity-blind mutators are unaffected — they ignore the flag.)
-  #
-  # The LHS is an ordinary runtime expression, with one exception: a stage under the call-level
-  # `:skip` whose skip displaced a code-provided route answers for its effective argument 0 by
-  # that route's position 0 (`analyze_piped_value/3`) — a skipped `1 |> match?(1)` must not
-  # have a selector `case` spliced into its pattern. (A stage under a *positional* route never
-  # arrives as a pipe: `analyze/3` made it the direct call on the way in.)
+  # A `Kernel.|>/2` that is still a pipe here. Every stage `Kernel` can pipe into became the
+  # direct call on the way in (`analyze/3`, `WrittenPipe.direct/1`), so what arrives is a stage
+  # under the call-level `:skip` — an inert leaf, whose left side is its *sibling* and keeps its
+  # mutants. That left side is still the skipped call's argument 0: when the skip displaced a
+  # code-provided route it is analyzed by that route's position 0
+  # (`Routed.analyze_piped_value/3`), so a skipped `1 |> match?(1)` gets no selector `case`
+  # spliced into its pattern.
   #
   # Only `Kernel.|>/2` is that pipe. A `|>` displaced out of `Kernel` is a call to somebody
-  # else's operator, and the closure `PipeEmit.hoist/2` builds would apply that operator twice —
-  # so it is analyzed as the call it is (`analyze_foreign_pipe/2`).
+  # else's operator, analyzed as the call it is (`analyze_foreign_pipe/2`).
   defp analyze_form({:|>, meta, [lhs, rhs]} = node, :runtime, env) do
     if Calls.kernel_call?(node) do
       {:|>, meta,
        [
          Routed.analyze_piped_value(lhs, rhs, env),
-         analyze_pipe_stage(rhs, env)
+         analyze(rhs, :runtime, env)
        ]}
     else
       analyze_foreign_pipe(node, env)
@@ -659,7 +653,7 @@ defmodule Mutare.Transform.Analyze do
        when is_negation_op(neg) do
     # A skipped inner node is a leaf with no mutants to be redundant with: the generic path.
     if Meta.skipped?(raw_inner) do
-      do_analyze_call_node(node, env, %{pipe_mode: :unpiped})
+      do_analyze_call_node(node, env)
     else
       inner = {neg, inner_meta, [analyze(operand, :runtime, env)]}
       Attach.offer({neg, meta, [inner]}, node, env.mutators)
@@ -680,7 +674,7 @@ defmodule Mutare.Transform.Analyze do
        )
        when is_negation_op(neg) do
     if Meta.skipped?(raw_inner) do
-      do_analyze_call_node(node, env, %{pipe_mode: :unpiped})
+      do_analyze_call_node(node, env)
     else
       inner =
         {:in, in_meta, [analyze(left, :runtime, env), analyze(right, :runtime, env)]}
@@ -709,14 +703,14 @@ defmodule Mutare.Transform.Analyze do
     inner_raw = {op, op_meta, [left, right]}
 
     if Meta.skipped?(inner_raw) do
-      do_analyze_call_node(node, env, %{pipe_mode: :unpiped})
+      do_analyze_call_node(node, env)
     else
       # The inner node takes the ordinary call path — offered, its operands by their stamped
       # positions when it carries a route (`{Kernel, :==, 2, :interior}` holds under `not` as it
       # does bare); this clause adds only the negation-redundancy drop on top.
       inner =
         inner_raw
-        |> do_analyze_call_node(env, %{pipe_mode: :unpiped})
+        |> do_analyze_call_node(env)
         |> drop_negation_redundant_candidates(op)
 
       Attach.offer({neg, meta, [inner]}, node, env.mutators)
@@ -768,7 +762,7 @@ defmodule Mutare.Transform.Analyze do
       content = {:<<>>, bmeta, Enum.map(segments, &analyze_segment(&1, :runtime, env))}
       Attach.offer({dot, meta, [content, encoding]}, node, env.mutators)
     else
-      do_analyze_call_node(node, env, %{pipe_mode: :unpiped})
+      do_analyze_call_node(node, env)
     end
   end
 
@@ -791,7 +785,7 @@ defmodule Mutare.Transform.Analyze do
   # *surgically* via `descend_sigil/2`, so an interpolated `~r/a#{b}c/` still mutates `b`
   # while its content `<<>>` wrapper is never offered; that gate lives in the helper.)
   defp analyze_form({_form, _meta, _args} = node, :runtime, env),
-    do: do_analyze_call_node(node, env, %{pipe_mode: :unpiped})
+    do: do_analyze_call_node(node, env)
 
   # A keyword/map/block pair (`key: value`, `%{a: …}`, a `do:`/`else:`/`rescue:`/
   # `catch:`/`after:` block). Only a **block key** is a pure structural label that
@@ -851,23 +845,6 @@ defmodule Mutare.Transform.Analyze do
     Candidate.update_candidates(node, fn cands -> Enum.reject(cands, predicate) end)
   end
 
-  # The right side of a `|>` (see the `:|>` clause of `analyze/3`): offer it to
-  # mutators *as piped* (so an arity-changing mutator sees the effective arity =
-  # visible args + 1), then descend its arguments as ordinary runtime. Mirrors the
-  # generic runtime clause (a pipe stage is never a sigil). The resulting candidate
-  # is a normal `Candidate.InPlace`, so emission wraps it in a selector and
-  # `PipeEmit.hoist/2` lifts the selector out of the illegal pipe-RHS position into a
-  # one-shot closure on the piped value — `lhs |> (fn v -> case … (each branch pipes
-  # `v`) … end).()`. A non-call RHS (rare) is analyzed normally.
-  #
-  # The stage is an **unrouted** call, or one under the call-level `:skip` (left alone by
-  # `do_analyze_call_node/3`): a stage under a positional route is no longer a pipe by the time
-  # it gets here — `analyze/3` made it the direct call on the way in.
-  defp analyze_pipe_stage({_form, _meta, args} = node, env) when is_list(args),
-    do: do_analyze_call_node(node, env, %{pipe_mode: :piped})
-
-  defp analyze_pipe_stage(other, env), do: analyze(other, :runtime, env)
-
   # A `|>` that is not `Kernel`'s is a call like any other: under the route the user gave the
   # custom operator if there is one, and otherwise offered whole with both operands descended
   # as values. Core assumes nothing about what the operator does with its right side — a
@@ -875,31 +852,19 @@ defmodule Mutare.Transform.Analyze do
   # argument, is for its user to route (`{MyPipe, :|>, 2, [:expression, :interior]}`), as any
   # other macro is.
   defp analyze_foreign_pipe(node, env),
-    do: do_analyze_call_node(node, env, %{pipe_mode: :unpiped})
+    do: do_analyze_call_node(node, env)
 
-  # The shared call-node dispatch behind the generic runtime `analyze/3` clause and
-  # `analyze_pipe_stage/2`: a call stamped a **known macro** (`meta[:mutare_route]`, set by
-  # `Mutare.Transform.Resolve` from `Mutare.CallRouting.Registry`) routes its arguments by their declared
-  # treatment (`Routed.analyze_routed_call` — so a pattern arg isn't mutated in place and an
-  # opaque DSL body is left raw) while the whole node is still offered to mutators; every other
-  # node is offered and its children descended. `context` carries `:pipe_mode` (`:piped` for a
-  # `|>` RHS, so an arity-changing mutator sees the effective arity) — which also gates the
-  # sigil-content path: a `|>` RHS (`:piped`) is never sigil syntax, so only the generic-runtime
-  # (`:unpiped`) path descends sigil content.
-  defp do_analyze_call_node({form, meta, _args} = node, env, context) do
+  # The shared call-node dispatch behind the runtime `analyze/3` clauses: a call stamped a
+  # **known macro** (`meta[:mutare_route]`, set by `Mutare.Transform.Resolve` from
+  # `Mutare.CallRouting.Registry`) routes its arguments by their declared treatment
+  # (`Routed.analyze_routed_call` — so a pattern arg isn't mutated in place and an opaque DSL
+  # body is left raw) while the whole node is still offered to mutators; every other node is
+  # offered and its children descended. (The call-level `:skip` never arrives: `analyze/3`
+  # returns a skipped node before any clause.)
+  defp do_analyze_call_node({form, meta, _args} = node, env) do
     case Meta.routing(meta) do
-      # The call-level `:skip`: an **inert leaf** — no whole-node offer, nothing inside the
-      # parentheses descended. (A piped receiver is the `|>`'s other operand, analyzed by the
-      # pipe clause before this node is reached, so `Repo.insert!(u) |> Skipped.call()` keeps
-      # the receiver's mutants. A tail-position skipped call still gets its return-value
-      # replacements — those belong to the enclosing function, attached by `Returns`.) Reached
-      # only from `analyze_pipe_stage/2`, a `|>` RHS — an unpiped node is intercepted by
-      # `analyze/3`'s dispatcher before any clause.
-      :skip ->
-        node
-
       nil ->
-        node = Attach.offer(node, node, env.mutators, context)
+        node = Attach.offer(node, node, env.mutators)
 
         # `sigil?(form)` (the `sigil_<x>` head) is necessary but **not sufficient**: a call to a
         # *function* named `sigil_s`/`sigil_r`/… (a local sigil shadowing `Kernel`'s) parses to the
@@ -909,12 +874,12 @@ defmodule Mutare.Transform.Analyze do
         # `binary_valued_literal?/1` guards). Only genuine sigil syntax carries the parser's
         # `:delimiter` meta, so gate on it; a non-sigil call falls through to `recurse_runtime`,
         # which analyses its args — including a real bitstring arg — correctly.
-        if context.pipe_mode == :unpiped and sigil?(form) and Keyword.has_key?(meta, :delimiter),
+        if sigil?(form) and Keyword.has_key?(meta, :delimiter),
           do: descend_sigil(node, env),
           else: node |> recurse_runtime(env) |> descend_receiver(env)
 
       routing ->
-        Routed.analyze_routed_call(node, routing, env, context)
+        Routed.analyze_routed_call(node, routing, env)
     end
   end
 

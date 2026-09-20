@@ -54,8 +54,7 @@ defmodule Mutare.Mutator.Dispatch do
   module's `mutate/1` helper from `mutate/2`, making composition explicit instead of
   a hidden double-dispatch rule. The per-spec `context` carries the pipe mode
   **and** the spec's `:opts`/`:config`, so pipe-aware/arity-changing and configurable
-  mutators both participate here. `context` defaults to `%{pipe_mode: :unpiped}`; the transform passes
-  `%{pipe_mode: :piped}` for a `|>` right-hand side. Each result is a `%Result{}`: `spec` the
+  mutators both participate here. `context` defaults to the empty base context. Each result is a `%Result{}`: `spec` the
   **spec** (not the bare module), so the result retains the family name and config; `node` the
   replacement AST; `note` (`nil` unless the mutator returned a `%Mutare.Mutator.Mutation{}` with one),
   so a per-mutant advisory is copied to the `Mutare.Site`; `variant` (the
@@ -68,7 +67,7 @@ defmodule Mutare.Mutator.Dispatch do
       {:arithmetic, {:-, [], [1, 2]}}
   """
   @spec mutations(Macro.t(), [Spec.t() | module()], Mutare.Mutator.context()) :: [Result.t()]
-  def mutations(node, mutators, context \\ %{pipe_mode: :unpiped}) do
+  def mutations(node, mutators, context \\ %{}) do
     Enum.flat_map(mutators, fn entry ->
       spec = Spec.coerce(entry)
       node_level(spec, node, put_spec_context(context, spec))
@@ -78,8 +77,7 @@ defmodule Mutare.Mutator.Dispatch do
   # Inject the per-spec configuration facts into a callback context: the raw `:opts`, the
   # `init/1`-normalized `:config`, and the enclosing module's `:behaviours`. The one place
   # the spec-derived context keys are named, shared by the node-level (`mutations/3`) and
-  # selector-host (`host_targets/3`) paths — `structural_context/1` builds the same keys
-  # minus `:pipe_mode` from scratch.
+  # selector-host (`host_targets/3`) paths, and by `structural_context/1`.
   defp put_spec_context(context, %Spec{
          name: name,
          opts: opts,
@@ -476,8 +474,7 @@ defmodule Mutare.Mutator.Dispatch do
   end
 
   # The structural-callback context: the same per-spec configuration facts as the
-  # node-level context, minus :pipe_mode (structural positions are not pipe
-  # stages). :opts/:config make {Module, opts} configurable structural mutators
+  # node-level context. :opts/:config make {Module, opts} configurable structural mutators
   # work, and :behaviours lets behaviour-gated structural mutators restrict
   # themselves to modules implementing a target behaviour.
   defp structural_context(%Spec{} = spec), do: put_spec_context(%{}, spec)

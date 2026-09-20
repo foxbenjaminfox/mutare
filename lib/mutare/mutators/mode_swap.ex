@@ -30,7 +30,7 @@ defmodule Mutare.Mutators.ModeSwap do
 
   Ordered sets use adjacent replacements, so a position produces at most two mutants. Unrecognized atoms and values of other types are ignored.
 
-  This family is enabled by default. It matches aliased and piped calls and locates the option at its effective argument position. Because it rewrites the whole call, overlapping `Mutare.Mutators.AtomLiteral` and `Mutare.Mutators.AliasLiteral` leaf mutants are removed.
+  This family is enabled by default. It matches aliased and piped calls alike. Because it rewrites the whole call, overlapping `Mutare.Mutators.AtomLiteral` and `Mutare.Mutators.AliasLiteral` leaf mutants are removed.
   """
   @behaviour Mutare.Mutator
 
@@ -119,10 +119,9 @@ defmodule Mutare.Mutators.ModeSwap do
   # The stdlib calls whose mode/unit argument we swap, grouped by their shared
   # `{mode_positions, group}` value — so the value is written once and a signature can't
   # drift from its siblings (and adding a calendar type, arity, or Base variant is one line
-  # in the right group). `@rules` (the `{alias_path, function, effective_arity}` =>
-  # `{positions, group}` lookup the matcher reads) is *derived* from this below. Positions
-  # are *effective* (pipe-independent); `visible_index/2` maps them to the node's own arg
-  # list. Most rules carry one position; `convert_time_unit` has two.
+  # in the right group). `@rules` (the `{alias_path, function, arity}` =>
+  # `{positions, group}` lookup the matcher reads) is *derived* from this below. Most rules
+  # carry one position; `convert_time_unit` has two.
   @rule_groups [
     # Time-unit precision — `truncate`'s 3-member slice of the calendar ladder.
     {{[1], :truncate},
@@ -192,7 +191,7 @@ defmodule Mutare.Mutators.ModeSwap do
     {{[2], :uri_encoding}, [{[:URI], :decode_query, 3}]}
   ]
 
-  # The flat lookup the matcher reads: `{alias_path, function, effective_arity}` =>
+  # The flat lookup the matcher reads: `{alias_path, function, arity}` =>
   # `{mode_positions, group}`, derived by flattening each group's signature list.
   @rules for {spec, sigs} <- @rule_groups, sig <- sigs, into: %{}, do: {sig, spec}
 
@@ -208,29 +207,26 @@ defmodule Mutare.Mutators.ModeSwap do
   def name, do: :mode_swap
 
   @impl Mutare.Mutator
-  def mutate(node, %{pipe_mode: pipe_mode}) do
+  def mutate(node) do
     with {:ok, {positions, group}, {_module, fun, args, rebuild}} <-
-           Helpers.lookup_resolved_arity(node, pipe_mode, @rules),
-         [_ | _] = sites <- swap_sites(args, positions, group, pipe_mode) do
+           Helpers.lookup_resolved_arity(node, @rules),
+         [_ | _] = sites <- swap_sites(args, positions, group) do
       # `rebuild` keeps the same function and written alias, swapping only args. Each site
       # carries the replacement *arg node* — a fresh mode-atom literal, or (for `shift`) the
       # duration keyword list with one unit key swapped.
-      Enum.map(sites, fn {vis, arg} -> rebuild.(fun, List.replace_at(args, vis, arg)) end)
+      Enum.map(sites, fn {pos, arg} -> rebuild.(fun, List.replace_at(args, pos, arg)) end)
     else
       _ -> :skip
     end
   end
 
-  # The `{visible_index, replacement_arg_node}` pairs this rule yields — one per legal
-  # swap at each mode position. A position that yields no swap (a non-mode-atom, an
-  # unrecognised atom, a non-keyword-list duration, or the piped value itself) contributes
-  # none.
-  defp swap_sites(args, positions, group, pipe_mode) do
+  # The `{index, replacement_arg_node}` pairs this rule yields — one per legal swap at each
+  # mode position. A position that yields no swap (a non-mode-atom, an unrecognised atom, a
+  # non-keyword-list duration) contributes none.
+  defp swap_sites(args, positions, group) do
     for pos <- positions,
-        vis = Mutare.Mutator.visible_index(pos, pipe_mode),
-        vis != nil,
-        replacement <- position_swaps(group, Enum.at(args, vis)) do
-      {vis, replacement}
+        replacement <- position_swaps(group, Enum.at(args, pos)) do
+      {pos, replacement}
     end
   end
 

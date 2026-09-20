@@ -33,10 +33,9 @@ defmodule Mutare.Transform.Names do
   # collision-free variant when the source already uses the name.
   @super_var :mutare_super
 
-  # The canonical piped-value closure variable. When a mutated *pipe stage* is
-  # hoisted out of its illegal `x |> case … end` position, the piped value is bound
-  # to a one-shot closure's parameter and the branches reference *it* rather than
-  # copying the whole upstream chain (see `Mutare.Transform.PipeEmit.hoist/2`). It is
+  # The canonical piped-value closure variable. A mutated call written as a *pipe stage*
+  # has its piped value bound to a one-shot closure's parameter, and the branches reference
+  # *it* rather than copying the whole upstream chain (see `Mutare.Transform.PipeEmit`). It is
   # read inside the branches, so — like the dispatch/super variables — it is salted
   # rather than underscore-prefixed, and must not collide with a source variable the
   # stage's arguments mention (else the closure param would capture it).
@@ -64,7 +63,7 @@ defmodule Mutare.Transform.Names do
     * `:prefix` — the private-function prefix (`__mutare_…`);
     * `:active_var` — the dispatch variable;
     * `:super_var` — the super-forwarding closure variable;
-    * `:piped_var` — the hoisted pipe-stage closure variable;
+    * `:piped_var` — the pipe-stage closure variable;
     * `:cond_var` — the condition-hoist temp;
     * `:case_var` — the tupled-case scrutinee temp.
 
@@ -101,7 +100,7 @@ defmodule Mutare.Transform.Names do
   # *read* warns ("used after being set"). The candidate family is infinite and
   # `taken` finite, so this terminates. Used for the dispatch variable
   # (`mutare_active`), the super-forwarding closure (`mutare_super`), and the
-  # hoisted pipe-stage closure (`mutare_piped`).
+  # pipe-stage closure (`mutare_piped`).
   defp salted(canonical, taken) do
     if MapSet.member?(taken, Atom.to_string(canonical)) do
       Stream.iterate(0, &(&1 + 1))

@@ -8,7 +8,7 @@ defmodule Mutare.Mutators.IntegerLiteral do
 
   **Configuring extra positions.** Add project-specific timeout positions with the `argument_marks:`
   option in `.mutare.exs` — entries have the declaration shape this table is written in
-  (`{module, function, arity, positions, label}`; `positions` lists effective argument indices and
+  (`{module, function, arity, positions, label}`; `positions` lists argument indices and
   `{:keyword, key}` option keys), and the `:timeout` label gives them exactly this family's reaction:
 
       [argument_marks: [
@@ -33,9 +33,9 @@ defmodule Mutare.Mutators.IntegerLiteral do
   @timeout_mark :timeout
 
   # The timeout/duration argument positions this family (and AtomLiteral) leaves alone, keyed by
-  # the call's **effective** arity — a piped receiver counts as argument 0, and an arity whose
+  # the call's arity — a piped value is argument 0 of the call it is piped into, and an arity whose
   # trailing list is data rather than options (`Task.async_stream/4`, the MFA callback-args form) is
-  # deliberately absent. `{module, function, effective_arity, [effective_index]}`.
+  # deliberately absent. `{module, function, arity, [index]}`.
   @timeout_positional [
     {Process, :sleep, 1, [0]},
     {:timer, :sleep, 1, [0]},
@@ -86,8 +86,8 @@ defmodule Mutare.Mutators.IntegerLiteral do
     {:timer, :kill_after, 2, [0]}
   ]
 
-  # The trailing-keyword timeout *options*, keyed by effective arity for the same reason — only the
-  # option-bearing arities appear. `{module, function, effective_arity, [option_key]}`.
+  # The trailing-keyword timeout *options*, keyed by arity for the same reason — only the
+  # option-bearing arities appear. `{module, function, arity, [option_key]}`.
   @timeout_keyword [
     {Task, :async_stream, 3, [:timeout]},
     {Task, :async_stream, 5, [:timeout]},

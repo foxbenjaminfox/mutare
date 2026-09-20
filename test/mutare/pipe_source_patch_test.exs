@@ -194,9 +194,10 @@ defmodule Mutare.PipeSourcePatchTest do
       def mutate(_node), do: :skip
     end
 
-    test "does not bind when a mutant rewrites the piped value, though it is an :expression" do
+    test "keeps a mutant that rewrites the piped value out of the binding" do
       # Bound, the mutant's own argument 0 would be replaced by the variable and the mutation
-      # lost: the patch check sees a mutant that behaves like the original.
+      # lost: the patch check sees a mutant that behaves like the original. It is delivered in
+      # a selector around the closure, which binds the stage's other mutants as usual.
       source = """
       defmodule Fixture do
         def run(n), do: n |> bump(1) |> bump(2)
@@ -210,7 +211,9 @@ defmodule Mutare.PipeSourcePatchTest do
       assert [%{original_code: "n |> bump(1)"}, %{original_code: "n |> bump(1) |> bump(2)"}] =
                Enum.filter(sites, &(&1.mutator == :bump_source))
 
-      refute Mutare.Test.metamutant_source(source, [BumpSource, BumpZero], opts) =~ "mutare_piped"
+      emitted = Mutare.Test.metamutant_source(source, [BumpSource, BumpZero], opts)
+      assert emitted =~ "(n + 100) |> bump(1)"
+      assert emitted =~ "mutare_piped |> bump(0)"
     end
 
     test "with position 0 routed :interior" do

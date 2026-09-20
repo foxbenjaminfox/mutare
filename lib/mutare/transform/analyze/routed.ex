@@ -25,9 +25,8 @@ defmodule Mutare.Transform.Analyze.Routed do
 
   # Analyze a routed call: offer the *whole* node to mutators (so a custom mutator
   # registered for the macro still fires — e.g. an Ecto query mutator on `from(...)`),
-  # then route each *visible* argument by its declared treatment instead of the default
-  # all-runtime descent. `context` carries the pipe flag (so a pipe-aware custom mutator sees
-  # the effective arity); `CallOptions.mark/1` still runs (harmless for `:raw`/`:pattern`
+  # then route each argument by its declared treatment instead of the default
+  # all-runtime descent. `CallOptions.mark/1` still runs (harmless for `:raw`/`:pattern`
   # args, which carry no candidates; correct for `:expression` args, preserving option-key gating).
   #
   # The context is enriched with `:mutators` — the run's enabled specs, **hosts included** —
@@ -46,7 +45,7 @@ defmodule Mutare.Transform.Analyze.Routed do
   # nested `:hosted` stamp's `host/2` through this same attachment but *lowers* each target
   # mutant to a whole-call rebuild (`splice(wrap(mutant))` — the woven selector degenerated to
   # its selected branch), so hosted semantics participate while no selector ever nests.
-  def analyze_routed_call(node, routing, env, context \\ %{pipe_mode: :unpiped})
+  def analyze_routed_call(node, routing, env, context \\ %{})
 
   # The call-level `:skip` (an inert leaf) is normally intercepted by the dispatch before it reaches
   # here (`Mutare.Transform.Analyze.do_analyze_call_node/3`); this clause keeps the contract total
@@ -110,7 +109,7 @@ defmodule Mutare.Transform.Analyze.Routed do
     call = Mutare.Transform.Calls.resolved_routed_call(raw_node)
 
     spec
-    |> Dispatch.host_targets(call, Map.take(context, [:pipe_mode, :mutators]))
+    |> Dispatch.host_targets(call, Map.take(context, [:mutators]))
     |> Enum.map(fn target ->
       %Candidate.Hosted{
         mutator: spec,
@@ -426,7 +425,7 @@ defmodule Mutare.Transform.Analyze.Routed do
   end
 
   # The left side of a `|>` whose right side is a call under the call-level `:skip`. The skipped
-  # call is an inert leaf, but the piped value is its *effective argument 0*: when the skip
+  # call is an inert leaf, but the piped value is its argument 0: when the skip
   # displaced a code-provided route, `Resolve` recorded that route's position 0 on the stage as
   # `:mutare_route_piped` (only when it isn't the `:expression` default), and the left side is
   # routed by it — a skipped `1 |> match?(1)` keeps its LHS a `:pattern`. Any other LHS is

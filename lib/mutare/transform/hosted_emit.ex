@@ -7,7 +7,7 @@ defmodule Mutare.Transform.HostedEmit do
   # fragment; their mutants then share a selector where the scope allows it (`extend/4`, NOTES
   # "Hosts on one target share a selector"). Any ordinary whole-node candidates on that same
   # node are delivered afterwards through the callback supplied by `Mutare.Transform`, because
-  # ordinary selector delivery owns pipe hoisting and pinned cases.
+  # ordinary selector delivery owns the piped-value binding and pinned cases.
 
   alias Mutare.Mutator.Dispatch.Result
   alias Mutare.Site

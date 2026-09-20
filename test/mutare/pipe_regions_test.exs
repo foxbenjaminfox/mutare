@@ -28,7 +28,7 @@ defmodule Mutare.PipeRegionsTest do
       # A head mutant's clause runs the body as the user wrote it …
       assert emitted =~ "5 |> plus(1)"
       # … and the instrumented clause runs the analyzed one, its piped value bound once.
-      assert emitted =~ "plus(mutare_piped, 1)"
+      assert emitted =~ "mutare_piped |> plus(1)"
       Mutare.Test.Metamutant.assert_compiles(emitted)
     end
 
@@ -45,8 +45,8 @@ defmodule Mutare.PipeRegionsTest do
       emitted = transform(source, [PipeSyntaxMutator], call_routes: routes).metamutant
 
       assert emitted =~ "label: n |> plus(1)"
-      assert emitted =~ "plus(mutare_piped, 2)"
-      refute emitted =~ "plus(mutare_piped, 1)"
+      assert emitted =~ "mutare_piped |> plus(2)"
+      refute emitted =~ "mutare_piped |> plus(1)"
     end
 
     test "a :hosted fragment no host claims" do

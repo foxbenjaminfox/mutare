@@ -11,7 +11,7 @@ defmodule Mutare.Transform.ClauseVariants do
   #
   # A head mutant that does not match falls through to a later original clause, so that
   # clause's body still runs while the mutant is active. The emitted body may differ from
-  # the source: a mutated pipe stage is hoisted into a closure whose parameter macros in
+  # the source: a mutated pipe stage binds its piped value in a closure whose parameter macros in
   # the stage observe through `Macro.Env.vars/1`. Whole-construct delivery ran the raw
   # source there; keep that. Where the raw and emitted bodies differ, the original clause
   # body selects between them on the already-bound active variable — the emitted body for

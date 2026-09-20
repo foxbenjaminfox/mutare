@@ -224,32 +224,33 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   to there; in a *body* (the coverage record, `Mutare.Coverage.Recorder.record_ast/3`) they are
   nested `case`s, because Elixir ≥ 1.21 accepts `:erlang.andalso` only in a guard — NOTES
   "Factor compiler input before rendering" and NOTES "`:erlang.andalso` is guard-only".
-- **Only `Kernel`'s `|>` is the pipe, and a routed stage is not a pipe at all.** A module can
-  displace the operator, and the hoisting closure would then apply the custom one twice: any
-  code about to read a `{:|>, …}` node as a pipe asks `Mutare.Transform.Calls.kernel_call?/1`
-  first — NOTES "Only `Kernel`'s `|>` is the pipe". And a piped stage under a positional route
-  is *routed* as the direct call (`Resolve` stamps it so and marks it, but leaves the tree
-  alone) and *becomes* that call as `Analyze` reaches it (`WrittenPipe.direct/1`, at the
-  dispatcher's entry). So routing, hosting, mutation and delivery never see such a pipe, while
-  code Mutare never analyzes — a `:raw` argument, a `:skip`ped call, a clean copy — is never
-  rewritten. Anything that reads a statement or tail *before* `analyze/3` does must apply
-  `direct/1` first, and so must any other walk that reads code as Elixir (`Tag`'s guard walk
-  does, at its entry); a marked stage on its own is not a complete call, and `Meta.routing/1`
-  raises on one rather than answer one argument late — NOTES "A marked stage cannot be
-  misread".
-  `Mutare.Transform.WrittenPipe` also keeps a rewritten call's Site in the user's spelling and
-  footprint — NOTES "A routed pipe stage becomes a direct call".
+- **A pipe stage is the call it is sugar for; only `Kernel`'s `|>` is the pipe.**
+  `left |> stage(args)` is *resolved* as `stage(left, args)` (`Resolve` walks the direct form,
+  marks the stage, and leaves the tree alone) and *becomes* that call as `Analyze` reaches it
+  (`WrittenPipe.direct/1`, at the dispatcher's entry). So routing, marks, hosting, mutators and
+  delivery never see a call one argument short — there is no `pipe_mode` — while code Mutare
+  never analyzes (a `:raw` argument, a `:skip`ped call, a clean copy) is never rewritten. The
+  spelling is read in two places only: `Mutare.Transform.WrittenPipe` keeps a Site in the
+  user's spelling and footprint, and `Mutare.Transform.PipeEmit` binds the piped value and
+  spells the emitted call as a pipe again. One stage stays a pipe: a call under the call-level
+  `:skip`, whose piped value is its *sibling* and keeps its mutants. Anything that reads a
+  statement or tail *before* `analyze/3` does must apply `direct/1` first, and so must any
+  other walk that reads code as Elixir (`Tag`'s guard walk does, at its entry); a marked stage
+  on its own is not a complete call, and `Meta.routing/1` raises on one rather than answer one
+  argument late. A module can displace the operator, so any code about to read a `{:|>, …}`
+  node as a pipe asks `Mutare.Transform.Calls.kernel_call?/1` first. NOTES "A pipe stage is
+  the call it is sugar for", "A marked stage cannot be misread", "Only `Kernel`'s `|>` is the
+  pipe".
 - **A call is ordinary in every respect its route does not address — evaluation included.**
   Routes are for functions and macros alike, and core never derives which a call is, nor holds
   a mutant back because a callee might be a macro. A call that seems to need special handling
   gets a route (built in, for a standard-library form) or a new routing word — never a
   heuristic in a walk, and never a default chosen because a macro is "likelier": PHILOSOPHY
   "Every call is ordinary until a route says otherwise", NOTES "Calls are ordinary; routes are
-  the only exception". Evaluation is the instance that bites: the hoisting closure, and the
-  let-binding of a rewritten stage's piped value (`PipeEmit.bound_argument/2`), evaluate a
-  piped operand ahead of any stage whose position 0 is `:expression`/`:interior`. The one way
-  to say otherwise is the position word `:lazy_expression`; anything that binds a user
-  expression ahead of a call must honour it —
+  the only exception". Evaluation is the instance that bites: the closure that binds a piped
+  value (`PipeEmit.delivery/2`) evaluates it ahead of any stage whose position 0 is a value —
+  unrouted, `:expression` or `:interior`. The one way to say otherwise is the position word
+  `:lazy_expression`; anything that binds a user expression ahead of a call must honour it —
   NOTES "Evaluation is a route's to declare: `:lazy_expression`".
 - **The metamutant is not invisible to reflection, and nothing should try to make it so.**
   Callers, captures, `@spec` and `@behaviour`/`@impl` see the module unchanged; a stacktrace,
@@ -303,7 +304,7 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 | Kind | Implement | Example fixture |
 | --- | --- | --- |
 | Node-level swap | `mutate/1` | `and_or_mutator.ex` |
-| Arity-changing / pipe-aware call | `mutate/2` (reads `pipe_mode`) | — (`CollectionArity`) |
+| Arity-changing call (a pipe stage arrives as the direct call — nothing pipe-specific to do) | `mutate/1` | — (`CollectionArity`) |
 | Configurable (`{Module, opts}`) | `mutate/2` (reads `context.opts`) | `configurable_mutator.ex` |
 | Rich option surface, parsed once per run | `init/1` → `context.config` (+ `use Mutare.Mutator.Families` for a `families:` catalog) | `init_mutator.ex` |
 | One tag → filter → enrich funnel over everything produced | `finalize/2` (core runs it on both delivery paths) | `finalize_mutator.ex` |
@@ -311,7 +312,7 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 | Structural head pattern | `pattern_mutations/2` | (`PatternSwap`/`PatternWildcard`) |
 | Behaviour-gated | read `context.behaviours` (or the `+1`-arity structural callbacks) | `behaviour_mutator.ex` |
 | Call-matching (stdlib/remote) | resolve via `Mutare.Calls.resolved_call_to/3` | `resolved_call_mutator.ex` |
-| Call routing (static or shape-aware) | `Mutare.CallRouting.call_routes/0` + optional `route_arguments/1` (a piped routed call is shown as the direct call — its piped operand is argument 0) | `macro_mutator.ex` / `host_mutator.ex` / `piped_call_probe.ex` |
+| Call routing (static or shape-aware) | `Mutare.CallRouting.call_routes/0` + optional `route_arguments/1` (a piped call is shown as the direct call — its piped operand is argument 0) | `macro_mutator.ex` / `host_mutator.ex` / `piped_call_probe.ex` |
 | Selector-hosting (mutate inside a DSL fragment) | subscribe via `Mutator.MacroHost.hosted_macros/0` + implement `host/2` | `host_mutator.ex` |
 | Sub-contract an Elixir island (pin interior) to core | `Mutare.Analyze.expression_mutations/3` over `context.mutators` (in `host/2`, or in `mutate/2` at a registered macro's whole-call offer), relayed with `producer:` | `host_mutator.ex` (`SubcontractHostMutator`) / `macro_mutator.ex` (`SubcontractNodeMutator`) |
 | Deployment requirement (routed library must be loadable) | `required_modules/0` (checked once at startup, on mutators and extensions) | `environment_fixtures.ex` |

@@ -38,9 +38,9 @@ defmodule Mutare.Transform.Render do
   Build a selector `case` — `case <subject> do <clauses> end` — `block_wrap/1`ped so
   it renders safely in any position, and marked as emit-built (`Meta.put_selector/1`).
 
-  This and `selector_case_parts/1` are the single home for the selector shape. The one
-  reader that must reach back into a just-built selector (`Mutare.Transform.PipeEmit.hoist/2`,
-  which lifts the `case` out of an illegal pipe-RHS position) recognises it by the marker
+  This and `selector_case_parts/1` are the single home for the selector shape. The
+  readers that must recognise a just-built selector (`Mutare.Transform.PipeEmit`, which keeps
+  a generated pin over one the argument of its call) do so by the marker
   this builder stamps, not by reconstructing its shape — so a user's own `case` can never be
   mistaken for one, and the two can't drift apart silently (a mismatch would yield an
   uncompilable metamutant with no error pointing back here). The marker is internal node

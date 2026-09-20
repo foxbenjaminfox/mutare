@@ -77,6 +77,11 @@ defmodule Mutare.Transform.Candidate do
     # Sourceror can over-count a clause ending in bare `true`/`false`/`nil` by the following
     # delimiter. Defaults `nil` — an ordinary mutation is reported at the offered node, exactly as
     # before.
+    #
+    # `position` is where the site is *keyed* (`[line:, column:]`) when that is not where its
+    # range starts: a pipe stage's mutant that moves the piped value patches the whole pipe, but
+    # is a mutation of the stage, and it is the stage's line a `# mutare:ignore` or a `--line`
+    # names (`Mutare.Transform.WrittenPipe.stage_position/1`). `nil` keys the site at its range.
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
@@ -88,7 +93,8 @@ defmodule Mutare.Transform.Candidate do
             note: String.t() | nil,
             variant: Mutare.Mutator.Mutation.variant(),
             attribution: Mutare.Mutator.Mutation.Attribution.t() | nil,
-            attribution_range: Sourceror.Range.t() | nil
+            attribution_range: Sourceror.Range.t() | nil,
+            position: keyword() | nil
           }
 
     defstruct [
@@ -101,7 +107,8 @@ defmodule Mutare.Transform.Candidate do
       note: nil,
       variant: nil,
       attribution: nil,
-      attribution_range: nil
+      attribution_range: nil,
+      position: nil
     ]
   end
 

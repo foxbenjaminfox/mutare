@@ -1,5 +1,5 @@
 defmodule Mutare.TransformResolutionTest do
-  # Call resolution & delivery: alias/import/Erlang-atom resolution and the pipe-aware,
+  # Call resolution & delivery: alias/import/Erlang-atom resolution and the
   # arity-changing call families (CollectionArity, ModeSwap, Numeric, String*, CallRemoval,
   # DefaultDrop, MapKeyword, MapSet) routed through it. Split from transform_test.exs.
   # The poison-attribution tests (which capture the global `:stderr`) live in
@@ -9,7 +9,7 @@ defmodule Mutare.TransformResolutionTest do
 
   alias Mutare.Site
 
-  describe "CollectionArity (pipe-aware, arity-changing Enum mutations)" do
+  describe "CollectionArity (arity-changing Enum mutations, direct and piped)" do
     test "non-piped: drops the comparator/predicate, and compiles" do
       assert {"Enum.sort(xs, & &1)", "Enum.reverse(xs)"} in arity_sites("""
              defmodule A do
@@ -25,8 +25,8 @@ defmodule Mutare.TransformResolutionTest do
     end
 
     test "piped sort/2: the comparator is dropped (the fix), and the metamutant compiles" do
-      # The naive node-local version mis-mutated this to Enum.reverse(:desc); the
-      # pipe-aware path sees effective arity 2 and drops the comparator.
+      # `xs |> Enum.sort(:desc)` is offered as `Enum.sort(xs, :desc)`, so the comparator is
+      # the argument dropped, not the collection.
       sites =
         arity_sites("""
         defmodule A do
@@ -82,9 +82,8 @@ defmodule Mutare.TransformResolutionTest do
     end
 
     test "piped Access.get_and_update keeps the container + key, dropping the update fun" do
-      # `d |> Access.get_and_update(k, f)` reaches the mutator as a 2-arg stage; the
-      # pipe-aware path sees effective arity 3 and keeps effective indices 0 (the piped
-      # container) and 1 (the key), so the mutant is `d |> Access.get(k)`.
+      # `d |> Access.get_and_update(k, f)` reaches the mutator as the 3-arg call, which keeps
+      # arguments 0 (the piped container) and 1 (the key), so the mutant is `d |> Access.get(k)`.
       assert {"Access.get_and_update(k, f)", "Access.get(k)"} in arity_sites("""
              defmodule A do
                def f(d, k, f), do: d |> Access.get_and_update(k, f)
@@ -1304,7 +1303,7 @@ defmodule Mutare.TransformResolutionTest do
   end
 
   describe "CallRemoval (transparent transform removal)" do
-    test "non-piped removal returns the first arg; piped removal uses Elixir.Function.identity — both compile" do
+    test "removal returns the first argument, written directly or piped — both compile" do
       source = """
       defmodule R do
         def a(xs), do: Enum.sort(xs, :desc)
@@ -1320,9 +1319,9 @@ defmodule Mutare.TransformResolutionTest do
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       # Non-piped: the whole transform collapses to its input.
       assert {"Enum.sort(xs, :desc)", "xs"} in pairs
-      # Piped: each stage becomes a no-op the pipe feeds.
-      assert {"String.trim()", "Elixir.Function.identity()"} in pairs
-      assert {"String.downcase()", "Elixir.Function.identity()"} in pairs
+      # Piped: the stage is the call it is sugar for, so it collapses to its piped value.
+      assert {"s |> String.trim()", "s"} in pairs
+      assert {"s |> String.trim() |> String.downcase()", "s |> String.trim()"} in pairs
       assert_compiles(meta)
     end
 
@@ -1341,7 +1340,7 @@ defmodule Mutare.TransformResolutionTest do
 
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       assert {"String.slice(s, 1, 3)", "s"} in pairs
-      assert {"String.slice(1..3)", "Elixir.Function.identity()"} in pairs
+      assert {"s |> String.slice(1..3)", "s"} in pairs
       assert_compiles(meta)
     end
 
@@ -1360,7 +1359,7 @@ defmodule Mutare.TransformResolutionTest do
 
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       assert {"String.byte_slice(s, 1, 3)", "s"} in pairs
-      assert {"String.byte_slice(1, 3)", "Elixir.Function.identity()"} in pairs
+      assert {"s |> String.byte_slice(1, 3)", "s"} in pairs
       assert_compiles(meta)
     end
 
@@ -1386,8 +1385,8 @@ defmodule Mutare.TransformResolutionTest do
       assert {"Keyword.delete(kw, k)", "kw"} in pairs
       assert {"List.delete(xs, x)", "xs"} in pairs
       # Piped stages collapse to the no-op the pipe feeds.
-      assert {"Map.drop([:a])", "Elixir.Function.identity()"} in pairs
-      assert {"List.delete_at(0)", "Elixir.Function.identity()"} in pairs
+      assert {"xs |> Map.drop([:a])", "xs"} in pairs
+      assert {"xs |> Map.drop([:a]) |> List.delete_at(0)", "xs |> Map.drop([:a])"} in pairs
       assert_compiles(meta)
     end
 
@@ -1423,7 +1422,7 @@ defmodule Mutare.TransformResolutionTest do
 
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       assert {"binary_slice(b, 0, 5)", "b"} in pairs
-      assert {"binary_slice(0..4)", "Elixir.Function.identity()"} in pairs
+      assert {"b |> binary_slice(0..4)", "b"} in pairs
       assert {"binary_part(b, 0, 5)", "b"} in pairs
       assert {":erlang.binary_part(b, {0, 5})", "b"} in pairs
       assert_compiles(meta)
@@ -1466,7 +1465,7 @@ defmodule Mutare.TransformResolutionTest do
 
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       assert {"Stream.uniq(xs)", "xs"} in pairs
-      assert {"Stream.dedup_by(& &1)", "Elixir.Function.identity()"} in pairs
+      assert {"xs |> Stream.dedup_by(& &1)", "xs"} in pairs
       assert_compiles(meta)
     end
 
@@ -1485,7 +1484,7 @@ defmodule Mutare.TransformResolutionTest do
 
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       assert {"List.flatten(xs)", "xs"} in pairs
-      assert {"List.flatten()", "Elixir.Function.identity()"} in pairs
+      assert {"xs |> List.flatten()", "xs"} in pairs
       assert_compiles(meta)
     end
   end

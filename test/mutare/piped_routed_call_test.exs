@@ -239,8 +239,11 @@ defmodule Mutare.PipedRoutedCallTest do
       refute emitted =~ "stage(n, x > 1)"
     end
 
-    test "and where it is analyzed, it is the direct call" do
-      assert rendered("keep(n |> stage(x > 1), 5)", []) =~ "stage(n, x > 1)"
+    test "and where it is analyzed, the metamutant spells the direct call as the pipe again" do
+      emitted = rendered("keep(n |> stage(x > 1), 5)", [])
+
+      assert emitted =~ ~r/n\s*\|> stage\(/
+      refute emitted =~ "stage(n,"
     end
   end
 end

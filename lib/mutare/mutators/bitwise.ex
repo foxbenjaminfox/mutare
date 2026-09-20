@@ -10,7 +10,7 @@ defmodule Mutare.Mutators.Bitwise do
 
   A left/right shift by the literal value `0` is unchanged and is therefore omitted. AND/OR replacements and complement removal remain eligible.
 
-  `bxor` and `^^^` are not mutated because XOR has no complementary operator. The deprecated `~~~` form is supported, but a piped `bnot` call is not removed. Imports introduced by `use Bitwise` are available only when that `use` can be expanded during resolution.
+  `bxor` and `^^^` are not mutated because XOR has no complementary operator. The deprecated `~~~` form is supported. Imports introduced by `use Bitwise` are available only when that `use` can be expanded during resolution.
 
   This family is enabled by default. Its ignore variants are `&&&`, `|||`, `<<<`, and `>>>`.
   """

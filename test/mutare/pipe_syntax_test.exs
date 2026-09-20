@@ -147,9 +147,10 @@ defmodule Mutare.PipeSyntaxTest do
       assert length(Regex.scan(~r/tick\(n, sink\)/, emitted)) == 3
     end
 
-    test "falls back to plain delivery when a mutant does not keep the piped value" do
+    test "delivers a mutant that does not keep the piped value around the bound stage" do
       # The tail stage also carries return-value constants, which replace the whole call: bound,
-      # they would evaluate the upstream chain the constant was meant to stand in for.
+      # they would evaluate the upstream chain the constant was meant to stand in for. They sit
+      # in a selector around the closure, which still binds the stage's own mutants.
       source = """
       defmodule Tail do
         import Mutare.Test.PipeSyntaxDSL
@@ -162,7 +163,7 @@ defmodule Mutare.PipeSyntaxTest do
       assert Enum.any?(sites, &(&1.mutator == :return_value))
 
       emitted = metamutant_source(source, [@mutator, :return_value])
-      assert length(Regex.scan(~r/fn mutare_piped ->/, emitted)) == 1
+      assert length(Regex.scan(~r/fn mutare_piped ->/, emitted)) == 2
 
       assert {11, 10} = observe_mutant(sites, {"plus(1)", "plus(0)"}, fn -> module.f(0) end)
       assert {11, 1} = observe_mutant(sites, {"plus(10)", "plus(0)"}, fn -> module.f(0) end)

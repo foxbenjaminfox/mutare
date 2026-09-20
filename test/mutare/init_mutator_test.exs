@@ -105,7 +105,7 @@ defmodule Mutare.InitMutatorTest do
 
     test "the host context carries config alongside opts and behaviours" do
       spec = Spec.configured(HostConfig, raw: :value)
-      assert Dispatch.host_targets(spec, :call, %{pipe_mode: :unpiped}) == []
+      assert Dispatch.host_targets(spec, :call, %{}) == []
       assert_received {:host_context, context}
       assert context.config == %{parsed: :value}
       assert context.opts == [raw: :value]

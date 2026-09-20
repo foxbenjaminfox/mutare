@@ -20,7 +20,7 @@ defmodule Mutare.MutatorsMiscTest do
 
   describe "StringCall.mutate/1" do
     test "skips a String.equivalent? call whose arity isn't 1 or 2 (the substitution fallback)" do
-      # `equivalent_substitution/1` only rewrites the /1 (piped) and /2 forms; any other arity
+      # `equivalent_substitution/1` only rewrites the /1 and /2 forms; any other arity
       # falls through to `:skip` rather than emitting a malformed `==`.
       node = Sourceror.parse_string!("String.equivalent?(a, b, c)")
       assert StringCall.mutate(node) == :skip
@@ -36,18 +36,13 @@ defmodule Mutare.MutatorsMiscTest do
     end
   end
 
-  describe "Helpers.removed_call/2" do
-    test "a piped removal becomes Function.identity/1" do
-      [call] = Helpers.removed_call(:piped, [{:x, [], nil}])
-      assert Sourceror.to_string(call) == "Elixir.Function.identity()"
+  describe "Helpers.removed_call/1" do
+    test "a zero-arg call has nothing to return → :skip" do
+      assert Helpers.removed_call([]) == :skip
     end
 
-    test "an unpiped zero-arg call has nothing to return → :skip" do
-      assert Helpers.removed_call(:unpiped, []) == :skip
-    end
-
-    test "an unpiped call returns its first argument" do
-      assert Helpers.removed_call(:unpiped, [:first, :second]) == [:first]
+    test "a call with arguments is replaced by its first argument" do
+      assert Helpers.removed_call([:first, :second]) == [:first]
     end
   end
 

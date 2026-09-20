@@ -39,7 +39,7 @@ defmodule Mutare.Transform.Analyze.Attach do
   # macro-routed `:skip` argument never is. Transform-enforced, deliberately not a mark: marks are
   # shared vocabulary each family reads by choice (NOTES "The `:structural` shared mark"), whereas
   # this is the transform's own return-path classification.
-  def offer(subject, raw, mutators, context \\ %{pipe_mode: :unpiped}) do
+  def offer(subject, raw, mutators, context \\ %{}) do
     if Meta.unit_tail?(raw) do
       subject
     else
@@ -72,7 +72,9 @@ defmodule Mutare.Transform.Analyze.Attach do
         note: result.note,
         variant: result.variant,
         attribution: attribution,
-        attribution_range: attribution_range
+        attribution_range: attribution_range,
+        # Reported over the whole pipe (no narrower attribution), but keyed at its stage.
+        position: if(is_nil(attribution), do: WrittenPipe.stage_position(node))
       }
     end)
   end

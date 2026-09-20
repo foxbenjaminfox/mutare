@@ -1,127 +1,116 @@
 defmodule Mutare.Transform.PipeEmit do
   @moduledoc false
 
-  # `x |> case … end` does not compile — `Kernel.|>/2` cannot pipe into a `case`.
-  # When ordinary selector emission wraps a pipe stage, the selector lands in exactly that
-  # illegal RHS position. Run on the parent `|>` during the same postwalk (the RHS is already
-  # emitted, and carries the marker `Render.selector_case/2` stamped on it), this lifts the
-  # selector out of the pipe into a one-shot closure invoked on the piped value:
-  #
-  #     lhs |> (fn mutare_piped ->
-  #               case <subject> do
-  #                 <id> -> mutare_piped |> <mutant stage>
-  #                 _    -> <cov>; mutare_piped |> <original stage>
-  #               end
-  #             end).()
-  #
-  # The piped value is computed once (it stays the pipe's LHS, so the upstream chain appears
-  # once) and bound to the closure's param; each branch pipes that cheap variable instead of a
-  # copy of `lhs`. This keeps a chain of mutated stages linear in the rendered source, and the
-  # bare stage stays the Site's recorded node, so the diff is unaffected.
-
-  # The closure evaluates the piped value ahead of the stage — what an ordinary call does with
-  # its first argument, and a call is ordinary in every respect its route does not address
-  # (`Mutare.CallRouting`, "Ordinary calls"). Core never derives whether a callee is a macro; a
-  # callee that does not evaluate its operand eagerly says so with `:lazy_expression`. A stage
-  # under a positional route never reaches `hoist/2` as a pipe — analysis made it the direct
-  # call (`Mutare.Transform.WrittenPipe.direct/1`) — and takes the binding from
-  # `bound_argument/2` below.
-
-  # All of it is `Kernel.|>/2`'s alone. A `|>` displaced out of `Kernel` is left exactly as
-  # emitted: the closure would apply the custom operator twice (once to reach the closure, once
-  # inside each branch), and expanding a pinned left side would assume `Kernel`'s desugaring.
-
-  alias Mutare.Transform.{BindingEscapeEmit, Calls, Candidate, Ctx, Meta, Render}
-  alias Mutare.Transform.Candidate.Delivery
-
-  @doc """
-  Hoist a selector out of a pipe's RHS and preserve a pinned LHS's rendering precedence.
-  """
-  @spec hoist(Macro.t(), Ctx.t()) :: Macro.t()
-  def hoist({:|>, meta, [lhs, rhs]} = node, ctx) do
-    if Calls.kernel_call?(node), do: hoist_kernel_pipe(lhs, rhs, meta, ctx), else: node
-  end
-
-  def hoist(node, _ctx), do: node
-
-  defp hoist_kernel_pipe(lhs, rhs, meta, ctx) do
-    # The pipe's RHS is one of our selectors iff it carries the builder's marker; the subject
-    # (inline read or hoisted variable) is reused as-is inside the closure.
-    case Render.selector_case_parts(rhs) do
-      {:ok, subject, clauses} ->
-        value_pipe(lhs, meta, subject, clauses, ctx)
-
-      :error ->
-        pipe_into(lhs, rhs, meta)
-    end
-  end
-
-  # --- a rewritten stage's piped value ----------------------------------------------------
-  #
-  # A piped stage under a positional route is no `|>` by now (`WrittenPipe.direct/1` made it
-  # the direct call), so its selector is the ordinary one, whose every mutant branch carries the
-  # call's as-written arguments — argument 0, the whole upstream chain, included. Down a chain of
-  # routed stages that is a copy of each prefix per mutant. The closure above answers the same
-  # problem for a pipe, and answers it here the same way, by binding the piped value once:
+  # Delivery for a call **written as a pipe**. Analysis made every `Kernel.|>/2` stage the direct
+  # call it is sugar for (`Mutare.Transform.WrittenPipe.direct/1`), so a stage's selector is the
+  # ordinary one, whose every mutant branch carries the call's as-written arguments — argument
+  # 0, the whole upstream chain, included, while its catch-all nests the emitted chain. Down a
+  # chain that is a copy of each prefix per mutant, and a `case` nested per stage. So the piped
+  # value is bound once, in a one-shot closure invoked on it:
   #
   #     <emitted argument 0>
   #     |> (fn mutare_piped ->
   #           case <subject> do
-  #             <id> -> <mutant stage>(mutare_piped, …)
-  #             _    -> <cov>; <original stage>(mutare_piped, …)
+  #             <id> -> mutare_piped |> <mutant stage>
+  #             _    -> <cov>; mutare_piped |> <original stage>
   #           end
   #         end).()
   #
-  # which is what such a stage was delivered as while it was still a pipe — the `|>` included.
-  # It is the user's own (its meta, from the `Meta.written_pipe/1` stamp), so it resolves as it
-  # did in their source: to `Kernel`, or the stage would not have been rewritten. Applying the
-  # closure to the argument directly would nest each stage inside the next and indent a long
-  # chain quadratically; piped, the chain renders flat. Two conditions, both read off the node
-  # (`bound_argument/2`):
+  # The upstream chain appears once and a chain of mutated stages renders flat, linear in its
+  # length. The `|>` is the user's own (its meta, from the `Meta.written_pipe/1` stamp), so it
+  # resolves as it did in their source: to `Kernel`, or the stage would not have been rewritten.
   #
-  #   * argument 0 is routed `:expression` or `:interior`: a value, which the callee is taken to
-  #     evaluate as a function would. `:lazy_expression` is the route's way of saying it does
-  #     not, and every other treatment says the macro reads the argument as syntax, which a
-  #     variable would hide.
-  #   * **every** candidate kept argument 0 where it was, or returns that operand directly
-  #     (call removal). Both shapes evaluate the operand once, and its bindings must stay
-  #     outside the selector so they reach later statements. A mutant that rewrote or dropped it —
-  #     a return-value constant standing in for the whole call among them — would either ignore
-  #     the binding or run the original operand beside its own, so one such candidate sends the
-  #     whole site back to inline delivery, exporting any bindings shared by its branches.
+  # This is the one place a call's spelling and its route are read together, and both answer a
+  # delivery question, invisible to mutators, to reports and to a function's behaviour:
   #
-  # Only a call *written as a pipe* is bound. The contract would allow binding a directly
-  # written call's argument 0 just as well; nothing asks for it — the binding exists so that a
-  # pipe chain costs the same whether or not its stages are routed, and directly nested calls
-  # are not written thirty deep.
+  #   * **written as a pipe** — the closure pays only where it can be rendered under a `|>`.
+  #     Applied to a directly nested call it would nest as deep as the call does, and wrap a
+  #     closure around every nested operator; directly nested calls are not written thirty deep.
+  #   * **argument 0 is a value** — unrouted, or routed `:expression`/`:interior`. The closure
+  #     evaluates the piped value ahead of the call, what an ordinary call does with its first
+  #     argument, and a call is ordinary in every respect its route does not address
+  #     (`Mutare.CallRouting`, "Ordinary calls"). `:lazy_expression` is the route's way of saying
+  #     the callee does not, and every other treatment says the macro reads the argument as
+  #     syntax, which a variable would hide.
+  #
+  # A candidate rides inside the closure when it **keeps argument 0** where it was, or returns
+  # that operand directly (call removal): both evaluate the operand once, first. One that moves
+  # or drops it (an operand swap, a return-value constant standing in for the whole call) would
+  # either ignore the binding or run the original operand beside its own, and hoisting the
+  # operand ahead of a swapped call would change the mutant's evaluation order. Those go in an
+  # **outer** selector around the closure, each branch evaluating its own as-written expression
+  # in its own order (`{:split, …}`) — the shape a tail pipe's return-value selector has always
+  # had around its stage's. An outer selector traps what its branches bind, so bindings every
+  # branch shares are exported through a tuple and rebound outside (`{:export, names}`).
+  #
+  # `sugar/1` spells a rewritten call as the pipe it was wherever emission leaves one bare, so
+  # the metamutant is as deep as the user's source, not one level deeper per stage.
 
-  @typedoc "Shared operand binding, inline binding export, or ordinary inline delivery."
-  @type binding :: {:bind, keyword(), Macro.t()} | {:export, nonempty_list(atom())} | :inline
+  alias Mutare.Transform.{BindingEscapeEmit, Calls, Candidate, Ctx, Meta, Render}
+  alias Mutare.Transform.Candidate.Delivery
 
-  @doc "How the selector preserves bindings: a shared operand, branch exports, or neither."
-  @spec bound_argument(Macro.t(), [Candidate.t()]) :: binding()
-  def bound_argument({_head, meta, [_zero | _rest]} = node, [_ | _] = candidates) do
+  @typedoc "How one selector treats what its branches share: nothing, exported bindings, or a bound operand."
+  @type binding :: :inline | {:export, nonempty_list(atom())} | {:bind, keyword(), Macro.t()}
+
+  @typedoc """
+  A site's delivery: one selector under one `t:binding/0`, or `{:split, inner, outer}` — the
+  candidates that keep argument 0 in a bound closure (`inner`), the rest in a selector around
+  it (`outer`).
+  """
+  @type t :: binding() | {:split, {:bind, keyword(), Macro.t()}, :inline | {:export, [atom()]}}
+
+  @typedoc "Which selector of a `t:t/0` a candidate is delivered in."
+  @type layer :: :inner | :outer
+
+  @doc "How `node`'s candidates are delivered — see the module header."
+  @spec delivery(Macro.t(), [Candidate.t()]) :: t()
+  def delivery({_head, meta, [_zero | _rest]} = node, [_ | _] = candidates) do
     with {:|>, pipe_meta, _operands} <- Meta.written_pipe(node),
-         [zero | _] when zero in [:expression, :interior] <- Meta.routing(meta),
+         true <- value_position?(Meta.routing(meta)),
          [%Candidate.InPlace{original: {_h, _m, [written | _]} = original} | _] <- candidates do
-      if Enum.all?(candidates, &keeps_argument?(&1, written)) do
-        {:bind, pipe_meta, written}
-      else
-        inline_binding(original, candidates)
+      bind = {:bind, pipe_meta, written}
+
+      case Enum.split_with(candidates, &keeps_argument?(&1, written)) do
+        {_kept, []} ->
+          bind
+
+        {[], moved} ->
+          exports(BindingEscapeEmit.expression_bindings(original), moved)
+
+        {_kept, moved} ->
+          {:split, bind, exports(BindingEscapeEmit.expression_bindings(written), moved)}
       end
     else
       _plain -> :inline
     end
   end
 
-  def bound_argument(_node, _candidates), do: :inline
+  def delivery(_node, _candidates), do: :inline
 
-  defp inline_binding(original, candidates) do
-    names = BindingEscapeEmit.expression_bindings(original)
+  @doc "The selector of `delivery` that `candidate` is delivered in."
+  @spec layer(Candidate.t(), t()) :: layer()
+  def layer(candidate, {:split, {:bind, _pipe_meta, written}, _outer}),
+    do: if(keeps_argument?(candidate, written), do: :inner, else: :outer)
 
-    # Moving an operand must retain the mutant's evaluation order. Return the result and
-    # bindings from each branch instead of evaluating the original operand ahead of them.
-    # Only bindings present in every branch can be exported (a whole-call constant has none).
+  def layer(_candidate, {:bind, _pipe_meta, _written}), do: :inner
+  def layer(_candidate, _binding), do: :outer
+
+  @doc "The binding of one selector of `delivery`."
+  @spec binding(t(), layer()) :: binding()
+  def binding({:split, inner, _outer}, :inner), do: inner
+  def binding({:split, _inner, outer}, :outer), do: outer
+  def binding(binding, _layer), do: binding
+
+  # An unrouted call is a function, whose every argument is a value.
+  defp value_position?(nil), do: true
+  defp value_position?([zero | _rest]), do: zero in [:expression, :interior]
+  defp value_position?(_routing), do: false
+
+  # What an outer selector must export: the bindings of `names` — those its catch-all makes —
+  # that every mutant branch makes too (a whole-call constant makes none). Each branch returns
+  # its result and those bindings instead of having the original operand evaluated ahead of
+  # it, which would change a moved operand's evaluation order.
+  defp exports(names, candidates) do
     shared =
       Enum.reduce(candidates, names, fn candidate, names ->
         bound = candidate |> Delivery.selector_branch() |> BindingEscapeEmit.expression_bindings()
@@ -174,37 +163,45 @@ defmodule Mutare.Transform.PipeEmit do
   defp export_tuple(value, names),
     do: {:{}, [], [value | Enum.map(names, &{&1, [], nil})]}
 
-  defp value_pipe(lhs, meta, subject, clauses, ctx) do
-    var = piped_var(ctx)
-    piped = Enum.map(clauses, &pipe_clause(var, &1))
-    closure = {:fn, [], [{:->, [], [[var], Render.selector_case(subject, piped)]}]}
-    invocation = {{:., [], [closure]}, [], []}
-    {:|>, meta, [lhs, invocation]}
-  end
+  @doc """
+  A rewritten call spelled as the pipe it was written as, with whatever argument 0 it now
+  holds; any other node untouched. For the bare calls emission leaves in the metamutant — a
+  selector's branches, a stage with no selector of its own — so a chain renders flat.
 
-  defp pipe_clause(lhs, {:->, meta, [pattern, body]}),
-    do: {:->, meta, [pattern, pipe_tail(lhs, body)]}
+  A generated pin over a selector stays the call's argument: Sourceror renders
+  `^case … end |> stage()`, which reparses as `^(case … end |> stage())`.
+  """
+  @spec sugar(Macro.t()) :: Macro.t()
+  def sugar({head, meta, [zero | rest]} = call) do
+    case Meta.written_pipe(call) do
+      {:|>, pipe_meta, _written} ->
+        if generated_pin?(zero),
+          do: call,
+          else: {:|>, pipe_meta, [zero, Meta.drop_written_pipe({head, meta, rest})]}
 
-  # Pipe `lhs` into a selector clause body. A mutant clause body is a single expression
-  # (the mutated stage), piped whole; the catch-all body is a block whose head is the
-  # coverage record and whose tail is the original stage, so only the tail is piped.
-  defp pipe_tail(lhs, {:__block__, bmeta, stmts}) when stmts != [],
-    do: {:__block__, bmeta, List.update_at(stmts, -1, &pipe_into(lhs, &1))}
-
-  defp pipe_tail(lhs, body), do: pipe_into(lhs, body)
-
-  # Sourceror renders a generated pin over a selector as `^case … end |> stage()`,
-  # which reparses as `^(case … end |> stage())`. Expand just this pipe as Kernel would,
-  # so the pin stays the macro's argument. This also applies when only the LHS mutates.
-  # The selector marker is essential: emission also visits untouched raw/skipped syntax.
-  defp pipe_into(lhs, stage, meta \\ [])
-
-  defp pipe_into({:^, _, [expression]} = lhs, stage, meta) do
-    case Render.selector_case_parts(expression) do
-      {:ok, _subject, _clauses} -> Macro.pipe(lhs, stage, 0)
-      :error -> {:|>, meta, [lhs, stage]}
+      nil ->
+        call
     end
   end
 
-  defp pipe_into(lhs, stage, meta), do: {:|>, meta, [lhs, stage]}
+  def sugar(node), do: node
+
+  @doc """
+  A `Kernel.|>/2` that reaches emission still a pipe — its stage is under the call-level
+  `:skip` — whose left side is a generated pin over a selector (a skip that displaced an
+  `:interpolated` route): expanded as `Kernel` would, so the pin stays the call's argument.
+  Emission also visits untouched `:raw` and skipped syntax, where a pinned pipe is the user's
+  and stays as written; the selector marker tells the two apart.
+  """
+  @spec expand_pinned(Macro.t()) :: Macro.t()
+  def expand_pinned({:|>, _meta, [lhs, stage]} = pipe) do
+    if generated_pin?(lhs) and Calls.kernel_call?(pipe), do: Macro.pipe(lhs, stage, 0), else: pipe
+  end
+
+  def expand_pinned(node), do: node
+
+  defp generated_pin?({:^, _meta, [expression]}),
+    do: match?({:ok, _subject, _clauses}, Render.selector_case_parts(expression))
+
+  defp generated_pin?(_node), do: false
 end

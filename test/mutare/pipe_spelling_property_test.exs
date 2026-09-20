@@ -10,7 +10,22 @@ defmodule Mutare.PipeSpellingPropertyTest do
 
   @moduletag :property
 
-  @mutators [Mutare.Test.PipeSyntaxMutator, :integer, :arithmetic, :return_value]
+  # `:numeric` and `:operand_swap` key on a call's arity and move its first operand: the
+  # families that once read a pipe stage one argument short, and answered differently for it.
+  @mutators [
+    Mutare.Test.PipeSyntaxMutator,
+    :integer,
+    :arithmetic,
+    :return_value,
+    :numeric,
+    :operand_swap
+  ]
+
+  # Routes that say of a function only what is already true of it.
+  @idle_routes [
+    {Kernel, :max, 2, [:expression, :expression]},
+    {Kernel, :div, 2, [:expression, :expression]}
+  ]
   @inputs [0, 3, -2]
 
   property "a chain means the same however its stages are spelled", numtests: 150 do
@@ -31,6 +46,25 @@ defmodule Mutare.PipeSpellingPropertyTest do
     end
   end
 
+  # A route addresses what it names and nothing else: one that declares a function's arguments
+  # the values they already are changes no mutant, however the call is spelled.
+  property "a route that says nothing new changes nothing", numtests: 100 do
+    forall {stages, spelling, _other} <- chain() do
+      unrouted = observe(stages, spelling)
+      routed = observe(stages, spelling, call_routes: @idle_routes)
+
+      (unrouted == routed)
+      |> when_fail(
+        IO.puts("""
+        #{source(stages, spelling)}
+        #{inspect(unrouted, pretty: true)}
+        --- with #{inspect(@idle_routes)}
+        #{inspect(routed, pretty: true)}
+        """)
+      )
+    end
+  end
+
   defp chain do
     let stages <- non_empty(resize(4, list(stage()))) do
       spelling = vector(length(stages), elements([:piped, :direct]))
@@ -39,13 +73,13 @@ defmodule Mutare.PipeSpellingPropertyTest do
   end
 
   # Never 0: the fixture mutator's one mutation rewrites a stage's last argument *to* 0.
-  defp stage, do: {elements([:plus, :lazy_plus, :max]), elements([-2, -1, 1, 2, 3, 5])}
+  defp stage, do: {elements([:plus, :lazy_plus, :max, :div]), elements([-2, -1, 1, 2, 3, 5])}
 
   # What a spelling amounts to: per mutator, the multiset of "what this mutant does" — its
   # results and head-evaluation counts over the inputs — beside the baseline's. Ids and source
   # positions differ between spellings by design; behaviour may not.
-  defp observe(stages, spelling) do
-    {[module], sites} = compile_metamutant(source(stages, spelling), @mutators)
+  defp observe(stages, spelling, opts \\ []) do
+    {[module], sites} = compile_metamutant(source(stages, spelling), @mutators, opts)
 
     mutants =
       sites

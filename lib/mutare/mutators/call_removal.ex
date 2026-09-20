@@ -24,7 +24,7 @@ defmodule Mutare.Mutators.CallRemoval do
 
   The list is limited to calls whose first argument and result have compatible types. Slicing calls are included because returning the whole input remains type-compatible. Calls such as `map`, `filter`, `reduce`, `replace`, and `split` are excluded.
 
-  A regular call is replaced by its first argument: `Enum.sort(xs)` becomes `xs`. A pipe stage is replaced by `Function.identity/1`. Guard-safe removals, such as `abs(x)`, also apply inside guards.
+  A regular call is replaced by its first argument: `Enum.sort(xs)` becomes `xs`. A pipe stage is removed the same way: `xs |> Enum.sort()` becomes `xs`. Guard-safe removals, such as `abs(x)`, also apply inside guards.
 
   This family is enabled by default. It matches aliased and imported calls, including Erlang modules. Bare `Kernel` calls match only at their defined arities, so a same-named local function is not removed.
   """
@@ -130,7 +130,7 @@ defmodule Mutare.Mutators.CallRemoval do
                {:string, :sub_string}
              ])
 
-  # Bare `Kernel` calls keyed on {name, effective_arity}. Like Numeric's bare-Kernel
+  # Bare `Kernel` calls keyed on {name, arity}. Like Numeric's bare-Kernel
   # handling, the arity is what proves a bare `abs(x)` is the Kernel `abs/1` rather than
   # a same-named user function at another arity — so a user's `abs/2` is left alone. The
   # binary slicers exist bare at these arities only (`binary_part/2` is not a `Kernel`
@@ -149,19 +149,18 @@ defmodule Mutare.Mutators.CallRemoval do
   # or bare imported `import Enum; sort`) *or* an Erlang remote (direct `:string.trim`,
   # aliased `alias :string, as: S; S.trim`, bare imported `import :string; trim`) — keyed by
   # its resolved module (`[:Enum]` or `:string`). A bare `Kernel` call (which `Calls` doesn't
-  # resolve) falls to `bare_removal/2`.
+  # resolve) falls to `bare_removal/1`.
   @impl Mutare.Mutator
-  def mutate(node, %{pipe_mode: pipe_mode}) do
-    case Helpers.remove_call(node, pipe_mode, @removable) do
-      :skip -> bare_removal(node, pipe_mode)
+  def mutate(node) do
+    case Helpers.remove_call(node, @removable) do
+      :skip -> bare_removal(node)
       mutants -> mutants
     end
   end
 
-  # A bare `Kernel` call (`abs(x)`, the binary slicers) — removed only at its effective arity
+  # A bare `Kernel` call (`abs(x)`, the binary slicers) — removed only at its arity
   # (so a same-named user call at another arity is never touched, and a call displaced from
   # `Kernel` by `import Kernel, except:/only:` is left alone). `Calls.resolved_call` doesn't
   # resolve bare `Kernel`, so the shared bare-`Kernel` removal helper matches it on arity.
-  defp bare_removal(node, pipe_mode),
-    do: Helpers.remove_bare_kernel(node, pipe_mode, @bare_removable)
+  defp bare_removal(node), do: Helpers.remove_bare_kernel(node, @bare_removable)
 end

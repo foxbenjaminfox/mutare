@@ -26,9 +26,7 @@ defmodule Mutare.Transform.Resolve do
   # rather than two passes: a second pass would rebuild the same alias env to resolve imports.
   #
   # The env: `aliases` (the alias map), `imports` (`%{module_path => selector}`), `kernel`
-  # (the tracked `Kernel` selector, default `:all`), `pipe_mode` (`:piped` when the current node
-  # is a `|>` right-hand side — so `Imports` can recover a piped call's effective arity),
-  # and `module` (the enclosing module, `nil` at the top level — the one piece of module
+  # (the tracked `Kernel` selector, default `:all`), and `module` (the enclosing module, `nil` at the top level — the one piece of module
   # scope this pass tracks, so `Mutare.Transform.ModuleScope` can fold the implicit alias a nested
   # `defmodule` introduces; a call to a sibling nested module by short name then resolves to the
   # module Elixir defines, matching a `:call_routes` entry keyed on it). Bare function captures
@@ -38,8 +36,7 @@ defmodule Mutare.Transform.Resolve do
 
   alias Mutare.AST
   alias Mutare.CallRouting.Registry, as: Routes
-  alias Mutare.Mutator
-  alias Mutare.Transform.{Aliases, Calls, Imports, Meta, MetaKeys, ModuleScope, Uses}
+  alias Mutare.Transform.{Aliases, Imports, Meta, MetaKeys, ModuleScope, Uses}
   alias Mutare.Transform.Resolve.{ArgumentMarks, NodeIds, OperandPositions, RouteStamp}
   alias Mutare.Transform.StructuralForms
 
@@ -66,7 +63,6 @@ defmodule Mutare.Transform.Resolve do
       aliases: %{},
       imports: %{},
       kernel: Imports.default_selector(),
-      pipe_mode: :unpiped,
       # The enclosing module (`nil` at the file top level), threaded so `ModuleScope` can fold the
       # implicit alias Elixir introduces for a nested module — a sibling nested module referred to
       # by short name then resolves to what the compiler defines (`Outer.Foo`, not the bare `Foo`).
@@ -111,45 +107,38 @@ defmodule Mutare.Transform.Resolve do
   defp walk({:quote, meta, args}, env) when is_list(args) do
     # The head (`Kernel.SpecialForms.quote`) is stamped like any bare call, so a `:skip` route on
     # it is honoured — the analyzer then leaves the whole quote alone, escaping unquotes included.
-    {meta, _module_key} = stamp_bare_call(:quote, meta, args, %{env | pipe_mode: :unpiped})
+    {meta, _module_key} = stamp_bare_call(:quote, meta, args, env)
     {:quote, meta, walk_live_quote_args(args, env)}
   end
 
-  # `|>` pipe: the RHS is a call whose effective first argument is the LHS, so it carries one
-  # fewer written arg — resolve it as *piped* (effective arity +1), the LHS normally. The
-  # RHS's own arguments are ordinary expressions, so descent resets the flag. The LHS *is* the
-  # RHS's effective argument 0, so if the RHS marks that position (`Process.sleep/1`,
-  # `:timer.sleep/1`, or a custom index-0 mark) `mark_pipe_receiver/3` marks the LHS — the piped
-  # counterpart of the visible-arg stamping the RHS clause did.
+  # `left |> stage(args)` is sugar for `stage(left, args)`, and it is resolved, routed and marked
+  # as that call — `Kernel.|>/2`'s own desugaring (`direct_stage/3`). Nothing in this pass knows a
+  # call "one argument short": the stage's arity, import, route and argument marks all come out of
+  # the clauses that serve a written call, with the left side as argument 0.
   #
-  # That is an **unrouted** stage. A stage under a positional route is resolved and routed as
-  # the direct call it is sugar for, and left in the tree as the pipe it was written as
-  # (`routed_stage/3`).
-  #
-  # All of that holds for `Kernel.|>/2` alone. A `|>` displaced out of `Kernel`
+  # That holds for `Kernel.|>/2` alone. A `|>` displaced out of `Kernel`
   # (`import Kernel, except: [|>: 2]` beside a custom operator) is somebody else's macro or
   # function: whether its right side receives the left as an argument is that definition's
-  # business, so the node takes the generic bare-call walk — operands unpiped, no pipe-left
-  # recorded, and the whole routing vocabulary open to it (its head resolves to a `:call`, not
-  # the structural `Kernel` pipe). `Mutare.Transform.Calls.kernel_call?/1` is how every later
-  # reader of a `|>` node asks the same question.
+  # business, so the node takes the generic bare-call walk, with the whole routing vocabulary
+  # open to it (its head resolves to a `:call`, not the structural `Kernel` pipe).
+  # `Mutare.Transform.Calls.kernel_call?/1` is how every later reader of a `|>` node asks the
+  # same question.
   defp walk({:|>, meta, [lhs, rhs] = args}, env) do
     # The pipe head is a resolvable call too (`Kernel.|>/2`): stamp it so a `:skip` route on it is
     # honoured (a positional route never applies — `Mutare.Transform.StructuralForms`).
-    unpiped = %{env | pipe_mode: :unpiped}
-    {meta, module_key} = stamp_bare_call(:|>, meta, args, unpiped)
+    {meta, module_key} = stamp_bare_call(:|>, meta, args, env)
 
     cond do
       module_key != [:Kernel] ->
-        {:|>, meta, descend_marked(args, module_key, :|>, unpiped)}
+        {:|>, meta, descend_marked(args, module_key, :|>, env)}
 
-      operands = routed_stage(lhs, rhs, unpiped) ->
+      operands = direct_stage(lhs, rhs, env) ->
         {:|>, meta, operands}
 
+      # Nothing `Kernel.|>/2` could pipe into (`x |> unquote(stage)` inside a `quote`, or
+      # source that does not compile): two expressions.
       true ->
-        rhs = walk(rhs, %{env | pipe_mode: :piped})
-        {lhs, rhs} = mark_pipe_receiver(walk(lhs, unpiped), rhs, env)
-        {:|>, meta, [lhs, rhs]}
+        {:|>, meta, descend(args, env)}
     end
   end
 
@@ -166,12 +155,12 @@ defmodule Mutare.Transform.Resolve do
     # The capture head (`Kernel.SpecialForms.&`) is stamped like any bare call, so a `:skip` route
     # on it is honoured here too (the other `&` shapes reach the bare-call clause on their own).
     {amp_meta, _module_key} =
-      stamp_bare_call(:&, amp_meta, [{:/, slash_meta, [ref, right]}], %{env | pipe_mode: :unpiped})
+      stamp_bare_call(:&, amp_meta, [{:/, slash_meta, [ref, right]}], env)
 
     case capture_arity(right) do
       {:ok, arity} ->
         ref_meta =
-          Imports.stamp(fun, ref_meta, placeholder_args(arity), env.imports, env.kernel, :unpiped)
+          Imports.stamp(fun, ref_meta, placeholder_args(arity), env.imports, env.kernel)
 
         amp_meta = copy_import_witness(amp_meta, ref_meta)
         {:&, amp_meta, [{:/, slash_meta, [{fun, ref_meta, context}, right]}]}
@@ -183,7 +172,7 @@ defmodule Mutare.Transform.Resolve do
 
   # A remote call `Mod.fun(...)`: stamp its module position with the alias-resolved module
   # (and, when it resolves to a known macro, its argument routing on the call meta), then
-  # descend the arguments un-piped (they may contain bare imported calls).
+  # descend the arguments (they may contain bare imported calls).
   defp walk({{:., dot_meta, [{:__aliases__, _am, path} = aliases, fun]}, call_meta, args}, env)
        when is_list(args) do
     stamped = Aliases.stamp_module(aliases, env.aliases)
@@ -208,7 +197,7 @@ defmodule Mutare.Transform.Resolve do
   # as `Mod.fun`'s `__aliases__` above) — bringing the macro path level with `resolved_call/1`. A
   # `nil` result means the receiver is *not* a module reference but a **runtime sub-expression** — a
   # chained call (`get_config().fetch(k)`, `Repo.get(...).name`), a variable/result dispatch
-  # (`obj.fun(...)`), and so on — so it is **walked** (un-piped, in the same lexical scope), letting
+  # (`obj.fun(...)`), and so on — so it is **walked** (in the same lexical scope), letting
   # an aliased/imported/known-macro call sitting in the receiver get its stamp instead of being
   # silently skipped (the old generic-clause behaviour). The function-name atom `fun` is never
   # touched. (Analyze mirrors this split — `descend_receiver/2` — so such a receiver is also offered
@@ -217,7 +206,7 @@ defmodule Mutare.Transform.Resolve do
        when is_atom(fun) and is_list(args) do
     case Aliases.resolve_node(mod, %{}) do
       nil ->
-        walked = walk(mod, %{env | pipe_mode: :unpiped})
+        walked = walk(mod, env)
         {{:., dot_meta, [walked, fun]}, call_meta, descend(args, env)}
 
       module_key ->
@@ -233,7 +222,7 @@ defmodule Mutare.Transform.Resolve do
   # receiver above — an aliased/imported/known-macro call inside an immediately-invoked `fn` gets its
   # stamp. (Analyze's `descend_receiver/2` has the matching clause.)
   defp walk({{:., dot_meta, [callee]}, call_meta, args}, env) when is_list(args) do
-    {{:., dot_meta, [walk(callee, %{env | pipe_mode: :unpiped})]}, call_meta, descend(args, env)}
+    {{:., dot_meta, [walk(callee, env)]}, call_meta, descend(args, env)}
   end
 
   # A `defmodule … do … end`: stamp the head (an `__aliases__` head with its resolved module — the
@@ -253,7 +242,7 @@ defmodule Mutare.Transform.Resolve do
     body_env =
       if kernel_module_definer?(:defmodule, meta, args, env),
         do: module_body_env(head, env),
-        else: %{env | pipe_mode: :unpiped}
+        else: env
 
     {:defmodule, meta, [defmodule_head(head, env), walk(body, body_env)]}
   end
@@ -277,28 +266,26 @@ defmodule Mutare.Transform.Resolve do
   # "this is Kernel's `defimpl`" signal; a displaced one carries none and stays an expression.
   defp walk({:defimpl, meta, args}, env) when is_list(args) and length(args) >= 2 do
     {meta, _module_key} = stamp_bare_call(:defimpl, meta, args, env)
-    enclosing = %{env | pipe_mode: :unpiped}
 
     if kernel_module_definer?(:defimpl, meta, args, env) do
       impl = ModuleScope.impl_module(hd(args), defimpl_for_type(args), env.aliases)
       {lead, [last]} = Enum.split(args, -1)
-      walked = Enum.map(lead, &walk(&1, enclosing)) ++ [walk(last, %{enclosing | module: impl})]
+      walked = Enum.map(lead, &walk(&1, env)) ++ [walk(last, %{env | module: impl})]
       {:defimpl, Keyword.put(meta, MetaKeys.impl_module_key(), impl), walked}
     else
       {:defimpl, meta, descend(args, env)}
     end
   end
 
-  # A bare call `fun(...)`: stamp it with its resolved import (or Kernel-displacement) using
-  # the current pipe context for effective arity, then — when it resolves to a known macro —
-  # its argument routing, then descend the arguments un-piped.
+  # A bare call `fun(...)`: stamp it with its resolved import (or Kernel-displacement), then —
+  # when it resolves to a known macro — its argument routing, then descend the arguments.
   defp walk({fun, meta, args}, env) when is_atom(fun) and is_list(args) do
     {meta, module_key} = stamp_bare_call(fun, meta, args, env)
     {fun, meta, descend_marked(args, module_key, fun, env)}
   end
 
   # Any other n-ary node (`__aliases__`, operators with a tuple form, …): nothing to stamp —
-  # descend the arguments un-piped.
+  # descend the arguments.
   defp walk({form, meta, args}, env) when is_list(args), do: {form, meta, descend(args, env)}
 
   defp walk({left, right}, env), do: {walk(left, env), walk(right, env)}
@@ -306,22 +293,19 @@ defmodule Mutare.Transform.Resolve do
   defp walk(node, _env), do: node
 
   # The bare-call stamping shared by the generic bare-call clause and the `defmodule`
-  # clause: the resolved import (or Kernel displacement) using the current pipe context
-  # for effective arity, then — when the call resolves to a known macro — its argument
-  # routing. The macro stamp runs *after* `Imports.stamp` so it can read the just-applied
+  # clause: the resolved import (or Kernel displacement), then — when the call resolves to a
+  # known macro — its argument routing. The macro stamp runs *after* `Imports.stamp` so it can read the just-applied
   # import / Kernel-displacement marks. Returns `{meta, module_key}` so the caller can also
   # stamp any argument marks the resolved module/function carries (`descend_marked/4`).
   defp stamp_bare_call(fun, meta, args, env) do
-    meta = Imports.stamp(fun, meta, args, env.imports, env.kernel, pipe_mode(env))
-    arity = Mutator.effective_arity(args, pipe_mode(env))
+    meta = Imports.stamp(fun, meta, args, env.imports, env.kernel)
+    arity = length(args)
     module_key = bare_module_key(fun, arity, meta, env)
     meta = RouteStamp.stamp(meta, module_key, fun, args, {fun, meta, args}, env)
     {stamp_mark_call(meta, module_key, fun, args, env), module_key}
   end
 
-  defp descend(args, env), do: Enum.map(args, &walk(&1, %{env | pipe_mode: :unpiped}))
-
-  defp pipe_mode(env), do: env.pipe_mode
+  defp descend(args, env), do: Enum.map(args, &walk(&1, env))
 
   # The head of a `defmodule`: an `__aliases__` head is *stamped* with its resolved module (for
   # `Mutare.Lifting`; no descent — it's a module path), a non-`__aliases__` (dynamic) head is a live
@@ -329,7 +313,7 @@ defmodule Mutare.Transform.Resolve do
   defp defmodule_head({:__aliases__, _, _} = head, env),
     do: Aliases.stamp_module(head, env.aliases)
 
-  defp defmodule_head(head, env), do: walk(head, %{env | pipe_mode: :unpiped})
+  defp defmodule_head(head, env), do: walk(head, env)
 
   # The env a genuine `Kernel.defmodule` body is walked under: the enclosing env plus the module it
   # enters (`child_module/3` — the unresolved sentinel for a non-static head) and the in-body
@@ -340,7 +324,7 @@ defmodule Mutare.Transform.Resolve do
     aliases =
       ModuleScope.register_defined_module({:defmodule, [], [head]}, env.module, env.aliases)
 
-    %{env | pipe_mode: :unpiped, module: child, aliases: aliases}
+    %{env | module: child, aliases: aliases}
   end
 
   # The `for:` type of a `defimpl`, wherever it sits — a standalone opts arg (`defimpl P, for: T do
@@ -353,135 +337,64 @@ defmodule Mutare.Transform.Resolve do
   end
 
   # `descend/2`, preceded by stamping any argument marks the resolved `{module_key, fun}` carries
-  # (`Mutare.Transform.Resolve.ArgumentMarks`). The marks are computed against the call's own pipe
-  # context (a piped receiver is effective arg 0), then the marked nodes are descended un-piped like
-  # every other argument — the stamp rides through untouched.
+  # (`Mutare.Transform.Resolve.ArgumentMarks`), then the marked nodes are descended like every
+  # other argument — the stamp rides through untouched. A `|>` stage reaches here as its direct
+  # call, so its piped operand is marked as the argument 0 it is.
   defp descend_marked(args, module_key, fun, env),
-    do: args |> ArgumentMarks.stamp(module_key, fun, pipe_mode(env), env.marks) |> descend(env)
+    do: args |> ArgumentMarks.stamp(module_key, fun, env.marks) |> descend(env)
 
   # Record on the call's own meta that a mark declaration matched it (`:mutare_mark_call`) — the
   # side channel `Mutare.Transform.ConfigMatches` reads to find configured `argument_marks:` entries
   # that reached no call. Keyed exactly as `ArgumentMarks.stamp/5` looks the declaration up.
   defp stamp_mark_call(meta, module_key, fun, args, env) do
-    arity = Mutator.effective_arity(args, pipe_mode(env))
+    arity = length(args)
     ArgumentMarks.stamp_call(meta, module_key, fun, arity, env.marks)
   end
 
-  # Mark a pipe's left side — the RHS call's effective argument 0, which `descend_marked/4` can't
-  # reach because it isn't in the RHS's visible args — when the RHS's marks reach the receiver
-  # (an index-0 positional mark, or an arity-1 call's keyword marks on a piped options list). The
-  # cheap `receiver_fun?` pre-filter runs first; only then is the RHS target resolved.
-  #
-  # Returns `{lhs, rhs}`: when a receiver mark applies, the RHS call is stamped `:mutare_mark_call`
-  # too (a parenless RHS never went through `stamp_bare_call/4`, so this is the one place the match
-  # can be recorded for the ineffective-entry diagnostic).
-  defp mark_pipe_receiver(lhs, rhs, env) do
-    if ArgumentMarks.receiver_fun?(rhs, env.marks) do
-      case pipe_target(rhs, env) do
-        {module_key, fun, effective_arity} ->
-          {ArgumentMarks.stamp_receiver(lhs, module_key, fun, effective_arity, env.marks),
-           stamp_rhs_mark_call(rhs, module_key, fun, effective_arity, env)}
-
-        nil ->
-          {lhs, rhs}
-      end
-    else
-      {lhs, rhs}
-    end
-  end
-
-  defp stamp_rhs_mark_call({form, rhs_meta, args}, module_key, fun, arity, env)
-       when is_list(rhs_meta),
-       do: {form, ArgumentMarks.stamp_call(rhs_meta, module_key, fun, arity, env.marks), args}
-
-  defp stamp_rhs_mark_call(rhs, _module_key, _fun, _arity, _env), do: rhs
-
-  # The resolved `{module_key, function, effective_arity}` of a walked pipe RHS call, or `nil`. A
-  # remote/erlang head resolves via `Calls.resolved_call/1` (reading the stamps this pass just
-  # placed); a bare head via `bare_module_key/4` (the import/Kernel resolution the bare-call clause
-  # used) — so a bare `Kernel` or imported RHS resolves the same as when the call is written
-  # non-piped, honouring the effective-index-0 contract there too.
-  defp pipe_target({{:., _dm, [_recv, fun]}, _meta, args} = rhs, _env)
-       when is_atom(fun) and is_list(args) do
-    case Calls.resolved_call(rhs) do
-      {module_key, ^fun, _args, _rebuild} -> {module_key, fun, length(args) + 1}
-      _ -> nil
-    end
-  end
-
-  defp pipe_target({fun, meta, args}, env) when is_atom(fun) and is_list(args),
-    do:
-      {bare_module_key(fun, Mutator.effective_arity(args, :piped), meta, env), fun,
-       length(args) + 1}
-
-  # A bare RHS written parenless (`123 |> to_string`, `1000 |> sleep`) is `{fun, meta, nil}`, which
-  # the generic `walk/2` leaves unstamped (a bare `{fun, meta, nil}` is a variable outside pipe
-  # position, so it can't be blanket-resolved as a call). As a pipe RHS it *is* a 0-visible-arg call
-  # whose effective argument 0 is the LHS, so resolve its import here — mirroring `stamp_bare_call/4`
-  # — before keying, so an imported/`Kernel` receiver mark applies to the parenless form too.
-  defp pipe_target({fun, meta, nil}, env) when is_atom(fun) do
-    meta = Imports.stamp(fun, meta, [], env.imports, env.kernel, :piped)
-    {bare_module_key(fun, 1, meta, env), fun, 1}
-  end
-
-  defp pipe_target(_rhs, _env), do: nil
-
-  # `left |> stage(args)` is sugar for `stage(left, args)`, and a **routed** stage is where the
-  # sugar costs something: the route treats the call's argument positions, and the left side is
-  # position 0 without being an argument. So such a stage is resolved, routed and stamped as the
-  # direct call `Kernel.|>/2` itself would build (`Macro.pipe/3`) — a classifier is shown that
-  # call, and the treatments stamped on the stage cover its left side too.
+  # The stage of a `Kernel.|>/2`, walked as the direct call `Macro.pipe/3` makes of it and split
+  # back into `[left, stage]`.
   #
   # The *tree* keeps the pipe. This pass walks everything, including what no later pass will
   # touch: a `:raw` argument, the inside of a `:skip`ped call, a pattern, source copied verbatim
   # into a clean region. Rewriting here would rewrite those too, and "as written" is the promise
-  # they carry. So the walked direct call is split back into `[left, stage]`, the stage marked
-  # (`Meta.routed_direct?/1`), and the rewrite itself is left to `Mutare.Transform.Analyze`, which
-  # performs it as part of analyzing a node (`Mutare.Transform.WrittenPipe.direct/1`) — so it
-  # happens exactly where Mutare reads code as Elixir, by construction rather than by a list of
-  # regions to avoid. NOTES "A routed pipe stage becomes a direct call".
+  # they carry. So the stage is marked (`Meta.routed_direct?/1`) and the rewrite itself is left
+  # to `Mutare.Transform.Analyze`, which performs it as part of analyzing a node
+  # (`Mutare.Transform.WrittenPipe.direct/1`) — so it happens exactly where Mutare reads code as
+  # Elixir, by construction rather than by a list of regions to avoid. NOTES "A pipe stage is
+  # the call it is sugar for".
   #
-  # An unrouted stage is not marked (it is a function call as far as Mutare knows, and keeps the
-  # hoisting closure). Nor is a stage under the call-level `:skip`, whose left side is documented
-  # as the skipped call's *sibling* and keeps its mutants.
-  defp routed_stage(lhs, {_head, _meta, written_args} = rhs, env) do
-    with {module_key, fun, arity} <- stage_target(rhs, env),
-         true <- RouteStamp.positional?(env.call_routes, module_key, fun, arity) do
-      {head, meta, [lhs | visible]} = walk(Macro.pipe(lhs, rhs, 0), env)
-      # A parenless stage (`x |> to_string`) keeps its written shape.
-      visible = if is_nil(written_args), do: nil, else: visible
-      [lhs, {head, Meta.stamp_routed_direct(meta), visible}]
-    else
-      _unrouted -> nil
+  # One stage is not marked: a call under the call-level `:skip`. Its left side is documented
+  # as the skipped call's *sibling*, which keeps its mutants (`Repo.insert!(u) |>
+  # Mixpanel.track(…)`), so the pipe stays, and the stage records what its piped operand may
+  # take (`RouteStamp.stamp_skipped_receiver/2`).
+  defp direct_stage(lhs, {head, _meta, written_args} = rhs, env)
+       when head not in [:unquote, :unquote_splicing] do
+    case direct_call(lhs, rhs) do
+      nil ->
+        nil
+
+      direct ->
+        {head, meta, [lhs | visible]} = walk(direct, env)
+        # A parenless stage (`x |> to_string`) keeps its written shape.
+        visible = if is_nil(written_args), do: nil, else: visible
+
+        if Meta.direct_routing(meta) == :skip do
+          [lhs, {head, RouteStamp.stamp_skipped_receiver(meta, env.call_routes), visible}]
+        else
+          [lhs, {head, Meta.stamp_routed_direct(meta), visible}]
+        end
     end
   end
 
-  defp routed_stage(_lhs, _rhs, _env), do: nil
+  defp direct_stage(_lhs, _rhs, _env), do: nil
 
-  # What an **unwalked** pipe stage resolves to, at its effective arity: `{module_key, fun, arity}`
-  # or `nil`. The head-only twin of the three call clauses below (`pipe_target/2` is the reader for
-  # a stage already walked).
-  defp stage_target({{:., _dm, [{:__aliases__, _am, path}, fun]}, _meta, args}, env)
-       when is_atom(fun) and is_list(args),
-       do: {Aliases.resolve_path(path, env.aliases), fun, length(args) + 1}
-
-  defp stage_target({{:., _dm, [mod, fun]}, _meta, args}, _env)
-       when is_atom(fun) and is_list(args) do
-    case Aliases.resolve_node(mod, %{}) do
-      nil -> nil
-      module_key -> {module_key, fun, length(args) + 1}
-    end
+  # `Kernel.|>/2`'s own desugaring. It refuses what cannot be piped into (a literal, a `fn`, a
+  # capture, a unary operator) — source that does not compile, left exactly as written.
+  defp direct_call(lhs, rhs) do
+    Macro.pipe(lhs, rhs, 0)
+  rescue
+    ArgumentError -> nil
   end
-
-  defp stage_target({fun, meta, args}, env)
-       when is_atom(fun) and is_list(meta) and (is_list(args) or is_nil(args)) do
-    args = args || []
-    meta = Imports.stamp(fun, meta, args, env.imports, env.kernel, :piped)
-    arity = length(args) + 1
-    {bare_module_key(fun, arity, meta, env), fun, arity}
-  end
-
-  defp stage_target(_rhs, _env), do: nil
 
   defp capture_arity(n) when is_integer(n) and n >= 0, do: {:ok, n}
   defp capture_arity({:__block__, _meta, [n]}) when is_integer(n) and n >= 0, do: {:ok, n}
@@ -522,7 +435,7 @@ defmodule Mutare.Transform.Resolve do
   # resolve later siblings to a module that needn't exist. Every other statement passes through.
   defp maybe_register_defined_module(aliases, {form, meta, args} = stmt, env)
        when form in [:defmodule, :defprotocol] and is_list(args) do
-    stamped = Imports.stamp(form, meta, args, env.imports, env.kernel, :unpiped)
+    stamped = Imports.stamp(form, meta, args, env.imports, env.kernel)
 
     if kernel_module_definer?(form, stamped, args, env),
       do: ModuleScope.register_defined_module(stmt, env.module, aliases),
@@ -611,7 +524,7 @@ defmodule Mutare.Transform.Resolve do
   # module the Mutare process can't reflect on, whose `{module, fun, arity}` some mutator *declared*
   # an argument mark for (`argument_marks/1`, or an `argument_marks:` config entry naming a target-project
   # module). The declaration asserts the module provides `fun/arity`, and the compile-unambiguity
-  # rule does the rest, so `descend_marked/4` (and the piped-receiver path, via `pipe_target/2`) can
+  # rule does the rest, so `descend_marked/4` can
   # stamp the configured positions on the imported bare form just as on the remote/selective-import
   # forms. Wrong-declaration risk runs only in the safe direction — a mark can at most *suppress* a
   # mutant, never mis-resolve a mutation. Same determinism argument as above (sorted fold); limited
@@ -634,7 +547,7 @@ defmodule Mutare.Transform.Resolve do
   # a DSL's own `defmodule`) resolves to that DSL module (or `nil`), never `[:Kernel]`, so its head
   # neither opens a module scope nor installs an implicit alias.
   defp kernel_module_definer?(form, meta, args, env),
-    do: bare_module_key(form, Mutator.effective_arity(args, :unpiped), meta, env) == [:Kernel]
+    do: bare_module_key(form, length(args), meta, env) == [:Kernel]
 
   # === quote data ============================================================
 
@@ -669,7 +582,7 @@ defmodule Mutare.Transform.Resolve do
             pair
 
           _option ->
-            {key, walk(value, %{env | pipe_mode: :unpiped})}
+            {key, walk(value, env)}
         end
 
       other ->
@@ -687,8 +600,8 @@ defmodule Mutare.Transform.Resolve do
   # route on it is honoured by `Analyze.QuoteEscape` and the escaping argument stays as written.
   defp walk_quoted_data({form, meta, [arg]}, 1, env)
        when form in [:unquote, :unquote_splicing] do
-    {meta, _module_key} = stamp_bare_call(form, meta, [arg], %{env | pipe_mode: :unpiped})
-    {form, meta, [walk(arg, %{env | pipe_mode: :unpiped})]}
+    {meta, _module_key} = stamp_bare_call(form, meta, [arg], env)
+    {form, meta, [walk(arg, env)]}
   end
 
   defp walk_quoted_data({form, _meta, [_arg]} = node, quote_level, _env)

@@ -79,16 +79,14 @@ defmodule Mutare.Transform do
   tail calls stay tail calls (LCO). Nested sites work because the catch-all holds
   the *transformed* children, reachable whenever an outer mutant is inactive.
 
-  One position the selector `case` is *not* legal in: the right side of a pipe.
-  `x |> case … end` parses but fails to compile (`Kernel.|>/2` cannot pipe into a
-  `case`), so when a mutated node is a **pipe stage**, emission lifts the selector
-  out of the pipe into a one-shot closure invoked on the piped value
-  (`PipeEmit.hoist/2`): `lhs |> (fn v -> case … (each branch pipes `v`) … end).()`. The
-  piped value is computed once (it stays the pipe's LHS) and bound to `v`, so each
-  branch references a cheap variable — keeping a chain of mutated stages **linear**
-  in the rendered source, where distributing `lhs` into every branch would copy the
-  whole upstream chain per branch and blow up exponentially. The Site still records
-  the bare stage, so the diff is unchanged.
+  A **pipe stage** is analyzed as the call it is sugar for (`left |> stage(args)` as
+  `stage(left, args)` — `WrittenPipe`), so no selector ever lands on the
+  right side of a pipe, where a `case` is illegal. Emission binds the piped value once, in a
+  one-shot closure invoked on it (`PipeEmit`):
+  `lhs |> (fn v -> case … (each branch pipes `v`) … end).()`. Each branch references a cheap
+  variable — keeping a chain of mutated stages **linear** in the rendered source, where
+  distributing `lhs` into every branch would copy the whole upstream chain per branch. The
+  Site still records the stage as written, so the diff is unchanged.
 
   The closure evaluates the piped value ahead of the stage, as an ordinary call does its first
   argument — and a call is ordinary in every respect its route does not address
@@ -1302,12 +1300,11 @@ defmodule Mutare.Transform do
       {:in_place, candidates} ->
         emit_site(current, candidates, ctx)
 
-      # No deliverable candidates. A `|>` never carries candidates itself, but its
-      # already-emitted RHS may now be a selector `case` — illegal as a pipe target — so
-      # rewrite it here. `Meta.strip_delivery` clears any meta left by candidates the gate dropped
-      # (a no-op when there were none), so the node renders clean.
+      # No deliverable candidates. `Meta.strip_delivery` clears any meta left by candidates the
+      # gate dropped (a no-op when there were none), so the node renders clean; a call written
+      # as a pipe is spelled as one again, around whatever its piped value became.
       :none ->
-        {PipeEmit.hoist(Meta.strip_delivery(current), ctx), ctx}
+        {current |> Meta.strip_delivery() |> PipeEmit.expand_pinned() |> PipeEmit.sugar(), ctx}
     end
   end
 
@@ -1338,43 +1335,54 @@ defmodule Mutare.Transform do
   defp emit_site(node, candidates, ctx), do: emit_selector_site(node, candidates, ctx)
 
   defp emit_selector_site(node, candidates, ctx) do
-    # A rewritten pipe stage whose piped value every mutant keeps binds it once, so a chain of
-    # routed stages stays linear — `PipeEmit.bound_argument/2`. If a mutant moves that operand,
-    # inline branches export their shared bindings so they still reach the enclosing scope.
-    binding = PipeEmit.bound_argument(node, candidates)
+    # A call written as a pipe binds its piped value once, so a chain of mutated stages stays
+    # linear; a candidate that moves that operand goes in a selector around the closure
+    # instead — `Mutare.Transform.PipeEmit`. Every other node is one `:outer` selector.
+    delivery = PipeEmit.delivery(node, candidates)
 
-    {clauses, ctx} =
+    {claimed, ctx} =
       SelectorEmit.claim_items(candidates, ctx, {&Delivery.site/4, &Delivery.line/1}, fn id,
                                                                                          candidate ->
-        {:->, [],
-         [
-           [id],
-           candidate
-           |> Delivery.selector_branch()
-           |> PipeEmit.rebind(binding, ctx)
-           |> ImportWitness.wrap(ImportWitness.for_candidate(candidate))
-         ]}
+        layer = PipeEmit.layer(candidate, delivery)
+
+        {layer, candidate,
+         {:->, [],
+          [
+            [id],
+            candidate
+            |> Delivery.selector_branch()
+            |> PipeEmit.rebind(PipeEmit.binding(delivery, layer), ctx)
+            |> PipeEmit.sugar()
+            |> ImportWitness.wrap(ImportWitness.for_candidate(candidate))
+          ]}}
       end)
 
-    # `PipeEmit.hoist/2`: when this node is itself a `|>` (e.g. its tail carries a
-    # ReturnValue candidate) whose RHS is an already-emitted selector, the selector
-    # would sit illegally as a pipe target inside this default/catch-all — hoist the
-    # pipe into it. A no-op for every other node shape.
-    default = PipeEmit.hoist(Meta.strip_delivery(node), ctx)
+    # A `|>` that is still a pipe here has a `:skip`ped stage; only a generated pin on its left
+    # needs anything (`PipeEmit.expand_pinned/1`). A no-op for every other node shape.
+    default = node |> Meta.strip_delivery() |> PipeEmit.expand_pinned()
 
-    # All mutations here skipped → no selector; emit the node unchanged.
-    case clauses do
-      [] ->
-        {default, ctx}
+    # A layer whose mutations were all skipped has no selector; the node passes through it.
+    Enum.reduce([:inner, :outer], {default, ctx}, fn layer, {default, ctx} ->
+      case for({^layer, candidate, clause} <- claimed, do: {candidate, clause}) do
+        [] -> {default, ctx}
+        live -> selector_layer(default, live, PipeEmit.binding(delivery, layer), ctx)
+      end
+    end)
+    |> then(fn {emitted, ctx} -> {PipeEmit.sugar(emitted), ctx} end)
+  end
 
-      _ ->
-        {case_node, ctx} =
-          default |> PipeEmit.rebind(binding, ctx) |> SelectorEmit.selector_case(clauses, ctx)
+  defp selector_layer(default, live, binding, ctx) do
+    {candidates, clauses} = Enum.unzip(live)
 
-        {case_node
-         |> pin_if_needed(candidates)
-         |> PipeEmit.close(binding, argument_zero(default), ctx), ctx}
-    end
+    {case_node, ctx} =
+      default
+      |> PipeEmit.rebind(binding, ctx)
+      |> PipeEmit.sugar()
+      |> SelectorEmit.selector_case(clauses, ctx)
+
+    {case_node
+     |> pin_if_needed(candidates)
+     |> PipeEmit.close(binding, argument_zero(default), ctx), ctx}
   end
 
   defp argument_zero({_head, _meta, [zero | _rest]}), do: zero

@@ -30,8 +30,8 @@ defmodule Mutare.Mutators.Arithmetic do
     :/ => [:*]
   }
 
-  # Bare `Kernel` `div`/`rem` calls keyed on {name, effective_arity} => [sibling] — the same
-  # shared bare-`Kernel` safeguard `Mutare.Mutators.Numeric` uses (`Helpers.swap_bare_kernel/3`):
+  # Bare `Kernel` `div`/`rem` calls keyed on {name, arity} => [sibling] — the same
+  # shared bare-`Kernel` safeguard `Mutare.Mutators.Numeric` uses (`Helpers.swap_bare_kernel/2`):
   # the arity proves a bare `div` is the Kernel `div/2` (not a user `div/3`), and a call
   # displaced by `import Kernel, except: [div: 2]` is skipped.
   @call_swaps %{
@@ -76,16 +76,16 @@ defmodule Mutare.Mutators.Arithmetic do
   # `div`/`rem` call mutations explicitly in the single exported mutation callback.
   #
   # `div`/`rem` are bare `Kernel` calls, not operators. Swapping `div`↔`rem` keeps the
-  # argument list, so it is a valid rename at any position (a pipe stage included), gated on
-  # **effective arity 2** so a same-named user `div/3` is never rewritten to a `rem/3` that may
+  # argument list, so it is a valid rename at any position, gated on
+  # **arity 2** so a same-named user `div/3` is never rewritten to a `rem/3` that may
   # not exist (which would poison the single build) — the shared bare-`Kernel` safeguard
-  # (`Helpers.swap_bare_kernel/3`, also used by `Numeric`).
+  # (`Helpers.swap_bare_kernel/2`, also used by `Numeric`).
   @impl Mutare.Mutator
-  def mutate(node, %{pipe_mode: pipe_mode}),
+  def mutate(node),
     do:
       Helpers.combine_mutations(
         operator_mutations(node),
-        Helpers.swap_bare_kernel(node, pipe_mode, @call_swaps)
+        Helpers.swap_bare_kernel(node, @call_swaps)
       )
 
   # Variant labels for `# mutare:ignore[arithmetic:<op>]`: the resulting operator of a binary
