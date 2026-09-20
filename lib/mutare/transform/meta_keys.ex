@@ -64,7 +64,7 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_marks`            — mutator-requested position marks (label set)   (Resolve.ArgumentMarks, read by Attach.offer)
   #   * `:mutare_mark_call`        — `{module_key, fun, arity}` of a call some mark declaration matched (Resolve, read by ConfigMatches)
   #   * `:mutare_unit_tail`        — a unit-returning function's leaf return tail    (UnitReturns, read by Attach.offer + Analyze.Returns)
-  #   * `:mutare_selector`         — marks a selector `case` the emit built           (Render.selector_case, read by PipeEmit)
+  #   * `:mutare_selector`         — marks a selector `case` the emit built           (Render.selector_case, read back by Render)
   #   * `:mutare_routed_direct`    — a `|>` stage resolved and routed as the direct call; its treatments cover the left side (Resolve, read by WrittenPipe.direct/1)
   #   * `:mutare_operand_of`       — the operator position a node was written in      (Resolve.OperandPositions, read by Site.Parenthesize)
   #   * `:mutare_written_pipe`     — the `|>` a routed call was written as, before Analyze made it a direct call (WrittenPipe.direct/1, read through Meta.written_pipe/1)

@@ -43,10 +43,15 @@ defmodule Mutare.Transform.PipeEmit do
   # had around its stage's. An outer selector traps what its branches bind, so bindings every
   # branch shares are exported through a tuple and rebound outside (`{:export, names}`).
   #
-  # `sugar/1` spells a rewritten call as the pipe it was wherever emission leaves one bare, so
-  # the metamutant is as deep as the user's source, not one level deeper per stage.
+  # The calls this leaves in the tree are direct calls still; `Mutare.Transform.Render` spells
+  # each as the pipe it was written as, so the metamutant is as deep as the user's source, not
+  # one level deeper per stage.
+  #
+  # The emitter drives this in three steps, and needs to know nothing about layers or bindings:
+  # `delivery/2` decides, `branch/3` places and rebinds one candidate's branch, and `layers/5`
+  # builds the selector or selectors through the emitter's own builder.
 
-  alias Mutare.Transform.{BindingEscapeEmit, Candidate, Ctx, Meta, Render}
+  alias Mutare.Transform.{BindingEscapeEmit, Candidate, Ctx, Meta}
   alias Mutare.Transform.Candidate.Delivery
 
   @typedoc "How one selector treats what its branches share: nothing, exported bindings, or a bound operand."
@@ -59,7 +64,7 @@ defmodule Mutare.Transform.PipeEmit do
   """
   @type t :: binding() | {:split, {:bind, keyword(), Macro.t()}, :inline | {:export, [atom()]}}
 
-  @typedoc "Which selector of a `t:t/0` a candidate is delivered in."
+  @typedoc "Which selector of a `t:t/0` a candidate is delivered in: inside the closure, or around it."
   @type layer :: :inner | :outer
 
   @doc "How `node`'s candidates are delivered — see the module header."
@@ -87,19 +92,51 @@ defmodule Mutare.Transform.PipeEmit do
 
   def delivery(_node, _candidates), do: :inline
 
-  @doc "The selector of `delivery` that `candidate` is delivered in."
-  @spec layer(Candidate.t(), t()) :: layer()
-  def layer(candidate, {:split, {:bind, _pipe_meta, written}, _outer}),
+  @doc """
+  Which selector of `delivery` `candidate` is delivered in, and its branch there — a retained
+  operand rebound to the closure's variable, or the branch's result and escaping bindings
+  appended.
+  """
+  @spec branch(Candidate.t(), t(), Ctx.t()) :: {layer(), Macro.t()}
+  def branch(candidate, delivery, ctx) do
+    layer = layer(candidate, delivery)
+    {layer, candidate |> Delivery.selector_branch() |> rebind(binding(delivery, layer), ctx)}
+  end
+
+  @typedoc "Builds one selector from its catch-all and the claimed items of one layer."
+  @type builder(item) :: (Macro.t(), [item], Ctx.t() -> {Macro.t(), Ctx.t()})
+
+  @doc """
+  Build `delivery`'s selectors around `default`, the inner one first. `claimed` tags each
+  claimed item with its `branch/3` layer; `build` makes one selector from a catch-all and the
+  items of one layer. A layer none of whose items was claimed (every mutation skipped) has no
+  selector, and the node passes through it.
+  """
+  @spec layers(t(), Macro.t(), [{layer(), item}], Ctx.t(), builder(item)) :: {Macro.t(), Ctx.t()}
+        when item: term()
+  def layers(delivery, default, claimed, ctx, build) do
+    Enum.reduce([:inner, :outer], {default, ctx}, fn layer, {default, ctx} ->
+      case for({^layer, item} <- claimed, do: item) do
+        [] ->
+          {default, ctx}
+
+        items ->
+          binding = binding(delivery, layer)
+          {selector, ctx} = default |> rebind(binding, ctx) |> build.(items, ctx)
+          {close(selector, binding, default, ctx), ctx}
+      end
+    end)
+  end
+
+  defp layer(candidate, {:split, {:bind, _pipe_meta, written}, _outer}),
     do: if(keeps_argument?(candidate, written), do: :inner, else: :outer)
 
-  def layer(_candidate, {:bind, _pipe_meta, _written}), do: :inner
-  def layer(_candidate, _binding), do: :outer
+  defp layer(_candidate, {:bind, _pipe_meta, _written}), do: :inner
+  defp layer(_candidate, _binding), do: :outer
 
-  @doc "The binding of one selector of `delivery`."
-  @spec binding(t(), layer()) :: binding()
-  def binding({:split, inner, _outer}, :inner), do: inner
-  def binding({:split, _inner, outer}, :outer), do: outer
-  def binding(binding, _layer), do: binding
+  defp binding({:split, inner, _outer}, :inner), do: inner
+  defp binding({:split, _inner, outer}, :outer), do: outer
+  defp binding(binding, _layer), do: binding
 
   # An unrouted call is a function, whose every argument is a value.
   defp value_position?(nil), do: true
@@ -130,30 +167,29 @@ defmodule Mutare.Transform.PipeEmit do
 
   defp keeps_argument?(_candidate, _written), do: false
 
-  @doc "Rebind a retained operand, or append the branch's result and escaping bindings."
-  @spec rebind(Macro.t(), binding(), Ctx.t()) :: Macro.t()
-  def rebind(branch, :inline, _ctx), do: branch
+  # Rebind a retained operand, or append the branch's result and escaping bindings.
+  defp rebind(branch, :inline, _ctx), do: branch
 
-  def rebind(branch, {:export, names}, ctx) do
+  defp rebind(branch, {:export, names}, ctx) do
     value = piped_var(ctx)
     {:__block__, [], [{:=, [], [value, branch]}, export_tuple(value, names)]}
   end
 
-  def rebind(written, {:bind, _pipe_meta, written}, ctx), do: piped_var(ctx)
+  defp rebind(written, {:bind, _pipe_meta, written}, ctx), do: piped_var(ctx)
 
-  def rebind({head, meta, [_zero | rest]}, {:bind, _pipe_meta, _written}, ctx),
+  defp rebind({head, meta, [_zero | rest]}, {:bind, _pipe_meta, _written}, ctx),
     do: {head, meta, [piped_var(ctx) | rest]}
 
-  @doc "Close over the shared operand, or rebind an inline selector's exported variables."
-  @spec close(Macro.t(), binding(), Macro.t(), Ctx.t()) :: Macro.t()
-  def close(selector, :inline, _argument, _ctx), do: selector
+  # Close over the shared operand — `default`'s emitted argument 0 — or rebind an inline
+  # selector's exported variables.
+  defp close(selector, :inline, _default, _ctx), do: selector
 
-  def close(selector, {:export, names}, _argument, ctx) do
+  defp close(selector, {:export, names}, _default, ctx) do
     value = piped_var(ctx)
     {:__block__, [], [{:=, [], [export_tuple(value, names), selector]}, value]}
   end
 
-  def close(selector, {:bind, pipe_meta, _written}, argument, ctx) do
+  defp close(selector, {:bind, pipe_meta, _written}, {_head, _meta, [argument | _rest]}, ctx) do
     closure = {:fn, [], [{:->, [], [[piped_var(ctx)], selector]}]}
     {:|>, pipe_meta, [argument, {{:., [], [closure]}, [], []}]}
   end
@@ -162,32 +198,4 @@ defmodule Mutare.Transform.PipeEmit do
 
   defp export_tuple(value, names),
     do: {:{}, [], [value | Enum.map(names, &{&1, [], nil})]}
-
-  @doc """
-  A rewritten call spelled as the pipe it was written as, with whatever argument 0 it now
-  holds; any other node untouched. For the bare calls emission leaves in the metamutant — a
-  selector's branches, a stage with no selector of its own — so a chain renders flat.
-
-  A generated pin over a selector stays the call's argument: Sourceror renders
-  `^case … end |> stage()`, which reparses as `^(case … end |> stage())`.
-  """
-  @spec sugar(Macro.t()) :: Macro.t()
-  def sugar({head, meta, [zero | rest]} = call) do
-    case Meta.written_pipe(call) do
-      {:|>, pipe_meta, _written} ->
-        if generated_pin?(zero),
-          do: call,
-          else: {:|>, pipe_meta, [zero, Meta.drop_written_pipe({head, meta, rest})]}
-
-      nil ->
-        call
-    end
-  end
-
-  def sugar(node), do: node
-
-  defp generated_pin?({:^, _meta, [expression]}),
-    do: match?({:ok, _subject, _clauses}, Render.selector_case_parts(expression))
-
-  defp generated_pin?(_node), do: false
 end

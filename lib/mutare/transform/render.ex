@@ -13,13 +13,13 @@ defmodule Mutare.Transform.Render do
   @doc """
   Render the annotated metamutant AST to source.
 
-  Strips the analyzer's internal annotations, flips keyword-format keys back to
-  plain atoms (a `Sourceror` formatter workaround), then renders. Metamutant
-  only.
+  Spells every call written as a pipe as a pipe again and strips the analyzer's internal
+  annotations (one walk), flips keyword-format keys back to plain atoms (a `Sourceror`
+  formatter workaround), then renders. Metamutant only.
   """
   def to_source(ast) do
     ast
-    |> strip_annotations()
+    |> Macro.prewalk(&(&1 |> written_spelling() |> strip_annotations()))
     |> normalize_keyword_blocks()
     |> normalize_for_options()
     |> Sourceror.to_string(Mutare.AST.render_opts())
@@ -38,9 +38,9 @@ defmodule Mutare.Transform.Render do
   Build a selector `case` — `case <subject> do <clauses> end` — `block_wrap/1`ped so
   it renders safely in any position, and marked as emit-built (`Meta.put_selector/1`).
 
-  This and `selector_case_parts/1` are the single home for the selector shape. The
-  readers that must recognise a just-built selector (`Mutare.Transform.PipeEmit`, which keeps
-  a generated pin over one the argument of its call) do so by the marker
+  This and `selector_case_parts/1` are the single home for the selector shape. A reader that
+  must recognise a just-built selector (`written_spelling/1`, which keeps a generated pin over
+  one the argument of its call) does so by the marker
   this builder stamps, not by reconstructing its shape — so a user's own `case` can never be
   mistaken for one, and the two can't drift apart silently (a mismatch would yield an
   uncompilable metamutant with no error pointing back here). The marker is internal node
@@ -121,16 +121,42 @@ defmodule Mutare.Transform.Render do
   # means) lives in `Mutare.Transform.MetaKeys`, so this scrub can't drift from the stamp sites.
   @internal_meta_keys Mutare.Transform.MetaKeys.all()
 
-  defp strip_annotations(ast) do
-    Macro.prewalk(ast, fn
-      # Equivalent: stripping is belt-and-suspenders — any leftover annotation metadata
-      # never reaches the rendered source (Sourceror ignores unknown meta keys).
-      # mutare:ignore[pattern_swap] form/meta swap only flips which binding is_list tests
-      {form, meta, args} when is_list(meta) ->
-        {form, Keyword.drop(meta, @internal_meta_keys), args}
+  # Equivalent: stripping is belt-and-suspenders — any leftover annotation metadata
+  # never reaches the rendered source (Sourceror ignores unknown meta keys).
+  # mutare:ignore[pattern_swap] form/meta swap only flips which binding is_list tests
+  defp strip_annotations({form, meta, args}) when is_list(meta),
+    do: {form, Keyword.drop(meta, @internal_meta_keys), args}
 
-      other ->
-        other
-    end)
+  defp strip_annotations(other), do: other
+
+  # Analysis made every `Kernel.|>/2` stage the direct call it is sugar for
+  # (`Mutare.Transform.WrittenPipe.direct/1`), and emission leaves that call wherever it stood:
+  # a selector's branches, a stage with no selector, a mutant's operand. Each is spelled as the
+  # pipe it was written as (the `Meta.written_pipe/1` stamp), around whatever argument 0 it now
+  # holds, so a chain renders as flat as the user's source rather than one level deeper per
+  # stage — NOTES "Evaluation is a route's to declare" measured 40 KB nested against 17 KB piped
+  # at depth 32. The compiler desugars it again, so nothing depends on this. The `|>` is the
+  # user's own (its meta), so it resolves as it did in their source: to `Kernel`, or the stage
+  # would not have been rewritten.
+  #
+  # A generated pin over a selector stays the call's argument: Sourceror renders
+  # `^case … end |> stage()`, which reparses as `^(case … end |> stage())`.
+  defp written_spelling({head, meta, [zero | rest]} = call) when is_list(meta) do
+    case Meta.written_pipe(call) do
+      {:|>, pipe_meta, _written} ->
+        if generated_pin?(zero),
+          do: call,
+          else: {:|>, pipe_meta, [zero, Meta.drop_written_pipe({head, meta, rest})]}
+
+      nil ->
+        call
+    end
   end
+
+  defp written_spelling(node), do: node
+
+  defp generated_pin?({:^, _meta, [expression]}),
+    do: match?({:ok, _subject, _clauses}, selector_case_parts(expression))
+
+  defp generated_pin?(_node), do: false
 end

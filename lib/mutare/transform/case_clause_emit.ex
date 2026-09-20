@@ -74,7 +74,10 @@ defmodule Mutare.Transform.CaseClauseEmit do
             record
           )
 
-        {{:case, meta, [subject, [{do_key, new_clauses}]]}, ctx}
+        # This `case` is generated: its subject is the `{active, scrutinee}` tuple, not the
+        # argument the user piped in, so it must not be spelled as their pipe again
+        # (`Mutare.Transform.Render`) — `Mutare.Manifest` reads the gated clauses off a `case`.
+        {Meta.drop_written_pipe({:case, meta, [subject, [{do_key, new_clauses}]]}), ctx}
     end
   end
 

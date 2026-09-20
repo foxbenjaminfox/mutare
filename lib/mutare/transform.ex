@@ -1301,10 +1301,9 @@ defmodule Mutare.Transform do
         emit_site(current, candidates, ctx)
 
       # No deliverable candidates. `Meta.strip_delivery` clears any meta left by candidates the
-      # gate dropped (a no-op when there were none), so the node renders clean; a call written
-      # as a pipe is spelled as one again, around whatever its piped value became.
+      # gate dropped (a no-op when there were none), so the node renders clean.
       :none ->
-        {current |> Meta.strip_delivery() |> PipeEmit.sugar(), ctx}
+        {Meta.strip_delivery(current), ctx}
     end
   end
 
@@ -1337,54 +1336,23 @@ defmodule Mutare.Transform do
   defp emit_selector_site(node, candidates, ctx) do
     # A call written as a pipe binds its piped value once, so a chain of mutated stages stays
     # linear; a candidate that moves that operand goes in a selector around the closure
-    # instead — `Mutare.Transform.PipeEmit`. Every other node is one `:outer` selector.
+    # instead. `Mutare.Transform.PipeEmit` decides and places; every other node is one selector.
     delivery = PipeEmit.delivery(node, candidates)
 
     {claimed, ctx} =
       SelectorEmit.claim_items(candidates, ctx, {&Delivery.site/4, &Delivery.line/1}, fn id,
                                                                                          candidate ->
-        layer = PipeEmit.layer(candidate, delivery)
-
-        {layer, candidate,
-         {:->, [],
-          [
-            [id],
-            candidate
-            |> Delivery.selector_branch()
-            |> PipeEmit.rebind(PipeEmit.binding(delivery, layer), ctx)
-            |> PipeEmit.sugar()
-            |> ImportWitness.wrap(ImportWitness.for_candidate(candidate))
-          ]}}
+        {layer, branch} = PipeEmit.branch(candidate, delivery, ctx)
+        witness = ImportWitness.for_candidate(candidate)
+        {layer, {candidate, {:->, [], [[id], ImportWitness.wrap(branch, witness)]}}}
       end)
 
-    default = Meta.strip_delivery(node)
-
-    # A layer whose mutations were all skipped has no selector; the node passes through it.
-    Enum.reduce([:inner, :outer], {default, ctx}, fn layer, {default, ctx} ->
-      case for({^layer, candidate, clause} <- claimed, do: {candidate, clause}) do
-        [] -> {default, ctx}
-        live -> selector_layer(default, live, PipeEmit.binding(delivery, layer), ctx)
-      end
+    PipeEmit.layers(delivery, Meta.strip_delivery(node), claimed, ctx, fn default, live, ctx ->
+      {candidates, clauses} = Enum.unzip(live)
+      {case_node, ctx} = SelectorEmit.selector_case(default, clauses, ctx)
+      {pin_if_needed(case_node, candidates), ctx}
     end)
-    |> then(fn {emitted, ctx} -> {PipeEmit.sugar(emitted), ctx} end)
   end
-
-  defp selector_layer(default, live, binding, ctx) do
-    {candidates, clauses} = Enum.unzip(live)
-
-    {case_node, ctx} =
-      default
-      |> PipeEmit.rebind(binding, ctx)
-      |> PipeEmit.sugar()
-      |> SelectorEmit.selector_case(clauses, ctx)
-
-    {case_node
-     |> pin_if_needed(candidates)
-     |> PipeEmit.close(binding, argument_zero(default), ctx), ctx}
-  end
-
-  defp argument_zero({_head, _meta, [zero | _rest]}), do: zero
-  defp argument_zero(_node), do: nil
 
   # An `:interpolated` in-place candidate's selector must be **`^`-pinned**: the value sits
   # in a compile-time DSL position (an Ecto keyword-shorthand value) that accepts `^(case …)` but

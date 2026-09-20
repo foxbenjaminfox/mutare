@@ -312,7 +312,7 @@ defmodule Mutare.Transform.Meta do
 
   @doc """
   Mark a `case` node as a selector the emit built (`:mutare_selector`), so a later emit step
-  that must tell it from a user's own `case` — `Mutare.Transform.PipeEmit`, keeping a generated
+  that must tell it from a user's own `case` — `Mutare.Transform.Render`, keeping a generated
   pin over a selector the argument of its call — recognises it by this handoff rather than by
   its shape. Stamped
   by the one builder, `Mutare.Transform.Render.selector_case/2`; total over a bare literal.

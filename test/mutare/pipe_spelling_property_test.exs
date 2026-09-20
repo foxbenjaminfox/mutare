@@ -73,7 +73,10 @@ defmodule Mutare.PipeSpellingPropertyTest do
   end
 
   # Never 0: the fixture mutator's one mutation rewrites a stage's last argument *to* 0.
-  defp stage, do: {elements([:plus, :lazy_plus, :max, :div]), elements([-2, -1, 1, 2, 3, 5])}
+  # `:case` is a structural head as a stage (`… |> case do k -> k + 1; other -> other end`):
+  # its clause mutants are delivered by rebuilding the `case`, not by a selector around it.
+  defp stage,
+    do: {elements([:plus, :lazy_plus, :max, :div, :case]), elements([-2, -1, 1, 2, 3, 5])}
 
   # What a spelling amounts to: per mutator, the multiset of "what this mutant does" — its
   # results and head-evaluation counts over the inputs — beside the baseline's. Ids and source
@@ -134,8 +137,12 @@ defmodule Mutare.PipeSpellingPropertyTest do
     stages
     |> Enum.zip(spelling)
     |> Enum.reduce("tick(n, sink)", fn
+      {{:case, k}, :piped}, acc -> "(#{acc} |> case do\n#{case_clauses(k)}\nend)"
+      {{:case, k}, :direct}, acc -> "(case #{acc} do\n#{case_clauses(k)}\nend)"
       {{name, k}, :piped}, acc -> "(#{acc} |> #{name}(#{k}))"
       {{name, k}, :direct}, acc -> "#{name}(#{acc}, #{k})"
     end)
   end
+
+  defp case_clauses(k), do: "#{k} -> #{k} + 1\nother -> other"
 end
