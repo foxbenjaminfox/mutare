@@ -1,9 +1,10 @@
 defmodule Mutare.PipeMacroStageTest do
-  # The evaluation contract for a piped stage Mutare mutates whole. A call is a function in
+  # The evaluation contract for a piped stage Mutare mutates whole. A call is ordinary in
   # every respect its route does not address — unrouted, or routed for some other reason (to
   # hold an argument back, say) — so its piped value may be evaluated ahead of it, once, as a
-  # function's first argument is. A callee that evaluates that operand late, conditionally, or
-  # never says so with `:lazy_expression`, and is then handed the expression itself.
+  # function call's first argument is. A callee that evaluates that operand late,
+  # conditionally, or never says so with `:lazy_expression`, and is then handed the expression
+  # itself.
   # `with_active_mutant/2` sets the VM-wide selector, so these cannot run beside other tests.
   use ExUnit.Case, async: false
   import Mutare.Test

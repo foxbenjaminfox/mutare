@@ -239,13 +239,24 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   misread".
   `Mutare.Transform.WrittenPipe` also keeps a rewritten call's Site in the user's spelling and
   footprint — NOTES "A routed pipe stage becomes a direct call".
-- **A call is a function in every respect its route does not address — evaluation included.**
-  Routes are for functions and macros alike, and core never derives which a call is. So the
-  hoisting closure, and the let-binding of a rewritten stage's piped value
-  (`PipeEmit.bound_argument/2`), evaluate a piped operand ahead of any stage whose position 0 is
-  `:expression`/`:interior`. The one way to say otherwise is the position word
-  `:lazy_expression`; anything that binds a user expression ahead of a call must honour it —
+- **A call is ordinary in every respect its route does not address — evaluation included.**
+  Routes are for functions and macros alike, and core never derives which a call is, nor holds
+  a mutant back because a callee might be a macro. A call that seems to need special handling
+  gets a route (built in, for a standard-library form) or a new routing word — never a
+  heuristic in a walk, and never a default chosen because a macro is "likelier": PHILOSOPHY
+  "Every call is ordinary until a route says otherwise", NOTES "Calls are ordinary; routes are
+  the only exception". Evaluation is the instance that bites: the hoisting closure, and the
+  let-binding of a rewritten stage's piped value (`PipeEmit.bound_argument/2`), evaluate a
+  piped operand ahead of any stage whose position 0 is `:expression`/`:interior`. The one way
+  to say otherwise is the position word `:lazy_expression`; anything that binds a user
+  expression ahead of a call must honour it —
   NOTES "Evaluation is a route's to declare: `:lazy_expression`".
+- **The metamutant is not invisible to reflection, and nothing should try to make it so.**
+  Callers, captures, `@spec` and `@behaviour`/`@impl` see the module unchanged; a stacktrace,
+  `__ENV__.function` or an `@on_definition` callback sees generated names. Don't add machinery
+  (or withhold mutants) to disguise that — a suite that depends on it fails the baseline, and
+  the user's remedies (`skip_lifting`, asserting behaviour) are documented in the `mix mutare`
+  task docs. NOTES "The metamutant is not invisible to reflection".
 - **Every delivery shape must be readable back.** `Mutare.Manifest` recognises what emission
   writes: selector clauses, `===` gates, `=/=` and range exclusions, coverage records, and
   clean regions (`CleanRegion.read/2`, whose copy belongs to no mutant and is blamed by its

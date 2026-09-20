@@ -19,9 +19,9 @@ defmodule Mutare.Transform.PipeEmit do
   # copy of `lhs`. This keeps a chain of mutated stages linear in the rendered source, and the
   # bare stage stays the Site's recorded node, so the diff is unaffected.
 
-  # The closure evaluates the piped value ahead of the stage — what a function does with its
-  # first argument, and a call is a function in every respect its route does not address
-  # (`Mutare.CallRouting`, "Evaluation"). Core never derives whether a callee is a macro; a
+  # The closure evaluates the piped value ahead of the stage — what an ordinary call does with
+  # its first argument, and a call is ordinary in every respect its route does not address
+  # (`Mutare.CallRouting`, "Ordinary calls"). Core never derives whether a callee is a macro; a
   # callee that does not evaluate its operand eagerly says so with `:lazy_expression`. A stage
   # under a positional route never reaches `hoist/2` as a pipe — analysis made it the direct
   # call (`Mutare.Transform.WrittenPipe.direct/1`) — and takes the binding from

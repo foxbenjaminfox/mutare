@@ -90,14 +90,14 @@ defmodule Mutare.Transform do
   whole upstream chain per branch and blow up exponentially. The Site still records
   the bare stage, so the diff is unchanged.
 
-  The closure evaluates the piped value ahead of the stage, as a function does its first
-  argument — and a call is a function in every respect its route does not address
-  (`Mutare.CallRouting`, "Evaluation"). A stage under a positional route never reaches emission
-  as a pipe: the resolve pass routes a piped call under a positional route as the direct call
-  `Kernel.|>/2` would build, and analysis makes it that call where it reaches the node (so code
-  left as written — a `:raw` argument, a `:skip`ped call — keeps its pipe), delivered like any
-  direct call (its mutant branches
-  hold the as-written arguments, the catch-all the emitted ones). Such a stage still binds its
+  The closure evaluates the piped value ahead of the stage, as an ordinary call does its first
+  argument — and a call is ordinary in every respect its route does not address
+  (`Mutare.CallRouting`, "Ordinary calls"). A stage under a positional route never reaches
+  emission as a pipe: the resolve pass routes a piped call under a positional route as the
+  direct call `Kernel.|>/2` would build, and analysis makes it that call where it reaches the
+  node (so code left as written — a `:raw` argument, a `:skip`ped call — keeps its pipe),
+  delivered like any direct call (its mutant branches hold the as-written arguments, the
+  catch-all the emitted ones). Such a stage still binds its
   piped value once, through the same closure, when its first position is `:expression` or
   `:interior` and every mutant there keeps that argument — so a chain of routed stages stays
   linear too. A first position routed `:lazy_expression`, or as syntax, is never evaluated ahead

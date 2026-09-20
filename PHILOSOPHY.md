@@ -82,8 +82,25 @@ imagined a dependency that isn't there.
 **Be invisible at the boundary.** The public `f/arity` is unchanged after
 lifting — callers, function captures, `@spec`, `@behaviour`/`@impl` all hit the
 same name. The surgery happens entirely behind the module's front door. A
-transform that changed the observable surface would be a transform you couldn't
+transform that changed the calling surface would be a transform you couldn't
 trust on real code.
+
+**Invisible to callers, not to reflection.** That promise covers what code
+reaches by calling, capturing, specifying, implementing. It stops at code that
+inspects its own compiled form: a stacktrace names a generated function, as does
+`__ENV__.function` inside a lifted body; an `@on_definition` callback sees
+definitions the author never wrote; a macro that counts its expansions counts
+the copies of a body too. We do not hide any of it, and we do not try. It cannot
+be hidden completely, and hiding part of it would be a promise we could not
+keep; every attempt would be paid for in machinery, or in mutants withheld from
+code that merely *might* be looking. So the metamutant is honestly a different
+program behind its front door, and code that depends on what is back there is
+code Mutare does not fit — which shows up at once, as a baseline that fails
+before any mutant runs, and is the author's to resolve: test the behaviour
+instead of the frame, or keep that function out of lifting. None of this
+licenses disturbing what costs nothing to leave alone — a head keeps the
+variable names its author gave it, since a macro may read them — but we stop at
+free.
 
 **Mutate the human's source.** Operators stay operators, clauses stay clauses —
 we work pre-expansion, on what the author actually wrote. Instrumenting
@@ -97,6 +114,28 @@ so a host that speaks that DSL may splice the mutation in the DSL's own terms.
 The principle, restated: mutate what the author wrote, wherever it lives; never
 what a macro wrote for them. Understanding foreign code and mutating it are
 separate powers, granted separately.
+
+**Every call is ordinary until a route says otherwise.** Working before expansion,
+we cannot see what a call becomes — and we do not try. Core never asks whether a
+callee is a macro, and never holds a mutant back because it might be one. The
+question is the wrong one: `assert` is a macro and wants nothing special, and
+what a genuinely unusual callee needs is not the label "macro" but a statement
+of *how* it is unusual — this argument is a pattern, that one is syntax, this
+one may never run. So each of those is a word in the call-routing vocabulary,
+and "ordinary" is simply what remains where no word was spoken. The knowledge
+enters as a declaration: built in for the standard library's forms, written by
+whoever knows the library otherwise. A declaration can be read, tested, and
+warned about when it matches nothing; an inference hides in the walk and changes
+its mind with what happened to be loadable. And the two ways of being wrong are
+not symmetric. Treat an unusual call as ordinary and the one compile fails:
+poison recovery drops the offending mutants and reports them, or, where it
+cannot, the run stops and prints the route to write. Hold mutants back on a
+suspicion and nothing fails, ever — they are just gone. The bargain holds only
+while every failure can be blamed on something we can drop, so whatever we
+generate is made *attributable*, never vetted in advance: even an uninstrumented
+copy of a function answers for its own compile error. And when some call seems
+to deserve special handling, the answer is a route, or a new word for routes to
+use; never a guess.
 
 ---
 

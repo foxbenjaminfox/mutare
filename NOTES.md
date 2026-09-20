@@ -11559,8 +11559,9 @@ wrong for a pipe-shaped *macro*, which reads its right side as the syntax of a c
 missing an argument: a whole-call mutant on the stage hands it `lhs |> case … end`, and every
 call family judges the stage one argument short. The first cut therefore hard-coded
 `[:expression, :interior]` as the unrouted default, guessing that a macro is the likelier
-reason to displace `|>`. It was removed: core never derives whether a call is a macro, and a
-built-in route keyed on an operator's *name* — whoever defines it — is exactly such a guess.
+reason to displace `|>`. It was removed: core never derives whether a call is a macro ("Calls are
+ordinary; routes are the only exception"), and a built-in route keyed on an operator's
+*name* — whoever defines it — is exactly such a guess.
 A macro that reads an argument as syntax is its user's to route, here as everywhere:
 `{MyPipe, :|>, 2, [:expression, :interior]}` withholds the stage's own node and mutates its
 arguments and the left side. Unrouted, a pipe macro's stage mutants fail the compile and
@@ -11682,15 +11683,15 @@ when the callee evaluates it.
    proof: it silently asserted eagerness for every routed macro.
 2. *Bind only ahead of a stage provably a function* (a loadable module exporting it as a
    function and not a macro), distributing the pipe otherwise. Rejected on principle: Mutare
-   does not derive function-versus-macro. An unrouted call is a function, and a user who wants
-   otherwise says so.
+   does not derive function-versus-macro. An unrouted call is ordinary, and a user who wants
+   otherwise says so ("Calls are ordinary; routes are the only exception").
 3. *Let "routed" mean "macro"*: bind unrouted stages, never routed ones. That made any
    positional route a statement about evaluation, which it is not — call routes are for
    functions and macros alike (`{MyApp.Audit, :log, 2, [:raw, :expression]}` holds an
    uninformative argument back from every family and says nothing else), and it charged such a
    function the size of direct delivery for using a route as intended.
 
-**The answer.** *A call is a function in every respect its route does not address* —
+**The answer.** *A call is ordinary in every respect its route does not address* —
 evaluation included. So evaluation needed a word, and got one: the position treatment
 `:lazy_expression`. It is analyzed exactly as `:expression`
 (`Mutare.CallRouting.Spec.expression?/1`; the two readers that match the word by name, the
@@ -12006,3 +12007,106 @@ restricted `--mutators`, a `# mutare:ignore[arithmetic]`, or a poison-dropped mu
 Deliberately not worked around: reported upstream as elixir-lang/elixir#15849 and fixed on the
 development branch (2e9ce85), unreleased as of this entry. `source_patch_parens_test.exs`
 steers its one affected fixture around it and says so.
+
+### Calls are ordinary; routes are the only exception `[done]` (2026-09-20)
+
+**The rule.** Core treats every call as ordinary — arguments are runtime expressions evaluated
+once, ahead of the call and in order; the call binds nothing outward; its node may be replaced
+— in every respect a route does not address. It never derives whether a callee is a function
+or a macro, and never withholds a mutant because a callee might be a macro. The stance is in
+PHILOSOPHY ("Every call is ordinary until a route says otherwise"); what "ordinary" means to a
+user is in the `Mutare.CallRouting` moduledoc ("Ordinary calls"). This entry records why it
+had to be written down, and what it displaced.
+
+**Why it was written down.** The rule was already cited as settled (the `:lazy_expression`
+entry rejects an option "on principle") without being stated anywhere, and an unstated
+principle did not stop the next exception. The first cut of "Only `Kernel`'s `|>` is the
+pipe" hard-coded `[:expression, :interior]` as a displaced `|>`'s unrouted treatment, guessing
+that a macro is the likelier reason to displace the operator. It withheld the stage's
+whole-call mutants from every operator *function*, silently, to spare an operator *macro* a
+compile error that poison recovery attributes anyway. That entry records the removal; this
+one exists so that the next such default is recognised before it is written.
+
+The older phrasing, "a call is a function in every respect its route does not address", was
+part of the trouble. It states a fact about the callee, which is often false, and a stated
+fact invites checking and correcting for. "Ordinary" names what Mutare *does*, and is defined
+by the routing vocabulary itself: each position word (`:pattern`, `:binding_pattern`, `:raw`,
+`:interior`, `:lazy_expression`) and `:skip` names one way a call departs from ordinary, and
+ordinary is what is left.
+
+**The test for a change.** When some call seems to need special handling, there are two
+admissible answers: a route — baked into the built-in registry when the form is the standard
+library's (`match?/2`, `destructure/2`), declared by an adapter or the user otherwise — or,
+when no existing word says what is unusual, a new word (`:lazy_expression` arrived this way).
+A heuristic in a walk, a default keyed on what a name is "likely" to be, and a reflection
+call that asks function-or-macro are not admissible.
+
+**Why optimism is affordable.** A mutant a macro rejects fails the one compile, and `Poison`
+attributes it — by line, or by the `expanding macro:` name where the compiler blames the call
+— drops it, and reports it `:poisoned`; where neither attribution lands, `Poison.Hint` stops
+the run with the `:raw` route to add. A semantic departure that compiles (an operand
+evaluated that the macro would have skipped) runs in the unmutated branch too, so a suite
+that depends on the difference fails the baseline, before any mutant runs. Withholding has no
+such backstop: a mutant never generated is reported nowhere. The measured exposure for
+built-in users is in "Evaluation is a route's to declare: `:lazy_expression`" ("Evidence that
+built-in users are unaffected").
+
+The bargain rests on an invariant: **every compile failure in generated code is attributable
+to something droppable** — a mutant, or a clean region. Anything new the transform emits is
+made attributable (and readable back by `Manifest`), not vetted in advance; vetting is how a
+classifier of foreign syntax gets built.
+
+**What the rule cost: clean regions.** `CleanPath` was the one place that demanded the
+opposite — "calls known to be functions may be copied; unknown calls may not" — and its
+premise was sound as far as it went: an uninstrumented copy that failed to compile belonged
+to no mutant, so poison recovery could not save the single build. Three ways out were
+weighed: drop the optimisation (it reached 87–99% of emitted variants — "Clean regions");
+keep the contract as a stated boundary of the rule (rejected: an exception written into the
+principle is the precedent for the next one); or remove the premise. The last was taken, and
+`CleanPath` went with it — "Clean regions are attributable".
+
+**What is not a violation.** `Imports` and `Resolve` call `macro_exported?` beside
+`function_exported?` to learn whether a name is exported *at all* (`import … only: :macros`
+makes the distinction Elixir's, not ours): that is name resolution, and its answer selects no
+treatment. `StructuralForms` lists `Kernel.SpecialForms` by name: a built-in declaration, not
+an inference.
+
+### The metamutant is not invisible to reflection `[decided]` (2026-09-20)
+
+**The stance.** Mutare keeps the *calling* surface of a module intact — name, arity, captures,
+`@spec`, `@behaviour`/`@impl` — and makes no promise to code that inspects its own compiled
+form. PHILOSOPHY states it ("Invisible to callers, not to reflection"); this entry lists what
+is known to differ, and what follows for the code.
+
+**What differs, knowingly.** A lifted function's clauses run under a generated private name,
+so a stacktrace frame, `FunctionClauseError.function`/`.arity`, `__ENV__.function` in the
+body, and anything a macro reads from `__CALLER__` there (`Logger` metadata) report that name.
+`@on_definition` and any other definition-time callback see the generated definitions. A
+body is duplicated — per lifted variant, and once more as a clean copy — so a macro that
+counts or registers its expansions sees more of them ("Clean regions are attributable" pins
+one that refuses a second expansion, and recovers by dropping the region). A selector wraps
+an expression in a `case`, so a macro that inspects its argument's *shape* sees the `case` —
+that one is a compile matter, and poison's.
+
+**Why not hide it.** It cannot be done completely (every item above would need its own
+disguise, and an arbitrary macro's reads are invisible without expanding it), and a partial
+disguise is a promise that fails somewhere less predictable. Each attempt also costs either
+machinery or mutants: the clean-region contract refused any body mentioning `__ENV__`,
+`__CALLER__`, `__STACKTRACE__`, `Process.info`, `Function.info` — withholding an optimisation
+from code that merely *might* depend on the answer — until "Clean regions are attributable"
+removed it. This is the reasoning of "Calls are ordinary; routes are the only exception"
+applied to a second unknowable: do not buy partial safety with silent loss.
+
+**Where it surfaces, and whose it is.** A test that asserts a frame or a
+`FunctionClauseError` field fails Mutare's *baseline*, before any mutant runs — loud, and
+documented for users in the `mix mutare` task docs ("Troubleshooting baseline-only
+failures") and the README. The remedies are the user's: assert the behaviour rather than the
+frame, or `skip_lifting` the function (which costs its guard, head-pattern and clause
+mutants). No new facility is owed for this.
+
+**What the stance does not license.** Disturbing what is free to leave alone. "Guard removal
+(`Mutare.Mutators.GuardDrop`)" keeps a head's variable names exactly as written, because
+`binding/0` or any macro may read them by name — and it got there by *deleting* an analysis,
+not by adding one. The line is
+cost: leaving source as written is the default; machinery whose only purpose is to fool
+reflection is not built.

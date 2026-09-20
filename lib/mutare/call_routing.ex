@@ -60,15 +60,27 @@ defmodule Mutare.CallRouting do
 
   Shape-dependent routes use `:routing`. A `:hosted` treatment marks a position as raw for core and available to every enabled `Mutare.Mutator.MacroHost` subscribing to that macro. Routing and mutation ownership are independent: one library adapter can describe the DSL while several mutators contribute mutations inside it.
 
+  ## Ordinary calls
+
+  **A call is ordinary in every respect its route does not address.** Ordinary is how a plain
+  function call behaves: each argument is a runtime expression, evaluated once, ahead of the
+  call and in order; the call binds nothing its caller can see; and the call itself is a value
+  a mutant may replace. Mutare treats every call that way — unrouted, or routed for some other
+  reason (a call routed `[:raw, :expression]` to hold one argument back is ordinary
+  everywhere else) — and it never works out whether the callee is a function or a macro in
+  order to decide. Most macros are ordinary in this sense (`assert`, a logging wrapper) and
+  need no route. One that is not says *how*, with the word for it: a position it reads as a
+  pattern is `:pattern`, one it reads as syntax is `:raw`, one it may never evaluate is
+  `:lazy_expression`. A mutant placed where a macro cannot accept it fails the metamutant's
+  compile and is recovered as poison: dropped, and reported `:poisoned`. Where Mutare cannot
+  tell which mutant to drop, the run stops and prints the route to add.
+
   ## Evaluation
 
-  **A call is a function in every respect its route does not address** — unrouted, or routed
-  for some other reason (a function routed `[:raw, :expression]` to hold one argument back is
-  still a function). That includes *when its arguments run*: a function evaluates them first,
-  in order, exactly once, and to deliver a whole-call mutant on a pipe stage Mutare relies on
-  it, evaluating the piped value once and handing every branch the result. It does so whenever
-  the stage's first position is `:expression` or `:interior`, routed or not (and, for a routed
-  stage, no mutant there rewrites that argument).
+  Ordinary includes *when a call's arguments run*, and to deliver a whole-call mutant on a pipe
+  stage Mutare relies on it, evaluating the piped value once and handing every branch the
+  result. It does so whenever the stage's first position is `:expression` or `:interior`,
+  routed or not (and, for a routed stage, no mutant there rewrites that argument).
 
   A macro need not evaluate its arguments that way (`value |> lazy(enabled?)` may expand to
   `if enabled?, do: value`), and nothing in `:expression` says it does. Route such a position
