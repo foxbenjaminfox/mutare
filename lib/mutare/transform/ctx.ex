@@ -21,7 +21,7 @@ defmodule Mutare.Transform.Ctx do
   #
   # `clean_decisions` likewise belongs to no stage: the emitter appends what it decided for
   # each candidate clean region (`Mutare.Transform.CleanRegion.Decision`, reversed), and only
-  # the eligibility diagnostic reads it back.
+  # `Mutare.Transform.Invariants` reads it back.
   #
   # Still threaded as **one** value (never destructured into loose args), so the shape stays
   # uniform and a stray field name fails loudly; the split is by ownership, not by threading.

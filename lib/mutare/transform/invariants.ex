@@ -16,6 +16,9 @@ defmodule Mutare.Transform.Invariants do
   #     mention outside every other mutant's branch, or, for a dropped clause (a `:delete` site,
   #     which generates no code of its own), such an `:exclusion`;
   #   * no branch or exclusion names an id that was not delivered;
+  #   * every clean region the transform emitted is one `Mutare.Manifest` finds — its clean
+  #     branch, and for a lifted group its relocated clauses too — and no other; a copy
+  #     that cannot be found is a compile error that cannot be blamed;
   #   * every delivered mutant appears in a coverage record outside every mutant branch (a record
   #     inside one never fires: it is gated on the baseline), and no record names anything else;
   #   * no delivered mutant renders identically to its original;
@@ -72,9 +75,9 @@ defmodule Mutare.Transform.Invariants do
 
   # --- readback ------------------------------------------------------------
 
-  defp readback(%{metamutant: source, dispatch_var: var, sites: sites}, delivered) do
+  defp readback(%{metamutant: source, dispatch_var: var, sites: sites} = rendered, delivered) do
     case manifest(source, var) do
-      {:ok, %Manifest{mentions: mentions}} ->
+      {:ok, %Manifest{mentions: mentions} = manifest} ->
         by_id = mentions |> Enum.reject(&(&1.kind == :record)) |> Enum.group_by(& &1.id)
         records = for %{kind: :record} = mention <- mentions, do: mention
         delivered_ids = MapSet.new(delivered, &RuntimeId.local/1)
@@ -88,7 +91,8 @@ defmodule Mutare.Transform.Invariants do
         branches ++
           strays(:stray_branch, Map.keys(by_id), delivered_ids, recorded) ++
           missing_records(delivered, records) ++
-          strays(:stray_record, Enum.map(records, & &1.id), delivered_ids, recorded)
+          strays(:stray_record, Enum.map(records, & &1.id), delivered_ids, recorded) ++
+          clean_regions(rendered.clean_decisions, manifest.clean)
 
       {:error, message} ->
         [{:unparseable_metamutant, message}]
@@ -147,6 +151,28 @@ defmodule Mutare.Transform.Invariants do
     for site <- delivered,
         not MapSet.member?(recorded, RuntimeId.local(site)),
         do: {:missing_record, site}
+  end
+
+  # A lifted group's copy is its relocated clauses, so a `:branch` span alone — the
+  # dispatcher's call — does not find it.
+  defp clean_regions(decisions, spans) do
+    parts = Enum.group_by(spans, & &1.range, & &1.part)
+    emitted = for %{verdict: :clean} = decision <- decisions, do: decision
+
+    unread =
+      for decision <- emitted,
+          needed = if(decision.delivery == :lifted, do: [:branch, :definition], else: [:branch]),
+          needed -- Map.get(parts, decision.range, []) != [],
+          do: {:unread_clean_region, decision}
+
+    emitted_ranges = MapSet.new(emitted, & &1.range)
+
+    stray =
+      for range <- parts |> Map.keys() |> Enum.sort(),
+          not MapSet.member?(emitted_ranges, range),
+          do: {:stray_clean_region, range}
+
+    unread ++ stray
   end
 
   # --- rendered code -------------------------------------------------------

@@ -2,8 +2,8 @@ defmodule Mutare.Transform.LiftedGuardGroupTest do
   @moduledoc """
   A lifted clause's **guard-only** mutants share one clause: the source head patterns, one copy
   of the raw body, and a `when` alternative per mutant, each gated on its own id
-  (`Mutare.Transform.LiftedEmit`). Pattern-changing mutants, a custom mutator's guard, and a
-  clause outside `CleanPath`'s contract keep a clause per mutant.
+  (`Mutare.Transform.LiftedEmit`). Pattern-changing mutants and a custom mutator's guard keep
+  a clause per mutant.
 
   The behavioural oracle is independent of the emitter: each site's range is patched into the
   source, the patched module is compiled on its own, and its outcomes are compared with the
@@ -179,9 +179,12 @@ defmodule Mutare.Transform.LiftedGuardGroupTest do
       assert Enum.sort(clause_ids(meta, hd(relational).id)) ==
                Enum.sort(Enum.map(relational, & &1.id))
     end
+  end
 
-    test "a clause whose body is outside CleanPath's contract" do
-      # An unknown macro may count its expansions; sharing would change that count.
+  describe "what does not" do
+    test "a body calling a macro the transform knows nothing about" do
+      # The transform does not ask what a call is. A macro that counts its expansions sees a
+      # different count under lifting either way; sharing moves it toward the source's one.
       body = """
       defmacrop noted(value), do: value
       def f(x) when x > 1 and x < 9, do: {:in, noted(x)}
@@ -192,7 +195,8 @@ defmodule Mutare.Transform.LiftedGuardGroupTest do
       relational = Enum.filter(sites, &(&1.mutator == :relational))
       assert length(relational) >= 4
 
-      for site <- relational, do: assert(clause_ids(meta, site.id) == [site.id])
+      members = relational |> Enum.map(& &1.id) |> Enum.sort()
+      for site <- relational, do: assert(Enum.sort(clause_ids(meta, site.id)) == members)
     end
   end
 

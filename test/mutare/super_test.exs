@@ -75,9 +75,11 @@ defmodule Mutare.SuperTest do
       # ...and threads it to the base as the second argument.
       assert meta =~ ~r/#{lifted_pattern(:greet, 1)}\(mutare_active, mutare_super,/
       # The relocated base clauses call super *through* the closure, never directly —
-      # one forwarded call per clause.
+      # one forwarded call per clause, and one more per clause of the clean copy, which is
+      # relocated too.
       assert meta =~ "mutare_super.(name)"
-      assert length(String.split(meta, "mutare_super.(")) - 1 == 2
+      assert length(String.split(meta, "mutare_super.(")) - 1 == 4
+      assert meta =~ "_original(mutare_super, mutare_arg1)"
       # No base clause keeps a bare `super(` — every one was rewritten to the closure.
       refute Regex.match?(~r/defp __mutare_greet.*?\bsuper\(/s, meta)
     end

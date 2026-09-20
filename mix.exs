@@ -29,7 +29,6 @@ defmodule Mutare.MixProject do
     Mutare.Transform.SelectorEmit
     Mutare.Transform.LiftedEmit
     Mutare.Transform.CleanRegion
-    Mutare.Transform.CleanPath
     Mutare.Transform.CaseClauseEmit
     Mutare.Transform.FnClauseEmit
     Mutare.Transform.ReceiveClauseEmit

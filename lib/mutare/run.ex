@@ -39,13 +39,22 @@ defmodule Mutare.Run do
   @type macro_skip :: %{module: String.t(), macro: atom()}
 
   @typedoc """
+  One clean region dropped during compile-poison recovery: a function's uninstrumented copy
+  would not compile, so the function keeps its instrumented code alone. No mutant is lost;
+  the function merely answers every selector when the active mutant is elsewhere. `:first`
+  and `:last` are the file-local ids the region spans, which is how the region is identified.
+  """
+  @type clean_region :: %{file: String.t(), first: pos_integer(), last: pos_integer()}
+
+  @typedoc """
   A compile-poison recovery summary: the number of rebuild `:rounds`, the set of `:dropped`
-  mutant ids, the `:escalated` unknown block macros, and the `:macro_skipped` inline DSL
-  macros the macro-expansion fallback dropped wholesale.
+  mutant ids, the `:clean_regions` dropped, the `:escalated` unknown block macros, and the
+  `:macro_skipped` inline DSL macros the macro-expansion fallback dropped wholesale.
   """
   @type recovery :: %{
           rounds: pos_integer(),
           dropped: MapSet.t(pos_integer()),
+          clean_regions: [clean_region()],
           escalated: [escalation()],
           macro_skipped: [macro_skip()]
         }

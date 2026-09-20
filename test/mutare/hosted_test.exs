@@ -561,7 +561,7 @@ defmodule Mutare.HostedTest do
       # The escaping bindings are re-exported through a tuple (`{a, b} = case … end`), and the
       # mutated pattern rides a real `pick(...)` call inside its branch — not the broken bare
       # `[b, a]` an ordinary node-wrapping selector (`emit_site/3`) would emit as the branch body.
-      assert meta =~ "{a, b} =\n      case mutare_active do"
+      assert meta =~ ~r/\{a, b\} =\n\s+case mutare_active do/
       assert meta =~ "pick([b, a], x > 1)"
 
       # The regression catch: without the dispatch fix the mutant branch references unbound

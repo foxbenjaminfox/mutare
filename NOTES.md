@@ -11004,6 +11004,11 @@ are 57–64% of all regions.
 
 #### What may be copied
 
+*Superseded by "Clean regions are attributable" (2026-09-20): `CleanPath` is gone and any
+source is copied. This subsection's premise — that a failing copy cannot be attributed —
+was the thing to fix, not to design around. The eligibility table above and
+`bench/clean_eligibility.exs` went with it.*
+
 `CleanPath` stays a **positive** contract and gained a lexical scope. It has to be
 positive even for a body duplicated inside its own function, where relocation is no
 concern: a copy that does not compile belongs to no mutant, so `Manifest` cannot attribute
@@ -11215,7 +11220,8 @@ from the candidate). A side effect: a guard variant rewrites only the guards, wh
 `mutated_clause/2` ran `Tag.replace_tag` over the whole clause, body included, once per mutant.
 
 **Three conditions keep a guard variant in a clause of its own**, each by handing `LiftedEmit`
-a `:clause` variant instead, so the assembler's rule stays total and policy-free:
+a `:clause` variant instead, so the assembler's rule stays total and policy-free. (The second
+was removed on 2026-09-20 with `CleanPath` — "Clean regions are attributable" — so two remain.)
 
 - *A custom mutator's guard.* Poison recovery attributes by line. Built-in swaps reuse the
   source's operands and compile by construction; a custom replacement need not, and a guard
@@ -11776,3 +11782,82 @@ correction**, older code this work did not touch: the delimiter tables, the sing
 conditions and the `sigil_` prefix check are barely pinned. `SourcePatch.assert_patches/4` over
 sources with escaped closing delimiters would be the way to pin them.
 
+### Clean regions are attributable (2026-09-20)
+
+**What was wrong.** `CleanPath` was a thousand-line classifier of Elixir syntax whose job
+was to decide, without expanding anything, whether a call in a function body was a known
+function, an allow-listed macro, or a bare name that might be a zero-arity macro. That is
+the guess Mutare declines to make everywhere else: the transform treats source uniformly,
+and a construct that cannot take what the transform does to it is handled by poison
+recovery, or named by the user in `call_routes:`. The classifier also tried to keep
+reflection stable (`__ENV__`, `__STACKTRACE__`, `Process.info`), which lifting had never
+promised and cannot: a relocated or duplicated body may observe that it is one, and a
+target that depends on not being observed that way is outside what Mutare supports.
+
+The contract rested on one stated premise — "a copy that does not compile belongs to no
+mutant, so `Manifest` cannot attribute the error and poison recovery cannot save the
+single build". The premise was the defect. Fixing it removes the need for the contract.
+
+**The fix.** A region already had an identity: the id interval in its guard, in runtime
+(file-local) id space. Regions claim disjoint ids, and ids are stable across rebuilds, so
+`{file, {first, last}}` names the same region in every round — the property `:skip_ids`
+relies on, for free. `CleanRegion.read/2` is `select/4`'s inverse; `Manifest` records the
+copy's lines under the interval (`:clean` spans: the clean branch, and each relocated
+`<base>_original` clause, joined to its dispatcher after the walk so the join does not
+depend on emission order); `Manifest.blame_at_line/2` puts mutant regions and clean spans
+under the one narrowest-range rule; `Poison.attribution/4` reports `:clean`;
+`Runner.Compile` accumulates `skip_regions` and hands them to `Schema.rebuild/5`, which
+gives each file its own intervals; the transform's `clean_verdict/3` answers `:dropped`.
+A dropped region costs no mutant and changes no id or site — the function just answers its
+selectors when the mutant is elsewhere — so it folds into whatever else the round drops.
+
+**A lifted dispatcher is recognised by what `LiftedEmit` wrote**, not by "the clean branch
+is a local call": the instrumented branch ends in a call to `<base>` threading the dispatch
+variable, and the clean branch calls `relocated_name(<base>)`. `def f(x), do: helper(x + 1)`
+has a clean branch that is a local call too, and must not claim `helper/1`'s definitions.
+
+**The macro fallback had to learn about copies.** `once(y * 2)` raising from the clean copy
+produces an `expanding macro:` frame, and the fallback's attribution is by *name* across the
+call-site file — so it found the healthy mutants inside the instrumented `once(...)` and
+would have dropped them as poison, a round before the line attribution got its turn. A
+culprit whose call site lies in a clean span now attributes nothing: there is no selector
+in a copy for the macro to have rejected. `poison_runner_test.exs` pins this end to end
+with a macro that refuses a second expansion in one function (one round, no mutant lost,
+the sibling function keeps its region).
+
+**`verify_invariants` checks the readback**, because an unreadable region is now exactly
+the unattributable compile error the old contract feared: every `:clean`
+`CleanRegion.Decision` must be found under its interval (a lifted one needs a `:definition`
+span, not just the dispatcher's call), and no other region may appear.
+
+**What went with `CleanPath`, by decision rather than by accident:**
+
+- *The purity proof behind direct recursion.* Every full-arity self-call in a relocated
+  clean clause is now redirected (`Transform.SelfCalls`), effectful bodies included. In a
+  mutant run selection is fixed per VM, so this is sound where it matters; an in-process
+  `Selector.put/1` issued *during* a recursion is no longer seen by the steps under way
+  (`clean_function_test.exs` pins the new behaviour, where it used to pin the opposite). A
+  self-named call inside a macro argument or a `quote` is renamed too; if that breaks the
+  compile, the error is in the copy and the region goes.
+- *Guard sharing's "clause outside the contract" condition.* It protected macros that count
+  their expansions. Lifting already changes that count, and sharing moves it toward the
+  source's one.
+- *`super` as a refusal.* A clean clause now takes the forwarding closure like a base
+  clause (`Super.rewrite/2`), and a redirected self-call passes it along; the dispatcher
+  binds the closure ahead of the region decision since both branches thread it.
+- `Scope.local_functions`, the `def`/`defp` inventory, and `bench/clean_eligibility.exs`.
+
+**Not built: escalation.** Each round drops only the regions that round's errors name, and
+the 25-round budget is shared with mutant poison. A macro that fails under duplication and
+is used in dozens of files would exhaust it. No real macro of that kind is known — the
+runner test had to invent one — so the block-macro style "second strike drops the file's
+regions" was left until there is one to measure against.
+
+**Evidence that copies compile in practice.** `mix mutare --check --verify-invariants` on
+Mutare itself (201 files, 32,048 mutants) compiled on the first attempt with every region of
+two or more sites copied and nothing filtering what a copy may hold. One codebase, and one
+that avoids exotic macros; the recovery path is what covers the rest.
+
+**Four structural pins moved**, none behavioural: functions `CleanPath` used to refuse (a
+caller-binding macro, `Macro.Env.vars(__CALLER__)` probes, `super`) now carry a copy, so
+two tests count one more occurrence and two opt out with `clean_functions: false`.

@@ -23,6 +23,12 @@ defmodule Mutare.InvariantError do
       mutant.
     * `{:stray_record, subject}` — a coverage record lists an id that the transform did not
       deliver.
+    * `{:unread_clean_region, decision}` — the transform emitted a clean region
+      (`Mutare.Transform.CleanRegion`) whose uninstrumented copy `Mutare.Manifest` cannot find.
+      The copy belongs to no mutant, so a compile error inside it could be blamed on nothing
+      and would sink the single build.
+    * `{:stray_clean_region, range}` — the metamutant holds a clean region the transform did
+      not decide on.
     * `{:unchanged_mutant, site}` — the mutant renders identically to its original code, so no
       test can kill it.
     * `{:nondeterministic_render, differences}` — emitting the same source again gave a
@@ -38,6 +44,18 @@ defmodule Mutare.InvariantError do
   @typedoc "An id the generated code names, and the Site recorded under it, if any."
   @type subject :: {non_neg_integer(), Site.t() | nil}
 
+  @typedoc """
+  What the transform decided for one clean region: the `:function` it belongs to, its
+  `:delivery` (`:lifted` or `:in_place`), and the `:range` of ids identifying it, among
+  other fields.
+  """
+  @type clean_decision :: %{
+          required(:function) => {atom(), arity()},
+          required(:delivery) => :lifted | :in_place,
+          required(:range) => Mutare.Manifest.clean_range(),
+          optional(atom()) => term()
+        }
+
   @type violation ::
           {:unparseable_metamutant, String.t()}
           | {:missing_branch, Site.t()}
@@ -45,6 +63,8 @@ defmodule Mutare.InvariantError do
           | {:stray_branch, subject()}
           | {:missing_record, Site.t()}
           | {:stray_record, subject()}
+          | {:unread_clean_region, clean_decision()}
+          | {:stray_clean_region, Mutare.Manifest.clean_range()}
           | {:unchanged_mutant, Site.t()}
           | {:nondeterministic_render, [String.t()]}
 
@@ -96,6 +116,18 @@ defmodule Mutare.InvariantError do
 
   defp describe({:stray_record, subject}),
     do: "a coverage record lists #{stray(subject)}"
+
+  defp describe({:unread_clean_region, decision}) do
+    {name, arity} = decision.function
+    {first, last} = decision.range
+
+    "the clean region of #{name}/#{arity} (ids #{first}–#{last}, #{decision.delivery}) cannot be " <>
+      "read back from the metamutant: a compile error in its uninstrumented copy could not " <>
+      "be attributed, so poison recovery could not save the build"
+  end
+
+  defp describe({:stray_clean_region, {first, last}}),
+    do: "the metamutant holds a clean region (ids #{first}–#{last}) the transform did not emit"
 
   defp describe({:unchanged_mutant, site}),
     do:

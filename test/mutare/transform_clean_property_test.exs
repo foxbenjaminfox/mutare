@@ -8,8 +8,8 @@ defmodule Mutare.TransformCleanPropertyTest do
   and then runs a copy of the source. Two things can go wrong, and neither shows at
   baseline (which always takes the instrumented implementation):
 
-    * the copy differs from the source it claims to be — a scoping slip in
-      `Mutare.Transform.CleanPath` that admitted something it should not have; or
+    * the copy differs from the source it claims to be — a relocation slip (a redirected
+      self-call, a `super` through the threaded closure, a default left behind); or
     * the interval is wrong — a mutant inside the region selects the clean copy and so
       silently runs the original (a false survivor), or an outside id misses it.
 
@@ -20,7 +20,7 @@ defmodule Mutare.TransformCleanPropertyTest do
       no site owns, give the same outcome for every probed call.
 
   The control is the transform's own `clean_functions: false`, so a divergence is the
-  region's fault by construction. `clean_threshold: 1` gives every eligible region a clean
+  region's fault by construction. `clean_threshold: 1` gives every region a clean
   implementation, including the single-site ones the default policy skips. A companion test
   pins that the generator's modules do acquire clean regions, so the property cannot pass
   vacuously.
@@ -84,9 +84,8 @@ defmodule Mutare.TransformCleanPropertyTest do
             ).clean_decisions,
           do: decision
 
-    clean = Enum.count(decisions, &(&1.verdict == :clean))
-    assert clean > 0
-    assert clean * 2 > length(decisions), "most generated regions should be clean-eligible"
+    assert decisions != []
+    assert Enum.all?(decisions, &(&1.verdict == :clean))
     assert Enum.any?(decisions, &(&1.verdict == :clean and &1.delivery == :lifted))
     assert Enum.any?(decisions, &(&1.verdict == :clean and &1.delivery == :in_place))
   end

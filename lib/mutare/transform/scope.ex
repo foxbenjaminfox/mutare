@@ -54,10 +54,6 @@ defmodule Mutare.Transform.Scope do
   #     (`Mutare.Transform.CleanRegion.worthwhile?/2`). Meaningful only between such a reset and
   #     its read; a nested module scope never counts (its selectors use the inline read,
   #     `module_depth`), so a reference there never adds an outer prologue.
-  #   * `local_functions` — the `{name, arity}` inventory of the statement sequence being
-  #     emitted (`Mutare.Transform.CleanPath.local_functions/1`): the sibling functions a clean
-  #     copy may keep calling. Bound by `Mutare.Transform.transform_statements/2` around a
-  #     sequence's emit and restored after, so a nested module never reads its parent's.
 
   @type t :: %__MODULE__{
           active_bound: boolean(),
@@ -66,8 +62,7 @@ defmodule Mutare.Transform.Scope do
           analysis_env: Mutare.Transform.Analyze.Env.t(),
           module: Mutare.Lifting.enclosing(),
           block_macro: {atom(), non_neg_integer()} | nil,
-          active_references: non_neg_integer(),
-          local_functions: Mutare.Transform.CleanPath.locals()
+          active_references: non_neg_integer()
         }
 
   defstruct active_bound: false,
@@ -76,8 +71,7 @@ defmodule Mutare.Transform.Scope do
             analysis_env: %Mutare.Transform.Analyze.Env{},
             module: nil,
             block_macro: nil,
-            active_references: 0,
-            local_functions: MapSet.new()
+            active_references: 0
 
   @doc """
   Whether a selector emitted in this scope can read the hoisted active-id variable directly:

@@ -3,7 +3,6 @@ defmodule Mutare.Transform.CleanFunctionTest do
   import Mutare.Test.Metamutant
 
   alias Mutare.Coverage.Recorder
-  alias Mutare.Test.SwitchingEnumerable
   alias Mutare.{Manifest, Report, Selector, Transform}
 
   @fixture Mutare.CleanFunctionFixture
@@ -26,6 +25,15 @@ defmodule Mutare.Transform.CleanFunctionTest do
   end
   """
   @mutators [:arithmetic, :relational, :clause_drop]
+
+  defmodule Overridable do
+    defmacro __using__(_opts) do
+      quote do
+        def count(n, acc), do: {:base, n, acc}
+        defoverridable count: 2
+      end
+    end
+  end
 
   defmodule Sink do
     def hit(ids) do
@@ -160,7 +168,7 @@ defmodule Mutare.Transform.CleanFunctionTest do
     refute tiny.metamutant =~ "_original("
   end
 
-  test "pure clean self recursion bypasses the dispatcher while ordinary entries select afresh" do
+  test "clean self recursion bypasses the dispatcher while ordinary entries select afresh" do
     source = """
     defmodule Mutare.CleanFunctionFixture do
       def sum([], total), do: total
@@ -235,7 +243,7 @@ defmodule Mutare.Transform.CleanFunctionTest do
     end
   end
 
-  test "an effectful recursive body keeps fresh selection through its ordinary self entry" do
+  test "a recursion under way finishes in the clean copy; the next entry selects afresh" do
     source = """
     defmodule Mutare.CleanFunctionFixture do
       def sum([], total), do: total
@@ -252,42 +260,68 @@ defmodule Mutare.Transform.CleanFunctionTest do
     """
 
     result = Transform.transform_string_with_sites(source, mutators: @mutators)
-    assert result.metamutant =~ "_original("
-    refute result.metamutant =~ "_original(rest, total)"
+    assert result.metamutant =~ "_original(rest, total)"
     compile_purging(@fixture, result.metamutant)
 
-    # Enter clean, switch to a body mutant during the first step, then reach its
-    # instrumented implementation at the next recursive activation.
+    # No purity is asked of a redirected self-call. Entered clean, the first step selects a
+    # body mutant; the second step is already inside the clean copy and does not see it. A
+    # mutant run never changes selection, which is what the redirect relies on.
     site = Enum.find(result.sites, &(&1.original_code == "total + 2"))
     Selector.put(result.next_id + 1)
-    assert apply(@fixture, :sum, [[site.id, site.id], 0]) == 36
+    assert apply(@fixture, :sum, [[site.id, site.id], 0]) == 40
+    assert Selector.active() == site.id
+    assert apply(@fixture, :sum, [[site.id], 0]) == 16
   end
 
-  test "membership through a user Enumerable preserves selector changes between recursive steps" do
+  test "a clean copy of an overriding function reaches super, and recurses with it" do
     source = """
     defmodule Mutare.CleanFunctionFixture do
-      def sum(0, _values, total), do: total
-      def sum(n, values, total) when n > 0 do
-        if n in values do
-          total = total + 2
-          total = total + 3
-          total = total + 4
-          total = total + 5
-          total = total + 6
-          sum(n - 1, values, total)
-        else
-          total
-        end
+      use Mutare.Transform.CleanFunctionTest.Overridable
+
+      def count([n | rest], acc) when n > 3 do
+        acc = acc + 2
+        acc = acc * 3
+        count(rest, acc)
       end
+
+      def count(list, acc), do: super(list, acc - 1)
     end
     """
 
     result = Transform.transform_string_with_sites(source, mutators: @mutators)
-    assert result.metamutant =~ "_original("
-    compile_purging(@fixture, result.metamutant)
-    site = Enum.find(result.sites, &(&1.original_code == "total + 2"))
-    Selector.put(result.next_id + 1)
-    assert apply(@fixture, :sum, [2, %SwitchingEnumerable{id: site.id}, 0]) == 36
+
+    control =
+      Transform.transform_string_with_sites(source, mutators: @mutators, clean_functions: false)
+
+    assert result.sites == control.sites
+    assert result.metamutant =~ "_original(mutare_super, rest, acc)"
+
+    selections = [0, result.next_id + 1 | Enum.map(result.sites, & &1.id)]
+
+    count = fn ->
+      Enum.map([[5, 6, 1], [1], []], fn list ->
+        try do
+          apply(@fixture, :count, [list, 1])
+        rescue
+          error -> {:raised, error.__struct__}
+        end
+      end)
+    end
+
+    compile_purging(@fixture, control.metamutant)
+
+    expected =
+      for id <- selections, into: %{} do
+        Selector.put(id)
+        {id, count.()}
+      end
+
+    Mutare.Test.Compile.string(result.metamutant)
+
+    for id <- selections do
+      Selector.put(id)
+      assert count.() == expected[id], "selection #{id}"
+    end
   end
 
   describe "an in-place clean body" do
@@ -432,7 +466,8 @@ defmodule Mutare.Transform.CleanFunctionTest do
       assert Enum.map(every.clean_decisions, & &1.verdict) == [:clean, :clean]
     end
 
-    test "a body outside the contract keeps its selectors" do
+    test "any body is copied, whatever it calls" do
+      # `binding/0` reads its caller's variables: a macro, which nothing here needs to know.
       source = """
       defmodule Mutare.CleanFunctionFixture do
         def f(x) do
@@ -444,8 +479,33 @@ defmodule Mutare.Transform.CleanFunctionTest do
       """
 
       result = Transform.transform_string_with_sites(source, mutators: [:arithmetic])
-      assert [%{verdict: {:ineligible, {:call, {:binding, 0}}}}] = result.clean_decisions
-      assert clean_bodies(result.metamutant) == []
+      assert [%{verdict: :clean, range: {1, 2}}] = result.clean_decisions
+      assert [clean] = clean_bodies(result.metamutant)
+      assert Macro.to_string(clean) =~ "binding()"
+
+      compile_purging(@fixture, result.metamutant)
+      Selector.put(result.next_id + 1)
+      assert apply(@fixture, :f, [1]) == 9
+    end
+
+    test "a region poison recovery dropped keeps its instrumented body alone" do
+      result = transform_in_place()
+
+      assert [%{range: total}, %{range: scale}, %{range: other}] = result.clean_decisions
+
+      dropped = transform_in_place(skip_regions: MapSet.new([total, scale]))
+      assert dropped.sites == result.sites
+      assert dropped.next_id == result.next_id
+
+      assert [
+               %{verdict: :dropped, range: ^total},
+               %{verdict: :dropped, range: ^scale},
+               %{verdict: :clean, range: ^other}
+             ] = dropped.clean_decisions
+
+      assert [_other] = clean_bodies(dropped.metamutant)
+      refute dropped.metamutant =~ "_original("
+      assert manifest_ids(dropped) == manifest_ids(result)
     end
   end
 

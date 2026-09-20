@@ -53,8 +53,9 @@ defmodule Mutare.Transform do
        its original clauses, a clause that stays in place a second `:do` body, and
        one decision on the already-read id sends a mutation elsewhere to the source.
        Baseline/probe and the region's full id interval retain the instrumented
-       path. `CleanPath` defines what may be copied; a copied call still enters its
-       callee through that callee's own dispatcher.
+       path. Any source may be copied: a copy that fails to compile is attributed
+       to its region, which poison recovery then drops (`:skip_regions`). A copied
+       call still enters its callee through that callee's own dispatcher.
     5. **Render** — annotations are stripped and the tree is rendered to source
        (with a Sourceror keyword-block workaround).
 
@@ -151,9 +152,8 @@ defmodule Mutare.Transform do
     * `Mutare.Transform.LiftedEmit` — the dispatcher + gated base clauses for a
       lifted group (the assembly half of `emit_function_plan/2`).
     * `Mutare.Transform.CleanRegion` — the one decision that sends a mutation
-      elsewhere to a function's uninstrumented source, and the policy for when that
-      repays its code; `Mutare.Transform.CleanPath` is the positive, scope-tracking
-      contract for which source may be copied.
+      elsewhere to a function's uninstrumented source, the policy for when that
+      repays its code, and the reader that lets a failing copy be blamed on its region.
     * `Mutare.Transform.CaseClauseEmit` — the tuple-the-scrutinee delivery for
       per-clause `case` pattern/guard mutants.
     * `Mutare.Transform.FnClauseEmit` — per-clause anonymous-function delivery,
@@ -192,7 +192,6 @@ defmodule Mutare.Transform do
     CaseClauseEmit,
     ClaimState,
     ClauseAST,
-    CleanPath,
     CleanRegion,
     ConfigMatches,
     CountReport,
@@ -548,6 +547,7 @@ defmodule Mutare.Transform do
       skip_ids: Keyword.get(opts, :skip_ids, MapSet.new()),
       emit_ids: Keyword.get(opts, :emit_ids),
       clean_functions: Keyword.get(opts, :clean_functions, true),
+      skip_regions: Keyword.get(opts, :skip_regions, MapSet.new()),
       clean_threshold: Keyword.get(opts, :clean_threshold, %Config{}.clean_threshold),
       ignore_directives: directives,
       skip_lifting:
@@ -760,13 +760,7 @@ defmodule Mutare.Transform do
     plan =
       ModulePlan.build(statements, ctx.scope.analysis_env.mutators, ctx.config, ctx.scope.module)
 
-    # The sequence's own `def`/`defp` inventory is what lets a clean copy keep a call to a
-    # sibling function (`Mutare.Transform.CleanPath`). A nested statement block re-enters
-    # here with its own, smaller inventory; the enclosing one is restored on the way out.
-    outer = ctx.scope.local_functions
-    ctx = Ctx.update_scope(ctx, &%{&1 | local_functions: CleanPath.local_functions(statements)})
-    {emitted, ctx} = emit_module_plan(plan, record_skip_matches(ctx, plan.skip_lifting_matches))
-    {emitted, Ctx.update_scope(ctx, &%{&1 | local_functions: outer})}
+    emit_module_plan(plan, record_skip_matches(ctx, plan.skip_lifting_matches))
   end
 
   # Accumulate the `:skip_lifting` entries this statement sequence matched onto the context's
@@ -915,7 +909,7 @@ defmodule Mutare.Transform do
   # read is emitted). With no reference the binding would draw an "unused variable" warning, so an
   # unmutated `:do` block is left untouched.
   #
-  # The prologue's binding is also where a **clean body** can be chosen: an eligible block is
+  # The prologue's binding is also where a **clean body** can be chosen: a block is
   # emitted twice under one `Mutare.Transform.CleanRegion` decision, so a mutant elsewhere
   # runs the source's own body instead of answering every selector in this one. Only the
   # `:do` block is a region — its sibling blocks keep their self-contained selectors, which
@@ -934,24 +928,13 @@ defmodule Mutare.Transform do
         sites: ctx.scope.active_references
       }
 
-      {verdict, ctx} =
-        clean_verdict(ctx, region, fn ->
-          CleanPath.check_body(source, ctx.scope.local_functions)
-        end)
+      range = clean_range(ctx, first_id)
+      {verdict, ctx} = clean_verdict(ctx, region, range)
 
       value =
-        case verdict do
-          :clean ->
-            CleanRegion.select(
-              ctx.config.active_var,
-              clean_range(ctx, first_id),
-              value,
-              source_do_block(source)
-            )
-
-          _other ->
-            value
-        end
+        if verdict == :clean,
+          do: CleanRegion.select(ctx.config.active_var, range, value, source_do_block(source)),
+          else: value
 
       read = LiftedEmit.active_read(ctx.config.active_var, ctx.config.runtime_namespace)
       {{key, prepend_statement(value, read)}, ctx}
@@ -965,22 +948,23 @@ defmodule Mutare.Transform do
     body
   end
 
-  # Whether a region gets a clean implementation. `check` runs only once the cheap
-  # conditions hold. Every outcome is recorded as a `CleanRegion.Decision` for the
-  # eligibility diagnostic; the count sink emits no clean code (it renders nothing) and
-  # records nothing.
-  defp clean_verdict(%Ctx{claim: %ClaimState{sink: :count}} = ctx, _region, _check),
+  # Whether a region gets a clean implementation: it must repay its code, and poison
+  # recovery must not have dropped it (`Config.skip_regions`, keyed by the region's `range`).
+  # Nothing is asked of the source itself — see `Mutare.Transform.CleanRegion`. Every outcome
+  # is recorded as a `CleanRegion.Decision`; the count sink emits no clean code (it renders
+  # nothing) and records nothing.
+  defp clean_verdict(%Ctx{claim: %ClaimState{sink: :count}} = ctx, _region, _range),
     do: {:disabled, ctx}
 
-  defp clean_verdict(%Ctx{config: %Config{clean_functions: false}} = ctx, _region, _check),
+  defp clean_verdict(%Ctx{config: %Config{clean_functions: false}} = ctx, _region, _range),
     do: {:disabled, ctx}
 
-  defp clean_verdict(ctx, region, check) do
+  defp clean_verdict(ctx, region, range) do
     verdict =
-      if CleanRegion.worthwhile?(region.sites, ctx.config.clean_threshold) do
-        with :ok <- check.(), do: :clean
-      else
-        :below_threshold
+      cond do
+        not CleanRegion.worthwhile?(region.sites, ctx.config.clean_threshold) -> :below_threshold
+        MapSet.member?(ctx.config.skip_regions, range) -> :dropped
+        true -> :clean
       end
 
     {name, call_meta, args} = ClauseAST.clause_head_call(region.clause)
@@ -991,6 +975,7 @@ defmodule Mutare.Transform do
       line: Keyword.get(call_meta, :line),
       variants: region.variants,
       sites: region.sites,
+      range: range,
       verdict: verdict
     }
 
@@ -1099,8 +1084,8 @@ defmodule Mutare.Transform do
   # touching one clause no longer duplicates the other N-1 (the C×M → C+M win; see
   # NOTES "lifting blowup"). One source clause's guard-only mutants go further and
   # share a single extra clause, one `when` alternative each, so its raw body is
-  # emitted once rather than per mutant (`LiftedEmit`; the two conditions that
-  # keep a guard mutant out of that are below, at `own_clause_unless_built_in/3`). The original clauses are gated `when mutare_active !==
+  # emitted once rather than per mutant (`LiftedEmit`; `own_clause_unless_built_in/3`, below,
+  # keeps a custom mutator's guard out of that). The original clauses are gated `when mutare_active !==
   # <id>` for every mutant that overrides or drops them, so exactly one wins for
   # any (id, args): the mutant when its id is active and its head/guard match, else
   # the original. Ids are assigned exactly as before — in-place **body** ids first
@@ -1138,8 +1123,6 @@ defmodule Mutare.Transform do
         end
       )
 
-    claimed = own_clauses_outside_contract(claimed, plan, ctx.scope.local_functions)
-
     if claimed == [] and body_sites == 0 do
       # All lifted variants were withheld, and no body needs the dispatcher's
       # active-id parameter. Keep the original function, including super/defaults.
@@ -1166,12 +1149,9 @@ defmodule Mutare.Transform do
         sites: body_sites + length(claimed)
       }
 
-      {verdict, ctx} =
-        clean_verdict(ctx, region, fn ->
-          CleanPath.check_function(plan, ctx.scope.local_functions)
-        end)
-
-      active_range = if verdict == :clean, do: clean_range(ctx, first_id)
+      range = clean_range(ctx, first_id)
+      {verdict, ctx} = clean_verdict(ctx, region, range)
+      active_range = if verdict == :clean, do: range
 
       {LiftedEmit.assemble(plan, orig_clauses, claimed, group, ctx.config, records, active_range),
        ctx}
@@ -1179,11 +1159,11 @@ defmodule Mutare.Transform do
   end
 
   # `LiftedEmit` delivers the `:guard` variants of one source clause as `when` alternatives of
-  # a single clause holding one copy of the raw body. Two conditions keep a guard variant out
-  # of that, each by restating it as the whole `:clause` it stands for — which `LiftedEmit`
-  # gives a clause of its own, exactly as before.
+  # a single clause holding one copy of the raw body. A custom mutator's guard is kept out of
+  # that by restating it as the whole `:clause` it stands for, which `LiftedEmit` gives a
+  # clause of its own. (`LiftedEmit` itself separates members with unequal import witnesses.)
   #
-  # **A custom mutator's guard.** Poison recovery attributes a compile error by line. Built-in
+  # Poison recovery attributes a compile error by line. Built-in
   # swaps reuse the source's operands and compile by construction; a custom replacement need
   # not, and a guard error can land on the clause head or carry no line at all. In a clause
   # of its own that still blames one mutant. In a shared clause it would fall to the
@@ -1195,34 +1175,6 @@ defmodule Mutare.Transform do
   end
 
   defp own_clause_unless_built_in(variant, _plan, _candidate), do: variant
-
-  # **A clause outside `CleanPath`'s contract.** Sharing changes how many times the body's
-  # macros expand, and only a body of known functions and allow-listed macros is certain not
-  # to notice (`CleanPath.check_clause/3`). Checked once per source clause, and only for a
-  # clause with two or more guard variants — a lone one is never shared.
-  defp own_clauses_outside_contract(claimed, plan, local_functions) do
-    outside =
-      claimed
-      |> Enum.flat_map(fn
-        {_id, {:guard, index, _guards}, _witness} -> [index]
-        _claim -> []
-      end)
-      |> Enum.frequencies()
-      |> Enum.filter(fn {index, count} ->
-        count >= 2 and CleanPath.check_clause(plan, index, local_functions) != :ok
-      end)
-      |> MapSet.new(fn {index, _count} -> index end)
-
-    Enum.map(claimed, fn
-      {id, {:guard, index, guards}, witness} = claim ->
-        if MapSet.member?(outside, index),
-          do: {id, {:clause, index, FunctionPlan.guard_clause(plan, index, guards)}, witness},
-          else: claim
-
-      claim ->
-        claim
-    end)
-  end
 
   # === in-place transform: analyze (annotate) then assign/emit ===============
 

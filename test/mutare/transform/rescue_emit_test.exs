@@ -157,8 +157,9 @@ defmodule Mutare.Transform.RescueEmitTest do
       end
       """)
 
-    # A single protected body proves these assertions exercise factoring.
-    assert String.split(meta, "if failure") |> length() == 2
+    # A single protected body proves these assertions exercise factoring; the second
+    # occurrence is the clean region's copy of the source.
+    assert String.split(meta, "if failure") |> length() == 3
     outer = [failure: nil, mutare_active: nil]
     handler = [e: nil, failure: nil, mutare_active: nil]
 

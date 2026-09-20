@@ -56,6 +56,17 @@ defmodule Mutare.Manifest do
   the `case` hosts — a bounded over-drop that still recovers the build, never the
   old "couldn't map it → abort").
 
+  ## Clean copies
+
+  A clean region (`Mutare.Transform.CleanRegion`) keeps a function's uninstrumented source
+  beside the instrumented code. That copy belongs to no mutant, and the transform copies
+  any source without asking whether it survives the copy, so the copy's lines are recorded
+  too, under the region's identity — the id interval its guard carries (`:clean`,
+  `t:clean_span/0`). `blame_at_line/2` weighs both kinds by the same narrowest-range rule,
+  and poison recovery drops a blamed region as it drops a blamed mutant. A lifted group's
+  clean clauses sit outside their dispatcher, under the name `CleanRegion.read/2` reports;
+  each such definition is a span of that region.
+
   Ranges are in **metamutant line space**, which only exists after rendering, so
   the manifest is built by re-parsing the rendered metamutant and ranging its
   generated nodes with `Sourceror.get_range/1`, recognising selectors via
@@ -82,9 +93,28 @@ defmodule Mutare.Manifest do
   alias Mutare.AST
   alias Mutare.Coverage.Recorder
   alias Mutare.Metamutant
+  alias Mutare.Transform.CleanRegion
 
   @typedoc "A generated line range and the mutant ids whose code occupies it."
   @type region :: %{ids: [pos_integer()], lo: pos_integer(), hi: pos_integer()}
+
+  @typedoc """
+  A clean region's identity within its file: the inclusive interval of file-local mutant ids
+  its guard carries. Regions claim disjoint ids, and ids are stable across poison rebuilds.
+  """
+  @type clean_range :: {pos_integer(), pos_integer()}
+
+  @typedoc """
+  A line range holding a clean region's uninstrumented copy, under the region's identity. `:part` is `:branch` for the clean branch of
+  the region `case` — an in-place body, or a lifted dispatcher's call to its clean clauses —
+  and `:definition` for one relocated clean clause.
+  """
+  @type clean_span :: %{
+          range: clean_range(),
+          part: :branch | :definition,
+          lo: pos_integer(),
+          hi: pos_integer()
+        }
 
   @typedoc """
   One place where the generated code names a mutant id:
@@ -113,13 +143,19 @@ defmodule Mutare.Manifest do
     * `:regions` — generated line ranges, for mapping a compile error back to a mutant.
     * `:mentions` — every generated mention of a mutant id, in source order, for
       `Mutare.Transform.Invariants` to check against the mutants the transform recorded.
+    * `:clean` — the line ranges of clean regions' uninstrumented copies, in source order.
     * `:ast` — the parsed metamutant the regions were ranged over, retained so the
       macro-expansion fallback (`ids_in_named_calls/2`) can range a blamed macro's calls in
       the same tree rather than parse the file a second time. `nil` on a hand-built manifest.
   """
-  @type t :: %__MODULE__{regions: [region()], mentions: [mention()], ast: Macro.t() | nil}
+  @type t :: %__MODULE__{
+          regions: [region()],
+          mentions: [mention()],
+          clean: [clean_span()],
+          ast: Macro.t() | nil
+        }
 
-  defstruct regions: [], mentions: [], ast: nil
+  defstruct regions: [], mentions: [], clean: [], ast: nil
 
   @doc """
   Build a manifest from one file's rendered metamutant source and its dispatch variable.
@@ -150,10 +186,26 @@ defmodule Mutare.Manifest do
 
   # Region and mention build over an already-parsed metamutant AST, threading the dispatch
   # variable to the recognisers (a hoisted selector's bare-variable subject, a mutant clause's
-  # gate). Both accumulate reversed; the walk starts outside every mutant branch.
+  # gate). Everything accumulates reversed; the walk starts outside every mutant branch.
+  #
+  # A lifted group's clean clauses are joined to their region after the walk, so the join
+  # does not depend on a dispatcher preceding its clauses: the walk notes each region's
+  # relocated `{name, arity}` and the range of every ungated private definition, and
+  # `relocated_spans/1` keeps the definitions some region named.
   defp build(ast, var) do
-    {regions, mentions} = walk(ast, nil, var, {[], []})
-    %__MODULE__{regions: Enum.reverse(regions), mentions: Enum.reverse(mentions)}
+    acc = walk(ast, nil, var, %{regions: [], mentions: [], clean: [], relocated: %{}, defps: []})
+
+    %__MODULE__{
+      regions: Enum.reverse(acc.regions),
+      mentions: Enum.reverse(acc.mentions),
+      clean: Enum.sort_by(acc.clean ++ relocated_spans(acc), & &1.lo)
+    }
+  end
+
+  defp relocated_spans(%{relocated: relocated, defps: defps}) do
+    for {signature, lo, hi} <- defps,
+        {:ok, range} <- [Map.fetch(relocated, signature)],
+        do: %{range: range, part: :definition, lo: lo, hi: hi}
   end
 
   @doc """
@@ -329,6 +381,42 @@ defmodule Mutare.Manifest do
     end
   end
 
+  @doc """
+  What a compile error on `line` is blamed on: the mutant ids whose generated code occupies
+  it, and the clean regions whose uninstrumented copy does — `%{ids: ids, clean: ranges}`.
+
+  Both kinds compete by the **narrowest containing range**, as in `ids_at_line/2`. A clean
+  copy holds no mutant code, so in practice a line has one kind of owner; the shared rule
+  only settles nesting.
+
+  ## Examples
+
+      iex> manifest = %Mutare.Manifest{
+      ...>   regions: [%{ids: [1], lo: 3, hi: 4}],
+      ...>   clean: [%{range: {1, 2}, part: :branch, lo: 6, hi: 9}]
+      ...> }
+      iex> Mutare.Manifest.blame_at_line(manifest, 7)
+      %{ids: [], clean: [{1, 2}]}
+      iex> Mutare.Manifest.blame_at_line(manifest, 3)
+      %{ids: [1], clean: []}
+      iex> Mutare.Manifest.blame_at_line(manifest, 5)
+      %{ids: [], clean: []}
+  """
+  @spec blame_at_line(t(), pos_integer()) :: %{
+          ids: [pos_integer()],
+          clean: [clean_range()]
+        }
+  def blame_at_line(%__MODULE__{regions: regions, clean: clean}, line) do
+    containing = Enum.filter(regions ++ clean, fn r -> r.lo <= line and line <= r.hi end)
+    min_span = containing |> Enum.map(&(&1.hi - &1.lo)) |> Enum.min(fn -> nil end)
+    narrowest = Enum.filter(containing, &(&1.hi - &1.lo == min_span))
+
+    %{
+      ids: narrowest |> Enum.flat_map(&Map.get(&1, :ids, [])) |> Enum.uniq(),
+      clean: for(%{range: range} <- narrowest, uniq: true, do: range)
+    }
+  end
+
   # --- traversal -----------------------------------------------------------
 
   # One pre-order walk over the parsed metamutant, threading `within`: the ids of the innermost
@@ -370,16 +458,19 @@ defmodule Mutare.Manifest do
   # A plain selector's subject (the active-id read, or its namespace projection) names no
   # mutant, so only its clauses are walked; a tupled subject holds the construct's coverage
   # record, so it is walked first.
-  defp walk_node({:case, _meta, [subject, kw]} = node, within, var, acc) do
-    cond do
-      Metamutant.subject?(subject, var) ->
-        walk_clauses(node, [], do_block(kw), within, var, acc, &selector_mutant/1)
+  #
+  # A clean region's `case` reads the same variable and hosts no mutant. Its clean branch is
+  # recorded as a clean span and not entered — it is source, holding no generated id — and
+  # only the instrumented branch is walked.
+  defp walk_node({:case, _meta, [_subject, _kw]} = node, within, var, acc) do
+    case CleanRegion.read(node, var) do
+      {:ok, region} ->
+        acc
+        |> clean_branch(region)
+        |> then(&walk(region.instrumented, within, var, &1))
 
-      Metamutant.pattern_subject?(subject, var) ->
-        walk_clauses(node, [subject], do_block(kw), within, var, acc, &pattern_mutant(&1, var))
-
-      true ->
-        descend(node, within, var, acc)
+      :error ->
+        walk_selector(node, within, var, acc)
     end
   end
 
@@ -403,6 +494,7 @@ defmodule Mutare.Manifest do
     case mutants |> Enum.map(&elem(&1, 0)) |> Enum.uniq() do
       [] ->
         acc
+        |> ungated_defp(vis, head, node)
         |> mention(:exclusion, guard_exclusions(head, var), within)
         |> then(&descend(node, within, var, &1))
 
@@ -459,6 +551,20 @@ defmodule Mutare.Manifest do
 
   defp walk_node(node, within, var, acc), do: descend(node, within, var, acc)
 
+  # A selector `case`, of either shape described above `walk_node/4`'s `case` clause.
+  defp walk_selector({:case, _meta, [subject, kw]} = node, within, var, acc) do
+    cond do
+      Metamutant.subject?(subject, var) ->
+        walk_clauses(node, [], do_block(kw), within, var, acc, &selector_mutant/1)
+
+      Metamutant.pattern_subject?(subject, var) ->
+        walk_clauses(node, [subject], do_block(kw), within, var, acc, &pattern_mutant(&1, var))
+
+      true ->
+        descend(node, within, var, acc)
+    end
+  end
+
   # The children of an unrecognised node, in `Macro.traverse/4` order: a call's callee, then its
   # arguments (an atom in either place — a local call's name, a variable's context — is a leaf);
   # a list's elements; a two-tuple's halves.
@@ -499,19 +605,48 @@ defmodule Mutare.Manifest do
 
   # Each mutant's region and `:branch` mention, then the whole-construct fallback region
   # over all of them (`nil` construct: no fallback, as for a lifted clause).
-  defp record_branches({regions, mentions}, mutants, construct, within) do
+  defp record_branches(%{regions: regions, mentions: mentions} = acc, mutants, construct, within) do
     {regions, mentions} =
       Enum.reduce(mutants, {regions, mentions}, fn {id, region}, {regions, mentions} ->
         {push(range_region([id], region), regions),
          [%{kind: :branch, id: id, within: within} | mentions]}
       end)
 
-    {push(case_fallback(construct, mutants), regions), mentions}
+    %{acc | regions: push(case_fallback(construct, mutants), regions), mentions: mentions}
   end
 
-  defp mention({regions, mentions}, kind, ids, within) do
-    {regions, Enum.reduce(ids, mentions, &[%{kind: kind, id: &1, within: within} | &2])}
+  defp mention(%{mentions: mentions} = acc, kind, ids, within) do
+    %{acc | mentions: Enum.reduce(ids, mentions, &[%{kind: kind, id: &1, within: within} | &2])}
   end
+
+  # A region's clean branch as a span, and — for a lifted dispatcher — the signature its clean
+  # clauses carry, for `relocated_spans/1`.
+  defp clean_branch(acc, %{range: range, clean: clean, relocated: relocated}) do
+    span =
+      with %{lo: lo, hi: hi} <- range_region([], clean),
+           do: %{range: range, part: :branch, lo: lo, hi: hi}
+
+    acc = %{acc | clean: push(span, acc.clean)}
+    if relocated, do: put_in(acc.relocated[relocated], range), else: acc
+  end
+
+  # The signature and range of a private definition no mutant gates: what a lifted group's
+  # relocated clean clause is, among other things. A head that is no call (`defp unquote(h)`)
+  # and a definition Sourceror cannot range are skipped.
+  defp ungated_defp(acc, :defp, head, node) do
+    with {name, _meta, args} when is_atom(name) <- unguarded(head),
+         %{lo: lo, hi: hi} <- range_region([], node) do
+      arity = if is_list(args), do: length(args), else: 0
+      %{acc | defps: [{{name, arity}, lo, hi} | acc.defps]}
+    else
+      _ -> acc
+    end
+  end
+
+  defp ungated_defp(acc, _vis, _head, _node), do: acc
+
+  defp unguarded({:when, _meta, [call | _guard]}), do: call
+  defp unguarded(call), do: call
 
   # A selector-`case` mutant clause `<id> -> <body>`: the id is its integer pattern; its
   # generated code is the body. A catch-all (`mutare_active -> …`) yields `{nil, nil}`.

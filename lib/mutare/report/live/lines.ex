@@ -139,14 +139,29 @@ defmodule Mutare.Report.Live.Lines do
 
   @doc """
   Renders one compile-poison recovery round as a persistent status line: how many
-  mutants were dropped and how many block macros were escalated (skipped wholesale),
-  naming the escalated macros so the line explains *why* the compile is being retried.
+  mutants were dropped, how many block macros were escalated (skipped wholesale), and how
+  many clean regions lost their uninstrumented copy — naming the escalated macros so the
+  line explains *why* the compile is being retried. A round that dropped only clean regions
+  reads "dropped 0 mutants", which is the point: it cost none.
   """
   @spec poison_round_line(map()) :: String.t()
-  def poison_round_line(%{dropped: dropped, escalated: escalated}) do
+  def poison_round_line(%{dropped: dropped, escalated: escalated} = info) do
     dropped_n = length(dropped)
-    parts = ["dropped #{dropped_n} mutant#{plural(dropped_n)}" | escalation_parts(escalated)]
+
+    parts =
+      ["dropped #{dropped_n} mutant#{plural(dropped_n)}"] ++
+        escalation_parts(escalated) ++ clean_region_parts(Map.get(info, :clean, []))
+
     "  ⟳ compile-poison: " <> Enum.join(parts, ", ") <> " — rebuilding…"
+  end
+
+  # A function whose uninstrumented copy would not compile keeps its instrumented code alone.
+  defp clean_region_parts([]), do: []
+
+  defp clean_region_parts(clean) do
+    n = length(clean)
+    files = clean |> Enum.map(& &1.file) |> Enum.uniq() |> Enum.join(", ")
+    ["kept #{n} function#{plural(n)} fully instrumented (#{files})"]
   end
 
   # The escalation clause of the poison-round line: nothing when no block was widened this

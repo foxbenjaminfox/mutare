@@ -7,7 +7,7 @@ defmodule Mutare.Transform.LiftedEmit do
   # (threading `Ctx`, claiming ids via `SelectorEmit.claim_items/4`, emitting in-place body
   # selectors) and calls `assemble/7` with plain data: the plan, the emitted source clauses, the
   # `{id, index, clause, witness}` claims, the group number, the config, and prepared
-  # coverage expressions, and an optional complete function id interval for a clean path.
+  # coverage expressions, and an optional complete function id interval for a clean region.
   #
   # The interleaving scheme: each source clause's mutant clauses (gated `when <var> === <id>`)
   # precede the source clause itself (gated `when <var> !== <those ids>`), so exactly one wins
@@ -17,20 +17,21 @@ defmodule Mutare.Transform.LiftedEmit do
   # source clause's, so they differ in the guard alone and become its `when` alternatives,
   # each gated on its own id (`lifted_guard_group/3`) — one copy of the body where there was
   # one per mutant.
-  # An eligible clean path adds C raw original clauses, for 2C+M total; it never
-  # duplicates a whole group per mutant. Pure self-recursion can remain in that copy.
+  # A clean region adds C raw original clauses, for 2C+M total; it never duplicates a whole
+  # group per mutant. Direct self-recursion stays inside that copy
+  # (`Mutare.Transform.SelfCalls`).
 
   alias Mutare.Coverage.Recorder
   alias Mutare.Metamutant
 
   alias Mutare.Transform.{
-    CleanPath,
     CleanRegion,
     ClauseAST,
     Config,
     FunctionPlan,
     GuardBuild,
     ImportWitness,
+    SelfCalls,
     Super
   }
 
@@ -58,9 +59,9 @@ defmodule Mutare.Transform.LiftedEmit do
   stateful emitter; assembly does not choose their gate or track scope usage.
 
   A non-nil `active_range` adds one raw original clause group and routes mutations
-  outside that interval to it. The caller must include **all** function ids, including
-  body mutations, and establish `CleanPath.eligible?/1` before supplying the range.
-  Baseline keeps the instrumented path so coverage positions remain unchanged.
+  outside that interval to it (`Mutare.Transform.CleanRegion`). The caller must include
+  **all** function ids, including body mutations. Baseline keeps the instrumented path so
+  coverage positions remain unchanged.
   """
   @spec assemble(
           FunctionPlan.t(),
@@ -211,17 +212,17 @@ defmodule Mutare.Transform.LiftedEmit do
     {super_args, super_stmts} = super_closure_binding(group.super_var, group.arity)
     call = {group.base, [], [var_node | super_args] ++ call_args}
 
-    statements = super_stmts ++ records ++ [call]
-
     body =
       if active_range do
         # Ids outside the group's interval (and another file's `:inactive` projection)
-        # call the raw clauses; see `Mutare.Transform.CleanRegion`.
-        instrumented = {:__block__, [], statements}
-        clean = {clean_name(group), [], call_args}
-        {:__block__, [], [read, CleanRegion.select(group.var, active_range, instrumented, clean)]}
+        # call the raw clauses; see `Mutare.Transform.CleanRegion`. Both branches thread the
+        # super closure, so it is bound ahead of the decision.
+        instrumented = {:__block__, [], records ++ [call]}
+        clean = {clean_name(group), [], super_args ++ call_args}
+        region = CleanRegion.select(group.var, active_range, instrumented, clean)
+        {:__block__, [], [read] ++ super_stmts ++ [region]}
       else
-        {:__block__, [], [read | statements]}
+        {:__block__, [], [read] ++ super_stmts ++ records ++ [call]}
       end
 
     {group.vis, [], [{group.name, [], head_args}, [do: body]]}
@@ -229,26 +230,40 @@ defmodule Mutare.Transform.LiftedEmit do
 
   defp clean_clauses(_group, _plan, nil), do: []
 
+  # The source clauses under the clean name, bodies untouched but for two relocations: a
+  # `super` goes through the threaded closure, as in a base clause, and a direct self-call
+  # stays in the clean group (`Mutare.Transform.SelfCalls`), carrying that closure along.
   defp clean_clauses(group, plan, _range) do
-    direct_recursion? = CleanPath.pure_self_recursive?(plan)
-
     for clause <- plan.clauses, not ClauseAST.bodiless_header?(clause) do
       {meta, call_meta, args, guards, body} = clause_parts(clause)
-
-      body =
-        if direct_recursion?,
-          do:
-            CleanPath.redirect_self_calls(body, {group.name, group.arity}, clean_name(group), []),
-          else: body
-
-      call = {clean_name(group), call_meta, args}
+      {body, super_params} = clean_body(body, group)
+      call = {clean_name(group), call_meta, super_params ++ args}
       guard = GuardBuild.combine(guards)
       head = if guard, do: {:when, [], [call, guard]}, else: call
       {:defp, meta, [head | body]}
     end
   end
 
-  defp clean_name(group), do: :"#{group.base}_original"
+  defp clean_body(body, %Group{super_var: nil} = group) do
+    {body, _redirected?} =
+      SelfCalls.redirect(body, {group.name, group.arity}, clean_name(group), [])
+
+    {body, []}
+  end
+
+  # The closure parameter is named when the clause reads it — for its own `super`, or to
+  # hand it to the next recursive step — and a bare `_` otherwise (`super_param/2`).
+  defp clean_body(body, %Group{super_var: super_var} = group) do
+    closure = {super_var, [], nil}
+    {body, super?} = Super.rewrite(body, super_var)
+
+    {body, redirected?} =
+      SelfCalls.redirect(body, {group.name, group.arity}, clean_name(group), [closure])
+
+    {body, [if(super? or redirected?, do: closure, else: {:_, [], nil})]}
+  end
+
+  defp clean_name(group), do: CleanRegion.relocated_name(group.base)
 
   # The default-argument expressions of a lifted group, keyed by 0-based head position. They live
   # on exactly one source clause — a bodiless header in a multi-clause group, or the lone clause

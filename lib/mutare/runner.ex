@@ -140,9 +140,10 @@ defmodule Mutare.Runner do
     * `{:poison_round, info}` — one compile-poison recovery round: the compile
       failed, the implicated mutants were dropped, and a rebuild + recompile is
       starting. `info` is `%{dropped: [%{id: id, file: file, line: line,
-      mutator: family}], escalated: [t:Mutare.Run.escalation/0]}` — the mutants
-      dropped individually this round, and any unknown block macro escalated
-      wholesale. Fired on every round (not just verbose), since each one is a
+      mutator: family}], escalated: [t:Mutare.Run.escalation/0], clean:
+      [t:Mutare.Run.clean_region/0]}` — the mutants dropped individually this round,
+      any unknown block macro escalated wholesale, and any clean region whose
+      uninstrumented copy would not compile. Fired on every round (not just verbose), since each one is a
       full recompile the user would otherwise read as a hang.
     * `{:compiled, ms}`
     * `{:baseline_done, ms}`

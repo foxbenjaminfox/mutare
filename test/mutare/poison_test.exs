@@ -110,6 +110,56 @@ defmodule Mutare.PoisonTest do
     end
   end
 
+  describe "attribution/4 — an error inside a clean region's copy" do
+    @clean_src """
+    defmodule C do
+      def f(a, b) do
+        x = query(a > b)
+        y = a + b
+        {x, y}
+      end
+    end
+    """
+
+    defp clean_build do
+      %{metamutant: meta, sites: sites, dispatch_var: var, clean_decisions: [region]} =
+        Mutare.Transform.transform_string_with_sites(@clean_src,
+          file: "lib/c.ex",
+          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Arithmetic]
+        )
+
+      lines = String.split(meta, "\n")
+      clean_line = length(lines) - Enum.find_index(Enum.reverse(lines), &(&1 =~ "query("))
+      {%{"lib/c.ex" => meta}, %{"lib/c.ex" => var}, sites, region.range, clean_line}
+    end
+
+    test "blames the region, by file and id interval, and no mutant" do
+      {metamutants, vars, _sites, range, line} = clean_build()
+      output = "** (CompileError) lib/c.ex:#{line}: undefined function query/1"
+
+      assert Poison.attribution(output, metamutants, vars) ==
+               %{line: MapSet.new(), macro: [], clean: MapSet.new([{"lib/c.ex", range}])}
+
+      assert Poison.ids(output, metamutants, vars) == MapSet.new()
+    end
+
+    test "a macro raising from the copy does not implicate its mutants elsewhere in the file" do
+      # The copy holds no selector for the macro to have rejected. Without this the fallback
+      # would drop the healthy mutants inside the *instrumented* `query(...)` call as poison.
+      {metamutants, vars, sites, range, line} = clean_build()
+      assert Enum.any?(sites, &(&1.line == 3))
+
+      output = """
+      ** (ArgumentError) nope
+          expanding macro: MyDsl.query/1
+          lib/c.ex:#{line}: C.f/2
+      """
+
+      assert Poison.attribution(output, metamutants, vars) ==
+               %{line: MapSet.new(), macro: [], clean: MapSet.new([{"lib/c.ex", range}])}
+    end
+  end
+
   describe "macro_poison/4 (macro-expansion fallback, metamutant space)" do
     # Transform a source into `{%{file => metamutant}, %{file => dispatch_var}, sites}` — the
     # real rendered metamutant the fallback attributes against (not the original), so its

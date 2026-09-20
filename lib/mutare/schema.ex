@@ -8,7 +8,7 @@ defmodule Mutare.Schema do
   `:metamutants` (their originals are used as-is) but never crash the build — a
   single unparseable file should not sink the run. A failure *after* a clean
   parse (transform or render) is a bug in this tool, not bad input, and is left
-  to crash: see `render_one/3`.
+  to crash: see `render_one/4`.
 
   ## Two-phase build (`from_files/4`)
 
@@ -35,20 +35,20 @@ defmodule Mutare.Schema do
        is the one pass that parses every file: nothing later re-parses. The count
        is drift-proof: it comes from the *same* id-claiming path emission uses, so
        it equals the matching render's `next_id - start_id` by construction.
-    2. **Render** (`render_files/3`) — prefix-sum the counts so each sited file
+    2. **Render** (`render_files/4`) — prefix-sum the counts so each sited file
        is given its globally-unique `:start_id` up front, then
        `Mutare.Transform.transform_string/2` each file (with that `:start_id` and
-       the file's `:runtime_namespace`, and the run's report-space `:skip_ids` and
-       statically selected `:emit_ids`) in parallel. Every
+       the file's `:runtime_namespace`, and the run's report-space `:skip_ids`, its
+       `:skip_regions`, and statically selected `:emit_ids`) in parallel. Every
        candidate reserves its id and records its diagnostic site, but only selected
-       candidates emit branches. `render_one/3` re-checks the count
+       candidates emit branches. `render_one/4` re-checks the count
        against the rendered `next_id` and fails loudly on any drift, since id
        stability across files depends on the two passes agreeing.
 
   The two passes agree only because the pipeline they share — parse, `use`-expansion,
   resolution, and every mutator — is a *deterministic* function of the source and opts;
   it runs once per pass, so a nondeterministic custom mutator or extension `expand_use/3`
-  surfaces as that `render_one/3` drift crash rather than a silent id overlap.
+  surfaces as that `render_one/4` drift crash rather than a silent id overlap.
   `from_files/4` also dedups its input by relative path, so a file passed twice is
   rendered once, under one id range — never two overlapping ones.
 
@@ -224,7 +224,10 @@ defmodule Mutare.Schema do
 
   `skip_ids` is poison-recovery state: ids to leave out of the emitted
   metamutant while still advancing the id counter. It is passed separately from
-  `Options` because it is run state, not user configuration.
+  `Options` because it is run state, not user configuration. `skip_regions` is the same kind
+  of state for clean regions (`Mutare.Transform.CleanRegion`): `{file, range}` pairs, as
+  `Mutare.Poison.attribution/4` reports them, whose uninstrumented copy is left out. It
+  changes no id and no site.
 
   `:only_lines` filters the finished sites to the requested `file:line` pairs.
   `:max_mutants` then caps those sites in source order. Both filters are applied
@@ -235,14 +238,26 @@ defmodule Mutare.Schema do
   Files with no emitted mutants retain their exact original source. Changing selection
   can therefore change the metamutant and invalidate a retained sandbox's build.
   """
-  @spec from_files([Path.t()], Path.t(), Context.t() | Options.t() | keyword(), MapSet.t()) :: t()
-  def from_files(files, root \\ ".", opts \\ [], skip_ids \\ MapSet.new()) do
+  @spec from_files(
+          [Path.t()],
+          Path.t(),
+          Context.t() | Options.t() | keyword(),
+          MapSet.t(),
+          MapSet.t(Mutare.Poison.clean_region())
+        ) :: t()
+  def from_files(
+        files,
+        root \\ ".",
+        opts \\ [],
+        skip_ids \\ MapSet.new(),
+        skip_regions \\ MapSet.new()
+      ) do
     context = Context.new(opts)
     options = context.options
 
     # Dedup the input by relative path. A file passed more than once would otherwise be
     # rendered twice under different `:start_id`s but collapse to a single relative-path
-    # key in `render_files/3` (only the last render kept, then reused for *every*
+    # key in `render_files/4` (only the last render kept, then reused for *every*
     # occurrence) — minting duplicate, overlapping site ids and violating the
     # globally-unique-id invariant. `build/2` already dedups via `discover`; the
     # public/`rebuild` entry must too, so each source is rendered once under one id range.
@@ -265,7 +280,7 @@ defmodule Mutare.Schema do
     # each sited file knows its `:start_id` up front, then emit + render it. A failure
     # here is a tool bug (the file already parsed in phase 1) — re-raised faithfully.
     jobs = render_jobs(counted, options.max_mutants)
-    rendered = render_files(jobs, context, skip_ids)
+    rendered = render_files(jobs, context, skip_ids, skip_regions)
 
     rel_files
     |> assemble(counted, rendered)
@@ -284,20 +299,26 @@ defmodule Mutare.Schema do
   This is the poison-recovery entry point. It does not rediscover files, because
   rediscovery could lose restrictions from `from_files/4`, `:only_files`,
   `:exclude`, or `:only_lines`. Reusing the recorded file list keeps the run's
-  scope and mutant ids stable while adding the new `skip_ids`.
+  scope and mutant ids stable while adding the new `skip_ids` and `skip_regions`.
 
   Pass the same options used for the original schema so mutator and extension
   configuration stays unchanged.
   """
-  @spec rebuild(t(), Path.t(), Context.t() | Options.t() | keyword(), MapSet.t()) :: t()
-  def rebuild(%__MODULE__{files: files}, root, opts, skip_ids) do
+  @spec rebuild(
+          t(),
+          Path.t(),
+          Context.t() | Options.t() | keyword(),
+          MapSet.t(),
+          MapSet.t(Mutare.Poison.clean_region())
+        ) :: t()
+  def rebuild(%__MODULE__{files: files}, root, opts, skip_ids, skip_regions \\ MapSet.new()) do
     # Poison recovery re-scans silently: drop any `:on_scan` hook so the live
     # reporter isn't yanked back to a scan display in the middle of a run.
     context = %{Context.new(opts) | on_scan: nil}
 
     files
     |> Enum.map(&Path.join(root, &1))
-    |> from_files(root, context, skip_ids)
+    |> from_files(root, context, skip_ids, skip_regions)
   end
 
   @doc "Total number of mutants in the schema."
@@ -425,14 +446,20 @@ defmodule Mutare.Schema do
     {emit_ids, remaining}
   end
 
-  # Emit + render every sited file in parallel throwaway workers (`render_one/3`),
+  # Emit + render every sited file in parallel throwaway workers (`render_one/4`),
   # returning `%{rel => {start_id, metamutant, sites, dispatch_var}}` — the `start_id` and
   # the metamutant's dispatch variable ride along so `assemble/3` can record them under
   # `:start_ids`/`:dispatch_vars`. The dominant `Sourceror.to_string` heap dies with each
   # worker. A tool bug captured by a worker is re-raised here.
-  defp render_files(jobs, %Context{} = context, skip_ids) do
+  defp render_files(jobs, %Context{} = context, skip_ids, skip_regions) do
+    # Each file's dropped regions, by the interval alone: within a file that is the identity.
+    regions_by_file =
+      Enum.group_by(skip_regions, fn {file, _range} -> file end, fn {_file, range} -> range end)
+
     jobs
-    |> async_stream(&render_one(&1, context, skip_ids))
+    |> async_stream(fn job ->
+      render_one(job, context, skip_ids, MapSet.new(Map.get(regions_by_file, job.rel, [])))
+    end)
     |> Enum.map(&reraise_if_raised/1)
     |> Map.new(fn {:rendered, rel, start_id, meta, sites, var} ->
       {rel, {start_id, meta, sites, var}}
@@ -452,7 +479,7 @@ defmodule Mutare.Schema do
   # `summary` is built per site when a live reporter will show the in-flight mutant
   # (`context.summarize_sites`, set by the Mix task unless `--quiet`); unlike the diff, the live
   # line can't defer — it shows every mutant as it runs.
-  defp render_one(%Job{} = job, %Context{} = context, skip_ids) do
+  defp render_one(%Job{} = job, %Context{} = context, skip_ids, skip_regions) do
     opts =
       transform_opts(context.options) ++
         [
@@ -460,6 +487,7 @@ defmodule Mutare.Schema do
           start_id: job.start_id,
           runtime_namespace: job.rel,
           skip_ids: skip_ids,
+          skip_regions: skip_regions,
           emit_ids: job.emit_ids,
           render_site_code: not context.defer_site_code,
           summarize_sites: context.summarize_sites,
@@ -596,7 +624,7 @@ defmodule Mutare.Schema do
   # order for id threading, scan progress, and site assembly) and untimed (a big file can
   # take seconds). Returns a **lazy** stream the caller forces — `count_files/4` via
   # `Enum.map_reduce` (so it can fire `:on_scan` per file *as results arrive*, not in one
-  # end-of-phase burst), `render_files/3` via `Enum.map`. Each worker classifies its own
+  # end-of-phase burst), `render_files/4` via `Enum.map`. Each worker classifies its own
   # outcome — a result tuple or a captured `{:raise, error, stacktrace}` — so it never
   # crashes the stream; `reraise_if_raised/1` surfaces a captured tool bug in the parent,
   # with its original type and trace, rather than as an opaque `Task` exit. A worker that

@@ -226,6 +226,100 @@ defmodule Mutare.ManifestTest do
     end
   end
 
+  describe "clean regions — a copy that belongs to no mutant is still blamed on something" do
+    @clean_src """
+    defmodule Demo do
+      def in_place(x) do
+        y = x + 2
+        noted(y * 3)
+      end
+
+      def lifted(n) when n > 0 do
+        m = n + 5
+        marked(m * 7)
+      end
+
+      def lifted(n), do: n
+    end
+    """
+
+    defp clean_fixture do
+      %{metamutant: meta, dispatch_var: var, clean_decisions: decisions} =
+        Mutare.Transform.transform_string_with_sites(@clean_src,
+          mutators: [:arithmetic, :relational]
+        )
+
+      [in_place, lifted] = decisions
+      {meta, Manifest.from_source(meta, var), in_place.range, lifted.range}
+    end
+
+    # The last line holding `needle`: a clean copy follows the instrumented code it copies.
+    defp last_line_of(meta, needle) do
+      lines = String.split(meta, "\n")
+      length(lines) - Enum.find_index(Enum.reverse(lines), &(&1 =~ needle))
+    end
+
+    test "an in-place clean body is one span under its region's id interval" do
+      {meta, manifest, in_place, _lifted} = clean_fixture()
+
+      assert [%{part: :branch, lo: lo, hi: hi}] =
+               Enum.filter(manifest.clean, &(&1.range == in_place))
+
+      line = last_line_of(meta, "noted(")
+      assert line in lo..hi
+      assert Manifest.blame_at_line(manifest, line) == %{ids: [], clean: [in_place]}
+    end
+
+    test "a lifted group's relocated clauses are spans of its region, as is the call to them" do
+      {meta, manifest, _in_place, lifted} = clean_fixture()
+      spans = Enum.filter(manifest.clean, &(&1.range == lifted))
+      assert Enum.map(spans, & &1.part) == [:branch, :definition, :definition]
+
+      assert Manifest.blame_at_line(manifest, last_line_of(meta, "marked(")) ==
+               %{ids: [], clean: [lifted]}
+
+      assert Manifest.blame_at_line(manifest, line_of(meta, "_original(mutare_arg1)")) ==
+               %{ids: [], clean: [lifted]}
+    end
+
+    test "the instrumented branch still maps to its mutants, and they to no region" do
+      {meta, manifest, _in_place, _lifted} = clean_fixture()
+      line = line_of(meta, "x - 2")
+      assert %{ids: [_id], clean: []} = Manifest.blame_at_line(manifest, line)
+      assert Manifest.ids_at_line(manifest, line) == Manifest.blame_at_line(manifest, line).ids
+    end
+
+    test "a region changes no mutant region and no mention" do
+      opts = [mutators: [:arithmetic, :relational]]
+      clean = Mutare.Transform.transform_string_with_sites(@clean_src, opts)
+
+      control =
+        Mutare.Transform.transform_string_with_sites(@clean_src, [clean_functions: false] ++ opts)
+
+      with_regions = Manifest.from_source(clean.metamutant, clean.dispatch_var)
+      without = Manifest.from_source(control.metamutant, control.dispatch_var)
+      assert with_regions.mentions == without.mentions
+      assert Enum.map(with_regions.regions, & &1.ids) == Enum.map(without.regions, & &1.ids)
+      assert without.clean == []
+    end
+
+    test "a source `case` on a local call is not a lifted region" do
+      # Only a dispatcher's own call shape names relocated clauses; a source body that is a
+      # local call leaves the callee's definitions unclaimed.
+      src = """
+      defmodule Demo do
+        def f(x), do: helper(x + 1 - 2)
+        defp helper(x), do: x
+      end
+      """
+
+      %{metamutant: meta, dispatch_var: var} =
+        Mutare.Transform.transform_string_with_sites(src, mutators: [:arithmetic])
+
+      assert [%{part: :branch}] = Manifest.from_source(meta, var).clean
+    end
+  end
+
   describe "ids_at_line/2 — the tuple-the-scrutinee (case-clause) path" do
     @case_src """
     defmodule D do

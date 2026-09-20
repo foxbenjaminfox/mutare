@@ -67,6 +67,74 @@ defmodule Mutare.PoisonRunnerTest do
     end
   end
 
+  describe "a clean region whose copy will not compile" do
+    @tag :runner
+    @tag timeout: 180_000
+    test "is dropped, and every mutant still runs" do
+      # The transform copies a function's source beside its instrumented code without asking
+      # what the source calls. `once/1` refuses a second expansion inside one function, so the
+      # copy — expanded after the instrumented body — fails, on a line no mutant owns. The
+      # error names an expanding macro whose instrumented call holds healthy mutants; the
+      # region, not they, must take the blame.
+      %{project: project, sandbox: sandbox} =
+        Project.build(:cleanpoison, %{
+          "lib/once.ex" => """
+          defmodule Once do
+            defmacro once(expr) do
+              key = {:once, __CALLER__.module, __CALLER__.function}
+              if Process.get(key), do: raise(ArgumentError, "once/1 expanded twice")
+              Process.put(key, true)
+              expr
+            end
+          end
+          """,
+          "lib/usage.ex" => """
+          defmodule Usage do
+            require Once
+
+            def scaled(x) do
+              y = x + 1
+              Once.once(y * 2)
+            end
+
+            def plain(x), do: x + 3 - 1
+          end
+          """,
+          "test/usage_test.exs" => """
+          defmodule UsageTest do
+            use ExUnit.Case
+            test "scaled", do: assert(Usage.scaled(2) == 6)
+            test "plain", do: assert(Usage.plain(2) == 4)
+          end
+          """
+        })
+
+      assert {:ok, run} =
+               Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.Arithmetic])
+
+      assert %{rounds: 1, clean_regions: [%{file: "lib/usage.ex", first: first, last: last}]} =
+               run.recovery
+
+      assert MapSet.size(run.recovery.dropped) == 0
+      assert run.recovery.macro_skipped == []
+
+      # The dropped region is `scaled/1`'s; `plain/1` keeps its clean copy.
+      scaled = for %{site: %{line: line} = site} <- run.results, line in 5..6, do: site
+      assert Enum.map(scaled, &Mutare.RuntimeId.local/1) == Enum.to_list(first..last)
+
+      manifest =
+        Mutare.Manifest.from_source(
+          run.schema.metamutants["lib/usage.ex"],
+          run.schema.dispatch_vars["lib/usage.ex"]
+        )
+
+      assert [%{part: :branch, range: plain}] = manifest.clean
+      assert plain != {first, last}
+
+      assert Enum.all?(run.results, &(&1.status == :killed))
+    end
+  end
+
   describe "end to end recovery" do
     @tag :runner
     @tag timeout: 180_000

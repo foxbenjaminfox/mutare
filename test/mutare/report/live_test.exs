@@ -335,6 +335,22 @@ defmodule Mutare.Report.LiveTest do
                  "skipped 1 unknown block macro wholesale (guarded) — rebuilding…"
     end
 
+    test "names the files of clean regions that lost their copy, which cost no mutant" do
+      line =
+        Lines.poison_round_line(%{
+          dropped: [],
+          escalated: [],
+          clean: [
+            %{file: "lib/a.ex", first: 1, last: 4},
+            %{file: "lib/a.ex", first: 9, last: 12}
+          ]
+        })
+
+      assert line ==
+               "  ⟳ compile-poison: dropped 0 mutants, " <>
+                 "kept 2 functions fully instrumented (lib/a.ex) — rebuilding…"
+    end
+
     test "a round that only escalates still reads (zero individual drops)" do
       line =
         Lines.poison_round_line(%{

@@ -219,20 +219,25 @@ defmodule Mutare.InvariantsTest do
           dispatch_var: :mutare_active
         })
 
-    defp check(metamutant, sites, reemitted \\ nil) do
+    defp check(metamutant, sites, reemitted \\ nil, clean_decisions \\ []) do
       rendered = %{
         metamutant: metamutant,
         sites: sites,
         next_id: length(sites) + 1,
-        dispatch_var: :mutare_active
+        dispatch_var: :mutare_active,
+        clean_decisions: clean_decisions
       }
 
       first = emitted(sites)
       Invariants.check!(rendered, first, %Config{file: "lib/m.ex"}, fn -> reemitted || first end)
     end
 
-    defp check_violations(metamutant, sites, reemitted \\ nil) do
-      error = assert_raise InvariantError, fn -> check(metamutant, sites, reemitted) end
+    defp check_violations(metamutant, sites, reemitted \\ nil, clean_decisions \\ []) do
+      error =
+        assert_raise InvariantError, fn ->
+          check(metamutant, sites, reemitted, clean_decisions)
+        end
+
       assert error.file == "lib/m.ex"
       {error.violations, error.message}
     end
@@ -260,6 +265,85 @@ defmodule Mutare.InvariantsTest do
         """)
 
       assert check(source, [site(1), site(2)]) == :ok
+    end
+
+    # A region `case` as `CleanRegion.select/4` renders it, around one selector.
+    defp region(first, last, clean) do
+      module("""
+      case mutare_active do
+        _ when :erlang.orelse(
+                 :erlang."=:="(mutare_active, 0),
+                 :erlang.andalso(
+                   :erlang.is_integer(mutare_active),
+                   :erlang.andalso(
+                     :erlang.>=(mutare_active, #{first}),
+                     :erlang."=<"(mutare_active, #{last})
+                   )
+                 )
+               ) ->
+          case mutare_active do
+            1 -> x - 1
+            mutare_active ->
+              #{record([1])}
+              x + 1
+          end
+
+        _ ->
+          #{clean}
+      end
+      """)
+    end
+
+    defp decision(range, fields \\ []) do
+      struct!(
+        %Mutare.Transform.CleanRegion.Decision{
+          function: {:f, 2},
+          delivery: :in_place,
+          line: 2,
+          variants: 1,
+          sites: 2,
+          range: range,
+          verdict: :clean
+        },
+        fields
+      )
+    end
+
+    test "a clean region must be read back under the interval the transform gave it" do
+      assert check(region(1, 1, "x + 1"), [site(1)], nil, [decision({1, 1})]) == :ok
+
+      # A region the manifest reads under another identity could never be dropped by it.
+      {violations, message} =
+        check_violations(region(1, 2, "x + 1"), [site(1)], nil, [decision({1, 1})])
+
+      assert violations == [
+               {:unread_clean_region, decision({1, 1})},
+               {:stray_clean_region, {1, 2}}
+             ]
+
+      assert message =~ "the clean region of f/2 (ids 1–1, in_place) cannot be read back"
+      assert message =~ "holds a clean region (ids 1–2) the transform did not emit"
+    end
+
+    test "a lifted region needs its relocated clauses found, not just the call to them" do
+      lifted = decision({1, 1}, delivery: :lifted)
+
+      assert [{:unread_clean_region, ^lifted}] =
+               region(1, 1, "x + 1") |> check_violations([site(1)], nil, [lifted]) |> elem(0)
+    end
+
+    test "a region that was not emitted needs no copy" do
+      source =
+        module(
+          "case mutare_active do\n 1 -> x - 1\n mutare_active ->\n #{record([1])}\n x + 1\n end"
+        )
+
+      decisions = [
+        decision({1, 1}, verdict: :below_threshold),
+        decision({1, 1}, verdict: :dropped)
+      ]
+
+      assert check(source, [site(1)], nil, decisions) == :ok
     end
 
     test "a branch only inside another mutant's branch is unreachable" do

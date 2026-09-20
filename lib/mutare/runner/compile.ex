@@ -21,7 +21,9 @@ defmodule Mutare.Runner.Compile do
 
   # The poison-recovery bookkeeping threaded through `compile_with_recovery/4`: how many
   # rebuild rounds have run, the accumulated dropped ids (`skip_ids`, forwarded to each
-  # `Schema.rebuild`), the block-macro invocations struck once (the evidence
+  # `Schema.rebuild`), the clean regions whose uninstrumented copy would not compile
+  # (`skip_regions`, forwarded likewise — NOTES "Clean regions are attributable"), the
+  # block-macro invocations struck once (the evidence
   # `escalate_block_poison/3` reads), the ones escalated wholesale, and the
   # `{module, fun}` macros the macro-expansion fallback skipped (an inline DSL macro the
   # compiler blamed by name — see `recover_compile_poison/5`). On success it is folded into
@@ -32,12 +34,14 @@ defmodule Mutare.Runner.Compile do
     @type t :: %__MODULE__{
             rounds: non_neg_integer(),
             skip_ids: MapSet.t(pos_integer()),
+            skip_regions: MapSet.t(Poison.clean_region()),
             struck: MapSet.t(term()),
             escalated: MapSet.t(term()),
             macro_skips: MapSet.t({String.t(), atom()})
           }
     defstruct rounds: 0,
               skip_ids: MapSet.new(),
+              skip_regions: MapSet.new(),
               struck: MapSet.new(),
               escalated: MapSet.new(),
               macro_skips: MapSet.new()
@@ -118,7 +122,7 @@ defmodule Mutare.Runner.Compile do
   defp recover_compile_poison(context, sandbox, schema, %Recovery{} = recovery, output) do
     # Both attributions of this round's failure from one `Poison` pass (one manifest per
     # implicated file): the line-attributed ids, and the macro-expansion fallback's matches.
-    %{line: raw, macro: macro_matches} =
+    %{line: raw, macro: macro_matches, clean: clean} =
       Poison.attribution(
         output,
         schema.metamutants,
@@ -143,15 +147,21 @@ defmodule Mutare.Runner.Compile do
     # are excluded here — they recover through `escalate_block_poison/3`'s second-strike path.
     inline = inline_macro_poison(macro_matches, schema.sites, recovery.skip_ids)
 
+    # A clean region blamed this round is dropped along with whatever else the round drops:
+    # it costs no mutant, and folding it in saves the round it would otherwise take alone.
+    # Only a *newly* blamed region justifies a round, as only a new id does.
+    clean = MapSet.difference(clean, recovery.skip_regions)
+    recovery = %{recovery | skip_regions: MapSet.union(recovery.skip_regions, clean)}
+
     cond do
       recovery.rounds >= @poison_attempts ->
         {:error, :compile_failed, output, sandbox}
 
       inline != [] ->
-        do_macro_recovery(context, sandbox, schema, recovery, inline)
+        do_macro_recovery(context, sandbox, schema, recovery, inline, clean)
 
-      not MapSet.subset?(poison, recovery.skip_ids) ->
-        do_line_recovery(context, sandbox, schema, recovery, poison, struck, escalated)
+      not MapSet.subset?(poison, recovery.skip_ids) or not Enum.empty?(clean) ->
+        do_line_recovery(context, sandbox, schema, recovery, {poison, clean}, struck, escalated)
 
       true ->
         {:error, :compile_failed, output, sandbox}
@@ -162,9 +172,9 @@ defmodule Mutare.Runner.Compile do
   # round before paying for its rebuild + recompile — each round is a full recompile, and
   # without a line per round the whole recovery hides behind the "compiling metamutant
   # (once)…" spinner and reads as a hang.
-  defp do_line_recovery(context, sandbox, schema, recovery, poison, struck, escalated) do
+  defp do_line_recovery(context, sandbox, schema, recovery, {poison, clean}, struck, escalated) do
     on_phase = Context.hook(context, :on_phase)
-    on_phase.({:poison_round, poison_round_info(recovery, poison, escalated, schema)})
+    on_phase.({:poison_round, poison_round_info(recovery, poison, clean, escalated, schema)})
 
     # Drop the poisoning mutants and rebuild. Ids are stable across rebuilds (the transform
     # advances its counter for skipped ids), so accumulated `skip_ids` keep referring to the
@@ -182,10 +192,18 @@ defmodule Mutare.Runner.Compile do
     rebuild_and_recompile(context, sandbox, schema, recovery)
   end
 
-  # Rebuild the schema without the accumulated `skip_ids`, rematerialise it into the same
+  # Rebuild the schema without the accumulated `skip_ids` and `skip_regions`, rematerialise it into the same
   # sandbox, and go round again — the tail both recovery kinds share.
   defp rebuild_and_recompile(context, sandbox, schema, recovery) do
-    schema = Schema.rebuild(schema, root(context), context.options, recovery.skip_ids)
+    schema =
+      Schema.rebuild(
+        schema,
+        root(context),
+        context.options,
+        recovery.skip_ids,
+        recovery.skip_regions
+      )
+
     Sandbox.rematerialize(sandbox, schema)
     compile_with_recovery(context, sandbox, schema, recovery)
   end
@@ -211,12 +229,15 @@ defmodule Mutare.Runner.Compile do
   # Drop the macros' argument mutants wholesale (`matched` is `inline_macro_poison/3`'s already-
   # filtered result), record the skip for the durable `{Module, :fun, :raw}` suggestion, fire a
   # loud `{:macro_poison, info}` warning naming the macro, and rebuild + recurse.
-  defp do_macro_recovery(context, sandbox, schema, recovery, matched) do
+  defp do_macro_recovery(context, sandbox, schema, recovery, matched, clean) do
     macro_ids =
       Enum.reduce(matched, MapSet.new(), fn {_m, ids}, acc -> MapSet.union(acc, ids) end)
 
     on_phase = Context.hook(context, :on_phase)
     on_phase.({:macro_poison, macro_poison_info(matched)})
+
+    if not Enum.empty?(clean),
+      do: on_phase.({:poison_round, %{dropped: [], escalated: [], clean: clean_regions(clean)}})
 
     recovery = %{
       recovery
@@ -244,8 +265,9 @@ defmodule Mutare.Runner.Compile do
   # before the rebuild it announces: the mutants newly dropped *individually* this round
   # (as `%{id, file, line, mutator}` descriptors, in source order — excluding the ids a
   # block escalation swept up, which its `:escalated` entry already covers in aggregate)
-  # and the block(s) escalated wholesale this round (`t:Mutare.Run.escalation/0`).
-  defp poison_round_info(%Recovery{} = recovery, poison, escalated, schema) do
+  # the block(s) escalated wholesale this round (`t:Mutare.Run.escalation/0`), and the clean
+  # regions dropped this round (`t:Mutare.Run.clean_region/0`).
+  defp poison_round_info(%Recovery{} = recovery, poison, clean, escalated, schema) do
     new_ids = MapSet.difference(poison, recovery.skip_ids)
 
     dropped =
@@ -254,7 +276,18 @@ defmodule Mutare.Runner.Compile do
           not MapSet.member?(escalated, block_macro_key(site)),
           do: %{id: site.id, file: site.file, line: site.line, mutator: site.mutator}
 
-    %{dropped: dropped, escalated: escalations(escalated, schema.sites)}
+    %{
+      dropped: dropped,
+      escalated: escalations(escalated, schema.sites),
+      clean: clean_regions(clean)
+    }
+  end
+
+  # Clean regions as display entries (`t:Mutare.Run.clean_region/0`), in a stable order.
+  defp clean_regions(regions) do
+    regions
+    |> Enum.sort()
+    |> Enum.map(fn {file, {first, last}} -> %{file: file, first: first, last: last} end)
   end
 
   # Escalated block keys → display entries: one `%{macro, file, line, count}` per
@@ -282,6 +315,7 @@ defmodule Mutare.Runner.Compile do
     %{
       rounds: recovery.rounds,
       dropped: recovery.skip_ids,
+      clean_regions: clean_regions(recovery.skip_regions),
       escalated: escalations(recovery.escalated, schema.sites),
       macro_skipped: macro_skips(recovery.macro_skips)
     }

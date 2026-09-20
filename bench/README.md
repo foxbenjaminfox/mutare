@@ -273,27 +273,6 @@ Every state but the last checks that all builds compute the same result before t
 Rows whose builds hold identical code show the noise floor of the session: read every
 other ratio against it.
 
-## Clean-path eligibility
-
-`clean_eligibility.exs` answers why functions miss the clean path. It transforms every
-source under the given roots with the site threshold lowered to one and tabulates what
-the emitter decided for each candidate region (`Mutare.Transform.CleanRegion.Decision`):
-eligible or not per delivery, regions by selector-site count, and the first construct
-outside the `Mutare.Transform.CleanPath` contract, ranked by how many regions it cost.
-
-```sh
-mix run bench/clean_eligibility.exs lib
-mix run bench/clean_eligibility.exs deps/req/lib deps/mint/lib
-CLEAN_WHERE='{:call, {:put_in, 2}}' mix run bench/clean_eligibility.exs deps/req/lib
-```
-
-`CLEAN_WHERE` takes one reason exactly as printed and lists the regions refused for it.
-Remote calls are accepted only into modules the scanning VM can load, so run it where
-the sources' own application and dependencies are compiled; a root whose modules are
-absent reports them as `{:remote, …}` refusals that a real run would not make. Read a
-frequent reason as a question about the contract, not as a defect: an unknown macro or
-a `use`-injected helper is refused on purpose.
-
 ## Inspecting dispatch instructions
 
 `dispatch_shapes.exs` compares current ID-equality guards with literal-ID patterns

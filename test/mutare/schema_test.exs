@@ -237,6 +237,39 @@ defmodule Mutare.SchemaTest do
     assert Enum.all?(emptied.sites, & &1.poisoned)
   end
 
+  test "a rebuild drops the named file's clean region and nothing else", %{root: root} do
+    source = """
+    defmodule Regions do
+      def f(x), do: x + 2 - 3
+      def g(x), do: x * 4 + 5
+    end
+    """
+
+    write(root, "lib/a.ex", source)
+    write(root, "lib/b.ex", source |> String.replace("Regions", "RegionsB"))
+    files = Enum.map(["lib/a.ex", "lib/b.ex"], &Path.join(root, &1))
+    opts = [mutators: [:arithmetic]]
+    schema = Schema.from_files(files, root, opts)
+
+    clean = fn schema, file ->
+      schema.metamutants[file]
+      |> Mutare.Manifest.from_source(Map.fetch!(schema.dispatch_vars, file))
+      |> Map.fetch!(:clean)
+      |> Enum.map(& &1.range)
+    end
+
+    # Both files are namespaced, so their regions carry the same file-local intervals: the
+    # file is part of a region's identity.
+    assert [first, second] = clean.(schema, "lib/a.ex")
+    assert clean.(schema, "lib/b.ex") == [first, second]
+
+    rebuilt = Schema.rebuild(schema, root, opts, MapSet.new(), MapSet.new([{"lib/a.ex", first}]))
+    assert clean.(rebuilt, "lib/a.ex") == [second]
+    assert clean.(rebuilt, "lib/b.ex") == [first, second]
+    assert rebuilt.sites == schema.sites
+    assert emitted_ids(rebuilt) == emitted_ids(schema)
+  end
+
   test "an unfocused run whose every mutant is poisoned keeps the original source", %{root: root} do
     write(root, "lib/a.ex", "defmodule PoisonedWhole do\n  def f(x), do: x + 1\nend\n")
 

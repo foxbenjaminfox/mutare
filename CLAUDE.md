@@ -90,8 +90,9 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
     mutants share one clause as `when` alternatives — NOTES "Guard-only variants share a
     clause". `Overlap` drops a leaf mutant a call rewrite already covers. `CleanRegion` keeps a
     function's uninstrumented source beside either delivery and sends a mutation elsewhere to it
-    with one decision; `CleanPath` is the positive, scope-tracking contract for what may be
-    copied — NOTES "Clean regions".
+    with one decision. Any source is copied — nothing classifies its calls — because a copy
+    that fails to compile is blamed on its region and dropped (`skip_regions`); `SelfCalls`
+    keeps a relocated copy's recursion inside it — NOTES "Clean regions are attributable".
 - **`Mutare.Schema`** — runs `Transform` across discovered files, assigning globally-unique
   report ids via a two-phase parallel build (count → prefix-sum → render). `Mutare.RuntimeId`
   separates those numbers from stable per-file runtime identities; see NOTES "Stable per-file
@@ -242,7 +243,9 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   `:lazy_expression`; anything that binds a user expression ahead of a call must honour it —
   NOTES "Evaluation is a route's to declare: `:lazy_expression`".
 - **Every delivery shape must be readable back.** `Mutare.Manifest` recognises what emission
-  writes: selector clauses, `===` gates, `=/=` and range exclusions, coverage records. A new
+  writes: selector clauses, `===` gates, `=/=` and range exclusions, coverage records, and
+  clean regions (`CleanRegion.read/2`, whose copy belongs to no mutant and is blamed by its
+  id interval). A new
   shape needs its reader in the same change: `verify_invariants` (the transform property soak,
   every `Mutare.Test` helper) reports an unrecognised branch as a mutant with no branch.
 - **Two renderers, on purpose.** The metamutant is a build artifact (AST rewrite via

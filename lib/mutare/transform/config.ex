@@ -6,8 +6,8 @@ defmodule Mutare.Transform.Config do
   # later stage. Two roles share this struct because they share that lifetime:
   #
   #   * pass configuration — the recorded `file`, the resolved `mutators`, the
-  #     poison-recovery `skip_ids`, static selection `emit_ids`, parsed ignore directives,
-  #     and the `skip_lifting` MFA set;
+  #     poison-recovery `skip_ids` and `skip_regions`, static selection `emit_ids`, parsed
+  #     ignore directives, and the `skip_lifting` MFA set;
   #   * generated-name hygiene — the private-function `prefix` and salted variable names
   #     the lifting/selector machinery emits. `Mutare.Transform.Names` derives each from a scan
   #     of the source's own identifiers, so a generated name can never collide with one in scope.
@@ -25,6 +25,7 @@ defmodule Mutare.Transform.Config do
           emit_ids: MapSet.t(pos_integer()) | nil,
           clean_functions: boolean(),
           clean_threshold: pos_integer(),
+          skip_regions: MapSet.t(Mutare.Transform.CleanRegion.range()),
           ignore_directives: Mutare.Ignore.Directives.t(),
           skip_lifting: MapSet.t(Mutare.Lifting.skip_entry()),
           warnings: boolean(),
@@ -53,6 +54,10 @@ defmodule Mutare.Transform.Config do
             # implementation (`Mutare.Transform.CleanRegion.worthwhile?/2`). Internal, like
             # `clean_functions`.
             clean_threshold: 2,
+            # Poison-recovery state, like `skip_ids`: the clean regions whose copy failed to
+            # compile, by the id interval their guard carries (runtime id space). A listed
+            # region keeps its instrumented implementation alone.
+            skip_regions: MapSet.new(),
             # Match after Site construction so custom attribution and variant labels apply.
             ignore_directives: %Mutare.Ignore.Directives{},
             skip_lifting: MapSet.new(),

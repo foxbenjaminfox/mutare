@@ -40,6 +40,15 @@ defmodule Mutare.Poison do
   which builds each file's manifest once for the round; `ids/4` and `macro_poison/4` are
   the two halves on their own.
 
+  An error can also land in a **clean region's uninstrumented copy**
+  (`Mutare.Transform.CleanRegion`), which belongs to no mutant: the transform copies any
+  source without asking whether it survives the copy (a macro may refuse to expand twice, or
+  under a relocated name). `attribution/4` reports those regions under `:clean`, as
+  `{file, range}` — the identity the region's own guard carries — and the runner drops them
+  through `Mutare.Schema`'s `skip_regions`. A macro that raises inside a clean copy is
+  excluded from the macro fallback: there is no selector in a copy for it to have rejected,
+  so its mutants elsewhere in the file are not the cause.
+
   A schema metamutant contains local integer ids. The runner supplies
   `Mutare.RuntimeId.file_index(schema.sites)` so attribution translates `{file, local_id}`
   to report ids before merging files. Without an index these APIs return the integers read
@@ -74,9 +83,13 @@ defmodule Mutare.Poison do
   # repeated stray reference isn't re-resolved either.
   @typep manifests :: %{optional(String.t()) => Manifest.t() | nil}
 
+  @typedoc "A clean region, by its file and the id interval its guard carries."
+  @type clean_region :: {String.t(), Manifest.clean_range()}
+
   @doc """
-  Both attributions of one failed compile — `%{line: ids, macro: matches}`, the results of
-  `ids/4` and `macro_poison/4` — from one manifest per file.
+  Every attribution of one failed compile — `%{line: ids, macro: matches, clean: regions}`:
+  the results of `ids/4` and `macro_poison/4`, and the clean regions whose uninstrumented
+  copy an error line falls in — from one manifest per file.
 
   The runner's poison-recovery loop uses both every round (macro attribution takes priority,
   with line attribution as a fallback). The macro's call-site file is normally also listed
@@ -84,15 +97,15 @@ defmodule Mutare.Poison do
   ranged once per round, not once per attribution.
   """
   @spec attribution(String.t(), metamutants(), dispatch_vars(), map() | nil) ::
-          %{line: MapSet.t(), macro: macro_matches()}
+          %{line: MapSet.t(), macro: macro_matches(), clean: MapSet.t(clean_region())}
   def attribution(compile_output, metamutants, dispatch_vars, report_ids \\ nil) do
-    {line, manifests} =
+    {line, clean, manifests} =
       line_attribution(compile_output, metamutants, dispatch_vars, report_ids, %{})
 
     {macro, _manifests} =
       macro_attribution(compile_output, metamutants, dispatch_vars, report_ids, manifests)
 
-    %{line: line, macro: macro}
+    %{line: line, macro: macro, clean: clean}
   end
 
   @doc """
@@ -146,9 +159,14 @@ defmodule Mutare.Poison do
         {_macro, nil}, acc ->
           acc
 
-        {{_module, fun} = macro, {file, _line}}, {ids_by_macro, manifests} ->
+        {{_module, fun} = macro, {file, line}}, {ids_by_macro, manifests} ->
           {manifest, manifests} = manifest_for(file, metamutants, dispatch_vars, manifests)
-          ids = MapSet.new(translate(named_call_ids(manifest, fun), file, report_ids))
+
+          ids =
+            if in_clean_copy?(manifest, line),
+              do: MapSet.new(),
+              else: MapSet.new(translate(named_call_ids(manifest, fun), file, report_ids))
+
           {Map.update(ids_by_macro, macro, ids, &MapSet.union(&1, ids)), manifests}
       end)
 
@@ -161,6 +179,12 @@ defmodule Mutare.Poison do
 
     {matches, manifests}
   end
+
+  # Whether the macro was invoked from a clean region's copy, which holds no selector.
+  defp in_clean_copy?(nil, _line), do: false
+
+  defp in_clean_copy?(%Manifest{} = manifest, line),
+    do: Manifest.blame_at_line(manifest, line).clean != []
 
   # The local ids inside every call of `fun` in a rendered file; nothing for a file we didn't
   # render.
@@ -185,16 +209,18 @@ defmodule Mutare.Poison do
   """
   @spec ids(String.t(), metamutants(), dispatch_vars(), map() | nil) :: MapSet.t()
   def ids(compile_output, metamutants, dispatch_vars, report_ids \\ nil) do
-    {ids, _manifests} =
+    {ids, _clean, _manifests} =
       line_attribution(compile_output, metamutants, dispatch_vars, report_ids, %{})
 
     ids
   end
 
+  # Each error location's blame (`Manifest.blame_at_line/2`): report ids, and clean regions
+  # as `{file, range}`.
   @spec line_attribution(String.t(), metamutants(), dispatch_vars(), map() | nil, manifests()) ::
-          {MapSet.t(), manifests()}
+          {MapSet.t(), MapSet.t(clean_region()), manifests()}
   defp line_attribution(output, metamutants, dispatch_vars, report_ids, manifests) do
-    {ids, manifests} =
+    {blamed, manifests} =
       output
       |> error_locations()
       |> Enum.flat_map_reduce(manifests, fn {file, line}, manifests ->
@@ -203,11 +229,15 @@ defmodule Mutare.Poison do
             {[], manifests}
 
           {manifest, manifests} ->
-            {translate(Manifest.ids_at_line(manifest, line), file, report_ids), manifests}
+            %{ids: ids, clean: clean} = Manifest.blame_at_line(manifest, line)
+
+            {Enum.map(translate(ids, file, report_ids), &{:id, &1}) ++
+               Enum.map(clean, &{:clean, {file, &1}}), manifests}
         end
       end)
 
-    {MapSet.new(ids), manifests}
+    {MapSet.new(for {:id, id} <- blamed, do: id),
+     MapSet.new(for {:clean, region} <- blamed, do: region), manifests}
   end
 
   # Local ids read back out of a metamutant, mapped to this run's report ids. An id the index

@@ -415,7 +415,9 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
           end
         end
         """,
-        [StageSwap, Mutare.Mutators.IntegerLiteral]
+        [StageSwap, Mutare.Mutators.IntegerLiteral],
+        # Pins the instrumented code's shape, so no clean copy beside it.
+        clean_functions: false
       )
 
     heads = Enum.filter(sites, &(&1.mutator == :integer))
@@ -685,11 +687,14 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
 
   defp source(module, body), do: "defmodule #{inspect(module)} do\n#{body}\nend"
 
-  defp compile_fixture(name, body, mutators \\ [Mutare.Mutators.IntegerLiteral]) do
+  defp compile_fixture(name, body, mutators \\ [Mutare.Mutators.IntegerLiteral], opts \\ []) do
     module = Module.concat(__MODULE__, name)
 
     %{metamutant: metamutant, sites: sites} =
-      Transform.transform_string_with_sites(source(module, body), mutators: mutators)
+      Transform.transform_string_with_sites(
+        source(module, body),
+        [mutators: mutators] ++ opts
+      )
 
     compile_observed(module, metamutant, CoverageSink)
     {module, sites, metamutant}
