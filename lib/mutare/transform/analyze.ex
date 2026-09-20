@@ -868,18 +868,14 @@ defmodule Mutare.Transform.Analyze do
 
   defp analyze_pipe_stage(other, env), do: analyze(other, :runtime, env)
 
-  # A `|>` that is not `Kernel`'s: a routed call like any other, under the route the user gave
-  # the custom operator, or else `@foreign_pipe_routing`. The default reads the right side the
-  # way a pipe-shaped macro does — as the *syntax* of a call still missing an argument — so the
-  # stage's own node is withheld (`:interior`): a selector there would hand the macro
-  # `left |> case … end`, and every family would judge the stage at the wrong arity. Its
-  # arguments, and the left side, are ordinary values. An operator defined as a *function* loses
-  # the stage's whole-call mutants to this caution; routing it `[:expression, :expression]`
-  # restores them.
-  @foreign_pipe_routing [:expression, :interior]
-
-  defp analyze_foreign_pipe({:|>, meta, _operands} = node, env),
-    do: Routed.analyze_routed_call(node, Meta.routing(meta) || @foreign_pipe_routing, env)
+  # A `|>` that is not `Kernel`'s is a call like any other: under the route the user gave the
+  # custom operator if there is one, and otherwise offered whole with both operands descended
+  # as values. Core assumes nothing about what the operator does with its right side — a
+  # pipe-shaped *macro*, which reads the stage as the syntax of a call still missing an
+  # argument, is for its user to route (`{MyPipe, :|>, 2, [:expression, :interior]}`), as any
+  # other macro is.
+  defp analyze_foreign_pipe(node, env),
+    do: do_analyze_call_node(node, env, %{pipe_mode: :unpiped})
 
   # The shared call-node dispatch behind the generic runtime `analyze/3` clause and
   # `analyze_pipe_stage/2`: a call stamped a **known macro** (`meta[:mutare_route]`, set by

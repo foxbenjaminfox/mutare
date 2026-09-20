@@ -11547,17 +11547,19 @@ which writes the stamp, branches on the module key it just resolved; `Analyze`,
 reads the rendered metamutant, which carries no stamps) and need not: it only widens a
 macro-poison attribution.
 
-A displaced `|>` is then a call, and needs a default treatment. The generic one (offer the
-node, descend both operands as values) is right for an operator *function* and wrong for a
-pipe-shaped *macro*, which reads its right side as the syntax of a call still missing an
-argument: a whole-call mutant on the stage would hand it `lhs |> case … end`, and every call
-family would judge the stage one argument short. Whether the operator is a macro is often
-unknowable (a local `defmacro`, an unloadable module), and the macro is by far the likelier
-reason to displace `|>`, so the default is `[:expression, :interior]`: the stage's own node
-withheld, its arguments and the left side mutated. An operator function loses the stage's
-whole-call mutants to that caution and gets them back with
-`{MyPipe, :|>, 2, [:expression, :expression]}` — `StructuralForms.classify/2` keys the
-`:skip`-only rule on `[:Kernel]`, so the custom head is an ordinary `:call`.
+A displaced `|>` is then a call, and gets the treatment of any unrouted call: the node
+offered, both operands descended as values. That is right for an operator *function* and
+wrong for a pipe-shaped *macro*, which reads its right side as the syntax of a call still
+missing an argument: a whole-call mutant on the stage hands it `lhs |> case … end`, and every
+call family judges the stage one argument short. The first cut therefore hard-coded
+`[:expression, :interior]` as the unrouted default, guessing that a macro is the likelier
+reason to displace `|>`. It was removed: core never derives whether a call is a macro, and a
+built-in route keyed on an operator's *name* — whoever defines it — is exactly such a guess.
+A macro that reads an argument as syntax is its user's to route, here as everywhere:
+`{MyPipe, :|>, 2, [:expression, :interior]}` withholds the stage's own node and mutates its
+arguments and the left side. Unrouted, a pipe macro's stage mutants fail the compile and
+poison recovery drops them. `StructuralForms.classify/2` keys the `:skip`-only rule on
+`[:Kernel]`, so the custom head is an ordinary `:call` and takes the positional route.
 
 Inherited limit: a displacement injected by a `use` Mutare cannot expand is invisible, as for
 every other `Kernel` name (`Imports`, "Scope and limits"). The other structural `Kernel`

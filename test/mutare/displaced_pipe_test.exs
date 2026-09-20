@@ -15,13 +15,18 @@ defmodule Mutare.DisplacedPipeTest do
   end
   """
 
-  test "a custom pipe macro is applied once, and its stage is not offered as a pipe stage" do
-    {[module], sites} = compile_metamutant(@bind_source, [:collection, :integer, :relational])
+  # A pipe-shaped macro reads its right side as syntax, which is its user's to say — as for any
+  # other macro.
+  @bind_route [call_routes: [{BindPipe, :|>, 2, [:expression, :interior]}]]
+
+  test "a routed custom pipe macro is applied once, and its stage is not offered as a pipe stage" do
+    {[module], sites} =
+      compile_metamutant(@bind_source, [:collection, :integer, :relational], @bind_route)
 
     assert module.f({:ok, [1, 2, 3]}) == [1, 2]
     assert module.f(:error) == :error
 
-    # The stage's own node is withheld (a selector there would hand the macro
+    # `:interior` withholds the stage's own node (a selector there would hand the macro
     # `result |> case … end`); its arguments are ordinary values.
     refute Enum.any?(sites, &(&1.mutator == :collection))
     assert Enum.any?(sites, &(&1.mutator == :integer))
@@ -37,10 +42,11 @@ defmodule Mutare.DisplacedPipeTest do
 
   test "the stage under a custom pipe is resolved at its written arity" do
     # `Enum.reject/1` does not exist, so no call family may read the stage as `Enum.reject/2`.
-    assert [] == diffs(@bind_source, [:collection, :collection_arity, :call_removal])
+    assert [] ==
+             diffs(@bind_source, [:collection, :collection_arity, :call_removal], @bind_route)
   end
 
-  test "a route on the custom operator replaces the default" do
+  test "an unrouted custom operator is an ordinary call: both operands are values" do
     source = """
     defmodule Paired do
       import Kernel, except: [|>: 2]
@@ -49,10 +55,7 @@ defmodule Mutare.DisplacedPipeTest do
     end
     """
 
-    {[module], sites} =
-      compile_metamutant(source, [:collection],
-        call_routes: [{PairPipe, :|>, 2, [:expression, :expression]}]
-      )
+    {[module], sites} = compile_metamutant(source, [:collection])
 
     assert module.f([1, 2]) == {[1, 2], [1]}
 
