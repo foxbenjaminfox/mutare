@@ -11733,3 +11733,40 @@ was already right: the rendered replacement carries the parentheses it needs.
 String equality on `original_code`/`mutated_code`, which is what the suite asserted
 everywhere, cannot see this class of bug; `SourcePatch.assert_patches/4` can, and is cheap
 enough to be the default way to test a new delivery shape.
+
+### Tests that select a mutant run `async: false`, and the suite checks it (2026-09-20)
+
+The selector is VM-wide `:persistent_term` state and every test metamutant numbers its mutants
+from 1, so a test module that calls `with_active_mutant/2` under `async: true` leaks its
+selection into whatever runs beside it: another test's *baseline* call runs mutant 1. Three new
+pipe test files did exactly that, and produced one unexplained failure in seven runs.
+`selector_isolation_test.exs` now reads the suite's own source and fails on any `async: true`
+module that names `with_active_mutant`, `observe_mutant` or `Selector.put`.
+
+### Dogfooding the pipe work (2026-09-20)
+
+`mix mutare --only` over `written_pipe.ex`, `pipe_emit.ex` and `node_range.ex`: 348 mutants,
+88.5% (298 killed, 1 timeout, 39 survived, 10 no-coverage). What the survivors in the *new*
+code said, and what was done:
+
+- `keeps_argument?` → `true` survived: nothing tested that a stage whose position 0 is
+  `:expression` refuses to bind when a mutant rewrites argument 0 (every such test had used a
+  `:raw` position, excluded earlier). Now `pipe_source_patch_test.exs` has one; bound, the
+  mutation is replaced by the variable and the mutant behaves like the original.
+- `pipe_into/3`'s pin clause survived a clause drop: 0.3.1's precedence fix had been tested
+  through a routed stage, which is no longer a pipe. It is still reachable — a `:skip` that
+  displaces an `:interpolated` route pins the left side of a stage that stays a pipe — and is
+  tested that way now.
+- `Keyword.delete` → `delete_first` on `:parens` survived: one layer short still patches to a
+  correct program, so the doubled-parentheses test now pins the patched *text*.
+- Dropping `:no_parens` in `direct/1` survived, rightly: no renderer honours it once the call
+  has arguments. The drop was removed.
+- Four `is_list(meta)` guards and an `:error` branch survived as defensive code the `Meta`
+  readers already cover; removed (`direct/1` takes the pipe's nid with `Keyword.fetch!/2`).
+
+Left as found: `pipe_tail/2`'s `-1` → `1` and `stmts != []` (equivalent — a catch-all body is
+always `[coverage, stage]`), and **26 survivors in `NodeRange`'s sigil and interpolated-string
+correction**, older code this work did not touch: the delimiter tables, the single-line
+conditions and the `sigil_` prefix check are barely pinned. `SourcePatch.assert_patches/4` over
+sources with escaped closing delimiters would be the way to pin them.
+

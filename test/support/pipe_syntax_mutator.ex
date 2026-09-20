@@ -36,6 +36,16 @@ defmodule Mutare.Test.PipeSyntaxDSL do
   # A composable stage: its first argument is an ordinary value (the query-builder shape).
   defmacro plus(source, amount), do: quote(do: unquote(source) + unquote(amount))
 
+  # The same stage, lazy in its source: a non-positive amount never evaluates it.
+  defmacro lazy_plus(source, amount) do
+    quote do
+      case unquote(amount) do
+        amount when amount > 0 -> unquote(source) + amount
+        _ -> 0
+      end
+    end
+  end
+
   defmacro keyword([{:value, expression}], value),
     do: quote(do: unquote(expression) == unquote(value))
 
@@ -66,6 +76,7 @@ defmodule Mutare.Test.PipeSyntaxMutator do
       {Mutare.Test.PipeSyntaxDSL, :pattern, 2, [:pattern, :expression]},
       {Mutare.Test.PipeSyntaxDSL, :binding, 2, [:binding_pattern, :expression]},
       {Mutare.Test.PipeSyntaxDSL, :plus, 2, [:expression, :expression]},
+      {Mutare.Test.PipeSyntaxDSL, :lazy_plus, 2, [:lazy_expression, :expression]},
       {Mutare.Test.PipeSyntaxDSL, :keyword, 2, [{:keyword, [:expression]}, :raw]},
       {Mutare.Test.PipeSyntaxDSL, :keyed, 2, [[:raw, value: :expression], :raw]},
       {Mutare.Test.PipeSyntaxDSL, :interpolated, 2, [:interpolated, :raw]}

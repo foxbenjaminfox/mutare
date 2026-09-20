@@ -124,13 +124,6 @@ defmodule Mutare.PipedRoutedCallTest do
   describe "a mutant that rewrites a piped call's argument 0" do
     @body "(p in n) |> stage(x > 1)"
 
-    test "is delivered: the macro still receives the declaration as syntax" do
-      {[module], [site]} = compile_metamutant(source(@body), [PipedCallProbe])
-
-      assert module.run(2, [1, 2]) == [1, 2]
-      assert with_active_mutant(site.id, fn -> module.run(2, [1, 2]) end) == [2, 1]
-    end
-
     test "is reported over the whole pipe, in the user's spelling" do
       %{sites: [site]} = transform(@body)
 
@@ -249,5 +242,29 @@ defmodule Mutare.PipedRoutedCallTest do
     test "and where it is analyzed, it is the direct call" do
       assert rendered("keep(n |> stage(x > 1), 5)", []) =~ "stage(n, x > 1)"
     end
+  end
+end
+
+defmodule Mutare.PipedRoutedCallRunTest do
+  # Runs compiled metamutants under a selected mutant. `with_active_mutant/2` sets the VM-wide
+  # selector, so these live apart from the pure transform tests above, which stay `async: true`.
+  use ExUnit.Case, async: false
+  import Mutare.Test
+
+  @source """
+  defmodule PipedCallFixture do
+    import Mutare.Test.PipedCallDSL
+
+    def run(x, n) do
+      (p in n) |> stage(x > 1)
+    end
+  end
+  """
+
+  test "a mutant that rewrites a piped call's argument 0 is delivered as syntax" do
+    {[module], [site]} = compile_metamutant(@source, [Mutare.Test.PipedCallProbe])
+
+    assert module.run(2, [1, 2]) == [1, 2]
+    assert with_active_mutant(site.id, fn -> module.run(2, [1, 2]) end) == [2, 1]
   end
 end

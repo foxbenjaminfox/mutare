@@ -97,8 +97,7 @@ defmodule Mutare.Transform.PipeEmit do
 
   @doc "Whether `node`'s selector binds its argument 0 once (see above), and to what."
   @spec bound_argument(Macro.t(), [Candidate.t()]) :: binding()
-  def bound_argument({_head, meta, [_zero | _rest]} = node, [_ | _] = candidates)
-      when is_list(meta) do
+  def bound_argument({_head, meta, [_zero | _rest]} = node, [_ | _] = candidates) do
     with {:|>, pipe_meta, _operands} <- Meta.written_pipe(node),
          [zero | _] when zero in [:expression, :interior] <- Meta.routing(meta),
          [%Candidate.InPlace{original: {_h, _m, [written | _]}} | _] <- candidates,

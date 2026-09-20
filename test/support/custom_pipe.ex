@@ -23,3 +23,15 @@ defmodule Mutare.Test.PairPipe do
 
   def left |> right, do: {left, right}
 end
+
+defmodule Mutare.Test.UsesBindPipe do
+  @moduledoc false
+  # Displaces `Kernel.|>/2` from inside a `use`, the way a library would.
+
+  defmacro __using__(_opts) do
+    quote do
+      import Kernel, except: [|>: 2]
+      import Mutare.Test.BindPipe
+    end
+  end
+end

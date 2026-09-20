@@ -11,6 +11,22 @@ defmodule Mutare.Test.LazyDSL do
   end
 end
 
+defmodule Mutare.Test.OptionsDSL do
+  @moduledoc false
+  # Macros taking a literal keyword list, in a body and in a guard — the argument shape a keyed
+  # refinement routes.
+
+  @doc "The sum of the options' values."
+  defmacro total(opts), do: quote(do: Enum.sum(Keyword.values(unquote(opts))))
+
+  @doc "Guard-safe: whether `x` lies within the literal `min:`/`max:` options."
+  defmacro within(x, opts) do
+    quote do
+      unquote(x) >= unquote(opts[:min]) and unquote(x) <= unquote(opts[:max])
+    end
+  end
+end
+
 defmodule Mutare.Test.LazyStageMutator do
   @moduledoc """
   A whole-call mutation on a `Mutare.Test.LazyDSL.lazy/2` call, which it registers **no route**

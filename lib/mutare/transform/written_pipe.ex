@@ -36,15 +36,15 @@ defmodule Mutare.Transform.WrittenPipe do
   of its own: a chain's stamps sum to its prefixes rather than doubling per stage.
   """
   @spec direct(Macro.t()) :: Macro.t()
-  def direct({:|>, pipe_meta, [left, {head, meta, args} = stage]} = pipe) when is_list(meta) do
+  def direct({:|>, pipe_meta, [left, {head, meta, args} = stage]} = pipe) do
     if Meta.routed_direct?(stage) do
       # The call stands where the pipe stood, so it answers to the pipe's node identity: a
       # return tail recorded against the `|>` (`Mutare.Transform.Analyze.Returns` delivers by
       # `:mutare_nid`) must find this node.
       meta =
         meta
-        |> Keyword.drop([MetaKeys.routed_direct_key(), MetaKeys.nid_key(), :no_parens])
-        |> put_identity(pipe_meta)
+        |> Keyword.delete(MetaKeys.routed_direct_key())
+        |> Keyword.put(MetaKeys.nid_key(), Keyword.fetch!(pipe_meta, MetaKeys.nid_key()))
         |> Meta.stamp_written_pipe(pipe)
 
       {head, meta, [left | args || []]}
@@ -54,13 +54,6 @@ defmodule Mutare.Transform.WrittenPipe do
   end
 
   def direct(node), do: node
-
-  defp put_identity(meta, pipe_meta) do
-    case Keyword.fetch(pipe_meta, MetaKeys.nid_key()) do
-      {:ok, nid} -> Keyword.put(meta, MetaKeys.nid_key(), nid)
-      :error -> meta
-    end
-  end
 
   @doc """
   The `|>` a rewritten call was written as, or `nil` for any other node — what
@@ -91,7 +84,7 @@ defmodule Mutare.Transform.WrittenPipe do
   @spec resugar(Macro.t()) :: Macro.t()
   def resugar(node) do
     Macro.prewalk(node, fn
-      {head, meta, [left | visible]} = call when is_list(meta) ->
+      {head, meta, [left | visible]} = call ->
         case Meta.written_pipe(call) do
           {:|>, pipe_meta, _written} ->
             {:|>, pipe_meta, [left, Meta.drop_written_pipe({head, meta, visible})]}
