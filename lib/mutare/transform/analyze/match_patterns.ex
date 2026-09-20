@@ -224,18 +224,14 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # hosts as extra branches, and return the node with them stripped (so emission doesn't *also*
   # wrap the call in a standalone selector).
   #
-  # A **piped** stage carries its mutations on the `|>` RHS *child* (`[x, y] |> destructure(v)`).
-  # Left in place, the child's postwalk would emit it as a selector `case`, and this node's
-  # baseline (`strip_candidates/1` in `BindingEscapeEmit.macro_pattern_site/3`) would become the illegal
-  # `pattern |> case …` — which also traps the macro's escaping bindings inside the branch. So
-  # the stage's mutations are pulled off the child (the baseline is then the bare emitted pipe)
-  # and each re-homed with `mutant_expr` the mutated stage piped back from the LHS pattern, so
-  # the mutant branch runs `lhs |> <mutated stage>` and the bindings reach the export tuple.
+  # A `Kernel.|>/2` that is still a pipe here has a stage under the call-level `:skip`
+  # (`piped_binding_pattern/1`): an inert leaf, never offered, so it carries no whole-call
+  # mutation to re-home.
   # mutare:ignore[guard_drop] equivalent — a `|>` RHS call node always has keyword-list meta, so the guard never excludes a real stage.
   defp rehome_call_mutations({:|>, _meta, [_lhs, {_form, rhs_meta, _args}]} = node, export)
        when is_list(rhs_meta) do
     if Calls.kernel_call?(node),
-      do: rehome_stage_mutations(node, export),
+      do: {node, []},
       else: rehome_written_call_mutations(node, export)
   end
 
@@ -247,17 +243,6 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
 
   # mutare:ignore[clause_drop] equivalent — `rehome_call_mutations/2` is only ever called on the analyzed macro/pipe node, which always matches one of the two heads above; this fallback is unreachable for valid input.
   defp rehome_call_mutations(node, _export), do: {node, []}
-
-  defp rehome_stage_mutations({:|>, meta, [lhs, rhs]}, export) do
-    {inplace, rhs} = take_inplace_candidates(rhs)
-
-    call_candidates =
-      Enum.map(inplace, fn ip ->
-        call_mutation_candidate(ip, export, {:|>, meta, [lhs, ip.mutated]})
-      end)
-
-    {{:|>, meta, [lhs, rhs]}, call_candidates}
-  end
 
   defp rehome_written_call_mutations(node, export) do
     {inplace, node} = take_inplace_candidates(node)
