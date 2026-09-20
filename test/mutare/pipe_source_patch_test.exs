@@ -76,6 +76,39 @@ defmodule Mutare.PipeSourcePatchTest do
     end
   end
 
+  test "a mutant built on a piped call's meta that is no call is not spelled as a stage" do
+    # The written-pipe stamp is meta, and a mutator that rebuilds a node on the offered call's
+    # meta carries it along. An operator or a literal is nothing `|>` pipes into: spelled as a
+    # stage it would read `n |> -2`, which compiles in neither the metamutant nor the patch.
+    defmodule KeepsMeta do
+      @behaviour Mutare.Mutator
+      def name, do: :keeps_meta
+
+      def mutate({:div, meta, [a, b]}),
+        do: [{:-, meta, [a, b]}, {:-, meta, [a]}, {:__block__, meta, [0]}]
+
+      def mutate(_node), do: []
+    end
+
+    programs = fn body ->
+      source = """
+      defmodule Fixture do
+        def run(n) do
+          x = #{body}
+          x
+        end
+      end
+      """
+
+      source
+      |> assert_patches([KeepsMeta], run: [7])
+      |> Enum.map(& &1.mutated_code)
+    end
+
+    assert programs.("n |> div(2)") == ["n - 2", "-n", "0"]
+    assert programs.("div(n, 2)") == ["n - 2", "-n", "0"]
+  end
+
   test "stages written without parentheses" do
     source = """
     defmodule Fixture do

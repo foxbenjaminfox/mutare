@@ -51,6 +51,25 @@ defmodule Mutare.WrittenPipeTest do
     assert {:|>, _pipe_meta, [^ys, _stage]} = WrittenPipe.written({head, meta, [ys | rest]})
   end
 
+  test "a node built on a piped call's meta that is no stage has no written form" do
+    {_head, meta, [n, two]} = resolved("n |> div(2)")
+
+    # What a mutator that keeps the offered call's meta may build: an operator, a literal.
+    for node <- [
+          {:-, meta, [n, two]},
+          {:-, meta, [n]},
+          {:__block__, meta, [0]},
+          {:*, meta, [n, two]}
+        ] do
+      assert WrittenPipe.written(node) == nil
+      assert WrittenPipe.resugar(node) == node
+    end
+
+    # A renamed call is still a stage.
+    assert {:|>, _pipe_meta, [^n, {:rem, _meta, [^two]}]} =
+             WrittenPipe.written({:rem, meta, [n, two]})
+  end
+
   test "a node that was not written as a pipe has no written form" do
     assert WrittenPipe.written(resolved("Enum.take(xs, 2)")) == nil
     assert WrittenPipe.written(:atom) == nil

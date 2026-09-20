@@ -237,7 +237,9 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   `Mutare.Transform.Render` spells every such call as a pipe again — which is how a `:raw`
   argument, a `:skip`ped call and a clean copy still reach the compiler as written. So **an
   emitter that builds a generated node on the user's meta must drop the stamp**
-  (`Meta.drop_written_pipe/1`), or its node is rendered as their pipe. Two `:skip`s read the
+  (`Meta.drop_written_pipe/1`), or its node is rendered as their pipe (a node `|>` cannot
+  pipe into — an operator, a literal — is never spelled as one, so a *mutator* reusing the
+  offered call's meta is safe; NOTES "Who inherits the written-pipe stamp"). Two `:skip`s read the
   spelling, both in `Resolve`: a skipped *stage*'s piped value is its sibling and keeps its
   mutants, so the call is restamped *withheld* (`Meta.withheld?/1`), honoured where `:skip` is
   — at the entry of `Analyze`'s dispatcher and of `Tag`'s walk; a skipped `|>` makes the call

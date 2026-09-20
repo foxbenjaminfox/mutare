@@ -12437,11 +12437,10 @@ direct call. A classifier that matches argument *shapes* is unaffected; one that
 `piped_routed_call_test.exs` pins the three seams reading one call, and an aliased call in a
 classifier's argument resolving.
 
-**Standing hazard.** The stamp lives in meta, and meta is copied by whoever rebuilds a node.
-An emitter that builds a *generated* node on the user's meta must drop it
-(`Meta.drop_written_pipe/1`): `CaseClauseEmit` was found by dogfooding, `SelfCalls` by this
-change's tests. Building generated nodes on fresh meta would remove the convention; not
-surveyed.
+**Standing hazard** *(surveyed since — "Who inherits the written-pipe stamp")*. The stamp
+lives in meta, and meta is copied by whoever rebuilds a node. An emitter that builds a
+*generated* node on the user's meta must drop it (`Meta.drop_written_pipe/1`):
+`CaseClauseEmit` was found by dogfooding, `SelfCalls` by this change's tests.
 
 **Hosts read what their DSL will.** A host finds `f(a, b)` inside its fragment where the user
 wrote `a |> f(b)`, which would be wrong for a DSL that gave `|>` a meaning of its own there.
@@ -12449,4 +12448,51 @@ wrote `a |> f(b)`, which would be wrong for a DSL that gave `|>` a meaning of it
 `Ecto.Query.Builder` hands a form it does not know to `Macro.expand_once/2` in the caller's
 env (`try_expansion/5`), so a `|>` in a query expression is `Kernel`'s, expanded to the very
 call the host is shown.
+
+### Who inherits the written-pipe stamp `[surveyed; one fix]` (2026-09-20)
+
+The stamp that says "this call was written as a pipe" is meta, so whoever rebuilds a node on
+that meta carries it, and `Render` and `Site` spell whatever carries it as `argument 0 |> rest`.
+Two emitters had inherited it wrongly. The proposal on the table was to build generated nodes
+on fresh meta everywhere; this is the survey that was owed first. Every emit-phase
+construction on a reused meta (`transform.ex`, the `*Emit` modules, `ClauseAST`,
+`ClauseVariants`, `Tag`, `Super`, `SelfCalls`, and the analyze-phase rebuilds) falls in one of
+three groups:
+
+1. **The same node with its children replaced** — dozens, the ordinary shape of a walk
+   (`{form, meta, analyzed_args}`). These *are* the user's call and must keep the stamp;
+   `PipeEmit.rebind/3` belongs here on purpose (`mutare_piped |> stage(…)`).
+2. **A form nothing can pipe into** — `def` heads and their `when`, `fn`, `try`, `receive`, `->`
+   clauses, blocks, `for`/`with` generators. `Macro.pipe/3` refuses them, so `Resolve` never
+   stamps one.
+3. **A generated structure on a stage-capable node's meta** — three in all: `CaseClauseEmit`'s
+   gated `case {active, subject}` and `SelfCalls`' redirected call, which both drop the stamp,
+   and `Super`, which turns `super(args)` into `var.(args)` and may keep it (the arguments are
+   the user's, and an anonymous call is a stage: `x |> mutare_super.(y)`).
+
+`HostedEmit`, `BindingEscapeEmit`, `SelectorEmit` and `Render.selector_case/2` build on fresh
+meta already. So a blanket fresh-meta rule is not warranted: group 1 needs the stamp, and
+group 3 is three sites, all correct. The convention stays, in CLAUDE.md.
+
+**The exposure was on the other side: mutators.** A mutator is offered the stamped call and
+may build its replacement on that meta — nothing says not to, and for a renamed call it is
+what keeps the diff in the user's spelling. But `{:-, meta, [a, b]}`, `{:-, meta, [a]}` or a
+hand-built `{:__block__, meta, [0]}` from an offered `div(n, 2)` is no stage, and was spelled
+as one: `n |> div(2)` reported `div(2)` → `-2`, the metamutant held `mutare_piped |> -2`
+(`cannot pipe … into`), and the mutant was poisoned — in the piped spelling alone; written
+directly all three worked. No built-in does this (0 of 32,423 Sites over `lib/` pipe into
+something unpipeable), so it was an author-facing trap, a companion's or a user's.
+
+**The fix puts the question to `Kernel.|>/2`.** `WrittenPipe.written/1` answers only for a
+node `Macro.pipe/3` accepts as a stage, and refuses an operator whatever its arity
+(`Macro.pipe/3` accepts `n |> *(2)`, which is not source anyone writes). Since `written/1` is
+the one inverse, that covers `Render`, `Site` and `NodeRange` at once; `stage_attribution/2`
+asks the same of the mutated node, so such a mutant is reported over the whole pipe, where
+its patch is right. `pipe_source_patch_test.exs` holds both spellings to the same three
+programs through `SourcePatch`. Over `lib/`: no Site and no metamutant byte moves.
+
+What this does not catch: a generated node that *is* a legal stage and is not the user's call
+— group 3. Those compile, so only a reader that cannot recognise the shape notices
+(`Manifest`, under `verify_invariants`); the soak generators now write a `case` stage, which
+is what would have caught `CaseClauseEmit`.
 

@@ -72,17 +72,38 @@ defmodule Mutare.Transform.WrittenPipe do
   """
   @spec written(Macro.t()) :: Macro.t() | nil
   def written({head, meta, [left | visible]} = call) when is_list(meta) do
-    case Meta.written_pipe_meta(call) do
-      nil ->
-        nil
-
-      pipe_meta ->
-        {_head, stage_meta, _args} = Meta.drop_written_pipe(call)
-        {:|>, pipe_meta, [left, {head, stage_meta, written_args(head, meta, visible)}]}
+    with pipe_meta when is_list(pipe_meta) <- Meta.written_pipe_meta(call),
+         {_head, stage_meta, _args} = Meta.drop_written_pipe(call),
+         stage = {head, stage_meta, written_args(head, meta, visible)},
+         true <- stage?(left, stage) do
+      {:|>, pipe_meta, [left, stage]}
+    else
+      _not_a_pipe -> nil
     end
   end
 
   def written(_node), do: nil
+
+  # Whether `stage` is something `Kernel.|>/2` pipes into. The stamp is meta, and meta is copied
+  # by whoever rebuilds a node on it: a mutator that turns `div(n, 2)` into `n - 2`, `-n` or a
+  # literal and keeps the call's meta has built a node that was never a stage. Spelled as one it
+  # would read `n |> -2`, which does not compile — in the piped spelling alone. So the question
+  # is put to `Macro.pipe/3`, which is `Kernel.|>/2`'s own answer, and an operator is refused
+  # whatever its arity (`n |> *(2)` is accepted there and is not source anyone writes).
+  defp stage?(_left, {head, _meta, _args}) when is_atom(head) and head in [:__block__, :fn, :&],
+    do: false
+
+  defp stage?(left, {head, _meta, _args} = stage) do
+    not (is_atom(head) and (Macro.operator?(head, 1) or Macro.operator?(head, 2))) and
+      pipes?(left, stage)
+  end
+
+  defp pipes?(left, stage) do
+    Macro.pipe(left, stage, 0)
+    true
+  rescue
+    ArgumentError -> false
+  end
 
   # The parser gives every parenthesized call a `:closing`; a bare name that takes no written
   # argument and has none was written `x |> name`, whose arguments are `nil`.
@@ -99,8 +120,10 @@ defmodule Mutare.Transform.WrittenPipe do
   @spec stage_attribution(Macro.t(), Macro.t()) :: Mutation.Attribution.t() | nil
   def stage_attribution({_head, _meta, [left | _visible]} = offered, mutated) do
     with {:|>, _pipe_meta, [^left, stage]} <- written(offered),
-         {head, meta, [^left | visible]} <- mutated do
-      Mutation.at(stage, Meta.drop_written_pipe({head, meta, visible}))
+         {head, meta, [^left | visible]} <- mutated,
+         mutated_stage = Meta.drop_written_pipe({head, meta, visible}),
+         true <- stage?(left, mutated_stage) do
+      Mutation.at(stage, mutated_stage)
     else
       _whole_pipe -> nil
     end
