@@ -36,6 +36,8 @@ mix format
 mix compile --warnings-as-errors      # CI-style; the project is kept warnings-clean
 mix mutare examples/auth              # run the tool against a bundled demo project
 mix run script.exs                    # ad-hoc exploration in the lib context (uses MIX_ENV=dev)
+bench/transform_diff.sh HEAD          # did a refactor move any transform output? (bench/README.md)
+bench/replay_fix.sh /tmp/r <fix-sha>  # would the generated suites have caught that fix's defect?
 ```
 
 `:runner`-tagged tests (`runner_test`, `coverage_test`, `mix_task_test`, `timeout_test`, and every
@@ -51,7 +53,9 @@ lock-serialized compile — never `capture_io(:stderr, …)` around a compile), 
 (assertions and pins over emitted code, plus `family_sites/4` for one family's internal `%Site{}`s),
 `Mutare.Test.SourcePatch` (`assert_patches/4`: every site's source patch must behave as the
 metamutant does under that mutant — the way to test a delivery shape or a range, since string
-equality on `mutated_code` cannot see a wrong span),
+equality on `mutated_code` cannot see a wrong span; `SourcePatchGenerators` /
+`CleanSourcePatchGenerators` are its generated vocabularies, where a new construct or routing
+word is added as an operand so the pairwise recipes cross it with everything),
 and the shipped `Mutare.Test` for diff-level checks; each says when it is safe under `async: true`.
 
 ## Architecture
@@ -81,6 +85,12 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
     Positions a mutator asked to leave alone (e.g. timeout literals) are stamped in the resolve
     pre-pass by `Resolve.ArgumentMarks` and read back as `context.marks` — a general facility, NOTES
     "Argument marks".
+  - **`KeywordRouting` / `QuoteStructure`** — two readings every pass shares, *decoders that
+    walk nothing*: which treatment each key and value of a keyword argument gets, and which
+    parts of a `quote` run (checked against Elixir itself in `quote_structure_test.exs`). A
+    pass that meets a keyword route or a quote asks them; it never re-derives either. The
+    walkers stay separate on purpose — NOTES "Keyword routes choose treatments once, without
+    sharing a walker", "Which parts of a quote run is one reading, checked against Elixir".
   - **`ModulePlan` / `FunctionPlan` / `Candidate.*`** — the IR: statements classified into items,
     liftable clause groups, and one typed struct per legal mutation kind.
   - **Emit** (`emit/2`, plus pure helpers `ClauseAST` / `GuardBuild` / `LiftedEmit` /
