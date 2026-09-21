@@ -18,32 +18,31 @@ defmodule Mutare.TransformSourcePatchPropertyTest do
     end
   end
 
-  # Guarantee the routing/scope × spelling pairs and callee × delivery pairs. Random
-  # generation then composes across the two groups, with shrinking over the recipe.
-  for operand <- Gen.operands(), spelling <- Gen.spellings() do
-    test "#{operand} operand, #{spelling} spelling" do
-      check(%{
-        operand: unquote(operand),
-        spelling: unquote(spelling),
-        delivery: :split,
-        callee: :static,
-        wrapped?: false,
-        offset: 0
-      })
+  # Every pair of values from two different dimensions, in a few dozen recipes: which
+  # combinations ran is asserted below, not sampled. The random property above composes
+  # three and more at a time, with shrinking over the recipe.
+  for recipe <- Gen.pairwise() do
+    test "pairwise: #{recipe |> Map.delete(:offset) |> inspect()}" do
+      check(unquote(Macro.escape(recipe)))
     end
   end
 
-  for callee <- Gen.callees(), delivery <- Gen.deliveries() do
-    test "#{callee} callee, #{delivery} delivery" do
-      check(%{
-        operand: :binding,
-        spelling: :piped,
-        delivery: unquote(delivery),
-        callee: unquote(callee),
-        wrapped?: true,
-        offset: 0
-      })
-    end
+  test "the pairwise recipes leave no pair of values untested" do
+    covered = Gen.pairwise() |> Enum.flat_map(&Gen.pairs/1) |> MapSet.new()
+
+    dimensions = Gen.dimensions()
+
+    expected =
+      for {{left, left_values}, i} <- Enum.with_index(dimensions),
+          {right, right_values} <- Enum.drop(dimensions, i + 1),
+          left_value <- left_values,
+          right_value <- right_values,
+          into: MapSet.new(),
+          do: {{left, left_value}, {right, right_value}}
+
+    assert MapSet.difference(expected, covered) == MapSet.new()
+    # A covering array earns its keep only while it stays far below the 540-recipe product.
+    assert length(Gen.pairwise()) < 50
   end
 
   defp check(recipe) do
@@ -59,18 +58,24 @@ defmodule Mutare.TransformSourcePatchPropertyTest do
         )
 
       # A silent loss of the targeted delivery must not make this property vacuous.
-      delivered = sites |> Enum.reject(&(&1.mutator == :relational)) |> Enum.map(& &1.mutator)
+      delivered =
+        sites
+        |> Enum.reject(&(&1.mutator in [:relational, :host_filter]))
+        |> Enum.map(& &1.mutator)
 
       expected =
         case {recipe.callee, recipe.delivery} do
           {:static, :retained} -> [:arithmetic]
           {:static, :moved} -> [:operand_swap]
           {:static, :split} -> [:arithmetic, :operand_swap]
-          {:dynamic, :split} -> [:dynamic_arithmetic, :dynamic_arithmetic]
-          {:dynamic, _} -> [:dynamic_arithmetic]
+          {_dynamic, :split} -> [:dynamic_arithmetic, :dynamic_arithmetic]
+          {_dynamic, _} -> [:dynamic_arithmetic]
         end
 
       assert Enum.sort(delivered) == Enum.sort(expected)
+
+      # The hosted fragment's mutants are the host's own, woven inside the DSL call.
+      assert Enum.any?(sites, &(&1.mutator == :host_filter)) == (recipe.operand == :hosted)
       assert Enum.any?(sites, &(&1.mutator == :relational and &1.original_code == "n < 1"))
       true
     rescue

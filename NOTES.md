@@ -12952,3 +12952,27 @@ helper is published.
 `bench/transform_diff.sh HEAD`: `lib/`, the examples and the 408 earlier fixture programs
 are byte-identical. Only the new `:nested_block_options` boundary moves, by the self-call
 redirect above.
+
+### The source-patch recipes cover every pair of values, by construction (2026-09-21)
+
+The generated source-patch test fixed two pairs of dimensions (operand × spelling, callee ×
+delivery) and left the other eight pairs to 40 random draws, with nothing recording what
+those drew. `SourcePatchGenerators.pairwise/0` is a greedy covering array over all five
+dimensions: 30 recipes out of the 540-recipe product, in which every pair of values from two
+different dimensions occurs. A test asserts that no pair is missing, so which combinations
+ran is a checked fact, and a value added to `operands/0` or `callees/0` is crossed with
+everything by the same list. The random property remains for what pairs cannot reach:
+three and more dimensions at once, varied inputs, and shrinking.
+
+Printing the drawn distribution (`aggregate/2` under `:verbose`) was tried and dropped: some
+200 lines of pair percentages, each already guaranteed.
+
+Two dimensions grew. The `:binding` callee is a dynamic receiver that binds a name read after
+the call (`(receiver = F.receiver()).div(…)`), the one binding position the recipes lacked.
+The `:hosted` operand pipes through `HostDSL.filter/2`, so a host's woven selector sits
+inside the expression the pipe deliveries move and rebind; the exact per-family count also
+requires the host's Sites exactly when that operand is used. Neither found a defect.
+
+Still outside both vocabularies, on purpose: a module a fixture creates at run time.
+`SourcePatch` purges what each compile returned, and cannot see a module a function body
+defined; `clean_function_test.exs` keeps that case as a fixed regression.

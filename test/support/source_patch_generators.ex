@@ -12,18 +12,72 @@ defmodule Mutare.Test.SourcePatchGenerators do
   baseline and active path. Relational mutations also exercise lifted guard delivery.
 
   This deliberately small vocabulary complements the broad transform AST generator. It
-  does not generate arbitrary recursion, nested definitions or hosted DSLs. Adding a
-  construct means declaring its escaping names, then including it in `operands/0` so the
-  deterministic cross-product exercises it too. No failed compile is discarded.
+  does not generate arbitrary recursion or nested definitions. Adding a construct means
+  declaring its escaping names, then including it in `operands/0`: `pairwise/0` then
+  exercises it against every value of every other dimension. No failed compile is discarded.
+
+  `pairwise/0` is a covering array, not a cross-product: every pair of values from two
+  different dimensions appears in at least one recipe. The failures this vocabulary was
+  built from were each an interaction of two features, and a chosen pair of dimensions
+  leaves the others to chance.
   """
   use PropCheck
 
-  alias Mutare.Test.{SourcePatchDynamicMutator, SourcePatchFixtures, SourcePatchKeywordRoutes}
+  alias Mutare.Test.{HostMutator, SourcePatchDynamicMutator, SourcePatchFixtures}
+  alias Mutare.Test.SourcePatchKeywordRoutes
 
-  def operands, do: [:plain, :binding, :skipped, :raw, :keyed, :keyword, :unquote, :quoted, :lazy]
+  def operands,
+    do: [:plain, :binding, :skipped, :raw, :keyed, :keyword, :unquote, :quoted, :lazy, :hosted]
+
   def spellings, do: [:direct, :piped, :grouped]
   def deliveries, do: [:retained, :moved, :split]
-  def callees, do: [:static, :dynamic]
+
+  # `:binding` is a dynamic callee whose receiver expression itself binds a name read later.
+  def callees, do: [:static, :dynamic, :binding]
+
+  def dimensions,
+    do: [
+      operand: operands(),
+      spelling: spellings(),
+      delivery: deliveries(),
+      callee: callees(),
+      wrapped?: [false, true]
+    ]
+
+  @doc "Recipes that together contain every pair of values from two different dimensions."
+  def pairwise do
+    dimensions = dimensions()
+
+    candidates =
+      Enum.reduce(dimensions, [%{offset: 0}], fn {dimension, values}, recipes ->
+        for recipe <- recipes, value <- values, do: Map.put(recipe, dimension, value)
+      end)
+
+    cover(candidates, MapSet.new(Enum.flat_map(candidates, &pairs/1)), [])
+  end
+
+  @doc "The cross-dimension value pairs one recipe contains."
+  def pairs(recipe) do
+    entries =
+      for {dimension, _values} <- dimensions(), do: {dimension, Map.fetch!(recipe, dimension)}
+
+    for {left, i} <- Enum.with_index(entries),
+        right <- Enum.drop(entries, i + 1),
+        do: {left, right}
+  end
+
+  # Greedy: take the recipe covering the most still-uncovered pairs. Deterministic, since
+  # `Enum.max_by/2` keeps the first of equals and the candidates are in a fixed order.
+  defp cover(candidates, uncovered, chosen) do
+    if MapSet.size(uncovered) == 0 do
+      Enum.reverse(chosen)
+    else
+      best =
+        Enum.max_by(candidates, fn recipe -> Enum.count(pairs(recipe), &(&1 in uncovered)) end)
+
+      cover(candidates, MapSet.difference(uncovered, MapSet.new(pairs(best))), [best | chosen])
+    end
+  end
 
   def recipe do
     let {operand, spelling, delivery, callee, wrapped?, offset} <-
@@ -44,7 +98,13 @@ defmodule Mutare.Test.SourcePatchGenerators do
     {left, bindings, opts} = operand(recipe.operand)
     left = if recipe.wrapped?, do: "F.identity(#{left})", else: left
     right = "(right = F.tick(divisor, :right))"
-    callee = if recipe.callee == :static, do: "div", else: "F.receiver().div"
+
+    {callee, callee_bindings} =
+      case recipe.callee do
+        :static -> {"div", []}
+        :dynamic -> {"F.receiver().div", []}
+        :binding -> {"(receiver = F.receiver()).div", ["receiver"]}
+      end
 
     expression =
       case recipe.spelling do
@@ -57,11 +117,12 @@ defmodule Mutare.Test.SourcePatchGenerators do
     defmodule PatchProgram do
       alias Mutare.Test.SourcePatchFixtures, as: F
       require F
+      import Mutare.Test.HostDSL, only: [filter: 2]
 
       def run(n, divisor, enabled) when n <= 20 do
         F.observe(fn ->
           result = #{expression}
-          {result, #{Enum.join(bindings ++ ["right"], ", ")}}
+          {result, #{Enum.join(bindings ++ callee_bindings ++ ["right"], ", ")}}
         end)
       end
 
@@ -76,8 +137,10 @@ defmodule Mutare.Test.SourcePatchGenerators do
         {:static, :retained} -> [:arithmetic]
         {:static, :moved} -> [:operand_swap]
         {:static, :split} -> [:arithmetic, :operand_swap]
-        {:dynamic, delivery} -> [{SourcePatchDynamicMutator, delivery: delivery}]
+        {_dynamic, delivery} -> [{SourcePatchDynamicMutator, delivery: delivery}]
       end
+
+    hosts = if recipe.operand == :hosted, do: [HostMutator], else: []
 
     calls =
       for {n, divisor, enabled} <- [{8, 3, true}, {-7, 2, false}, {0, 0, true}],
@@ -85,7 +148,7 @@ defmodule Mutare.Test.SourcePatchGenerators do
 
     %{
       source: source,
-      mutators: mutators ++ [:relational],
+      mutators: mutators ++ hosts ++ [:relational],
       calls: calls ++ [other: [-1], other: [2]],
       opts: opts
     }
@@ -119,6 +182,11 @@ defmodule Mutare.Test.SourcePatchGenerators do
 
   defp operand(:quoted),
     do: {"length(quote(do: [hidden = 4, quote(do: unquote(hidden = 9))]))", [], []}
+
+  # A fragment core mutates inside a DSL: the host weaves its selector into `divisor > 1`,
+  # and the macro evaluates that condition before its query.
+  defp operand(:hosted),
+    do: {"List.first(filter([F.tick(n, :left)], F.tick(divisor, :condition) > 1), 0)", [], []}
 
   defp operand(:lazy),
     do:
