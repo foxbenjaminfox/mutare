@@ -12796,3 +12796,22 @@ bindings: the keyword argument in `true |> if(do: (t = 4), else: 0)` is a branch
 condition. Neither reader invokes nested route classifiers or changes the preserved source.
 SourcePatch regressions cover local imports, grouped stages, branch-local bindings, and bindings
 that really do escape from conditions and ordinary call arguments.
+
+### Bound pipe stages preserve scope and callee order `[fixed]` (2026-09-21)
+
+`PipeEmit`'s one-shot closure trapped assignments in retained stage arguments. A mutation of
+`x |> div(y = 2)` therefore left the later `y` read undefined outside the closure, even though
+both the original and mutant made the binding. Bound delivery now intersects the bindings made
+by the stage (excluding argument 0) across the original and retained branches, returns those
+with the result, and rebinds them outside. Argument-0 bindings remain in the invocation argument,
+where they already escape; trying to return them from the closure would capture an unbound name.
+Split delivery combines the bindings available from that closure with argument 0 before finding
+what its outer branches share.
+
+The same closure also moved argument 0 ahead of a dynamic callee. Elixir evaluates the receiver
+in `lhs() |> receiver().f()` before `lhs()`, while the closure necessarily evaluated `lhs()`
+first. Bound delivery is now limited to bare calls and calls whose module resolves statically;
+dynamic remote and anonymous callees use the ordinary selector, whose branches retain the full
+call's evaluation order and still tuple-export shared bindings. SourcePatch regressions compile
+the retained-argument case and compare both baseline and mutant behavior for an effectful dynamic
+receiver.

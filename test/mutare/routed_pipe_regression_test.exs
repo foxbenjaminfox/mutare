@@ -273,6 +273,46 @@ defmodule Mutare.RoutedPipeRegressionTest do
     assert Enum.any?(sites, &(&1.mutator == :mode_swap))
   end
 
+  test "a bound stage exports bindings made by its retained arguments" do
+    source = """
+    defmodule Binding do
+      def run(x) do
+        result = x |> div(y = 2)
+        {result, y}
+      end
+    end
+    """
+
+    assert [_] = assert_patches(source, [:arithmetic], run: [8])
+  end
+
+  test "a dynamic receiver is evaluated before the piped operand" do
+    source = """
+    defmodule DynamicReceiver do
+      def scale(value, mode), do: {value, mode}
+
+      def run do
+        Process.put(:pipe_order, [])
+        result = lhs() |> receiver().scale(:small)
+        {result, Process.delete(:pipe_order)}
+      end
+
+      defp receiver do
+        Process.put(:pipe_order, [:receiver | Process.get(:pipe_order)])
+        __MODULE__
+      end
+
+      defp lhs do
+        Process.put(:pipe_order, [:lhs | Process.get(:pipe_order)])
+        10
+      end
+    end
+    """
+
+    assert [%{mutator: :call_rewrite}] =
+             assert_patches(source, [Mutare.Test.CallRewriteMutator], run: [])
+  end
+
   test "a tail stage's return-value mutants sit around its bound stage mutants" do
     source = """
     defmodule Tail do

@@ -32,6 +32,10 @@ defmodule Mutare.Transform.PipeEmit do
   #     (`Mutare.CallRouting`, "Ordinary calls"). `:lazy_expression` is the route's way of saying
   #     the callee does not, and every other treatment says the macro reads the argument as
   #     syntax, which a variable would hide.
+  #   * **the callee is inert** — a bare call or a call on a statically resolved module has no
+  #     receiver expression to evaluate. A dynamic remote or anonymous callee runs before its
+  #     arguments, so moving argument 0 outside the call would reverse their order; those calls
+  #     keep ordinary branch-local delivery.
   #
   # A candidate rides inside the closure when it **keeps argument 0** where it was, or returns
   # that operand directly (call removal): both evaluate the operand once, first. One that moves
@@ -42,6 +46,9 @@ defmodule Mutare.Transform.PipeEmit do
   # in its own order (`{:split, …}`) — the shape a tail pipe's return-value selector has always
   # had around its stage's. An outer selector traps what its branches bind, so bindings every
   # branch shares are exported through a tuple and rebound outside (`{:export, names}`).
+  # The closure is a scope boundary too: bindings made by retained stage arguments are returned
+  # with its result and rebound outside. Bindings made by argument 0 already escape from the
+  # closure invocation's argument expression and must not be captured inside the closure.
   #
   # The calls this leaves in the tree are direct calls still; `Mutare.Transform.Render` spells
   # each as the pipe it was written as, so the metamutant is as deep as the user's source, not
@@ -51,18 +58,23 @@ defmodule Mutare.Transform.PipeEmit do
   # `delivery/2` decides, `branch/3` places and rebinds one candidate's branch, and `layers/5`
   # builds the selector or selectors through the emitter's own builder.
 
-  alias Mutare.Transform.{BindingEscapeEmit, Candidate, Ctx, Meta}
+  alias Mutare.Transform.{BindingEscapeEmit, Calls, Candidate, Ctx, Meta}
   alias Mutare.Transform.Candidate.Delivery
 
   @typedoc "How one selector treats what its branches share: nothing, exported bindings, or a bound operand."
-  @type binding :: :inline | {:export, nonempty_list(atom())} | {:bind, keyword(), Macro.t()}
+  @type binding ::
+          :inline
+          | {:export, nonempty_list(atom())}
+          | {:bind, keyword(), Macro.t(), [atom()]}
 
   @typedoc """
   A site's delivery: one selector under one `t:binding/0`, or `{:split, inner, outer}` — the
   candidates that keep argument 0 in a bound closure (`inner`), the rest in a selector around
   it (`outer`).
   """
-  @type t :: binding() | {:split, {:bind, keyword(), Macro.t()}, :inline | {:export, [atom()]}}
+  @type t ::
+          binding()
+          | {:split, {:bind, keyword(), Macro.t(), [atom()]}, :inline | {:export, [atom()]}}
 
   @typedoc "Which selector of a `t:t/0` a candidate is delivered in: inside the closure, or around it."
   @type layer :: :inner | :outer
@@ -73,17 +85,29 @@ defmodule Mutare.Transform.PipeEmit do
     with pipe_meta when is_list(pipe_meta) <- Meta.written_pipe_meta(node),
          true <- value_position?(Meta.routing(meta)),
          [%Candidate.InPlace{original: {_h, _m, [written | _]} = original} | _] <- candidates do
-      bind = {:bind, pipe_meta, written}
+      if inert_callee?(original) do
+        case Enum.split_with(candidates, &keeps_argument?(&1, written)) do
+          {kept, []} ->
+            {:bind, pipe_meta, written, shared_stage_bindings(original, kept)}
 
-      case Enum.split_with(candidates, &keeps_argument?(&1, written)) do
-        {_kept, []} ->
-          bind
+          {[], moved} ->
+            exports(BindingEscapeEmit.expression_bindings(original), moved)
 
-        {[], moved} ->
-          exports(BindingEscapeEmit.expression_bindings(original), moved)
+          {kept, moved} ->
+            stage = shared_stage_bindings(original, kept)
 
-        {_kept, moved} ->
-          {:split, bind, exports(BindingEscapeEmit.expression_bindings(written), moved)}
+            outer =
+              written
+              |> BindingEscapeEmit.expression_bindings()
+              |> Kernel.++(stage)
+              |> Enum.uniq()
+              |> shared_bindings(moved)
+              |> export_binding()
+
+            {:split, {:bind, pipe_meta, written, stage}, outer}
+        end
+      else
+        exports(BindingEscapeEmit.expression_bindings(original), candidates)
       end
     else
       _plain -> :inline
@@ -128,10 +152,10 @@ defmodule Mutare.Transform.PipeEmit do
     end)
   end
 
-  defp layer(candidate, {:split, {:bind, _pipe_meta, written}, _outer}),
+  defp layer(candidate, {:split, {:bind, _pipe_meta, written, _exports}, _outer}),
     do: if(keeps_argument?(candidate, written), do: :inner, else: :outer)
 
-  defp layer(_candidate, {:bind, _pipe_meta, _written}), do: :inner
+  defp layer(_candidate, {:bind, _pipe_meta, _written, _exports}), do: :inner
   defp layer(_candidate, _binding), do: :outer
 
   defp binding({:split, inner, _outer}, :inner), do: inner
@@ -143,17 +167,44 @@ defmodule Mutare.Transform.PipeEmit do
   defp value_position?([zero | _rest]), do: zero in [:expression, :interior]
   defp value_position?(_routing), do: false
 
-  # What an outer selector must export: the bindings of `names` — those its catch-all makes —
-  # that every mutant branch makes too (a whole-call constant makes none). Each branch returns
-  # its result and those bindings instead of having the original operand evaluated ahead of
-  # it, which would change a moved operand's evaluation order.
-  defp exports(names, candidates) do
-    shared =
-      Enum.reduce(candidates, names, fn candidate, names ->
-        bound = candidate |> Delivery.selector_branch() |> BindingEscapeEmit.expression_bindings()
-        Enum.filter(names, &(&1 in bound))
-      end)
+  # A bare call or a call on a statically resolved module has no runtime callee expression to
+  # move across argument 0. A dynamic remote/anonymous receiver is evaluated before its
+  # arguments, so binding argument 0 outside the call would reverse their order.
+  defp inert_callee?({head, _meta, args}) when is_atom(head) and is_list(args), do: true
+  defp inert_callee?(node), do: not is_nil(Calls.resolved_call(node))
 
+  # Bindings made after argument 0 enters the closure. Bindings in argument 0 already escape
+  # from the closure invocation's argument expression; referring to one inside the closure
+  # would instead make it an unbound captured variable at compile time.
+  defp shared_stage_bindings(original, candidates) do
+    Enum.reduce(candidates, stage_bindings(original), fn candidate, names ->
+      bound = candidate |> Delivery.selector_branch() |> stage_bindings()
+      Enum.filter(names, &(&1 in bound))
+    end)
+  end
+
+  defp stage_bindings({head, meta, [_zero | rest]}) do
+    BindingEscapeEmit.expression_bindings({head, meta, [{:mutare_piped, [], nil} | rest]})
+  end
+
+  defp stage_bindings(_not_a_call), do: []
+
+  # Bindings the catch-all and every mutant branch make. A whole-call constant makes none, so
+  # the intersection correctly leaves a later read to poison that source-invalid mutant.
+  defp exports(names, candidates) do
+    names
+    |> shared_bindings(candidates)
+    |> export_binding()
+  end
+
+  defp shared_bindings(names, candidates) do
+    Enum.reduce(candidates, names, fn candidate, names ->
+      bound = candidate |> Delivery.selector_branch() |> BindingEscapeEmit.expression_bindings()
+      Enum.filter(names, &(&1 in bound))
+    end)
+  end
+
+  defp export_binding(shared) do
     case shared do
       [] -> :inline
       names -> {:export, names}
@@ -175,10 +226,11 @@ defmodule Mutare.Transform.PipeEmit do
     {:__block__, [], [{:=, [], [value, branch]}, export_tuple(value, names)]}
   end
 
-  defp rebind(written, {:bind, _pipe_meta, written}, ctx), do: piped_var(ctx)
+  defp rebind(written, {:bind, _pipe_meta, written, names}, ctx),
+    do: export_branch(piped_var(ctx), names, ctx)
 
-  defp rebind({head, meta, [_zero | rest]}, {:bind, _pipe_meta, _written}, ctx),
-    do: {head, meta, [piped_var(ctx) | rest]}
+  defp rebind({head, meta, [_zero | rest]}, {:bind, _pipe_meta, _written, names}, ctx),
+    do: export_branch({head, meta, [piped_var(ctx) | rest]}, names, ctx)
 
   # Close over the shared operand — `default`'s emitted argument 0 — or rebind an inline
   # selector's exported variables.
@@ -189,9 +241,30 @@ defmodule Mutare.Transform.PipeEmit do
     {:__block__, [], [{:=, [], [export_tuple(value, names), selector]}, value]}
   end
 
-  defp close(selector, {:bind, pipe_meta, _written}, {_head, _meta, [argument | _rest]}, ctx) do
+  defp close(
+         selector,
+         {:bind, pipe_meta, _written, names},
+         {_head, _meta, [argument | _rest]},
+         ctx
+       ) do
     closure = {:fn, [], [{:->, [], [[piped_var(ctx)], selector]}]}
-    {:|>, pipe_meta, [argument, {{:., [], [closure]}, [], []}]}
+    application = {:|>, pipe_meta, [argument, {{:., [], [closure]}, [], []}]}
+
+    case names do
+      [] ->
+        application
+
+      names ->
+        value = piped_var(ctx)
+        {:__block__, [], [{:=, [], [export_tuple(value, names), application]}, value]}
+    end
+  end
+
+  defp export_branch(branch, [], _ctx), do: branch
+
+  defp export_branch(branch, names, ctx) do
+    value = piped_var(ctx)
+    {:__block__, [], [{:=, [], [value, branch]}, export_tuple(value, names)]}
   end
 
   defp piped_var(ctx), do: {ctx.config.piped_var, [], nil}
