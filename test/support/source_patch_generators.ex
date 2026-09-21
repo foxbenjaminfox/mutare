@@ -38,6 +38,8 @@ defmodule Mutare.Test.SourcePatchGenerators do
       :unquote,
       :quoted,
       :lazy,
+      :lazy_twice,
+      :interior_reversed,
       :hosted,
       :keyed_key,
       :raw_pipe,
@@ -250,6 +252,16 @@ defmodule Mutare.Test.SourcePatchGenerators do
 
   defp operand(:injected_pipe),
     do: {"injected(n)", [], [call_routes: [{:*, :|>, 2, [:expression, :interior]}]]}
+
+  defp operand(:lazy_twice),
+    do:
+      {"F.twice(F.tick(n, :left))", [],
+       [call_routes: [{SourcePatchFixtures, :twice, 1, [:lazy_expression]}]]}
+
+  defp operand(:interior_reversed),
+    do:
+      {"F.reversed(rem(left = F.tick(n, :left), F.tick(7, :seven)))", ["left"],
+       [call_routes: [{SourcePatchFixtures, :reversed, 1, [:interior]}]]}
 
   defp operand(:lazy),
     do:

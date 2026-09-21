@@ -13016,3 +13016,21 @@ keyed refinement's key). 50 pairwise recipes; none found a defect at HEAD. One t
 name-only route taught the fixture: `{:*, :|>, 2, …}` governs Kernel's pipes too, as designed,
 so the recipe's own stages stop being direct calls and the per-family counts are exact for
 that operand only in the `:direct` spelling. The semantic comparison holds in all three.
+
+### Routing words are tested against their least convenient macro (2026-09-21)
+
+The pipe work took its host contract from the one adapter that motivated it, and
+`ForeignPipeDSL` (a `|>` that subtracts) was written only after that proved too kind. The
+source-patch vocabulary now holds the same kind of macro for two routing words, so a change
+to delivery meets them under every pairing of spelling, callee and delivery:
+
+- `F.twice/1`, routed `:lazy_expression`, evaluates its argument **twice**. The word promises
+  that the macro decides when the argument runs, not that it runs at most once.
+- `F.reversed/1`, routed `:interior`, takes its root call apart and evaluates the second
+  argument **before** the first. The word promises that the root is the macro's to read,
+  not that the macro preserves the call's order; the first argument's binding still escapes.
+
+Both pass at HEAD. `UseExpansion` already has its adversary (`UsesBindPipe`, a `use` that
+displaces `|>`); `argument_marks` declares no evaluation or scope behaviour for a macro to be
+inconvenient about. A new routing word, or a new delivery that moves code, should arrive with
+the macro that satisfies the word's letter while defeating whatever else the delivery assumed.

@@ -50,6 +50,25 @@ defmodule Mutare.Test.SourcePatchFixtures do
       if unquote(enabled), do: unquote(value), else: 0
     end
   end
+
+  # The least convenient valid readings of two routing words. `:lazy_expression` promises
+  # only that the macro decides when its argument runs: this one runs it twice.
+  defmacro twice(value) do
+    quote do
+      unquote(value)
+      unquote(value)
+    end
+  end
+
+  # `:interior` promises only that the root call is the macro's to read: this one takes the
+  # call apart and evaluates its second argument first.
+  defmacro reversed({name, meta, [first, second]}) do
+    quote do
+      second = unquote(second)
+      first = unquote(first)
+      unquote({name, meta, [quote(do: first), quote(do: second)]})
+    end
+  end
 end
 
 defmodule Mutare.Test.SourcePatchDynamicMutator do
