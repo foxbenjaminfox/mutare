@@ -7,12 +7,14 @@ defmodule Mutare.Options.RegistryTest do
   test "defaults/0 drives the Options struct: same keys, identity validators on each default" do
     options = Options.new([])
 
-    # Each validator is identity on its own default, except `:workers` (nil -> scheduler count).
-    for {key, default} <- Registry.defaults(), key != :workers do
+    # Each validator is identity on its own default. `:workers` and `:schedulers` default to
+    # `nil` and are then computed together from the scheduler count.
+    for {key, default} <- Registry.defaults(), key not in [:workers, :schedulers] do
       assert Map.fetch!(options, key) == default
     end
 
     assert is_integer(options.workers) and options.workers > 0
+    assert is_integer(options.schedulers) and options.schedulers > 0
   end
 
   test "the runtime-wiring keys are NOT registry options (they live on Run.Context)" do
@@ -95,6 +97,7 @@ defmodule Mutare.Options.RegistryTest do
              {"only_lines", "(all lines)"},
              {"test_selection", "tests"},
              {"workers", to_string(System.schedulers_online() |> div(2) |> min(4) |> max(1))},
+             {"schedulers", "#{Options.new([]).schedulers} per worker"},
              {"partition_env", "(off)"},
              {"timeout", "derived from baseline run"},
              {"timeout_multiplier", "3.0"},

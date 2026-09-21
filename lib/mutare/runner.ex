@@ -18,9 +18,11 @@ defmodule Mutare.Runner do
 
   ## Parallel workers and timeouts
 
-  The per-mutant phase runs `:workers` mutants concurrently (default: half `System.schedulers_online/0`, capped at 4 — each worker is a full `mix test` BEAM that itself uses every scheduler, so a parallel suite already scales with the machine and extra workers only fill the serial/IO gaps one run leaves), each its own OS process in the shared sandbox. Each run has a wall-clock cap: an explicit `:timeout` in ms, or `baseline × :timeout_multiplier` (default 3.0) scaled by half the concurrent lanes — the baseline is measured *uncontended*, so wall time under contention legitimately inflates with the lane count — with a floor. A mutation can turn a terminating loop infinite, so the run is capped; a capped run counts as `:timeout` — a kill, since the hang is observable misbehavior.
+  The per-mutant phase runs `:workers` mutants concurrently, each its own OS process — a full `mix test` BEAM — in the shared sandbox. Left alone, every such BEAM would start a scheduler thread per core, and the phase would oversubscribe the CPU by the worker count; so each is trimmed to `:schedulers` threads (`+S`, see `Mutare.Sandbox.Command.Invocation.emulator_flags_env/1`), and the two options divide `System.schedulers_online/0` between them. Whichever is omitted is derived from the other so that `workers × schedulers` fits the machine; with neither, workers are half the schedulers, capped at 4 — more of them buy little (what a worker fills is the serial stretch of another's run: boot, app start, `async: false` tests, IO waits) and each costs a BEAM's memory. `schedulers: :all` trims nothing. Whatever the suite derives from the scheduler count follows the trim — ExUnit's default `max_cases` above all.
 
-  Even a scaled cap can be overrun by a slow-but-finite run, and survivors are the most exposed (a kill exits at its first failing test; a survivor must run its entire selected set). A false `:timeout` is a false kill hiding a true survivor, so by default (`:confirm_timeouts`) a streamed `:timeout` is *provisional*: after the stream drains, each timed-out mutant is re-run sequentially — no contention — with the same cap, and that verdict is recorded instead. Only a repeat overrun records `:timeout`; a genuine hang pays one extra cap. `confirm_timeouts: false` (`--no-confirm-timeouts`) records the first overrun as-is. A wall-clock `:time_budget` covers this confirmation pass too: confirmations already launched are allowed to finish, but no new confirmation run starts after the deadline.
+  The baseline runs under the same trim, so it checks the suite is green at the concurrency a mutant run gets and measures what such a run takes. Each run then has a wall-clock cap: an explicit `:timeout` in ms, or `baseline × :timeout_multiplier` (default 3.0), with a floor. (A configuration that does oversubscribe — `schedulers: :all`, or explicit counts whose product exceeds the machine — scales the cap by half the oversubscription, since wall time then legitimately inflates past the baseline.) A mutation can turn a terminating loop infinite, so the run is capped; a capped run counts as `:timeout` — a kill, since the hang is observable misbehavior. The one compile and the coverage probe run alone and keep every scheduler.
+
+  The cap can still be overrun by a slow-but-finite run — concurrent runs share memory bandwidth, disk and any database even when they do not share cores — and survivors are the most exposed (a kill exits at its first failing test; a survivor must run its entire selected set). A false `:timeout` is a false kill hiding a true survivor, so by default (`:confirm_timeouts`) a streamed `:timeout` is *provisional*: after the stream drains, each timed-out mutant is re-run sequentially — no contention — with the same cap, and that verdict is recorded instead. Only a repeat overrun records `:timeout`; a genuine hang pays one extra cap. `confirm_timeouts: false` (`--no-confirm-timeouts`) records the first overrun as-is. A wall-clock `:time_budget` covers this confirmation pass too: confirmations already launched are allowed to finish, but no new confirmation run starts after the deadline.
 
   ## Early stop: survivor cap (`:max_survivors`) or time budget (`:time_budget`)
 
@@ -49,7 +51,7 @@ defmodule Mutare.Runner do
 
   The mirror-image refinement: a run the OS killed with SIGKILL (exit 137, the `:sigkilled` outcome) is recognised so it is **never** retried — the opposite of `:boot_failure`. Its signature cause is the kernel OOM killer reaping a mutant whose mutation made it allocate without bound (a dropped guard turning a function unconditionally self-recursive can exhaust tens of GB in under a second — faster than any wall-clock watcher can react), and that failure is *deterministic*: a back-to-back retry re-detonates the same blowup on the host. The verdict stays a harness error (out of the score), with a specific warning naming the likely cause and the mitigation.
 
-  The mitigation is `:max_heap_mb` (`--max-heap-mb`, off by default): a per-process BEAM heap cap injected into every *runtime* sandbox run — baseline, coverage probe, per-mutant — so a runaway-allocation mutant dies as an ordinary, fast test failure inside its own run instead of endangering the host. The baseline running under the same cap validates up front that the suite itself fits under it. The one metamutant compile is deliberately not capped. Mechanism and sizing guidance: `Mutare.Sandbox.Command.Invocation.heap_cap_env/1`.
+  The mitigation is `:max_heap_mb` (`--max-heap-mb`, off by default): a per-process BEAM heap cap injected into every *runtime* sandbox run — baseline, coverage probe, per-mutant — so a runaway-allocation mutant dies as an ordinary, fast test failure inside its own run instead of endangering the host. The baseline running under the same cap validates up front that the suite itself fits under it. The one metamutant compile is deliberately not capped. Mechanism and sizing guidance: `Mutare.Sandbox.Command.Invocation.emulator_flags_env/1`.
   """
 
   alias Mutare.{
@@ -62,6 +64,7 @@ defmodule Mutare.Runner do
     Score
   }
 
+  alias Mutare.Options.Parallelism
   alias Mutare.Run.Context
 
   alias Mutare.Runner.{
@@ -154,7 +157,7 @@ defmodule Mutare.Runner do
 
   Custom hooks should ignore phase or detail events they do not recognise.
 
-  The run uses the resolved `:test_selection`, `:workers`, `:timeout`,
+  The run uses the resolved `:test_selection`, `:workers`, `:schedulers`, `:timeout`,
   `:timeout_multiplier`, `:max_heap_mb`, `:baseline_runs`, `:baseline_retries`,
   `:kill_runs`, `:confirm_timeouts`, `:harness_retries`, `:max_harness_error_rate`,
   and `:max_survivors` options. When
@@ -279,11 +282,18 @@ defmodule Mutare.Runner do
       # does (`MutantRun` reads it off `RunCtx.options`): running the baseline under the same
       # cap the mutants get validates up front that the suite itself fits under it — a
       # too-small cap fails the baseline loudly instead of minting false kills mid-run. (The
-      # one metamutant compile is deliberately *not* capped — see `Invocation.heap_cap_env/1`.)
+      # one metamutant compile is deliberately *not* capped — see
+      # `Invocation.emulator_flags_env/1`.)
       fixed_opts = [
         partition: Partitions.entry(options.partition_env, 1),
         max_heap_mb: options.max_heap_mb
       ]
+
+      # The baseline alone also takes the mutants' `:schedulers` trim: it then checks the
+      # suite is green at the concurrency a mutant run gets, and times it at a mutant run's
+      # speed, which the cap below is a multiple of. The probe's time is nobody's yardstick
+      # and its record does not depend on the scheduler count, so it keeps the whole machine.
+      baseline_opts = [{:schedulers, options.schedulers} | fixed_opts]
 
       with {:ok, baseline_ms} <-
              run_baseline(
@@ -291,7 +301,7 @@ defmodule Mutare.Runner do
                sandbox,
                options.baseline_runs,
                options.baseline_retries,
-               fixed_opts
+               baseline_opts
              ) do
         # Verbose-only detail: the baseline timing the cap is scaled from.
         on_phase.({:baseline_done, baseline_ms})
@@ -303,10 +313,16 @@ defmodule Mutare.Runner do
         # will run — see `app_scopes/3` and `Mutare.Runner.MutantRun`'s broadening.
         scopes = app_scopes(context.project, sandbox, selection)
 
-        # The run configuration the verbose running line reports (worker count); fired
-        # just before `{:running, total}` so the reporter has it when it renders the label.
+        # The run configuration the verbose running line reports (workers and their
+        # schedulers); fired just before `{:running, total}` so the reporter has it when it
+        # renders the label.
         on_phase.(
-          {:run_config, %{workers: options.workers, partition_env: options.partition_env}}
+          {:run_config,
+           %{
+             workers: options.workers,
+             schedulers: options.schedulers,
+             partition_env: options.partition_env
+           }}
         )
 
         on_phase.({:running, length(schema.sites)})
@@ -402,25 +418,31 @@ defmodule Mutare.Runner do
   end
 
   # Per-mutant wall-clock cap. An explicit `:timeout` (ms) wins; otherwise
-  # baseline × `:timeout_multiplier` (default 3.0), scaled by the concurrent lanes
-  # (below), with a floor so tiny suites don't get an absurdly small cap. A mutation
-  # can turn a terminating loop infinite, so without a cap a single mutant could
-  # hang the whole run.
+  # baseline × `:timeout_multiplier` (default 3.0), scaled by how far the concurrent
+  # runs oversubscribe the CPU (below), with a floor so tiny suites don't get an
+  # absurdly small cap. A mutation can turn a terminating loop infinite, so without a
+  # cap a single mutant could hang the whole run.
   defp timeout_cap(_baseline_ms, _schema, %Options{timeout: ms}) when is_integer(ms) and ms > 0,
     do: ms
 
   defp timeout_cap(baseline_ms, schema, %Options{} = options) do
-    # The baseline is measured uncontended, but up to `lanes` runs — each a full
-    # BEAM — execute at once, so an honest run's wall time inflates with the lane
-    # count (~2.4× at 4 workers, >4× at 16 — NOTES "Timeouts"). Scale the cap by
-    # half the lanes so slow-but-finite runs rarely reach the confirmation pass;
-    # over-generosity only delays catching a genuine hang, which the confirmation
-    # re-run bounds anyway. `lanes` is capped by the site count (a `--line` rerun
-    # of two mutants has next to no contention), and the generous floor keeps tiny
-    # suites honest. A true infinite loop runs far past any cap, so we still catch it.
-    lanes = min(options.workers, length(schema.sites))
-    contention = max(1.0, lanes / 2)
+    contention = contention(options, length(schema.sites), System.schedulers_online())
     max(round(baseline_ms * options.timeout_multiplier * contention), 10_000)
+  end
+
+  # The baseline ran alone, under the mutants' own `:schedulers` trim, so with the default
+  # division (`workers × schedulers ≤` the machine) its time already is an honest run's
+  # time and the factor is 1. Only a configuration that asks for more scheduler threads
+  # than there are cores — `schedulers: :all`, where every run takes them all, or explicit
+  # counts whose product exceeds the machine — inflates an honest run's wall time past the
+  # baseline (measured untrimmed: ~2.4× at 4 workers, >4× at 16 — NOTES "Timeouts"). There
+  # the cap scales by half the oversubscription, so slow-but-finite runs rarely reach the
+  # confirmation pass; over-generosity only delays catching a genuine hang, which the
+  # confirmation re-run bounds anyway. `lanes` is capped by the site count (a `--line`
+  # rerun of two mutants has next to no contention).
+  defp contention(%Options{workers: workers, schedulers: schedulers}, sites, machine) do
+    lanes = min(workers, sites)
+    max(1.0, Parallelism.oversubscription(lanes, schedulers, machine) / 2)
   end
 
   # The coverage probe's wall-clock cap. An explicit `:probe_timeout` (ms) wins —

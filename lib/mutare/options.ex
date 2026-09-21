@@ -16,6 +16,7 @@ defmodule Mutare.Options do
   # and the sandbox/project disjointness check lives in `Mutare.Sandbox` (it is
   # relational to `root`); here we only validate the shape of `:sandbox`.
 
+  alias Mutare.Options.Parallelism
   alias Mutare.Options.Registry
 
   @type t :: %__MODULE__{
@@ -31,6 +32,7 @@ defmodule Mutare.Options do
           only_lines: MapSet.t() | nil,
           test_selection: :tests | :coverage | :full,
           workers: pos_integer(),
+          schedulers: pos_integer() | :all,
           partition_env: String.t() | nil,
           timeout: pos_integer() | nil,
           timeout_multiplier: number(),
@@ -103,11 +105,14 @@ defmodule Mutare.Options do
   Resolve and validate options.
 
   Accepts a keyword list or an existing `Options` struct. Raises `ArgumentError`
-  on an unknown key or invalid value. `:workers` defaults to half
-  `System.schedulers_online/0` capped at 4 (each worker is a full `mix test`
-  BEAM that uses every scheduler, so the useful concurrency is a small constant,
-  not a fraction of the cores), resolved here so the struct carries a concrete
-  positive integer.
+  on an unknown key or invalid value.
+
+  `:workers` (concurrent mutant runs) and `:schedulers` (scheduler threads per
+  run) divide `System.schedulers_online/0` between them, so the runs do not
+  oversubscribe the CPU. Whichever is omitted is derived from the other; with
+  neither, workers are half the schedulers capped at 4. `schedulers: :all` leaves
+  every run every scheduler. Both are resolved here, so the struct carries
+  concrete values.
 
       iex> opts = Mutare.Options.new(
       ...>   paths: ["lib/billing"],
@@ -121,6 +126,10 @@ defmodule Mutare.Options do
       iex> opts = Mutare.Options.new(workers: 2)
       iex> Mutare.Options.new(opts) == opts
       true
+
+      iex> opts = Mutare.Options.new(workers: 3, schedulers: :all)
+      iex> {opts.workers, opts.schedulers}
+      {3, :all}
   """
   @spec new(t() | keyword()) :: t()
   def new(%__MODULE__{} = options) do
@@ -140,7 +149,17 @@ defmodule Mutare.Options do
     Registry.specs()
     |> Enum.map(fn %{key: key, validate: validate} -> {key, validate.(opt(opts, key))} end)
     |> then(&struct(__MODULE__, &1))
+    |> resolve_parallelism()
     |> validate_argument_mark_labels!()
+  end
+
+  # `:workers` and `:schedulers` share one budget, so they are defaulted together rather than
+  # by their own validators — the one computed default.
+  defp resolve_parallelism(%__MODULE__{workers: workers, schedulers: schedulers} = options) do
+    {workers, schedulers} =
+      Parallelism.resolve(workers, schedulers, System.schedulers_online())
+
+    %{options | workers: workers, schedulers: schedulers}
   end
 
   # The one cross-field check: a configured `argument_marks:` label must be one some mutator
@@ -175,9 +194,8 @@ defmodule Mutare.Options do
   end
 
   # Read option `key` from `opts`, falling back to its registry default — the one place `new/1`'s
-  # defaults come from, so they can't drift from `defstruct`'s. (`:workers`'s `nil` default is
-  # resolved to half `System.schedulers_online/0` capped at 4 inside its validator, the lone
-  # computed default.)
+  # defaults come from, so they can't drift from `defstruct`'s. (`:workers` and `:schedulers`
+  # default to `nil` there and are computed afterwards, by `resolve_parallelism/1`.)
   defp opt(opts, key), do: Keyword.get(opts, key, Keyword.fetch!(@field_defaults, key))
 
   defp reject_unknown!(opts) do

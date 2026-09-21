@@ -75,7 +75,8 @@ defmodule Mutare.Runner.Baseline do
   `opts` are the run options each run is invoked with
   (`t:Mutare.Sandbox.Command.Invocation.run_opts/0`): a fixed `:partition` entry
   (e.g. `MIX_TEST_PARTITION=1`) when `:partition_env` is on, so a partitioned suite
-  finds a valid database, and the `:max_heap_mb` cap; `[]` (the default) sets none.
+  finds a valid database, the `:max_heap_mb` cap, and the mutants' `:schedulers` trim
+  (the elapsed time returned is the yardstick for their cap); `[]` (the default) sets none.
   The baseline is sequential, so one fixed partition suffices
   (`Mutare.Runner.Partitions`).
   """

@@ -60,16 +60,24 @@ defmodule Mutare.Report.Live.Lines do
   def phase_label(phase), do: Map.get(@phase_labels, phase)
 
   @doc """
-  The `:running` phase's label. In verbose mode it appends the worker count from the
+  The `:running` phase's label. In verbose mode it appends the worker count, and each
+  worker's scheduler count when trimmed, from the
   stashed `:run_config` (`{:run_config, cfg}` always fires just before
   `{:running, total}`); the non-verbose label is unchanged.
   """
   @spec running_label(map(), non_neg_integer()) :: String.t()
-  def running_label(%{verbose: true, run_config: %{workers: w}}, total) when is_integer(w) do
-    "testing #{total} mutant(s) · #{w} worker#{plural(w)}…"
+  def running_label(%{verbose: true, run_config: %{workers: w} = config}, total)
+      when is_integer(w) do
+    "testing #{total} mutant(s) · #{w} worker#{plural(w)}#{schedulers_label(config)}…"
   end
 
   def running_label(_state, total), do: "testing #{total} mutant(s)…"
+
+  # Each worker's scheduler trim; nothing for `:all` (untrimmed) or a config without it.
+  defp schedulers_label(%{schedulers: s}) when is_integer(s),
+    do: " × #{s} scheduler#{plural(s)}"
+
+  defp schedulers_label(_config), do: ""
 
   @doc "The label announcing the post-stream timeout-confirmation pass."
   @spec confirming_label(non_neg_integer()) :: String.t()

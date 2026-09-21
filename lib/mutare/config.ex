@@ -52,7 +52,8 @@ defmodule Mutare.Config do
   `--full`/`--no-full` and `--per-file`/`--no-per-file` resolve to
   `:test_selection`, and
   `--partition-db`/`--no-partition-db`/`--partition-env` resolve to
-  `:partition_env`. A `:mutators`
+  `:partition_env`, and `--schedulers N|all` to `:schedulers` (an integer, or `:all`).
+  A `:mutators`
   CLI value is translated from CSV into a list of names; `Mutare.Options` resolves
   those names, including the `:builtins` group token, through the mutator catalog.
 
@@ -78,6 +79,7 @@ defmodule Mutare.Config do
     |> append_skip_calls(flags)
     |> put_translation(:test_selection, test_selection(flags))
     |> put_translation(:partition_env, partition_env(flags))
+    |> put_unless_nil(:schedulers, flags[:schedulers] && parse_schedulers(flags[:schedulers]))
     |> put_unless_nil(:mutators, flags[:mutators] && parse_families(flags[:mutators]))
     |> put_passthrough_flags(flags)
     |> resolve_reporters(flags)
@@ -102,6 +104,7 @@ defmodule Mutare.Config do
     per_file: :boolean,
     partition_db: :boolean,
     partition_env: :string,
+    schedulers: :string,
     report: [:string, :keep]
   ]
   @spec cli_switches() :: keyword()
@@ -401,6 +404,22 @@ defmodule Mutare.Config do
       flags[:partition_db] == true -> {:set, "MIX_TEST_PARTITION"}
       Keyword.fetch(flags, :partition_db) == {:ok, false} -> {:set, nil}
       true -> :unset
+    end
+  end
+
+  # `--schedulers N` trims each worker BEAM to N scheduler threads; `--schedulers all` is the
+  # `:all` of `.mutare.exs` (no trimming). A string flag because of that one word, so it is
+  # parsed here rather than passed through. `Mutare.Options` checks the integer's range.
+  defp parse_schedulers("all"), do: :all
+
+  defp parse_schedulers(text) do
+    case Integer.parse(text) do
+      {count, ""} ->
+        count
+
+      _ ->
+        raise ArgumentError,
+              "--schedulers expects a positive integer or `all`, got: #{inspect(text)}"
     end
   end
 

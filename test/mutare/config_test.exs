@@ -352,6 +352,19 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([time_budget: "5m"], time_budget: "10m")[:time_budget] == "10m"
     end
 
+    test "--schedulers takes a count or `all`; flag wins over file; anything else is a usage error" do
+      assert Config.merge([], schedulers: "4")[:schedulers] == 4
+      assert Config.merge([schedulers: 2], schedulers: "all")[:schedulers] == :all
+      refute Keyword.has_key?(Config.merge([], []), :schedulers)
+      assert Config.merge([schedulers: :all], [])[:schedulers] == :all
+
+      for bad <- ["four", "4x", ""] do
+        assert_raise ArgumentError, ~r/--schedulers expects a positive integer or `all`/, fn ->
+          Config.merge([], schedulers: bad)
+        end
+      end
+    end
+
     test "--workers passes through; flag wins over file; absent leaves it to default" do
       assert Config.merge([], workers: 4)[:workers] == 4
       refute Keyword.has_key?(Config.merge([], []), :workers)

@@ -109,7 +109,9 @@ defmodule Mutare.Sandbox.Command.Invocation do
       (`Mutare.Sandbox.CompilerOptions.compiler_env/0`).
     * `:coverage` (`{dump_path, root}`, or `nil`) — the coverage probe's capture
       flag, dump path and path-normalisation root (`Mutare.Coverage.Recorder`).
-    * `:max_heap_mb` (MB, or `nil`) — the per-process heap cap (`heap_cap_env/1`).
+    * `:max_heap_mb` (MB, or `nil`) — the per-process heap cap (`emulator_flags_env/1`).
+    * `:schedulers` (a count, `:all`, or `nil`) — the run's scheduler threads
+      (`emulator_flags_env/1`).
     * `:partition` (`[{name, id}]` or `[]`) — the user-named partition entry
       (`Mutare.Runner.Partitions.entry/2`), appended last.
 
@@ -124,6 +126,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
           compile: boolean(),
           coverage: {Path.t(), Path.t()} | nil,
           max_heap_mb: pos_integer() | nil,
+          schedulers: pos_integer() | :all | nil,
           partition: [{String.t(), String.t()}]
         ]
 
@@ -156,7 +159,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
   self-hosting isolation variables, and the selector variables for `mutant_id`. Then
   one group per armed option, in `t:run_opts/0` order, and the `:partition` entry
   last. Pure apart from reading Mutare's *own* environment where an entry merges
-  with an inherited value (`heap_cap_env/1`, `CompilerOptions.compiler_env/0`).
+  with an inherited value (`emulator_flags_env/1`, `CompilerOptions.compiler_env/0`).
   """
   @spec environment(Mutare.RuntimeId.t(), run_opts()) :: [{String.t(), String.t() | nil}]
   def environment(mutant_id, opts \\ []) do
@@ -182,7 +185,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
       cap_env(@compile_timeout_env, opts[:compile_cap]) ++
       compile_env(opts[:compile]) ++
       coverage_env(opts[:coverage]) ++
-      heap_cap_env(opts[:max_heap_mb]) ++
+      emulator_flags_env(opts) ++
       Keyword.get(opts, :partition, [])
   end
 
@@ -214,7 +217,8 @@ defmodule Mutare.Sandbox.Command.Invocation do
     compile_cap: 1,
     compile: true,
     coverage: {"mutare_coverage.dump", "."},
-    max_heap_mb: 1
+    max_heap_mb: 1,
+    schedulers: 1
   ]
 
   @doc """
@@ -236,12 +240,19 @@ defmodule Mutare.Sandbox.Command.Invocation do
   end
 
   @doc """
-  The env entry that caps every BEAM process's heap in a sandbox run, or `[]`
-  when `mb` is `nil` (the `:max_heap_mb` default — no cap).
+  The one `ELIXIR_ERL_OPTIONS` entry carrying the emulator flags a sandbox run is
+  armed with — `:max_heap_mb` and `:schedulers` of `t:run_opts/0` — or `[]` when
+  neither is armed. One entry for both, since they share the variable.
 
-  The cap rides in `ELIXIR_ERL_OPTIONS` as `+hmax <words>` (the emulator's
-  default per-process `max_heap_size`, which **kills the offending process**
-  when exceeded). This is the memory analogue of the wall-clock watcher, and
+  A pre-existing `ELIXIR_ERL_OPTIONS` in Mutare's own environment is preserved
+  and the flags appended after it (later emulator flags win), so a user's flags
+  survive with Mutare's applied on top. With nothing armed the inherited value
+  reaches the run untouched.
+
+  ## `:max_heap_mb` — `+hmax <words>`
+
+  The emulator's default per-process `max_heap_size`, which **kills the offending
+  process** when exceeded. This is the memory analogue of the wall-clock watcher, and
   like it needs nothing platform-specific: no cgroups, no `ulimit`, no process
   tree to hunt down. A mutation that makes code allocate without bound (the
   motivating incident: a dropped guard turning a function unconditionally
@@ -249,10 +260,6 @@ defmodule Mutare.Sandbox.Command.Invocation do
   ordinary, fast, attributable test failure inside the run — the growing heap
   belongs to the test process exercising the mutant — instead of racing the
   kernel's OOM killer for the whole host.
-
-  A pre-existing `ELIXIR_ERL_OPTIONS` in Mutare's own environment is preserved
-  and the cap appended after it (later emulator flags win), so a user's flags
-  survive with the cap applied on top.
 
   One limitation: `max_heap_size` counts the process *heap* — lists, tuples,
   maps, small binaries (the incident's growth shape, and the common one for
@@ -265,22 +272,44 @@ defmodule Mutare.Sandbox.Command.Invocation do
   probe, every per-mutant `mix test`) all get it — the baseline doubles as
   validation that the suite itself fits under the cap, so a too-small value
   surfaces as a red baseline up front rather than as false kills mid-run.
+
+  ## `:schedulers` — `+S <n>:<n>`
+
+  Trims the run's BEAM to `n` scheduler threads, all online. `:workers` such runs
+  execute at once, and an untrimmed BEAM takes every core for itself, so without
+  this the per-mutant phase oversubscribes the CPU by the worker count. Dirty CPU
+  schedulers follow the count, and so does whatever the suite derives from
+  `System.schedulers_online/0` — ExUnit's default `max_cases` above all, so a
+  trimmed run executes fewer async tests at once. `:all` (and `nil`) emit no flag.
+
+  The baseline runs under the same count as the mutants, so it checks the suite is
+  green at the concurrency they get, and times it at their speed — the per-mutant
+  cap is a multiple of that time. The one compile and the coverage probe run alone
+  on the machine and are not trimmed.
   """
-  @spec heap_cap_env(pos_integer() | nil) :: [{String.t(), String.t()}]
-  def heap_cap_env(nil), do: []
+  @spec emulator_flags_env(run_opts()) :: [{String.t(), String.t()}]
+  def emulator_flags_env(opts) do
+    case heap_flag(opts[:max_heap_mb]) ++ scheduler_flag(opts[:schedulers]) do
+      [] -> []
+      flags -> [{@erl_options_env, Enum.join(inherited_emulator_flags() ++ flags, " ")}]
+    end
+  end
 
-  def heap_cap_env(mb) when is_integer(mb) and mb > 0 do
-    words = div(mb * 1_048_576, :erlang.system_info(:wordsize))
-    flag = "+hmax #{words}"
+  defp heap_flag(nil), do: []
 
-    merged =
-      case System.get_env(@erl_options_env) do
-        nil -> flag
-        "" -> flag
-        existing -> existing <> " " <> flag
-      end
+  defp heap_flag(mb) when is_integer(mb) and mb > 0,
+    do: ["+hmax #{div(mb * 1_048_576, :erlang.system_info(:wordsize))}"]
 
-    [{@erl_options_env, merged}]
+  defp scheduler_flag(nil), do: []
+  defp scheduler_flag(:all), do: []
+  defp scheduler_flag(count) when is_integer(count) and count > 0, do: ["+S #{count}:#{count}"]
+
+  defp inherited_emulator_flags do
+    case System.get_env(@erl_options_env) do
+      nil -> []
+      "" -> []
+      existing -> [existing]
+    end
   end
 
   @doc """

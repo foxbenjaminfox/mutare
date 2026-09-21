@@ -134,6 +134,8 @@ mix mutare --fail-on-harness-error     # fail on infrastructure verdict gaps
 mix mutare --per-file                  # run whole covering files, not per-test-case
 mix mutare --full                      # run the whole suite per mutant
 mix mutare --workers 4                 # run N mutants concurrently
+mix mutare --schedulers 2              # scheduler threads per worker (default:
+                                       #   the machine's ÷ workers; `all` = untrimmed)
 mix mutare --timeout 30000             # per-mutant wall-clock cap, in ms
 mix mutare --max-heap-mb 4096          # per-process heap cap: a mutant that
                                        #   allocates without bound dies as a

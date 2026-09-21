@@ -165,6 +165,7 @@ defmodule Mutare.Runner.MutantRun do
       Command.timed_test(ctx.sandbox, test_args, Mutare.RuntimeId.of(site),
         cap: ctx.cap,
         max_heap_mb: ctx.options.max_heap_mb,
+        schedulers: ctx.options.schedulers,
         partition: partition
       )
 

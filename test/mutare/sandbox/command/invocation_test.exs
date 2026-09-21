@@ -55,7 +55,9 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
                {Mutare.Coverage.Recorder.root_env(), "/s"}
              ]
 
-      assert extra.(max_heap_mb: 64) == Invocation.heap_cap_env(64)
+      assert extra.(max_heap_mb: 64) == Invocation.emulator_flags_env(max_heap_mb: 64)
+      assert extra.(schedulers: 4) == Invocation.emulator_flags_env(schedulers: 4)
+      assert extra.(schedulers: :all) == []
       assert extra.(partition: [{"MIX_TEST_PARTITION", "3"}]) == [{"MIX_TEST_PARTITION", "3"}]
     end
 
@@ -110,7 +112,7 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
     end
   end
 
-  describe "heap_cap_env/1 (the :max_heap_mb per-process heap cap)" do
+  describe "emulator_flags_env/1 (the :max_heap_mb heap cap and the :schedulers trim)" do
     setup do
       original = System.get_env("ELIXIR_ERL_OPTIONS")
 
@@ -124,21 +126,52 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
       %{original: original}
     end
 
-    test "nil (the default) sets no cap" do
-      assert Invocation.heap_cap_env(nil) == []
+    test "nothing armed sets nothing, so an inherited value reaches the run untouched" do
+      System.put_env("ELIXIR_ERL_OPTIONS", "+S 2")
+      assert Invocation.emulator_flags_env([]) == []
+      assert Invocation.emulator_flags_env(max_heap_mb: nil, schedulers: nil) == []
+      assert Invocation.emulator_flags_env(schedulers: :all) == []
     end
 
     test "an MB value becomes a +hmax flag in words" do
       System.delete_env("ELIXIR_ERL_OPTIONS")
       words = div(1024 * 1_048_576, :erlang.system_info(:wordsize))
-      assert Invocation.heap_cap_env(1024) == [{"ELIXIR_ERL_OPTIONS", "+hmax #{words}"}]
+
+      assert Invocation.emulator_flags_env(max_heap_mb: 1024) ==
+               [{"ELIXIR_ERL_OPTIONS", "+hmax #{words}"}]
+    end
+
+    test "a scheduler count becomes a +S flag with every scheduler online" do
+      System.delete_env("ELIXIR_ERL_OPTIONS")
+      assert Invocation.emulator_flags_env(schedulers: 4) == [{"ELIXIR_ERL_OPTIONS", "+S 4:4"}]
+    end
+
+    test "both flags share the one entry — a second would be a duplicate key" do
+      System.delete_env("ELIXIR_ERL_OPTIONS")
+
+      assert [{"ELIXIR_ERL_OPTIONS", merged}] =
+               Invocation.emulator_flags_env(max_heap_mb: 1, schedulers: 3)
+
+      assert merged =~ ~r/^\+hmax \d+ \+S 3:3$/
+    end
+
+    test "the emitted +S is what a child BEAM runs with, over an inherited one" do
+      # Later emulator flags win: the trim is appended after the inherited `+S`.
+      System.put_env("ELIXIR_ERL_OPTIONS", "+S 1:1")
+
+      {out, 0} =
+        System.cmd("elixir", ["-e", "IO.write(System.schedulers_online())"],
+          env: Invocation.emulator_flags_env(schedulers: 2)
+        )
+
+      assert out == "2"
     end
 
     test "a pre-existing ELIXIR_ERL_OPTIONS is preserved, the cap appended after it" do
       # Later emulator flags win, so appending keeps the user's flags *and*
       # applies the cap on top — never silently clobbers their environment.
       System.put_env("ELIXIR_ERL_OPTIONS", "+S 2")
-      assert [{"ELIXIR_ERL_OPTIONS", merged}] = Invocation.heap_cap_env(1)
+      assert [{"ELIXIR_ERL_OPTIONS", merged}] = Invocation.emulator_flags_env(max_heap_mb: 1)
       assert merged =~ ~r/^\+S 2 \+hmax \d+$/
     end
   end

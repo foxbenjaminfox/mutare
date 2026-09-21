@@ -4399,8 +4399,9 @@ drains; only a repeat overrun records `:timeout` (mechanics in the
 `Mutare.Runner` moduledoc). The asymmetry that decides it: an over-generous
 verdict path costs one extra cap per *genuine* hang (rare); a tight one silently
 corrupts the score. Two companions attack the cause so few honest runs reach the
-confirmation pass at all: the derived cap scales by half the concurrent lanes
-(`min(workers, sites)`), and the default `:workers` dropped to half the
+confirmation pass at all: the derived cap scaled by half the concurrent lanes
+(`min(workers, sites)`; since narrowed to real oversubscription — "Parallel
+workers", round four), and the default `:workers` dropped to half the
 schedulers, later clamped at 4 (see "Parallel workers"). Per-covering-file caps
 would be tighter and more precise — still a refinement.
 
@@ -4428,10 +4429,34 @@ evidence-backed knee (~2.4× at 4, diminishing hard after) — which changes not
 for ≤ 8 schedulers and only reins in many-core boxes. Suites with poor
 parallelism genuinely benefit from more; that's what `--workers` is for, and
 too-low-default (slower) is a far kinder failure than too-high (false timeouts,
-OOM kills, confirmation tails). A future root fix — trimming each worker BEAM to
-`schedulers/workers` via `+S` — would remove the oversubscription itself, but it
-changes the target suite's own async concurrency semantics, too invasive for a
-default. The lock contention itself is measured and negligible — per-worker
+OOM kills, confirmation tails).
+
+Round four took the root fix this entry used to defer: each worker BEAM is trimmed
+with `+S` to `:schedulers` threads, and `:workers` × `:schedulers` divide
+`System.schedulers_online/0` (`Mutare.Options.Parallelism`; whichever side is
+missing is derived from the other, floored). It had been judged "too invasive for a
+default" because it changes the suite's own async concurrency (ExUnit's `max_cases`
+follows the scheduler count). What changed the judgment: running targets under a
+blanket `ELIXIR_ERL_OPTIONS="+S 4:4"` worked well in practice; fewer concurrent
+tests is the direction that *removes* interference, not the one that causes it;
+and the baseline runs under the same trim, so a suite that does mind fails there,
+loudly, before any verdict. That last point is the `:max_heap_mb` argument again,
+and it is also why the baseline pays the trim although it runs alone: its time is
+the cap's yardstick, and timed at full width it measured something no mutant run
+gets. With the yardstick honest, the cap's `lanes / 2` contention factor (round
+two of "Timeouts") double-counted and went; it survives only as half the
+*oversubscription*, which is 1 unless the user asks for it (`schedulers: :all`,
+or counts whose product exceeds the machine). The probe and the one compile stay
+untrimmed — nobody's yardstick, alone on the machine — which is what the blanket
+env var could not do (it also throttled Mutare's own scan). The budget is
+`schedulers_online`, not the core count, so a container quota or a `+S` given to
+Mutare itself shrinks what is divided and no inherited flag needs parsing. The
+no-flags worker default keeps its clamp at 4, now for the remaining reasons: a
+BEAM's memory per worker, the boot stampede, a database per worker under
+`:partition_env`. A given `--schedulers` derives workers *unclamped* — the user
+who types `--schedulers 1` on a big box has asked for that many BEAMs. Unmeasured:
+whether the clamp should now rise on many-core machines, since oversubscription no
+longer argues against it. The lock contention itself is measured and negligible — per-worker
 isolation (`MIX_BUILD_PATH` or full source copies) was not pursued; see
 "Per-worker `MIX_BUILD_PATH` vs the shared sandbox build" above. (Disabling the
 lock outright was tried and abandoned — see "Bypassing Mix's build lock per
@@ -8193,7 +8218,7 @@ any deadline it could hold. Two independent mitigations, both shipped:
   as false kills mid-run. The one metamutant compile is deliberately uncapped (~25× sources;
   compiler processes are legitimately huge). Opt-in (`nil` default): a cap that silently
   killed a legitimately memory-hungry suite process would manufacture false kills, so the
-  user picks the number. Known limit (in `Invocation.heap_cap_env/1`'s doc): `max_heap_size`
+  user picks the number. Known limit (in `Invocation.emulator_flags_env/1`'s doc): `max_heap_size`
   counts the process heap — lists/tuples/maps, the runaway-recursion shape — not off-heap
   refc binaries; a pure binary-append blowup escapes it.
 

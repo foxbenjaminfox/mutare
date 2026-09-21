@@ -19,6 +19,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The concurrent mutant runs share the machine instead of each taking all of it.** Every
+  worker is a whole `mix test` BEAM, and a BEAM starts a scheduler thread per core, so
+  `--workers 4` used to ask a 16-core machine for 64 busy threads — slower runs, and
+  slow-but-finite mutants pushed past their timeout. Each worker is now trimmed with `+S` to
+  the new **`:schedulers`** option (`--schedulers N`), and the two divide the machine: give
+  either and the other defaults to your schedulers divided by it; give neither and you get the
+  old worker default (half your schedulers, capped at 4) with the schedulers split among them —
+  4 × 4 on 16 cores, 4 × 2 on 8. `schedulers: :all` (`--schedulers all`) restores untrimmed
+  workers. What to expect: a trimmed run sees fewer `System.schedulers_online/0`, so ExUnit's
+  default `max_cases` shrinks with it; the baseline runs under the same trim (it validates the
+  suite at that concurrency, and an async-heavy suite's baseline is slower for it), while the one compile and the
+  coverage probe keep every core. If you were passing `ELIXIR_ERL_OPTIONS="+S …"` to get this
+  effect, drop it — it also throttled Mutare's own scan and compile.
+- **The derived per-mutant timeout is `baseline × :timeout_multiplier`**, no longer scaled by
+  half the worker count: the baseline is now timed under the mutants' scheduler trim, so it
+  already measures what a mutant run takes. The scaling remains only for a configuration that
+  oversubscribes the CPU (`schedulers: :all`, or explicit counts whose product exceeds the
+  machine).
+
 - **A pipe stage is the call it is sugar for, everywhere Mutare reads code.**
   `left |> stage(args)` is resolved, routed, marked, offered to mutators and delivered as
   `stage(left, args)` — `Kernel.|>/2`'s own desugaring — whether or not the call has a route.

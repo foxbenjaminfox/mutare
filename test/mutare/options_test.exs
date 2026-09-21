@@ -266,6 +266,33 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  # The derivation itself is `Mutare.Options.ParallelismTest`'s; here, that `new/1` applies it
+  # to this machine's scheduler count and the struct never carries a `nil`.
+  describe ":schedulers" do
+    test "divides the machine with :workers, whichever side is given" do
+      budget = System.schedulers_online()
+
+      assert Options.new(workers: 2).schedulers == max(1, div(budget, 2))
+      assert Options.new(schedulers: 2).workers == max(1, div(budget, 2))
+
+      default = Options.new([])
+      assert default.schedulers == max(1, div(budget, default.workers))
+    end
+
+    test "both given are taken as given; :all is accepted and trims nothing" do
+      assert %{workers: 64, schedulers: 64} = Options.new(workers: 64, schedulers: 64)
+      assert %{workers: 3, schedulers: :all} = Options.new(workers: 3, schedulers: :all)
+    end
+
+    test "rejects zero, negatives, and other words" do
+      for bad <- [0, -1, 2.5, "4", :auto] do
+        assert_raise ArgumentError, ~r/:schedulers must be a positive integer or :all/, fn ->
+          Options.new(schedulers: bad)
+        end
+      end
+    end
+  end
+
   describe ":partition_env" do
     test "defaults to nil (off)" do
       assert Options.new([]).partition_env == nil

@@ -156,8 +156,13 @@ defmodule Mix.Tasks.Mutare do
 
       mix mutare --workers 8              # run 8 mutants concurrently (default: half
                                           #   your schedulers, capped at 4 — each worker
-                                          #   is a full `mix test` BEAM that uses all
-                                          #   of them)
+                                          #   is a full `mix test` BEAM)
+      mix mutare --schedulers 2           # scheduler threads per worker (default:
+                                          #   your schedulers ÷ workers, so the workers
+                                          #   share the machine instead of each taking
+                                          #   all of it; given alone, workers become
+                                          #   your schedulers ÷ this)
+      mix mutare --schedulers all         # don't trim the workers' schedulers
       mix mutare --full                   # run the whole suite for every mutant
                                           #   (default: only the test cases that cover it)
       mix mutare --per-file               # run whole covering test *files*, not just
@@ -169,9 +174,7 @@ defmodule Mix.Tasks.Mutare do
                                           #   (--no-per-file likewise restores :tests)
       mix mutare --timeout 30000          # per-mutant wall-clock cap, in ms
                                           #   (default: derived from the baseline run)
-      mix mutare --timeout-multiplier 5   # ...or set the cap to baseline × this,
-                                          #   scaled by half the concurrent workers
-                                          #   (the baseline is timed uncontended)
+      mix mutare --timeout-multiplier 5   # ...or set the cap to baseline × this
                                           #   (default: 3.0; ignored if --timeout is set)
       mix mutare --probe-timeout 600000   # wall-clock cap for the coverage probe run,
                                           #   in ms (default: 10× the per-mutant cap);
@@ -314,14 +317,18 @@ defmodule Mix.Tasks.Mutare do
         # runs the whole suite for every mutant
         test_selection: :tests,
         # concurrent mutant runs; default: half the schedulers, capped at 4 (each
-        # worker is a full `mix test` BEAM that itself uses every scheduler)
+        # worker is a full `mix test` BEAM)
         workers: 4,
+        # scheduler threads per worker (`+S`), so that workers × schedulers fits the
+        # machine; default: the schedulers ÷ workers (and if only this is set, workers
+        # default to the schedulers ÷ this). The baseline runs trimmed the same way.
+        # :all leaves every worker every scheduler.
+        schedulers: 4,
         # give each concurrent worker a distinct partition id under this env var
         # (1..workers), for per-worker DB isolation — read it in config/test.exs
         # like `mix test --partitions`; nil (default) is off. Needs `workers` DBs.
         partition_env: nil,
-        # per-mutant wall-clock cap = baseline run × multiplier × half the
-        # concurrent workers (the baseline is timed uncontended), unless an
+        # per-mutant wall-clock cap = baseline run × multiplier, unless an
         # absolute `timeout:` in ms is given instead (then the multiplier is moot)
         timeout_multiplier: 3.0,
         timeout: nil,

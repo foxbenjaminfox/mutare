@@ -33,6 +33,20 @@ defmodule Mutare.Report.LiveTest do
     end
   end
 
+  describe "running_label/2" do
+    test "verbose names the workers and their scheduler trim; untrimmed names workers alone" do
+      state = fn config -> %{verbose: true, run_config: config} end
+
+      assert Lines.running_label(state.(%{workers: 1, schedulers: 1}), 3) ==
+               "testing 3 mutant(s) · 1 worker × 1 scheduler…"
+
+      assert Lines.running_label(state.(%{workers: 4, schedulers: :all}), 3) ==
+               "testing 3 mutant(s) · 4 workers…"
+
+      assert Lines.running_label(%{verbose: false, run_config: nil}, 3) == "testing 3 mutant(s)…"
+    end
+  end
+
   describe "eta_secs/3" do
     test "extrapolates remaining from rate so far" do
       # 4 done in 41s ⇒ ~10.25s each ⇒ 6 remaining ≈ 62s.
@@ -467,7 +481,7 @@ defmodule Mutare.Report.LiveTest do
         {:coverage_done, %{covered: 134, no_coverage: 8, run_all?: false, cap_ms: 9300}}
       )
 
-      Live.phase(live, {:run_config, %{workers: 8, partition_env: nil}})
+      Live.phase(live, {:run_config, %{workers: 8, schedulers: 2, partition_env: nil}})
       Live.phase(live, {:running, 142})
       Live.started(live, site())
 
@@ -517,8 +531,8 @@ defmodule Mutare.Report.LiveTest do
       assert out =~ "running baseline suite…"
       assert out =~ "✓ baseline green in 3.1s"
       assert out =~ "✓ coverage: 134 covered · 8 no-coverage · cap 9.3s"
-      # The worker count rides onto the running line.
-      assert out =~ "testing 142 mutant(s) · 8 workers…"
+      # The worker count, and each worker's scheduler trim, ride onto the running line.
+      assert out =~ "testing 142 mutant(s) · 8 workers × 2 schedulers…"
 
       # A line per mutant — kills included (unlike non-verbose) — with durations.
       # The label is padded to 8 then a 2-space gap, so "KILLED" → 4 trailing spaces,

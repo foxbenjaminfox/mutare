@@ -177,7 +177,8 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   **`Mutare.Score`** — consumed by the runner's harness-error abort and the CLI's gate check, so
   they are not a reporter's concern.
 - **Config surface** — `Mutare.Options` (validated user config) + `Options.Registry` (the single
-  source of every option's default/CLI-switch/validator) + `Mutare.Run.Context` (runtime wiring:
+  source of every option's default/CLI-switch/validator) + `Options.Parallelism` (how `:workers` ×
+  `:schedulers` divide the machine — NOTES "Parallel workers") + `Mutare.Run.Context` (runtime wiring:
   the resolved project + the four live-progress hooks). `Mutare.Config`/`Changes` +
   `Mix.Tasks.Mutare` resolve `.mutare.exs` + CLI flags + `git diff` for `--since`.
 - **Extension surface** — `Mutare.Mutator` (+ capability behaviours `Mutator.Structural` /

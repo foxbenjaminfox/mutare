@@ -174,20 +174,28 @@ defmodule Mutare.Options.Registry do
         ":test_selection must be :tests, :coverage, or :full"
       )
 
-  # `:workers` defaults to `nil`, resolved here to half `System.schedulers_online/0`
-  # **clamped to 1..4** (the lone computed default), so the struct always carries a
-  # concrete positive integer. Why that shape: each worker is a full `mix test` BEAM
-  # that itself uses every scheduler, so a parallel suite already scales with the
-  # machine on its own — extra workers only fill the utilization gaps one run leaves
-  # (boot/app-start, IO waits, the small selected-test sets), and the workers needed
-  # for that is a small constant, not a fraction of the cores. Past ~4 the
-  # oversubscription inflates wall time toward the per-mutant cap and manufactures
-  # provisional timeouts (NOTES "Parallel workers", "Timeouts — portable self-halt").
-  # An explicit `nil` resolves the same way; any other non-positive value is rejected.
-  defp validate_workers!(nil), do: System.schedulers_online() |> div(2) |> min(4) |> max(1)
-
+  # `:workers` and `:schedulers` both default to `nil` ("not given"). They divide one budget, so
+  # neither validator can default its own: `Mutare.Options` resolves the pair through
+  # `Mutare.Options.Parallelism.resolve/3` after both are validated, and the struct always
+  # carries concrete values. Here each is only checked for shape.
   defp validate_workers!(workers),
-    do: validate!(workers, &(is_integer(&1) and &1 > 0), ":workers must be a positive integer")
+    do:
+      validate_nullable!(
+        workers,
+        &(is_integer(&1) and &1 > 0),
+        ":workers must be a positive integer"
+      )
+
+  # The scheduler threads each worker BEAM runs with (`+S`, see
+  # `Mutare.Sandbox.Command.Invocation.emulator_flags_env/1`). `:all` passes no `+S`: every
+  # worker keeps every scheduler, the behaviour before this option existed.
+  defp validate_schedulers!(schedulers),
+    do:
+      validate_nullable!(
+        schedulers,
+        &(&1 == :all or (is_integer(&1) and &1 > 0)),
+        ":schedulers must be a positive integer or :all"
+      )
 
   # `:partition_env` (default `nil` = off) names an env var each concurrent worker
   # is given a distinct partition id under (e.g. `MIX_TEST_PARTITION`), so a
@@ -280,7 +288,7 @@ defmodule Mutare.Options.Registry do
   # coverage probe, per-mutant `mix test`; never the one metamutant compile) at
   # that many megabytes, so a mutation that allocates without bound dies as an
   # ordinary test failure instead of racing the kernel's OOM killer for the host.
-  # See `Mutare.Sandbox.Command.Invocation.heap_cap_env/1` for the mechanism and
+  # See `Mutare.Sandbox.Command.Invocation.emulator_flags_env/1` for the mechanism and
   # sizing guidance (the baseline validates the cap fits the suite).
   defp validate_max_heap!(mb),
     do:
@@ -589,6 +597,9 @@ defmodule Mutare.Options.Registry do
   defp show_probe_timeout(nil), do: "derived from the per-mutant cap"
   defp show_probe_timeout(ms), do: to_string(ms)
 
+  defp show_schedulers(:all), do: "all (workers are not trimmed)"
+  defp show_schedulers(count), do: "#{count} per worker"
+
   defp show_cap(nil), do: "(no cap)"
   defp show_cap(n), do: to_string(n)
 
@@ -682,6 +693,12 @@ defmodule Mutare.Options.Registry do
       ),
       spec(key: :test_selection, default: :tests, validate: &validate_test_selection!/1),
       spec(key: :workers, default: nil, cli: :integer, validate: &validate_workers!/1),
+      spec(
+        key: :schedulers,
+        default: nil,
+        show: &show_schedulers/1,
+        validate: &validate_schedulers!/1
+      ),
       spec(
         key: :partition_env,
         default: nil,

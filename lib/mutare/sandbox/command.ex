@@ -256,8 +256,9 @@ defmodule Mutare.Sandbox.Command do
   args otherwise); they are folded into the kill-detection argv by `test_argv/1`
   (forcing `--exit-status #{Exit.failure()}` and `--max-failures 1`). `opts` are the
   run options of `Mutare.Sandbox.Command.Invocation.mix/4` — `:cap` bounds an
-  overrun via the watcher, `:max_heap_mb` caps the heap, `:partition` carries the
-  per-worker partition entry; `[]` sets none.
+  overrun via the watcher, `:max_heap_mb` caps the heap, `:schedulers` trims the
+  run's scheduler threads, `:partition` carries the per-worker partition entry; `[]`
+  sets none.
   """
   @spec timed_test(Path.t(), [String.t()], Mutare.RuntimeId.t(), Invocation.run_opts()) ::
           Result.t()
