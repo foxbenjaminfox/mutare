@@ -13,11 +13,10 @@ defmodule Mutare.Transform.Analyze.Routed do
   # arrives as the direct call it is sugar for). It drives the descent back through `Analyze.annotate/2` /
   # `Analyze.pattern/2`, with the whole-node offer on `Attach`.
 
-  alias Mutare.AST
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Transform.{Candidate, Meta, NodeRange, Resolve}
+  alias Mutare.Transform.{Candidate, KeywordRouting, Meta, NodeRange, Resolve}
   alias Mutare.Transform.Analyze
-  alias Mutare.Transform.Analyze.{Attach, CallOptions, Syntax}
+  alias Mutare.Transform.Analyze.{Attach, CallOptions}
   alias Mutare.Transform.Suppression
 
   import Suppression, only: [is_equality_op: 1, is_negation_op: 1]
@@ -179,7 +178,7 @@ defmodule Mutare.Transform.Analyze.Routed do
   # A keyed refinement `{:keyed, leading, pairs}` over a literal keyword list (the trailing sugar
   # or an explicit `[k: v]`): every pair is routed **once**, by its final position — a named key's
   # value by the position the refinement gives it, every other value and every key by the leading
-  # treatment's reading one level down (`descendant_treatment/1`) — and the container is offered
+  # treatment's reading one level down (`KeywordRouting`) — and the container is offered
   # by the leading treatment (`offer_container/4`). Choosing the final position *before*
   # descending keeps the once-per-node invariant: a two-pass "route by the leading treatment,
   # then re-route the named values from the raw source" analyzes every named value twice, and
@@ -188,26 +187,13 @@ defmodule Mutare.Transform.Analyze.Routed do
   # argument (a variable, a `Keyword.merge/2` call, a map) has no keys to refine and takes the
   # leading treatment alone — exactly the "if it is a literal keyword list with a literal key"
   # contract. (`Mutare.Transform.Tag.tag_routed_arg/4` is the guard-path twin.)
-  defp route_macro_arg(arg, {:keyed, leading, pairs}, env) do
-    case CallOptions.keyword_pairs(arg) do
-      {:ok, kw_pairs, rewrap} ->
-        inner = descendant_treatment(leading)
+  defp route_macro_arg(arg, {:keyed, leading, _} = treatment, env) do
+    case KeywordRouting.decode(arg, treatment) do
+      {:pairs, pairs, rewrap} ->
+        offer_container(rewrap.(route_pairs(pairs, env)), arg, leading, env)
 
-        routed =
-          Enum.map(kw_pairs, fn {key, value} ->
-            position =
-              case List.keyfind(pairs, AST.key_atom(key), 0) do
-                {_key, position} -> position
-                nil -> inner
-              end
-
-            {route_key(key, inner, env), route_macro_arg(value, position, env)}
-          end)
-
-        offer_container(rewrap.(routed), arg, leading, env)
-
-      :error ->
-        route_macro_arg(arg, leading, env)
+      {:whole, fallback} ->
+        route_macro_arg(arg, fallback, env)
     end
   end
 
@@ -238,9 +224,12 @@ defmodule Mutare.Transform.Analyze.Routed do
   # `:routing` classifier caused that fallback, `Mutare.Transform.Resolve.RouteStamp` already
   # printed an advisory warning at stamp time (a static route stays silent — its non-keyword
   # call sites are legitimate alternate macro forms).
-  defp route_macro_arg(arg, {:keyword, value_treatments}, env)
-       when is_list(value_treatments),
-       do: route_keyword(arg, value_treatments, env)
+  defp route_macro_arg(arg, {:keyword, _} = treatment, env) do
+    case KeywordRouting.decode(arg, treatment) do
+      {:pairs, pairs, rewrap} -> rewrap.(route_pairs(pairs, env))
+      {:whole, fallback} -> route_macro_arg(arg, fallback, env)
+    end
+  end
 
   # An already-`^`-pinned value under `:interpolated` is descended, not re-pinned: past
   # the user's own `^` the code is plain Elixir evaluated at build time, where a bare selector
@@ -276,21 +265,11 @@ defmodule Mutare.Transform.Analyze.Routed do
 
   defp route_macro_arg(arg, _expression, env), do: Analyze.annotate(arg, env)
 
-  # A keyword key under a keyed refinement, treated as the generic pair clause treats it
-  # (`Mutare.Transform.Analyze`): a **block key** (`do:`/`else:`/`rescue:`/`catch:`/`after:`) is a
-  # structural label and stays raw — a selector in its place is malformed, and a macro matching
-  # `wrap(do: body)` would not even expand — while a data key is a runtime value and follows the
-  # leading treatment's reading.
-  defp route_key(key, inner, env) do
-    if Syntax.block_key?(key), do: key, else: route_macro_arg(key, inner, env)
+  defp route_pairs(pairs, env) do
+    Enum.map(pairs, fn {{key, key_treatment}, {value, value_treatment}} ->
+      {route_macro_arg(key, key_treatment, env), route_macro_arg(value, value_treatment, env)}
+    end)
   end
-
-  # What a leading treatment means one level down a keyed refinement: `:interior` withholds only
-  # the container, so its children are ordinary expressions; every other word means the same at
-  # every depth (`:raw` children stay raw, `:pattern` children are patterns, `:interpolated`
-  # children are each pinned — the scalar-per-value shape the keyword form is for).
-  defp descendant_treatment(:interior), do: :expression
-  defp descendant_treatment(other), do: other
 
   # The keyword container's own offer under a keyed refinement, by the leading treatment. Only the
   # Sourceror-wrapped explicit list (`{:__block__, _, [list]}`) is a node the generic walk offers
@@ -356,30 +335,6 @@ defmodule Mutare.Transform.Analyze.Routed do
 
   defp inplace_candidate?(node),
     do: Enum.any?(Meta.candidates(node, :in_place), &match?(%Candidate.InPlace{}, &1))
-
-  # Route a keyword list's pair *values* by `value_treatments` (keys raw). Handles the bare list
-  # (a trailing keyword argument, `where(q, x: v)`) and the Sourceror `{:__block__, _, [list]}`
-  # wrap a list takes in a keyword *value* position (`where: [x: v]` inside a `from`) — unwrapped,
-  # routed, re-wrapped so the rendering metadata is preserved. A non-keyword-shaped value is left
-  # raw (nothing to route). The treatment list is **strict**: exactly one treatment per pair, or
-  # `validate_keyword_treatments!/2` raises.
-  defp route_keyword({:__block__, meta, [list]}, value_treatments, env)
-       when is_list(list),
-       do: {:__block__, meta, [route_keyword(list, value_treatments, env)]}
-
-  defp route_keyword(list, value_treatments, env) when is_list(list) do
-    if CallOptions.keyword_list_shaped?(list) do
-      CallOptions.validate_keyword_treatments!(list, value_treatments)
-
-      Enum.zip_with(list, value_treatments, fn {key, value}, treatment ->
-        {key, route_macro_arg(value, treatment, env)}
-      end)
-    else
-      list
-    end
-  end
-
-  defp route_keyword(arg, _value_treatments, _env), do: arg
 
   # The plain `:interior` move: analyze, then withhold the node's own candidates.
   defp strip_interior(arg, env),

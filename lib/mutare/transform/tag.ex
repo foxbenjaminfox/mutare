@@ -26,8 +26,7 @@ defmodule Mutare.Transform.Tag do
 
   alias Mutare.{AST, Mutator}
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Transform.{Calls, Meta, NodeRange, StructuralForms, Suppression}
-  alias Mutare.Transform.Analyze.{CallOptions, Syntax}
+  alias Mutare.Transform.{Calls, KeywordRouting, Meta, NodeRange, StructuralForms, Suppression}
 
   # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
   # the guard path matches the guard-legal subset of the body path's sets, so its clauses
@@ -285,44 +284,24 @@ defmodule Mutare.Transform.Tag do
   defp tag_routed_arg(arg, :interior, acc, mutators),
     do: arg |> tag_walk(acc, mutators) |> strip_own_target()
 
-  defp tag_routed_arg(arg, {:keyed, leading, pairs}, acc, mutators) do
-    case CallOptions.keyword_pairs(arg) do
-      {:ok, kw_pairs, rewrap} ->
-        inner = descendant_position(leading)
-
-        {kw_pairs, acc} =
-          Enum.map_reduce(kw_pairs, acc, fn {key, value}, acc ->
-            position =
-              case List.keyfind(pairs, AST.key_atom(key), 0) do
-                {_key, position} -> position
-                nil -> inner
-              end
-
-            {key, acc} = tag_key(key, inner, acc, mutators)
-            {value, acc} = tag_routed_arg(value, position, acc, mutators)
+  defp tag_routed_arg(arg, {:keyed, leading, _} = treatment, acc, mutators) do
+    case KeywordRouting.decode(arg, treatment) do
+      {:pairs, pairs, rewrap} ->
+        {pairs, acc} =
+          Enum.map_reduce(pairs, acc, fn {{key, key_treatment}, {value, value_treatment}}, acc ->
+            {key, acc} = tag_routed_arg(key, key_treatment, acc, mutators)
+            {value, acc} = tag_routed_arg(value, value_treatment, acc, mutators)
             {{key, value}, acc}
           end)
 
-        offer_container(rewrap.(kw_pairs), leading, acc, mutators)
+        offer_container(rewrap.(pairs), leading, acc, mutators)
 
-      :error ->
-        tag_routed_arg(arg, leading, acc, mutators)
+      {:whole, fallback} ->
+        tag_routed_arg(arg, fallback, acc, mutators)
     end
   end
 
   defp tag_routed_arg(arg, _position, acc, mutators), do: tag_walk(arg, acc, mutators)
-
-  # A keyword key under a keyed refinement: a block key (`do:`/`else:`/…) is a structural label
-  # and stays raw, as the body path keeps it (`Analyze.Routed`); a data key follows the leading
-  # treatment's reading.
-  defp tag_key(key, inner, acc, mutators) do
-    if Syntax.block_key?(key), do: {key, acc}, else: tag_routed_arg(key, inner, acc, mutators)
-  end
-
-  # What a leading treatment means one level down: `:interior` withholds only the container, so
-  # its children are ordinary expressions; `:raw` and `:expression` mean the same at every depth.
-  defp descendant_position(:interior), do: :expression
-  defp descendant_position(other), do: other
 
   # The keyword container's own offer, by the leading treatment. Only the Sourceror-wrapped
   # explicit list (`{:__block__, _, [list]}`) is a node the ordinary walk offers (the `[…] → []`

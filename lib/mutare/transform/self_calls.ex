@@ -28,8 +28,8 @@ defmodule Mutare.Transform.SelfCalls do
   # its receiver. Quoted pipes remain data, and their spelling is preserved too.
 
   alias Mutare.AST
-  alias Mutare.Transform.Analyze.{CallOptions, QuoteEscape, Syntax}
-  alias Mutare.Transform.{Calls, Imports, Meta}
+  alias Mutare.Transform.Analyze.QuoteEscape
+  alias Mutare.Transform.{Calls, Imports, KeywordRouting, Meta}
 
   @doc """
   Redirect executable full-arity self-calls of `self_call` in `body` to `replacement`,
@@ -138,49 +138,30 @@ defmodule Mutare.Transform.SelfCalls do
   defp walk_argument({:quote, _, _} = arg, :interior, acc, fun), do: fun.(arg, acc)
   defp walk_argument(arg, :interior, acc, fun), do: walk_routed_children(arg, acc, fun)
 
-  defp walk_argument(arg, {:keyed, leading, refinements}, acc, fun) do
-    case CallOptions.keyword_pairs(arg) do
-      {:ok, pairs, rewrap} ->
-        inner = if leading == :interior, do: :expression, else: leading
+  defp walk_argument(arg, {:keyed, _, _} = treatment, acc, fun),
+    do: walk_keyword(arg, treatment, acc, fun)
 
-        {pairs, acc} =
-          Enum.map_reduce(pairs, acc, fn {key, value}, acc ->
-            treatment = Keyword.get(refinements, AST.key_atom(key), inner)
-
-            {key, acc} =
-              if Syntax.block_key?(key),
-                do: {key, acc},
-                else: walk_argument(key, inner, acc, fun)
-
-            {value, acc} = walk_argument(value, treatment, acc, fun)
-            {{key, value}, acc}
-          end)
-
-        {rewrap.(pairs), acc}
-
-      :error ->
-        walk_argument(arg, leading, acc, fun)
-    end
-  end
-
-  defp walk_argument(arg, {:keyword, treatments}, acc, fun) do
-    case CallOptions.keyword_pairs(arg) do
-      {:ok, pairs, rewrap} ->
-        {pairs, acc} =
-          Enum.zip(pairs, treatments)
-          |> Enum.map_reduce(acc, fn {{key, value}, treatment}, acc ->
-            {value, acc} = walk_argument(value, treatment, acc, fun)
-            {{key, value}, acc}
-          end)
-
-        {rewrap.(pairs), acc}
-
-      :error ->
-        {arg, acc}
-    end
-  end
+  defp walk_argument(arg, {:keyword, _} = treatment, acc, fun),
+    do: walk_keyword(arg, treatment, acc, fun)
 
   defp walk_argument(arg, _treatment, acc, fun), do: fun.(arg, acc)
+
+  defp walk_keyword(arg, treatment, acc, fun) do
+    case KeywordRouting.decode(arg, treatment) do
+      {:pairs, pairs, rewrap} ->
+        {pairs, acc} =
+          Enum.map_reduce(pairs, acc, fn {{key, key_treatment}, {value, value_treatment}}, acc ->
+            {key, acc} = walk_argument(key, key_treatment, acc, fun)
+            {value, acc} = walk_argument(value, value_treatment, acc, fun)
+            {{key, value}, acc}
+          end)
+
+        {rewrap.(pairs), acc}
+
+      {:whole, fallback} ->
+        walk_argument(arg, fallback, acc, fun)
+    end
+  end
 
   defp walk_quote_arg({:__block__, meta, [kw]}, level, enabled?, self_call, acc, fun)
        when is_list(kw) do

@@ -18,9 +18,10 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
   alias Mutare.AST
   alias Mutare.Coverage.Recorder
-  alias Mutare.Transform.Analyze.{CallOptions, QuoteEscape, Syntax}
+  alias Mutare.Transform.Analyze.QuoteEscape
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Delivery
+  alias Mutare.Transform.KeywordRouting
   alias Mutare.Transform.{Calls, CoverageEmit, Ctx, Meta, PatternStructure, Resolve, SelectorEmit}
 
   @doc "Bindings guaranteed to escape an expression, in their source order."
@@ -112,41 +113,26 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   defp argument_bindings_for(arg, :binding_pattern, _context),
     do: PatternStructure.bound_var_names(arg)
 
-  defp argument_bindings_for(arg, {:keyed, leading, refinements}, context) do
-    case CallOptions.keyword_pairs(arg) do
-      {:ok, pairs, _rewrap} ->
-        inner = if leading == :interior, do: :expression, else: leading
+  defp argument_bindings_for(arg, {:keyed, _, _} = treatment, context),
+    do: keyword_bindings(arg, treatment, context)
 
-        Enum.flat_map(pairs, fn {key, value} ->
-          treatment = Keyword.get(refinements, AST.key_atom(key), inner)
-
-          key_bindings =
-            if Syntax.block_key?(key),
-              do: [],
-              else: argument_bindings_for(key, inner, context)
-
-          key_bindings ++ argument_bindings_for(value, treatment, context)
-        end)
-
-      :error ->
-        argument_bindings_for(arg, leading, context)
-    end
-  end
-
-  defp argument_bindings_for(arg, {:keyword, treatments}, context) do
-    case CallOptions.keyword_pairs(arg) do
-      {:ok, pairs, _rewrap} ->
-        Enum.zip(pairs, treatments)
-        |> Enum.flat_map(fn {{_key, value}, treatment} ->
-          argument_bindings_for(value, treatment, context)
-        end)
-
-      :error ->
-        []
-    end
-  end
+  defp argument_bindings_for(arg, {:keyword, _} = treatment, context),
+    do: keyword_bindings(arg, treatment, context)
 
   defp argument_bindings_for(_arg, _treatment, _context), do: []
+
+  defp keyword_bindings(arg, treatment, context) do
+    case KeywordRouting.decode(arg, treatment) do
+      {:pairs, pairs, _rewrap} ->
+        Enum.flat_map(pairs, fn {{key, key_treatment}, {value, value_treatment}} ->
+          argument_bindings_for(key, key_treatment, context) ++
+            argument_bindings_for(value, value_treatment, context)
+        end)
+
+      {:whole, fallback} ->
+        argument_bindings_for(arg, fallback, context)
+    end
+  end
 
   # Quote options execute in the surrounding scope. Its body is data, except for
   # live unquotes; a nested quote or disabled unquoting keeps those expressions data.

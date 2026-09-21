@@ -12873,3 +12873,26 @@ Historical replay in disposable VMs confirms that the new oracle rejects SelfCal
 before `226550f4` (quoted calls renamed as recursion) and before `8d59d5fb` (nested quote
 options rewritten as executable escapes). Both failures are semantic source-patch
 mismatches, not compilation failures. No production change was needed for this extension.
+
+### Keyword routes choose treatments once, without sharing a walker (2026-09-21)
+
+`Transform.KeywordRouting` now assigns treatments to the keys and values of a concrete
+keyword argument for Resolve, body analysis, guard tagging, self-call rewriting and binding
+analysis. Those passes previously repeated the keyed refinement lookup, `:interior`
+descendant rule, block-key protection and positional keyword handling. A correction to
+that interpretation should no longer require rediscovering each copy.
+
+The decoder returns ordered `{node, treatment}` pairs and a shape-preserving rebuilder,
+or an explicit whole-argument fallback. Positional routes require exactly one treatment
+per pair before returning a result. It neither walks children nor offers a container;
+nested routes remain treatments for the consumer to interpret in its own scope.
+
+The walkers stay separate deliberately. A skipped call can still export evaluated
+argument bindings even though resolution, mutation and self-call rewriting leave it
+alone. Guard tagging still treats adapter-only words as ordinary guard syntax. Sharing
+those policies would conflate withholding mutation with withholding execution. Direct
+decoder tests pin the shared contract; the generated source-patch suites check its
+consumers against independently compiled source edits.
+
+A disposable-VM comparison across all 408 combinations of the two fixture vocabularies
+produced identical metamutant source and public mutant records before and after this refactor.
