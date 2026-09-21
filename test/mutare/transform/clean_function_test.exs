@@ -597,6 +597,49 @@ defmodule Mutare.Transform.CleanFunctionTest do
   end
 
   describe "a relocated clean copy" do
+    test "preserves nested public functions when an unrelated mutant selects the clean copy" do
+      nested = Module.concat(@fixture, :Inner)
+
+      on_exit(fn ->
+        :code.purge(nested)
+        :code.delete(nested)
+      end)
+
+      source = """
+      defmodule Mutare.CleanFunctionFixture do
+        def build(n) when n > 0 do
+          defmodule Inner do
+            def build(x), do: x
+            def call(x), do: build(x)
+          end
+          n + 1
+        end
+        def build(0), do: :zero
+        def other(n), do: n + 7
+      end
+      """
+
+      result = Transform.transform_string_with_sites(source, mutators: @mutators)
+
+      assert Enum.any?(
+               result.clean_decisions,
+               &match?(%{function: {:build, 1}, delivery: :lifted, verdict: :clean}, &1)
+             )
+
+      other = Enum.find(result.sites, &(&1.original_code == "n + 7"))
+      assert other
+      compile_purging(@fixture, result.metamutant)
+
+      for selection <- [0, other.id] do
+        Selector.put(selection)
+        :code.purge(nested)
+        :code.delete(nested)
+        assert apply(@fixture, :build, [1]) == 2
+        assert apply(nested, :build, [:value]) == :value
+        assert apply(nested, :call, [:value]) == :value
+      end
+    end
+
     test "preserves routed syntax when an unrelated mutant selects the clean copy" do
       for {expression, route, expected} <- [
             {"Syntax.label(f(n))", {:label, [:raw]}, :f},

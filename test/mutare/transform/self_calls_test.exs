@@ -3,6 +3,52 @@ defmodule Mutare.Transform.SelfCallsTest do
 
   alias Mutare.Transform.{Meta, Resolve, SelfCalls}
 
+  for source <- [
+        "defmodule Inner do; def f(x), do: f(x); end",
+        "Kernel.defmodule Inner do; def f(x), do: f(x); end",
+        "defmodule Inner do; @value f(1); end",
+        "defprotocol Inner do; def f(x); end",
+        "defimpl Inner, for: Atom do; def f(x), do: f(x); end",
+        "def f(x), do: f(x)",
+        "Kernel.def f(x), do: f(x)",
+        "defp f(x) when is_integer(x), do: f(x)",
+        "defmacro f(x), do: f(x)",
+        "defmacrop f(x), do: f(x)",
+        "defguard f(x) when is_integer(x)",
+        "defguardp f(x) when is_integer(x)",
+        "defdelegate f(x), to: Other"
+      ] do
+    test "preserves a nested definition scope: #{source}" do
+      ast = Sourceror.parse_string!(unquote(source))
+      assert SelfCalls.redirect(ast, {:f, 1}, :clean_f, []) == {ast, false}
+
+      node = {:consume, Meta.stamp_routing([], [:interior]), [ast]}
+      assert SelfCalls.redirect(node, {:f, 1}, :clean_f, []) == {node, false}
+    end
+  end
+
+  test "a displaced definition macro remains an ordinary call" do
+    ast = Sourceror.parse_string!("Other.defmodule(f(1))")
+    assert {redirected, true} = SelfCalls.redirect(ast, {:f, 1}, :clean_f, [])
+    assert Sourceror.to_string(redirected) == "Other.defmodule(clean_f(1))"
+
+    {:defmodule, meta, args} = Sourceror.parse_string!("defmodule(f(1), [])")
+
+    meta =
+      Mutare.Transform.Imports.stamp(
+        :defmodule,
+        meta,
+        args,
+        %{},
+        {:all, MapSet.new([{:defmodule, 2}])}
+      )
+
+    assert {redirected, true} =
+             SelfCalls.redirect({:defmodule, meta, args}, {:f, 1}, :clean_f, [])
+
+    assert Sourceror.to_string(redirected) == "defmodule(clean_f(1), [])"
+  end
+
   for {source, treatment, expected, changed?} <- [
         {"f(f(1))", :raw, "f(f(1))", false},
         {"f(f(1))", :interior, "f(clean_f(1))", true},
@@ -55,6 +101,8 @@ defmodule Mutare.Transform.SelfCallsTest do
   end
 
   for {source, expected} <- [
+        {"quote(do: defmodule Inner do; def f(x), do: unquote(f(1)); end)",
+         "quote(do: defmodule Inner do; def f(x), do: unquote(clean_f(:extra, 1)); end)"},
         {"quote(do: f(unquote(f(1))))", "quote(do: f(unquote(clean_f(:extra, 1))))"},
         {"quote(do: [unquote_splicing(f(1))])",
          "quote(do: [unquote_splicing(clean_f(:extra, 1))])"},

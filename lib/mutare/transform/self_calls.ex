@@ -20,6 +20,9 @@ defmodule Mutare.Transform.SelfCalls do
   # are data: only quote option values and live unquote expressions can contain executable
   # self-calls. Renaming quoted calls
   # can silently change returned data even when both copies compile.
+  # Definitions are separate scopes: their heads are declarations, and their bodies'
+  # calls belong to the new scope. Leave the entire construct at its ordinary entry
+  # points. Quoted definitions still admit live unquotes in the enclosing function.
   #
   # Resolve has already expanded executable pipes to calls, so a stage's arity includes
   # its receiver. Quoted pipes remain data, and their spelling is preserved too.
@@ -89,7 +92,23 @@ defmodule Mutare.Transform.SelfCalls do
     if level == 0 and self_call?(node, self_call), do: fun.(node, acc), else: {node, acc}
   end
 
-  defp walk_routed_children({form, meta, args} = node, acc, fun) when is_list(args) do
+  defp walk_routed_children(node, acc, fun) do
+    if definition?(node), do: {node, acc}, else: do_walk_routed_children(node, acc, fun)
+  end
+
+  @definitions ~w(defmodule defprotocol defimpl def defp defmacro defmacrop defguard defguardp defdelegate)a
+
+  defp definition?({form, _meta, args} = node) when is_list(args) do
+    case Calls.resolved_call(node) do
+      {[:Kernel], name, _args, _rebuild} -> name in @definitions
+      nil -> form in @definitions and Calls.kernel_call?(node)
+      _other -> false
+    end
+  end
+
+  defp definition?(_node), do: false
+
+  defp do_walk_routed_children({form, meta, args} = node, acc, fun) when is_list(args) do
     case Meta.routing(meta) do
       treatments when is_list(treatments) ->
         {form, acc} = fun.(form, acc)
@@ -110,7 +129,7 @@ defmodule Mutare.Transform.SelfCalls do
     end
   end
 
-  defp walk_routed_children(node, acc, fun), do: walk_children(node, acc, fun)
+  defp do_walk_routed_children(node, acc, fun), do: walk_children(node, acc, fun)
 
   defp walk_argument(arg, :raw, acc, _fun), do: {arg, acc}
   defp walk_argument(arg, {:hosted, _hosts}, acc, _fun), do: {arg, acc}

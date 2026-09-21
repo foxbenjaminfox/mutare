@@ -11852,6 +11852,12 @@ span, not just the dispatcher's call), and no other region may appear.
   result only when an unrelated mutant selects the clean copy, yielding false kills after
   a passing baseline. `SelfCalls` now preserves quoted bodies and redirects only live
   unquotes and evaluated quote options, respecting nesting and disabled unquoting.
+  Nested definitions also stay outside the rewrite: a nested module's same-named
+  definition head is not an outer self-call, nor are calls in that module's body.
+  Renaming them changed the nested module's public API only on the clean path, falsely
+  killing unrelated mutants. The walk now preserves Kernel definition constructs at
+  executable positions (including explicitly qualified forms), while still reaching live
+  unquotes inside quoted definitions. Displaced definition macros remain ordinary calls.
 - *Guard sharing's "clause outside the contract" condition.* It protected macros that count
   their expansions. Lifting already changes that count, and sharing moves it toward the
   source's one.
