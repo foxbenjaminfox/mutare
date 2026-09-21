@@ -120,6 +120,22 @@ defmodule Mutare.RoutedPipeRegressionTest do
     end
   end
 
+  test "operand swapping exports bindings from keyed-refinement keys" do
+    source = """
+    defmodule Binding do
+      def run do
+        result = Keyword.get(["\#{key = "value"}": 10, raw: 0], :value) |> div(2)
+        {result, key}
+      end
+    end
+    """
+
+    assert [%{mutator: :operand_swap}] =
+             assert_patches(source, [:operand_swap], [run: []],
+               call_routes: [{Keyword, :get, 2, [[:expression, raw: :raw], :expression]}]
+             )
+  end
+
   test "operand swapping exports destructure's pattern bindings" do
     source = """
     defmodule Binding do

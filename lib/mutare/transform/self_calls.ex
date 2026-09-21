@@ -28,7 +28,7 @@ defmodule Mutare.Transform.SelfCalls do
   # its receiver. Quoted pipes remain data, and their spelling is preserved too.
 
   alias Mutare.AST
-  alias Mutare.Transform.Analyze.{CallOptions, QuoteEscape}
+  alias Mutare.Transform.Analyze.{CallOptions, QuoteEscape, Syntax}
   alias Mutare.Transform.{Calls, Imports, Meta}
 
   @doc """
@@ -146,6 +146,12 @@ defmodule Mutare.Transform.SelfCalls do
         {pairs, acc} =
           Enum.map_reduce(pairs, acc, fn {key, value}, acc ->
             treatment = Keyword.get(refinements, AST.key_atom(key), inner)
+
+            {key, acc} =
+              if Syntax.block_key?(key),
+                do: {key, acc},
+                else: walk_argument(key, inner, acc, fun)
+
             {value, acc} = walk_argument(value, treatment, acc, fun)
             {{key, value}, acc}
           end)

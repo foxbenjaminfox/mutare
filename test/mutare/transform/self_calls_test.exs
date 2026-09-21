@@ -56,6 +56,8 @@ defmodule Mutare.Transform.SelfCallsTest do
         {"quote(do: f(1))", :interior, "quote(do: f(1))", false},
         {"[raw: f(1), value: f(2)]", {:keyed, :expression, [raw: :raw]},
          "[raw: f(1), value: clean_f(2)]", true},
+        {~S|["#{f(1)}": n]|, {:keyed, :expression, []}, ~S|["#{clean_f(1)}": n]|, true},
+        {~S|["#{f(1)}": n]|, {:keyed, :raw, []}, ~S|["#{f(1)}": n]|, false},
         {"[raw: f(1), value: f(2)]", {:keyword, [:raw, :expression]},
          "[raw: f(1), value: clean_f(2)]", true},
         {"[nested: [raw: f(1), value: f(2)]]", {:keyword, [{:keyed, :raw, [value: :expression]}]},

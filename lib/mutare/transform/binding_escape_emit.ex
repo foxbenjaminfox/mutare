@@ -18,7 +18,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
   alias Mutare.AST
   alias Mutare.Coverage.Recorder
-  alias Mutare.Transform.Analyze.{CallOptions, QuoteEscape}
+  alias Mutare.Transform.Analyze.{CallOptions, QuoteEscape, Syntax}
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Delivery
   alias Mutare.Transform.{Calls, CoverageEmit, Ctx, Meta, PatternStructure, Resolve, SelectorEmit}
@@ -119,7 +119,13 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
         Enum.flat_map(pairs, fn {key, value} ->
           treatment = Keyword.get(refinements, AST.key_atom(key), inner)
-          argument_bindings_for(value, treatment, context)
+
+          key_bindings =
+            if Syntax.block_key?(key),
+              do: [],
+              else: argument_bindings_for(key, inner, context)
+
+          key_bindings ++ argument_bindings_for(value, treatment, context)
         end)
 
       :error ->

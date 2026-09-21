@@ -15,6 +15,9 @@ defmodule Mutare.Transform.BindingEscapeEmitTest do
          {:keyed, :raw, [nested: {:keyword, [:expression, :raw]}]}, [:x]},
         {"[pattern: {x, y}]", {:keyword, [:binding_pattern]}, [:x, :y]},
         {"[pattern: {x, y}]", {:keyed, :raw, [pattern: :binding_pattern]}, [:x, :y]},
+        {~S(["#{key = "value"}": n]), {:keyed, :expression, []}, [:key]},
+        {~S(["#{key = "value"}": n]), {:keyed, :interior, []}, [:key]},
+        {~S(["#{hidden = "value"}": n]), {:keyed, :raw, []}, []},
         {"x = 1", {:keyed, :expression, [value: :raw]}, [:x]},
         {"x = 1", {:keyed, :raw, [value: :expression]}, []},
         {"x = 1", {:keyword, [:expression]}, []}
