@@ -11573,7 +11573,8 @@ poison recovery drops them. `StructuralForms.classify/2` keys the `:skip`-only r
 Inherited limit: a displacement injected by a `use` Mutare cannot expand is invisible, as for
 every other `Kernel` name (`Imports`, "Scope and limits"). The other structural `Kernel`
 heads (`if`/`unless`, the connectives, `in`) still dispatch in `Analyze` by shape; they were
-not audited here.
+not audited here. A name-only pipe route can now override that invisible displacement — see
+"A name-only pipe route overrides the Kernel assumption" below.
 
 ### A routed pipe stage becomes a direct call `[done — extended to every stage: see "A pipe stage is the call it is sugar for"]` (2026-09-19)
 
@@ -12571,3 +12572,21 @@ sites, and the positional route to the same sites in both. The `^`-pinned select
 of a stage — which the skipped-stage test in `pipe_source_patch_test.exs` had been the named
 reason for — is still reached by a stage routed `:interpolated`, and "upstream mutants of a
 routed stage" fails with `Render`'s guard off.
+
+### A name-only pipe route overrides the Kernel assumption `[fixed]` (2026-09-21)
+
+An arbitrary macro can inject `import Kernel, except: [|>: 2]` and a custom pipe import
+without `Resolve` seeing either. A user's `{:*, :|>, 2, [:expression, :interior]}` then lost
+to the assumed `Kernel` identity: the structural-head rule declined its positions and the
+pipe was desugared. With the binding-pipe fixture, this changed even the baseline result.
+
+`Resolve` now trusts a winning name-only pipe route over that assumption. The operator stays
+a two-argument call with an unknown provider, stamped displaced so later readers agree, and
+its operands take the ordinary routed-call walk. This includes `:skip` and any-arity routes.
+The normal specificity cascade still decides the winner: a more specific `Kernel` route
+keeps the usual desugaring. No route, no change; a visible custom import keeps its identity.
+
+This declaration also reaches ordinary pipes in its scope. Mutare cannot distinguish the
+hidden custom operator from them; use a module-specific route where resolution can see the
+provider. `displaced_pipe_test.exs` exercises an arbitrary import-injecting macro, checks
+every mutant against its source patch, and pins route-match reporting and Kernel precedence.

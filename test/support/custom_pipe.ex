@@ -17,6 +17,17 @@ defmodule Mutare.Test.BindPipe do
   end
 end
 
+defmodule Mutare.Test.InjectsBindPipe do
+  @moduledoc false
+  # Unlike `use`, arbitrary macro calls are not expanded by name resolution.
+  defmacro install do
+    quote do
+      import Kernel, except: [|>: 2]
+      import Mutare.Test.BindPipe
+    end
+  end
+end
+
 defmodule Mutare.Test.PairPipe do
   @moduledoc false
   # A custom `|>` *function*: both operands are ordinary values, and nothing is piped anywhere.

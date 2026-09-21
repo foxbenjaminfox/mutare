@@ -103,6 +103,14 @@ defmodule Mutare.CallRouting do
 
   Routes are positional and transform-enforced: no mutator is consulted. The other facility for leaving something alone — **argument marks** (`argument_marks:` / `c:Mutare.Mutator.argument_marks/1`) — labels a position for value-dependent handling by each mutator. The built-in timeout exclusions use these marks to skip duration literals while allowing mutations in computed durations. Reach for a route when the position should simply not mutate; reach for a mark when the reaction should depend on the value. See `Mutare.Mutator`.
 
+  **A custom pipe hidden by macro expansion.** If Mutare cannot see the import that replaces
+  `Kernel.|>/2`, route the operator by name: `{:*, :|>, 2, [:expression, :interior]}` (or
+  `{:*, :|>, :skip}` to leave it alone). When that route wins the normal specificity cascade,
+  it overrides the assumption that a bare `|>` belongs to `Kernel`: Mutare keeps the operator
+  as a two-argument call and applies the route to its left and right operands. This also affects
+  ordinary pipes reached by the same route; use a module-specific route when the provider can
+  be resolved. A more specific `Kernel` route keeps precedence and the usual pipe desugaring.
+
   ## Which behaviours do I implement?
 
   Routing and selector *delivery* are separate capabilities, so you declare only the ones you use:

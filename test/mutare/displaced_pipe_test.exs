@@ -115,6 +115,66 @@ defmodule Mutare.DisplacedPipeTest do
 
     @mutators [:collection, :integer, :relational, :arithmetic]
 
+    @injected_source """
+    defmodule Injected do
+      require Mutare.Test.InjectsBindPipe
+      Mutare.Test.InjectsBindPipe.install()
+      def run(result), do: result |> Enum.reject(&(&1 > 1 + 1))
+    end
+    """
+
+    test "a name-only route respects displacement hidden inside an arbitrary macro" do
+      for route <- [
+            {:*, :|>, 2, [:expression, :interior]},
+            {:*, :|>, [:expression, :interior]}
+          ] do
+        sites =
+          assert_patches(
+            @injected_source,
+            @mutators,
+            [run: [{:ok, [1, 2, 3]}], run: [:error]],
+            call_routes: [route]
+          )
+
+        refute Enum.any?(sites, &(&1.mutator == :collection))
+        assert Enum.any?(sites, &(&1.mutator == :integer))
+        assert Enum.any?(sites, &(&1.mutator == :relational))
+
+        report =
+          Mutare.Transform.count_report(@injected_source,
+            mutators: @mutators,
+            call_routes: [route]
+          )
+
+        assert MapSet.size(report.matches.routes) == 1
+      end
+    end
+
+    test "a name-only skip leaves an injected operator intact" do
+      {[module], sites} =
+        compile_metamutant(@injected_source, @mutators, call_routes: [{:*, :|>, :skip}])
+
+      assert sites == []
+      assert module.run({:ok, [1, 2, 3]}) == [1, 2]
+      assert module.run(:error) == :error
+    end
+
+    test "a more specific Kernel route keeps precedence over a name-only pipe route" do
+      alias Mutare.CallRouting.Registry
+      alias Mutare.Transform.{Meta, Resolve}
+
+      routes = [{Kernel, :|>, 2, :skip}, {:*, :|>, 2, [:expression, :interior]}]
+
+      ast =
+        Resolve.annotate(
+          Sourceror.parse_string!("x |> Enum.reverse()"),
+          Registry.build(routes, [])
+        )
+
+      assert Meta.written_pipe_meta(ast)
+      assert Meta.skipped?(ast)
+    end
+
     test "by a `use` Mutare can expand" do
       source = """
       defmodule Used do

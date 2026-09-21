@@ -36,6 +36,8 @@ defmodule Mutare.Transform.Resolve do
 
   alias Mutare.AST
   alias Mutare.CallRouting.Registry, as: Routes
+  alias Mutare.CallRouting.Registry.Entry
+  alias Mutare.CallRouting.Spec
   alias Mutare.Transform.{Aliases, Imports, Meta, MetaKeys, ModuleScope, Uses, WrittenPipe}
   alias Mutare.Transform.Resolve.{ArgumentMarks, NodeIds, OperandPositions, RouteStamp}
   alias Mutare.Transform.StructuralForms
@@ -128,22 +130,17 @@ defmodule Mutare.Transform.Resolve do
   # `Mutare.Transform.Calls.kernel_call?/1` is how every later reader of a `|>` node asks the
   # same question.
   defp walk({:|>, meta, [lhs, rhs] = args}, env) do
-    # The pipe head is a resolvable call too (`Kernel.|>/2`): stamp it so a `:skip` route on it is
-    # honoured (a positional route never applies — `Mutare.Transform.StructuralForms`).
-    {resolved_meta, module_key} = resolve_bare_call(:|>, meta, args, env)
-    meta = stamp_routed(resolved_meta, module_key, :|>, args, env)
+    {resolved_meta, module_key} = resolve_pipe_call(meta, args, env)
 
-    cond do
-      module_key != [:Kernel] ->
-        walk_bare_call(:|>, resolved_meta, module_key, args, env)
-
-      direct = direct_stage(meta, lhs, rhs, env) ->
-        direct
+    if module_key != [:Kernel] do
+      walk_bare_call(:|>, resolved_meta, module_key, args, env)
+    else
+      # A route explicitly naming Kernel's pipe accepts only :skip.
+      meta = stamp_routed(resolved_meta, module_key, :|>, args, env)
 
       # Nothing `Kernel.|>/2` could pipe into (`x |> unquote(stage)` inside a `quote`, or
       # source that does not compile): two expressions.
-      true ->
-        {:|>, meta, descend(args, env)}
+      direct_stage(meta, lhs, rhs, env) || {:|>, meta, descend(args, env)}
     end
   end
 
@@ -325,6 +322,23 @@ defmodule Mutare.Transform.Resolve do
   defp resolve_bare_call(fun, meta, args, env) do
     meta = Imports.stamp(fun, meta, args, env.imports, env.kernel)
     {meta, bare_module_key(fun, length(args), meta, env)}
+  end
+
+  # A macro can inject a custom operator without exposing its imports to this walk. A winning
+  # name-only route explicitly names that operator, so trust it over the default Kernel
+  # assumption: keep the call at its written arity and route its two operands. Its provider
+  # remains unknown. Use the ordinary displacement stamp so later readers agree, and the
+  # registry's ordinary lookup so a more specific Kernel route still wins.
+  defp resolve_pipe_call(meta, args, env) do
+    {meta, module_key} = resolve_bare_call(:|>, meta, args, env)
+
+    case {module_key, Routes.lookup(env.call_routes, module_key, :|>, 2)} do
+      {[:Kernel], %Entry{spec: %Spec{module: :*, name: :|>}}} ->
+        {Keyword.put(meta, MetaKeys.kernel_displaced_key(), true), nil}
+
+      _ ->
+        {meta, module_key}
+    end
   end
 
   defp stamp_routed(meta, module_key, fun, args, env) do
