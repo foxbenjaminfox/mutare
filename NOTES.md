@@ -12815,3 +12815,36 @@ dynamic remote and anonymous callees use the ordinary selector, whose branches r
 call's evaluation order and still tuple-export shared bindings. SourcePatch regressions compile
 the retained-argument case and compare both baseline and mutant behavior for an effectful dynamic
 receiver.
+
+### Generated source-patch comparisons exercise effects and scope (2026-09-21)
+
+The activation soak proves isolation, not that a mutant implements its reported edit.
+`transform_source_patch_property_test.exs` now uses `Mutare.Test.SourcePatch` as the semantic
+oracle: compile the metamutant once, compile each reported source patch, and compare every
+mutant and the baseline on the same calls. No failing compile or troublesome site is discarded.
+`SourcePatch` now unloads each reference's empty wrapper too, since a generated comparison
+compiles many references in one test.
+
+`SourcePatchFixtures` supplies an observer outside the transformed code, recording ordered
+effects even before a raise, throw or exit, and restoring its process-local trace afterward.
+`SourcePatchGenerators` builds small recipes with declared escaping bindings: direct, piped
+and right-grouped calls; static and effectful dynamic receivers; retained, moved and combined
+operand candidates; ordinary, skipped, raw, lazy, keyword-routed and quote/unquote operands.
+The functions return their escaping bindings alongside the result. An independently mutated
+function exercises clean-copy execution, and a guard supplies lifted mutants. Fixed tests
+cover operand × spelling and callee × delivery pairs; 40 generated cases compose those
+dimensions with an optional wrapper and varied inputs. The recipe shrinks without unbinding
+variables, and a failure prints it and its source. Exact delivery-family counts prevent
+silently losing the interesting mutants. These tests are tagged `:property`; the vocabulary
+is intentionally bounded and does not yet generate recursion, nested definitions or hosts.
+
+**Found immediately:** direct calls still trapped argument bindings inside ordinary selectors.
+`div(value, right = expr)` followed by a read of `right` compiled as source but not as a
+metamutant. `PipeEmit.delivery/2` now uses its existing shared-binding tuple export on the
+non-pipe fallback too. A fast regression checks fresh bindings and rebindings in both call
+spellings; the generated property checks the routed and quoted variations.
+
+**Oracle check:** loading the pre-`05df809f` PipeEmit into a disposable VM makes the new
+vocabulary detect both its retained-argument scope failure and its dynamic receiver-order
+failure. For the latter probe the argument binding was omitted to isolate the trace mismatch
+from the compile failure. The checkout and compiled beams were not replaced.

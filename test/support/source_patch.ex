@@ -29,7 +29,7 @@ defmodule Mutare.Test.SourcePatch do
 
     for site <- [nil | sites] do
       patched = if site, do: patch(source, site), else: source
-      reference = compile_reference!(patched, site)
+      {reference, compiled} = compile_reference!(patched, site)
 
       try do
         id = if site, do: site.id, else: 0
@@ -47,7 +47,7 @@ defmodule Mutare.Test.SourcePatch do
           """
         end
       after
-        purge(reference)
+        Enum.each(compiled, &purge/1)
       end
     end
 
@@ -69,7 +69,7 @@ defmodule Mutare.Test.SourcePatch do
     case Compile.string_result("defmodule #{inspect(shell)} do\n#{patched}\nend") do
       {{:ok, compiled}, _diagnostics} ->
         [module] = for {module, _binary} <- compiled, module != shell, do: module
-        module
+        {module, Enum.map(compiled, &elem(&1, 0))}
 
       {{:error, _exception}, diagnostics} ->
         flunk("""

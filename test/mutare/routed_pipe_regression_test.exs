@@ -4,6 +4,23 @@ defmodule Mutare.RoutedPipeRegressionTest do
   import Mutare.Test
   import Mutare.Test.SourcePatch
 
+  test "direct selectors export fresh and rebound argument bindings like pipe selectors" do
+    for initial <- ["", "left = 0; right = 0"],
+        call <- ["div(left = 8, right = 3)", "(left = 8) |> div(right = 3)"] do
+      source = """
+      defmodule Binding do
+        def run do
+          #{initial}
+          result = #{call}
+          {result, left, right}
+        end
+      end
+      """
+
+      assert [_, _] = assert_patches(source, [:arithmetic, :operand_swap], run: [])
+    end
+  end
+
   test "preserved pipe stages export condition bindings but not branch bindings" do
     for {operand, binding} <- [
           {"true |> if(do: (t = 4), else: 0)", "nil"},

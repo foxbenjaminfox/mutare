@@ -1,7 +1,8 @@
 defmodule Mutare.Transform.PipeEmit do
   @moduledoc false
 
-  # Delivery for a call **written as a pipe**. `Mutare.Transform.Resolve` made every
+  # Binding-preserving selector delivery, with a shared-operand optimization for calls
+  # **written as a pipe**. `Mutare.Transform.Resolve` made every
   # `Kernel.|>/2` stage the direct call it is sugar for, so a stage's selector is the
   # ordinary one, whose every mutant branch carries the call's as-written arguments — argument
   # 0, the whole upstream chain, included, while its catch-all nests the emitted chain. Down a
@@ -49,6 +50,8 @@ defmodule Mutare.Transform.PipeEmit do
   # The closure is a scope boundary too: bindings made by retained stage arguments are returned
   # with its result and rebound outside. Bindings made by argument 0 already escape from the
   # closure invocation's argument expression and must not be captured inside the closure.
+  # Direct calls and non-binding pipe deliveries need the same tuple export: their selector
+  # is still a scope boundary, even though no shared-operand closure is introduced.
   #
   # The calls this leaves in the tree are direct calls still; `Mutare.Transform.Render` spells
   # each as the pipe it was written as, so the metamutant is as deep as the user's source, not
@@ -110,7 +113,7 @@ defmodule Mutare.Transform.PipeEmit do
         exports(BindingEscapeEmit.expression_bindings(original), candidates)
       end
     else
-      _plain -> :inline
+      _plain -> exports(BindingEscapeEmit.expression_bindings(node), candidates)
     end
   end
 
