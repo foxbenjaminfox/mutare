@@ -4,6 +4,58 @@ defmodule Mutare.RoutedPipeRegressionTest do
   import Mutare.Test
   import Mutare.Test.SourcePatch
 
+  for {label, operand, binding, routes} <- [
+        {"dynamic remote callee", "(m = Map).get(%{x: 10}, :x)", "m", []},
+        {"anonymous callee", "(f = &Kernel.abs/1).(-10)", "f.(1)", []},
+        {"live unquote", "length(quote(do: [unquote(x = 10)]))", "x", []},
+        {"live unquote splicing", "length(quote(do: [unquote_splicing(xs = [10])]))", "xs", []},
+        {"quote options", "length(quote(bind_quoted: [v: x = 10], do: [v]) |> elem(2))", "x", []},
+        {"skipped call", "abs(x = -10)", "x", [{Kernel, :abs, 1, :skip}]},
+        {"skipped pipe stage", "(%{x: 10} |> Map.get(key = :x))", "key", [{Map, :get, 2, :skip}]},
+        {"skipped unquote", "length(quote(do: [unquote(x = 10)]))", "x",
+         [{Kernel.SpecialForms, :unquote, 1, :skip}]}
+      ] do
+    test "operand swapping exports bindings from #{label}" do
+      source = """
+      defmodule Binding do
+        def run do
+          result = #{unquote(operand)} |> div(2)
+          {result, #{unquote(binding)}}
+        end
+      end
+      """
+
+      # Arithmetic's div/rem swap also exercises the split delivery: one selector
+      # retains the operand in a closure, and the operand swap surrounds it.
+      for mutators <- [[:operand_swap], [:operand_swap, :arithmetic]] do
+        sites =
+          assert_patches(source, mutators, [run: []], call_routes: unquote(Macro.escape(routes)))
+
+        assert [%{mutator: :operand_swap}] = Enum.filter(sites, &(&1.mutator == :operand_swap))
+      end
+    end
+  end
+
+  test "pipe exports exclude assignments in quoted data and inactive unquotes" do
+    for quoted <- [
+          "quote(do: [hidden = 10])",
+          "quote(unquote: false, do: [unquote(hidden = 10)])",
+          "quote(bind_quoted: [v: 10], do: [unquote(hidden = 10)])",
+          "quote(do: [quote(do: unquote(hidden = 10))])"
+        ] do
+      source = """
+      defmodule Binding do
+        def run do
+          result = length(List.wrap(quote_value = #{quoted})) |> div(2)
+          {result, is_list(quote_value)}
+        end
+      end
+      """
+
+      assert [_] = assert_patches(source, [:operand_swap], run: [])
+    end
+  end
+
   test "operand swapping exports bindings from inline routed-pipe branches" do
     source = """
     defmodule Binding do

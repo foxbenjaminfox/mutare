@@ -18,6 +18,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
   alias Mutare.AST
   alias Mutare.Coverage.Recorder
+  alias Mutare.Transform.Analyze.QuoteEscape
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Delivery
   alias Mutare.Transform.{CoverageEmit, Ctx, Meta, PatternStructure, SelectorEmit}
@@ -38,12 +39,26 @@ defmodule Mutare.Transform.BindingEscapeEmit do
        do: bound_names(first)
 
   defp collect_bindings({form, _, _})
-       when form in [:fn, :for, :with, :try, :quote, :cond, :receive, :->, :&],
+       when form in [:fn, :for, :with, :try, :cond, :receive, :->, :&],
        do: []
 
-  defp collect_bindings({_form, meta, args}) when is_list(args) do
-    case Meta.routing(meta) do
-      nil ->
+  defp collect_bindings({:quote, _, args}) when is_list(args) do
+    enabled? = QuoteEscape.quote_unquote_enabled?(args)
+    Enum.flat_map(args, &quote_bindings(&1, enabled?))
+  end
+
+  defp collect_bindings({form, meta, args}) when is_list(args) do
+    bound_names(form) ++ argument_bindings(args, Meta.routing(meta))
+  end
+
+  defp collect_bindings({left, right}), do: bound_names(left) ++ bound_names(right)
+  defp collect_bindings(list) when is_list(list), do: Enum.flat_map(list, &bound_names/1)
+  defp collect_bindings(_), do: []
+
+  defp argument_bindings(args, routing) do
+    case routing do
+      ordinary when ordinary in [nil, :skip] ->
+        # Skipping mutation does not stop an ordinary call's arguments executing.
         Enum.flat_map(args, &bound_names/1)
 
       treatments when is_list(treatments) ->
@@ -58,9 +73,34 @@ defmodule Mutare.Transform.BindingEscapeEmit do
     end
   end
 
-  defp collect_bindings({left, right}), do: bound_names(left) ++ bound_names(right)
-  defp collect_bindings(list) when is_list(list), do: Enum.flat_map(list, &bound_names/1)
-  defp collect_bindings(_), do: []
+  # Quote options execute in the surrounding scope. Its body is data, except for
+  # live unquotes; a nested quote or disabled unquoting keeps those expressions data.
+  defp quote_bindings({:__block__, _, [keywords]}, enabled?) when is_list(keywords),
+    do: quote_bindings(keywords, enabled?)
+
+  defp quote_bindings(keywords, enabled?) when is_list(keywords),
+    do: Enum.flat_map(keywords, &quote_bindings(&1, enabled?))
+
+  defp quote_bindings({key, value}, enabled?) do
+    case AST.key_atom(key) do
+      :do -> if enabled?, do: unquote_bindings(value), else: []
+      _option -> bound_names(value)
+    end
+  end
+
+  defp quote_bindings(_, _enabled?), do: []
+
+  defp unquote_bindings({:quote, _, args}) when is_list(args), do: []
+
+  defp unquote_bindings({form, _, [arg]}) when form in [:unquote, :unquote_splicing],
+    do: bound_names(arg)
+
+  defp unquote_bindings({form, _, args}) when is_list(args),
+    do: unquote_bindings(form) ++ Enum.flat_map(args, &unquote_bindings/1)
+
+  defp unquote_bindings({left, right}), do: unquote_bindings(left) ++ unquote_bindings(right)
+  defp unquote_bindings(list) when is_list(list), do: Enum.flat_map(list, &unquote_bindings/1)
+  defp unquote_bindings(_), do: []
 
   # === binding-escaping `=` match: tuple re-export =====================================
 

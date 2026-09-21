@@ -12633,3 +12633,13 @@ the stamp carries the remaining stages and reporting replaces the complete enclo
 stage-only changes still patch only the stage. Both remain keyed at the stage's line.
 Roundtrip tests cover nested groups and comments; SourcePatch checks the baseline and every
 mutation against its source patch, including operand swaps and removal of an intermediate call.
+
+### Moving pipe operands must export executable bindings `[fixed]` (2026-09-21)
+
+The outer selector for an operand swap trapped bindings in dynamic callees, live unquotes,
+and skipped-call arguments. The later variable read then failed outside every mutant region,
+so poison recovery could not attribute it. `BindingEscapeEmit.expression_bindings/1` now
+visits callees, quote options and live unquotes, and treats skipped ordinary arguments as
+executable, including a skipped pipe stage's arguments. Quoted assignments, disabled unquotes,
+and nested quotes remain data. SourcePatch regressions compare baseline and mutant behavior
+under both the outer-only and split-selector deliveries.
