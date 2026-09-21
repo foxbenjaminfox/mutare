@@ -56,8 +56,7 @@ defmodule Mutare.Site.Parenthesize do
        else: code
   end
 
-  defp parenthesized?({_form, meta, _args}) when is_list(meta),
-    do: Keyword.has_key?(meta, :parens)
+  defp parenthesized?({_form, meta, _args}), do: Keyword.has_key?(meta, :parens)
 
   defp parenthesized?(_node), do: false
 
@@ -88,10 +87,8 @@ defmodule Mutare.Site.Parenthesize do
   defp placeholder, do: {String.to_atom(@placeholder), [], nil}
 
   defp parse(code) do
-    case Code.string_to_quoted(code) do
-      {:ok, ast} -> {:ok, Macro.prewalk(ast, &Macro.update_meta(&1, fn _meta -> [] end))}
-      {:error, _reason} -> :error
-    end
+    with {:ok, ast} <- Code.string_to_quoted(code),
+         do: {:ok, Macro.prewalk(ast, &Macro.update_meta(&1, fn _meta -> [] end))}
   end
 
   # --- a `do`-block call the user parenthesized ---------------------------------------------
@@ -105,7 +102,7 @@ defmodule Mutare.Site.Parenthesize do
        when form in [:->, :def, :defp, :defmacro, :defmacrop],
        do: false
 
-  defp dropped_block_parentheses?({_form, _meta, args} = mutated) when is_list(args) do
+  defp dropped_block_parentheses?({_form, _meta, _args} = mutated) do
     {_mutated, found?} =
       Macro.prewalk(mutated, false, fn node, found? ->
         {node, found? or parenthesized_block?(node)}
@@ -116,9 +113,9 @@ defmodule Mutare.Site.Parenthesize do
 
   defp dropped_block_parentheses?(_node), do: false
 
-  defp parenthesized_block?({form, meta, args})
-       when is_atom(form) and is_list(meta) and is_list(args),
-       do: Keyword.has_key?(meta, :parens) and Keyword.has_key?(meta, :do)
+  # Local or remote, a call records its parentheses and its block in its own meta.
+  defp parenthesized_block?({_form, meta, _args}),
+    do: Keyword.has_key?(meta, :parens) and Keyword.has_key?(meta, :do)
 
   defp parenthesized_block?(_node), do: false
 

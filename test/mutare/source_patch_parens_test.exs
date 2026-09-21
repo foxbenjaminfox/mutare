@@ -161,6 +161,27 @@ defmodule Mutare.SourcePatchParensTest do
       assert Enum.any?(sites, &String.starts_with?(&1.mutated_code, "(1 -"))
     end
 
+    test "a remote do-block call the user parenthesized, in the head of a block call" do
+      source = """
+      defmodule Fixture do
+        def run(a) do
+          case 1 +
+                 (Kernel.if a > 0 do
+                    1
+                  else
+                    2
+                  end) do
+            2 -> :two
+            _ -> :other
+          end
+        end
+      end
+      """
+
+      sites = assert_patches(source, [:arithmetic], run: [3], run: [-3])
+      assert Enum.any?(sites, &String.starts_with?(&1.mutated_code, "(1 -"))
+    end
+
     test "a do-block call the user parenthesized, under an operator in such a head" do
       source = """
       defmodule Fixture do
@@ -250,6 +271,18 @@ defmodule Mutare.SourcePatchParensTest do
 
       under_minus = Enum.filter(sites, &(&1.mutated_code =~ "-0.25"))
       assert Enum.map(under_minus, & &1.mutated_code) == ["(-0.25)", "-0.25"]
+    end
+
+    test "and nothing else does: an operand under a unary operator that reads the same" do
+      source = """
+      defmodule Fixture do
+        def run(a), do: {-7, !a}
+      end
+      """
+
+      sites = assert_patches(source, [:integer], run: [true])
+      assert "8" in Enum.map(sites, & &1.mutated_code)
+      refute Enum.any?(sites, &String.starts_with?(&1.mutated_code, "("))
     end
 
     test "and nothing else does: a statement, an argument, a slot already parenthesized" do
