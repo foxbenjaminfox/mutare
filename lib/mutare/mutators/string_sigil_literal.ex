@@ -24,8 +24,10 @@ defmodule Mutare.Mutators.StringSigilLiteral do
   def name, do: :string_sigil
 
   @impl Mutare.Mutator
-  def mutate({sigil, meta, [{:<<>>, _bmeta, segments}, _modifiers]})
-      when sigil in [:sigil_s, :sigil_S] do
+  def mutate(node), do: Helpers.kernel_mutations(node, &mutations/1)
+
+  defp mutations({sigil, meta, [{:<<>>, _bmeta, segments}, _modifiers]})
+       when sigil in [:sigil_s, :sigil_S] do
     # Only a real `~s`/`~S` sigil carries the parser's `:delimiter` meta. A call to a
     # *function* named `sigil_s`/`sigil_S` (a local sigil shadowing `Kernel`'s) parses to the
     # same head with a `<<…>>` first arg, but it is not a string sigil — decline it, mirroring
@@ -34,7 +36,7 @@ defmodule Mutare.Mutators.StringSigilLiteral do
     if Keyword.has_key?(meta, :delimiter), do: sigil_mutations(segments), else: :skip
   end
 
-  def mutate(_node), do: :skip
+  defp mutations(_node), do: :skip
 
   # Variant vocabulary for `# mutare:ignore[string_sigil:<label>]` — `empty` / `sentinel`, exactly
   # like `Mutare.Mutators.StringLiteral`. Each mutant is a plain string literal tagged at production

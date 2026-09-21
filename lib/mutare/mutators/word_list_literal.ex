@@ -25,8 +25,10 @@ defmodule Mutare.Mutators.WordListLiteral do
   def name, do: :word_list
 
   @impl Mutare.Mutator
-  def mutate({sigil, meta, [{:<<>>, bmeta, [content]}, modifiers]})
-      when sigil in [:sigil_w, :sigil_W] and is_binary(content) do
+  def mutate(node), do: Helpers.kernel_mutations(node, &mutations/1)
+
+  defp mutations({sigil, meta, [{:<<>>, bmeta, [content]}, modifiers]})
+       when sigil in [:sigil_w, :sigil_W] and is_binary(content) do
     words = String.split(content)
 
     ["", @sentinel]
@@ -39,7 +41,7 @@ defmodule Mutare.Mutators.WordListLiteral do
     end)
   end
 
-  def mutate(_node), do: :skip
+  defp mutations(_node), do: :skip
 
   # Variant vocabulary for `# mutare:ignore[word_list:<label>]` — `empty` (the `~w()`) / `sentinel`
   # (the `~w(mutare)`). Each mutant is a re-wrapped `~w`/`~W` sigil tagged at production with its

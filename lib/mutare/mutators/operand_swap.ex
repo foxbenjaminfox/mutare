@@ -105,12 +105,18 @@ defmodule Mutare.Mutators.OperandSwap do
 
   @impl Mutare.Mutator
   def mutate(node),
-    do: Helpers.combine_mutations(operator_mutations(node), call_mutations(node))
+    do:
+      Helpers.combine_mutations(
+        Helpers.kernel_mutations(node, &operator_mutations/1),
+        call_mutations(node)
+      )
 
   # `div`/`rem`: bare `Kernel` calls, transposed only at arity 2 (the bare-`Kernel` safeguard
   # from `Numeric`, confirming the builtin over a same-named user `div/3`).
-  defp call_mutations({op, meta, [left, right]}) when op in @call_operators do
-    if same?(left, right), do: :skip, else: [{op, meta, [right, left]}]
+  defp call_mutations({op, meta, [left, right]} = node) when op in @call_operators do
+    if Calls.kernel_call?(node) and not same?(left, right),
+      do: [{op, meta, [right, left]}],
+      else: :skip
   end
 
   # Non-commutative *remote* calls (`DateTime.before?`/`diff` and twins, `Kernel.++`):

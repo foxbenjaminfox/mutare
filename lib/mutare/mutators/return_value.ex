@@ -45,6 +45,7 @@ defmodule Mutare.Mutators.ReturnValue do
 
   alias Mutare.AST
   alias Mutare.Mutators.Conditional
+  alias Mutare.Transform.Calls
 
   # Operators whose result is unambiguously a number — so `0`/`1` are the
   # contrasting pair. Both binary (`a + b`) and unary (`-n`) forms reach here.
@@ -105,10 +106,7 @@ defmodule Mutare.Mutators.ReturnValue do
 
   # A boolean-valued operator (comparison / logical / membership): Conditional
   # already forces it to true/false, so a return mutant here is pure duplication.
-  defp boolean_valued?({op, _meta, args}) when is_atom(op) and is_list(args),
-    do: Conditional.boolean_op?(op)
-
-  defp boolean_valued?(_), do: false
+  defp boolean_valued?(node), do: Conditional.boolean_node?(node)
 
   # A literal a value-family mutator already rewrites at the node: an integer,
   # float, string, list literal, or boolean. Sourceror wraps every literal in a
@@ -132,7 +130,13 @@ defmodule Mutare.Mutators.ReturnValue do
   # original tail dropped (reachable only for a bare-atom tail — numeric/string/
   # list literals are excluded upstream by `redundant_literal?/1`).
   defp contrasting_constants(tail) do
-    [empty_constant(tail), sentinel_constant(tail)]
+    # Operator spelling implies a value type only for Kernel's implementation.
+    constants =
+      if Calls.kernel_call?(tail),
+        do: [empty_constant(tail), sentinel_constant(tail)],
+        else: [AST.literal(nil), AST.literal(@sentinel_atom)]
+
+    constants
     |> Enum.reject(&equivalent_to?(&1, tail))
   end
 

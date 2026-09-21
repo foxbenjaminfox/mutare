@@ -26,7 +26,7 @@ defmodule Mutare.Transform.Tag do
 
   alias Mutare.{AST, Mutator}
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Transform.{Meta, NodeRange, Suppression}
+  alias Mutare.Transform.{Calls, Meta, NodeRange, StructuralForms, Suppression}
   alias Mutare.Transform.Analyze.{CallOptions, Syntax}
 
   # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
@@ -118,9 +118,11 @@ defmodule Mutare.Transform.Tag do
   # Mirrors `Mutare.Transform.Analyze.analyze/3`'s dispatcher (and, like it, the negation
   # clauses check their inner operand, so a skipped `in` under `not` is a leaf too).
   defp tag_walk(node, acc, mutators) do
-    if Meta.skipped?(node),
-      do: {node, acc},
-      else: tag_walk_form(node, acc, mutators)
+    cond do
+      Meta.skipped?(node) -> {node, acc}
+      StructuralForms.foreign_kernel_form?(node) -> tag_generic(node, acc, mutators)
+      true -> tag_walk_form(node, acc, mutators)
+    end
   end
 
   # Redundancy suppression in guards — the guard-legal subset of the in-place analyzer's
@@ -136,7 +138,7 @@ defmodule Mutare.Transform.Tag do
   # guard errors fail the guard; see `tag_in_rhs/3`). The outer `not` is offered
   # (strip/true/false).
   defp tag_walk_form({:not, meta, [{:in, in_meta, [left, right]} = inner]} = node, acc, mutators) do
-    if Meta.skipped?(inner) do
+    if Meta.skipped?(inner) or not Calls.kernel_call?(inner) do
       tag_generic(node, acc, mutators)
     else
       {left, acc} = tag_walk(left, acc, mutators)
@@ -160,7 +162,7 @@ defmodule Mutare.Transform.Tag do
          mutators
        )
        when is_equality_op(op) do
-    if Meta.skipped?(raw_inner) do
+    if Meta.skipped?(raw_inner) or not Calls.kernel_call?(raw_inner) do
       tag_generic(node, acc, mutators)
     else
       # The operands by the inner node's own positions (a positional route on `==` holds under
@@ -175,7 +177,7 @@ defmodule Mutare.Transform.Tag do
   # strips are the identical `not x`, and Conditional on the inner ≡ the outer's
   # `true`/`false`. Suppress the inner `not`; offer only the outer.
   defp tag_walk_form({:not, meta, [{:not, inner_meta, [operand]} = inner]} = node, acc, mutators) do
-    if Meta.skipped?(inner) do
+    if Meta.skipped?(inner) or not Calls.kernel_call?(inner) do
       tag_generic(node, acc, mutators)
     else
       {operand, acc} = tag_walk(operand, acc, mutators)

@@ -147,6 +147,14 @@ defmodule Mutare.Transform.Calls do
 
   def kernel_call?(_node), do: false
 
+  @doc "Whether this bare module-defining form really opens a Kernel module scope."
+  @spec kernel_module?(Macro.t()) :: boolean()
+  def kernel_module?({form, _meta, _args} = node)
+      when form in [:defmodule, :defprotocol, :defimpl],
+      do: kernel_call?(node)
+
+  def kernel_module?(_node), do: false
+
   # Match a resolved call against a target module and function name(s). See
   # `Mutare.Calls.resolved_call_to/3` for the contract.
   @spec resolved_call_to(Macro.t(), module() | module_key(), atom() | [atom()] | :any) ::

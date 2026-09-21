@@ -17,6 +17,8 @@ defmodule Mutare.Mutators.DateTimeLiteral do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.Mutators.Helpers
+
   @sigils [:sigil_D, :sigil_T, :sigil_N, :sigil_U]
 
   # One day in seconds — the `:sigil_N`/`:sigil_U` shift, whose `add/2` defaults to seconds
@@ -30,8 +32,10 @@ defmodule Mutare.Mutators.DateTimeLiteral do
   def name, do: :datetime
 
   @impl Mutare.Mutator
-  def mutate({sigil, meta, [{:<<>>, bmeta, [content]}, modifiers]})
-      when sigil in @sigils and is_binary(content) do
+  def mutate(node), do: Helpers.kernel_mutations(node, &mutations/1)
+
+  defp mutations({sigil, meta, [{:<<>>, bmeta, [content]}, modifiers]})
+       when sigil in @sigils and is_binary(content) do
     case shift(sigil, content) do
       {:ok, shifted} -> [{sigil, meta, [{:<<>>, bmeta, [shifted]}, modifiers]}]
       # `from_iso8601` failure surfaces as `{:error, _}` here — no mutant rather
@@ -40,7 +44,7 @@ defmodule Mutare.Mutators.DateTimeLiteral do
     end
   end
 
-  def mutate(_node), do: :skip
+  defp mutations(_node), do: :skip
 
   # Parse → ±1 unit → re-serialise. Any parse failure degrades to a non-`{:ok, …}`
   # value (handled above), so a sigil we can't read never produces invalid source.

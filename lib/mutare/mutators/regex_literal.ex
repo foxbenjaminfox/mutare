@@ -45,6 +45,8 @@ defmodule Mutare.Mutators.RegexLiteral do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.Mutators.Helpers
+
   alias Mutare.AST
   alias Mutare.Mutator.Mutation
   alias Mutare.Mutators.RegexLiteral.Tokens
@@ -67,7 +69,10 @@ defmodule Mutare.Mutators.RegexLiteral do
   def variants, do: ~w(pattern anchor class dot quantifier laziness alternation modifier)
 
   @impl Mutare.Mutator
-  def mutate({:sigil_r, meta, [{:<<>>, bmeta, [pattern]}, modifiers]}) when is_binary(pattern) do
+  def mutate(node), do: Helpers.kernel_mutations(node, &mutations/1)
+
+  defp mutations({:sigil_r, meta, [{:<<>>, bmeta, [pattern]}, modifiers]})
+       when is_binary(pattern) do
     # One lexical pass: the shared `Tokens.tokens/2` reader owns all cross-cutting state —
     # escapes, character classes, group structure + the `Flags` scope stack, and the inert
     # (`\Q…\E` / `x`-comment) spans — and every pass below is a fold over its output, so the
@@ -96,7 +101,7 @@ defmodule Mutare.Mutators.RegexLiteral do
     end)
   end
 
-  def mutate(_node), do: :skip
+  defp mutations(_node), do: :skip
 
   # Collapse duplicate candidates (the old `Enum.uniq/1`, first-occurrence order preserved),
   # unioning their labels: a leading-`^` pattern's anchor drop and its whole-pattern `""`

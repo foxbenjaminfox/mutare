@@ -6,7 +6,13 @@ defmodule Mutare.Mutators.Helpers do
   # families would otherwise copy.
 
   alias Mutare.Mutator.Mutation
-  alias Mutare.Transform.{Calls, Imports}
+  alias Mutare.Transform.Calls
+
+  @doc "Run a Kernel-specific producer only when the call still belongs to Kernel."
+  @spec kernel_mutations(Macro.t(), (Macro.t() -> :skip | list())) :: :skip | list()
+  def kernel_mutations(node, produce) do
+    if Calls.kernel_call?(node), do: produce.(node), else: :skip
+  end
 
   @doc """
   Combine two mutation callback results, preserving the public `:skip | list` shape.
@@ -95,14 +101,11 @@ defmodule Mutare.Mutators.Helpers do
   @doc """
   Swap a **bare `Kernel`** call for a sibling, gated on arity.
 
-  The bare-`Kernel` counterpart of `swap_call/2`: a bare `min`/`abs`/`div`/… has no module
-  to prove it is the `Kernel` one (`Mutare.Transform.Calls` only resolves *qualified*/
-  aliased/imported calls), so the sole evidence is its arity. Look `{fun, arity}` up in `table`
-  (so a same-named user function at another arity is never touched) and rebuild the call with
-  each sibling name, keeping the argument list. A call displaced from `Kernel` by `import
-  Kernel, except:/only:` (`Mutare.Transform.Imports`) names *another* module's function, so
-  it is skipped — the swap would otherwise rewrite a user function to a sibling that may not
-  exist (poisoning the single build) or mean something else.
+  The bare-`Kernel` counterpart of `swap_call/2`: look `{fun, arity}` up in `table`
+  and rebuild the call with each sibling name, keeping the argument list. Resolution must
+  still permit Kernel: both a positively resolved foreign import and an exclusion whose
+  replacement is unavailable rule it out. Otherwise the swap could rewrite a custom call
+  to a sibling that does not exist or means something else.
 
   `table` maps `{function, arity}` to a sibling name, or a **list** of names
   (several siblings → several mutants). The single home for the bare-`Kernel` swap that
@@ -114,9 +117,9 @@ defmodule Mutare.Mutators.Helpers do
           Macro.t(),
           %{optional({atom(), arity()}) => atom() | [atom()]}
         ) :: [Macro.t()] | :skip
-  def swap_bare_kernel({fun, meta, args}, table)
+  def swap_bare_kernel({fun, meta, args} = node, table)
       when is_atom(fun) and is_list(args) do
-    with false <- Imports.kernel_displaced?(meta),
+    with true <- Calls.kernel_call?(node),
          {:ok, siblings} <- Map.fetch(table, {fun, length(args)}) do
       siblings |> List.wrap() |> Enum.map(&{&1, meta, args})
     else
@@ -131,16 +134,15 @@ defmodule Mutare.Mutators.Helpers do
 
   The removal twin of `swap_bare_kernel/2` (and the bare-`Kernel` counterpart of
   `remove_call/2`): a bare `abs`/`binary_slice`/… has no module to prove it is the `Kernel`
-  one, so its arity is the sole evidence. When `{fun, arity}` is in the `removable` set and the
-  call isn't displaced from `Kernel` by `import Kernel, except:/only:`
-  (`Mutare.Transform.Imports`), drop it via `removed_call/1`. `removable` is a `MapSet` of
+  one. When `{fun, arity}` is in the `removable` set and resolution does not identify a
+  foreign import or a displacement from `Kernel`, drop it via `removed_call/1`. `removable` is a `MapSet` of
   `{function, arity}` pairs. Returns `:skip` when the node isn't a bare call, is displaced, or
   its `{fun, arity}` isn't removable.
   """
   @spec remove_bare_kernel(Macro.t(), MapSet.t({atom(), arity()})) :: [Macro.t()] | :skip
-  def remove_bare_kernel({fun, meta, args}, removable)
+  def remove_bare_kernel({fun, _meta, args} = node, removable)
       when is_atom(fun) and is_list(args) do
-    with false <- Imports.kernel_displaced?(meta),
+    with true <- Calls.kernel_call?(node),
          true <- MapSet.member?(removable, {fun, length(args)}) do
       removed_call(args)
     else

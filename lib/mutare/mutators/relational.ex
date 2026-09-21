@@ -18,6 +18,8 @@ defmodule Mutare.Mutators.Relational do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.Mutators.Helpers
+
   @swaps %{
     :> => [:>=, :<],
     :>= => [:>, :<=],
@@ -37,18 +39,20 @@ defmodule Mutare.Mutators.Relational do
   # formatter renders it back as `x not in y`). Reuses the operand AST, so it stays
   # a minimal, compile- and guard-safe mutation.
   @impl Mutare.Mutator
-  def mutate({:in, meta, [left, right]}) do
+  def mutate(node), do: Helpers.kernel_mutations(node, &mutations/1)
+
+  defp mutations({:in, meta, [left, right]}) do
     [{:not, [], [{:in, meta, [left, right]}]}]
   end
 
-  def mutate({op, meta, [left, right]}) do
+  defp mutations({op, meta, [left, right]}) do
     case Map.fetch(@swaps, op) do
       {:ok, replacements} -> Enum.map(replacements, &{&1, meta, [left, right]})
       :error -> :skip
     end
   end
 
-  def mutate(_node), do: :skip
+  defp mutations(_node), do: :skip
 
   # Variant labels for `# mutare:ignore[relational:<op>]`: the resulting operator, so a
   # symmetric `i < j` can suppress just the `i > j` reflection (`[relational:>]`) while

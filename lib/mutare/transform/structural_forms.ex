@@ -49,6 +49,7 @@ defmodule Mutare.Transform.StructuralForms do
   # `:skip`, `:raw`, `:interior`, keyed refinements", the "structural heads" paragraph.
 
   alias Mutare.CallRouting.Spec
+  alias Mutare.Transform.Calls
 
   @kernel_structural [:if, :unless, :|>, :!, :not, :in, :and, :or, :&&, :||]
 
@@ -64,6 +65,14 @@ defmodule Mutare.Transform.StructuralForms do
     :use,
     :@
   ]
+
+  @doc "A Kernel-shaped structural form whose visible import resolves elsewhere."
+  @spec foreign_kernel_form?(Macro.t()) :: boolean()
+  def foreign_kernel_form?({form, _meta, args} = node)
+      when (form in @kernel_structural or form in @kernel_declarations) and is_list(args),
+      do: not Calls.kernel_call?(node)
+
+  def foreign_kernel_form?(_node), do: false
 
   @special_forms Kernel.SpecialForms.__info__(:macros) |> Keyword.keys() |> Enum.uniq()
 

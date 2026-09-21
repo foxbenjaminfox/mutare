@@ -12,13 +12,17 @@ defmodule Mutare.Mutators.List do
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Transform.Calls
 
   @impl Mutare.Mutator
   def name, do: :list
 
   @impl Mutare.Mutator
-  def mutate({:++, meta, [left, right]}), do: [{:--, meta, [left, right]}]
-  def mutate({:--, meta, [left, right]}), do: [{:++, meta, [left, right]}]
+  def mutate({op, meta, [left, right]} = node) when op in [:++, :--] do
+    if Calls.kernel_call?(node),
+      do: [{if(op == :++, do: :--, else: :++), meta, [left, right]}],
+      else: :skip
+  end
 
   # A list literal parses as `{:__block__, meta, [[elem, ...]]}`; collapse a
   # non-empty one to `[]`. The empty list is left alone (mutating it to itself

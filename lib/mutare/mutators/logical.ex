@@ -12,6 +12,8 @@ defmodule Mutare.Mutators.Logical do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.Mutators.Helpers
+
   @swaps %{
     :and => :or,
     :or => :and,
@@ -23,15 +25,17 @@ defmodule Mutare.Mutators.Logical do
   def name, do: :logical
 
   @impl Mutare.Mutator
-  def mutate({op, meta, [left, right]}) when is_map_key(@swaps, op) do
+  def mutate(node), do: Helpers.kernel_mutations(node, &mutations/1)
+
+  defp mutations({op, meta, [left, right]}) when is_map_key(@swaps, op) do
     [{Map.fetch!(@swaps, op), meta, [left, right]}]
   end
 
   # Strip a negation: `not x` / `!x` → `x`. The operand already type-checked in
   # its position, so the result always compiles (and stays guard-safe for `not`).
-  def mutate({op, _meta, [operand]}) when op in [:not, :!], do: [operand]
+  defp mutations({op, _meta, [operand]}) when op in [:not, :!], do: [operand]
 
-  def mutate(_node), do: :skip
+  defp mutations(_node), do: :skip
 
   # Variant labels for `# mutare:ignore[logical:<op>]`: the resulting connective of a binary
   # swap. The `not`/`!` strip stays unlabeled (bare-family only) — its unary original can't be a

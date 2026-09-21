@@ -15,6 +15,7 @@ defmodule Mutare.Mutators.CharlistLiteral do
   alias Mutare.AST
   alias Mutare.Mutator.Mutation
   alias Mutare.Mutators.Helpers
+  alias Mutare.Transform.Calls
 
   @sentinel AST.sentinel_string()
   @sentinel_charlist String.to_charlist(AST.sentinel_string())
@@ -23,14 +24,14 @@ defmodule Mutare.Mutators.CharlistLiteral do
   def name, do: :charlist
 
   @impl Mutare.Mutator
-  def mutate({sigil, meta, [{:<<>>, bmeta, segments}, modifiers]})
+  def mutate({sigil, meta, [{:<<>>, bmeta, segments}, modifiers]} = node)
       when sigil in [:sigil_c, :sigil_C] do
     # Only real `~c`/`~C` sigil syntax carries the parser's `:delimiter` meta — a call to
     # a *function* named `sigil_c`/`sigil_C` (a local sigil shadowing `Kernel`'s) parses to
     # the same head without it (see `Mutare.Mutators.StringSigilLiteral`, the same guard).
     # The head is preserved so a `~C` replacement stays `~C` (`~C` never interpolates, so
     # only the static single-binary path applies to it).
-    if Keyword.has_key?(meta, :delimiter) do
+    if Calls.kernel_call?(node) and Keyword.has_key?(meta, :delimiter) do
       segments
       |> replacement_contents()
       |> Enum.map(fn new ->

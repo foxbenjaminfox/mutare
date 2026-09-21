@@ -84,7 +84,7 @@ defmodule Mutare.Mutators.Arithmetic do
   def mutate(node),
     do:
       Helpers.combine_mutations(
-        operator_mutations(node),
+        Helpers.kernel_mutations(node, &operator_mutations/1),
         Helpers.swap_bare_kernel(node, @call_swaps)
       )
 

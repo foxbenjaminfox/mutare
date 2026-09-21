@@ -113,10 +113,12 @@ defmodule Mutare.Transform.ModulePlan do
   plain one without re-deriving the shape.
   """
   @spec clause_signature(Macro.t()) :: FunctionPlan.signature() | nil
-  def clause_signature({vis, _meta, [head | _rest]}) when vis in [:def, :defp] do
-    case name_arity(head) do
-      {name, arity} -> {vis, name, arity}
-      :error -> nil
+  def clause_signature({vis, _meta, [head | _rest]} = node) when vis in [:def, :defp] do
+    if Calls.kernel_call?(node) do
+      case name_arity(head) do
+        {name, arity} -> {vis, name, arity}
+        :error -> nil
+      end
     end
   end
 
@@ -186,7 +188,8 @@ defmodule Mutare.Transform.ModulePlan do
   # unrecognised on purpose: missing a scope *boundary* only over-blocks (its quoted defs read as
   # metaprogrammed heads), and over-blocking costs mutants where under-blocking crashes.
   @spec definition_form(Macro.t()) :: atom() | nil
-  def definition_form({form, _meta, args}) when is_atom(form) and is_list(args), do: form
+  def definition_form({form, _meta, args} = node) when is_atom(form) and is_list(args),
+    do: if(Calls.kernel_call?(node), do: form)
 
   def definition_form({{:., _, [_module, fun]}, _meta, args} = node)
       when fun in @definition_macros and is_list(args) do

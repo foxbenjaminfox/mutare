@@ -11574,7 +11574,8 @@ Inherited limit: a displacement injected by a `use` Mutare cannot expand is invi
 every other `Kernel` name (`Imports`, "Scope and limits"). The other structural `Kernel`
 heads (`if`/`unless`, the connectives, `in`) still dispatched in `Analyze` by shape; they were
 not audited here. `if`/`unless` were subsequently fixed — "Only Kernel's conditionals have
-condition slots" below. A name-only pipe route can now override that invisible displacement —
+condition slots" below — and the remaining readers in "Kernel semantics follow resolution
+throughout the transform". A name-only pipe route can now override that invisible displacement —
 see "A name-only pipe route overrides the Kernel assumption" below.
 
 ### A routed pipe stage becomes a direct call `[done — extended to every stage: see "A pipe stage is the call it is sugar for"]` (2026-09-19)
@@ -12647,3 +12648,33 @@ visits callees, quote options and live unquotes, and treats skipped ordinary arg
 executable, including a skipped pipe stage's arguments. Quoted assignments, disabled unquotes,
 and nested quotes remain data. SourcePatch regressions compare baseline and mutant behavior
 under both the outer-only and split-selector deliveries.
+
+### Kernel semantics follow resolution throughout the transform `[fixed]` (2026-09-21)
+
+The conditional fix exposed the same assumption in six other places: module-scope handling
+(including the late helper-xref attribute injection); definition grouping and lifting;
+boolean structural analysis and guard tagging; operator swaps and redundancy suppression;
+bare-call swaps/removals; and standard-named sigil mutators. A custom macro can use any of
+these names and consume patterns or other syntax where Kernel consumes values. Rewriting
+its head or injecting a selector into that syntax can sink the metamutant's single compile.
+
+All read the existing `Calls.kernel_call?/1` boundary. `StructuralForms` reuses its Kernel
+vocabulary to send foreign forms through ordinary routed analysis before any structural
+clause runs, in both `Analyze` and `Tag`. Definition planning and module-scope emission use
+the same identity check; `Calls.kernel_module?/1` shares the module-name vocabulary. This
+includes the late attribute walk, which must respect identity even inside a skipped call.
+
+`Helpers.kernel_mutations/2` gates built-in operator and sigil producers without withholding
+the call from user mutators. Mixed families gate only their Kernel-specific branches. The
+bare-call helpers previously checked only the displacement flag, missing positive foreign
+import resolution (the resolver stamps one or the other). They now use the shared reader.
+Boolean suppression, condition/return-family ownership, and return type guesses must agree
+with the producers: a foreign `==` is eligible for ordinary condition and return mutants.
+Likewise, only Kernel's string sigils justify a `::binary` pin in bitstring construction.
+
+Detection remains bounded by the imports/exclusions the resolver can see. No macro expansion
+or callable-kind guessing was added. `displaced_kernel_test.exs` uses custom syntax-consuming
+macros to reproduce the compile failures, checks routed delivery against source patches,
+and covers unavailable imports, live custom-mutator replacements, and nonbinary custom
+string sigils. The existing Kernel and displaced-pipe/conditional tests cover the other side
+of the boundary.

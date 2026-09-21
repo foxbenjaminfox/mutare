@@ -24,7 +24,7 @@ defmodule Mutare.Transform.Analyze do
 
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Transform.{Calls, Candidate, Meta, Suppression}
+  alias Mutare.Transform.{Calls, Candidate, Meta, StructuralForms, Suppression}
 
   # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
   # the body path's five equivalent-sibling clauses below match on these shared `defguard`s
@@ -152,8 +152,24 @@ defmodule Mutare.Transform.Analyze do
   # does the same at the head of its guard and pattern walks; `Analyze.Returns` treats a skipped
   # tail as one leaf.
   defp analyze(node, context, env) do
-    if Meta.skipped?(node), do: node, else: analyze_form(node, context, env)
+    cond do
+      Meta.skipped?(node) -> node
+      StructuralForms.foreign_kernel_form?(node) -> analyze_foreign_form(node, context, env)
+      true -> analyze_form(node, context, env)
+    end
   end
+
+  # A custom form has only the semantics its route declares. Keep this boundary ahead of
+  # every Kernel-specific clause, including definitions and redundancy suppression.
+  defp analyze_foreign_form(node, :runtime, env), do: do_analyze_call_node(node, env)
+
+  defp analyze_foreign_form(node, :scaffold, env) do
+    if module_macro_block_statement?(node),
+      do: analyze_module_macro_block(node, env),
+      else: recurse(node, :scaffold, env)
+  end
+
+  defp analyze_foreign_form(node, context, env), do: recurse(node, context, env)
 
   # `when` guard (position-independent: also covers case/fn clause guards): the
   # lift path owns guard mutation, so the in-place walk never touches one.
@@ -411,19 +427,15 @@ defmodule Mutare.Transform.Analyze do
   # through to the non-mutating catch-all.
   defp analyze_form({form, meta, [condition, body_kw]} = node, :runtime, env)
        when form in [:if, :unless] and is_list(body_kw) do
-    if Calls.kernel_call?(node) do
-      analyzed_body = analyze(body_kw, :runtime, env)
-      analyzed_condition = analyze(condition, :runtime, env)
+    analyzed_body = analyze(body_kw, :runtime, env)
+    analyzed_condition = analyze(condition, :runtime, env)
 
-      if Conditions.hoist_if?(analyzed_condition, env) do
-        Conditions.hoist_if(form, meta, condition, analyzed_condition, analyzed_body, env)
-      else
-        analyzed_condition = Conditions.finish_condition(analyzed_condition, condition, env)
-        rebuilt = {form, meta, [analyzed_condition, analyzed_body]}
-        Attach.offer(rebuilt, node, env.mutators)
-      end
+    if Conditions.hoist_if?(analyzed_condition, env) do
+      Conditions.hoist_if(form, meta, condition, analyzed_condition, analyzed_body, env)
     else
-      do_analyze_call_node(node, env)
+      analyzed_condition = Conditions.finish_condition(analyzed_condition, condition, env)
+      rebuilt = {form, meta, [analyzed_condition, analyzed_body]}
+      Attach.offer(rebuilt, node, env.mutators)
     end
   end
 
@@ -549,13 +561,9 @@ defmodule Mutare.Transform.Analyze do
   # one `Kernel` could not expand (`x |> unquote(stage)`, or source that does not compile): two
   # expressions, the node itself never offered.
   #
-  # Only `Kernel.|>/2` is that pipe. A `|>` displaced out of `Kernel` is a call to somebody
-  # else's operator, analyzed as the call it is (`analyze_foreign_pipe/2`).
-  defp analyze_form({:|>, meta, [lhs, rhs]} = node, :runtime, env) do
-    if Calls.kernel_call?(node),
-      do: {:|>, meta, [analyze(lhs, :runtime, env), analyze(rhs, :runtime, env)]},
-      else: analyze_foreign_pipe(node, env)
-  end
+  # Foreign pipes take the ordinary routed path at `analyze/3`'s entry.
+  defp analyze_form({:|>, meta, [lhs, rhs]}, :runtime, env),
+    do: {:|>, meta, [analyze(lhs, :runtime, env), analyze(rhs, :runtime, env)]}
 
   # `for` comprehension: its generators (`<-`), filters, `:into`/`:reduce` options
   # and `:do`/`:reduce` body all descend as ordinary runtime, but the **`:uniq`**
@@ -639,7 +647,7 @@ defmodule Mutare.Transform.Analyze do
        )
        when is_negation_op(neg) do
     # A skipped inner node is a leaf with no mutants to be redundant with: the generic path.
-    if Meta.skipped?(raw_inner) do
+    if Meta.skipped?(raw_inner) or not Calls.kernel_call?(raw_inner) do
       do_analyze_call_node(node, env)
     else
       inner = {neg, inner_meta, [analyze(operand, :runtime, env)]}
@@ -660,7 +668,7 @@ defmodule Mutare.Transform.Analyze do
          env
        )
        when is_negation_op(neg) do
-    if Meta.skipped?(raw_inner) do
+    if Meta.skipped?(raw_inner) or not Calls.kernel_call?(raw_inner) do
       do_analyze_call_node(node, env)
     else
       inner =
@@ -689,7 +697,7 @@ defmodule Mutare.Transform.Analyze do
        when is_negation_op(neg) and is_equality_op(op) do
     inner_raw = {op, op_meta, [left, right]}
 
-    if Meta.skipped?(inner_raw) do
+    if Meta.skipped?(inner_raw) or not Calls.kernel_call?(inner_raw) do
       do_analyze_call_node(node, env)
     else
       # The inner node takes the ordinary call path — offered, its operands by their stamped
@@ -831,15 +839,6 @@ defmodule Mutare.Transform.Analyze do
   defp reject_candidates(node, predicate) do
     Candidate.update_candidates(node, fn cands -> Enum.reject(cands, predicate) end)
   end
-
-  # A `|>` that is not `Kernel`'s is a call like any other: under the route the user gave the
-  # custom operator if there is one, and otherwise offered whole with both operands descended
-  # as values. Core assumes nothing about what the operator does with its right side — a
-  # pipe-shaped *macro*, which reads the stage as the syntax of a call still missing an
-  # argument, is for its user to route (`{MyPipe, :|>, 2, [:expression, :interior]}`), as any
-  # other macro is.
-  defp analyze_foreign_pipe(node, env),
-    do: do_analyze_call_node(node, env)
 
   # The shared call-node dispatch behind the runtime `analyze/3` clauses: a call stamped a
   # **known macro** (`meta[:mutare_route]`, set by `Mutare.Transform.Resolve` from
@@ -1059,12 +1058,13 @@ defmodule Mutare.Transform.Analyze do
   # shadowed `Kernel`'s) parses to the same `{:sigil_s, …}` head but carries no `:delimiter` and
   # may return an integer, so pinning `::binary` there would break the baseline (the call would
   # have to yield a binary). Only genuine sigil syntax — like the interpolated-string `<<>>`
-  # above — gets the parser's `:delimiter` stamp.
+  # above — gets the parser's `:delimiter` stamp. Even that syntax must still resolve to
+  # Kernel: a custom string-named sigil may return an integer too.
   defp binary_valued_literal?({:__block__, _meta, [value]}), do: is_binary(value)
   defp binary_valued_literal?({:<<>>, meta, _segs}), do: Keyword.has_key?(meta, :delimiter)
 
-  defp binary_valued_literal?({sigil, meta, _args}) when sigil in [:sigil_s, :sigil_S],
-    do: Keyword.has_key?(meta, :delimiter)
+  defp binary_valued_literal?({sigil, meta, _args} = node) when sigil in [:sigil_s, :sigil_S],
+    do: Keyword.has_key?(meta, :delimiter) and Calls.kernel_call?(node)
 
   defp binary_valued_literal?(_), do: false
 
@@ -1106,8 +1106,8 @@ defmodule Mutare.Transform.Analyze do
 
   defp descend_sigil(node, _env), do: node
 
-  def module_scaffold_statement?({form, _meta, _args}) when form in @module_scaffold_forms,
-    do: true
+  def module_scaffold_statement?({form, _meta, _args} = node) when form in @module_scaffold_forms,
+    do: not StructuralForms.foreign_kernel_form?(node)
 
   def module_scaffold_statement?(_node), do: false
 

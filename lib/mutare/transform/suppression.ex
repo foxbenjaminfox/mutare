@@ -105,10 +105,7 @@ defmodule Mutare.Transform.Suppression do
   sibling.
   """
   @spec boolean_op_node?(Macro.t()) :: boolean()
-  def boolean_op_node?({op, _meta, args}) when is_atom(op) and is_list(args),
-    do: Conditional.boolean_op?(op)
-
-  def boolean_op_node?(_node), do: false
+  defdelegate boolean_op_node?(node), to: Conditional, as: :boolean_node?
 
   @doc """
   The constant a short-circuit connective's Conditional mutant duplicates on its left operand:

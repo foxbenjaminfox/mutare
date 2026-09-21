@@ -11,6 +11,8 @@ defmodule Mutare.Mutators.Conditional do
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutators.Helpers
+  alias Mutare.Transform.Calls
 
   @boolean_ops [
     :>,
@@ -34,11 +36,13 @@ defmodule Mutare.Mutators.Conditional do
   def name, do: :conditional
 
   @impl Mutare.Mutator
-  def mutate({op, _meta, args}) when op in @boolean_ops and is_list(args) do
+  def mutate(node), do: Helpers.kernel_mutations(node, &mutations/1)
+
+  defp mutations({op, _meta, args}) when op in @boolean_ops and is_list(args) do
     [AST.literal(true), AST.literal(false)]
   end
 
-  def mutate(_node), do: :skip
+  defp mutations(_node), do: :skip
 
   # Variant labels for `# mutare:ignore[conditional:<label>]`: which constant the condition
   # was forced to — `true` or `false`.
@@ -61,4 +65,11 @@ defmodule Mutare.Mutators.Conditional do
   @spec boolean_op?(atom()) :: boolean()
   def boolean_op?(op) when is_atom(op), do: op in @boolean_ops
   def boolean_op?(_), do: false
+
+  @doc "Whether a node is one of Kernel's boolean operators, rather than a custom call."
+  @spec boolean_node?(Macro.t()) :: boolean()
+  def boolean_node?({op, _meta, args} = node) when is_atom(op) and is_list(args),
+    do: boolean_op?(op) and Calls.kernel_call?(node)
+
+  def boolean_node?(_node), do: false
 end

@@ -183,6 +183,7 @@ defmodule Mutare.Transform do
     Analyze,
     Behaviours,
     BindingEscapeEmit,
+    Calls,
     Candidate,
     Candidate.Delivery,
     CaseClauseEmit,
@@ -633,10 +634,15 @@ defmodule Mutare.Transform do
     attr = Recorder.no_warn_attr_ast(namespace)
 
     Macro.prewalk(ast, fn
-      {form, meta, args} when form in [:defmodule, :defimpl] and is_list(args) and args != [] ->
-        {init, [do_keyword]} = Enum.split(args, -1)
-        do_keyword = AST.update_do_block(do_keyword, &prepend_statement(&1, attr))
-        {form, meta, init ++ [do_keyword]}
+      {form, meta, args} = node
+      when form in [:defmodule, :defimpl] and is_list(args) and args != [] ->
+        if Calls.kernel_module?(node) do
+          {init, [do_keyword]} = Enum.split(args, -1)
+          do_keyword = AST.update_do_block(do_keyword, &prepend_statement(&1, attr))
+          {form, meta, init ++ [do_keyword]}
+        else
+          node
+        end
 
       other ->
         other
@@ -654,17 +660,21 @@ defmodule Mutare.Transform do
   # (`put_module_behaviours/3` refreshes the cached enriched list) while the body is walked.
   # Behaviours don't inherit, so a nested module that re-enters here overwrites and then restores
   # the outer set.
-  defp transform_node({:defmodule, meta, [alias_node, do_keyword]}, ctx)
+  defp transform_node({:defmodule, meta, [alias_node, do_keyword]} = node, ctx)
        when is_list(do_keyword) do
-    outer_module = ctx.scope.module
+    if Calls.kernel_module?(node) do
+      outer_module = ctx.scope.module
 
-    # An unresolvable (dynamic) head threads the explicit sentinel, never `nil`: `nil`
-    # means "file top level" downstream, and a literal module nested under a dynamic
-    # parent resolved with the top-level rules would match an unrelated module's
-    # `:skip_lifting` entry (see `Mutare.Lifting.unresolved/0`).
-    module = Lifting.module_from_alias(alias_node, outer_module) || Lifting.unresolved()
-    {do_keyword, ctx} = transform_module_body(do_keyword, module, meta, ctx)
-    {{:defmodule, meta, [alias_node, do_keyword]}, ctx}
+      # An unresolvable (dynamic) head threads the explicit sentinel, never `nil`: `nil`
+      # means "file top level" downstream, and a literal module nested under a dynamic
+      # parent resolved with the top-level rules would match an unrelated module's
+      # `:skip_lifting` entry (see `Mutare.Lifting.unresolved/0`).
+      module = Lifting.module_from_alias(alias_node, outer_module) || Lifting.unresolved()
+      {do_keyword, ctx} = transform_module_body(do_keyword, module, meta, ctx)
+      {{:defmodule, meta, [alias_node, do_keyword]}, ctx}
+    else
+      in_place(node, ctx)
+    end
   end
 
   # A genuine `Kernel.defimpl` (stamped by `Resolve` with the impl module it opens — `P.T`, or the
@@ -1012,15 +1022,21 @@ defmodule Mutare.Transform do
   #     (`:runtime`, via the def clause), while its head stays `:pattern`
   #     (unmutated; these functions are not lifted). Nesting (`for` in `if` in …)
   #     is handled for free — `:scaffold` propagates through the generic descent.
-  defp transform_statement({form, _meta, _args} = node, ctx) when form in [:defmodule, :defimpl],
-    do: transform_node(node, ctx)
+  defp transform_statement({form, _meta, _args} = node, ctx)
+       when form in [:defmodule, :defimpl] do
+    if Calls.kernel_module?(node),
+      do: transform_node(node, ctx),
+      else: transform_other_statement(node, ctx)
+  end
 
   defp transform_statement({:__block__, meta, statements}, ctx) do
     {statements, ctx} = transform_statements(statements, ctx)
     {{:__block__, meta, statements}, ctx}
   end
 
-  defp transform_statement(node, ctx) do
+  defp transform_statement(node, ctx), do: transform_other_statement(node, ctx)
+
+  defp transform_other_statement(node, ctx) do
     # Scaffold is the default. Only an *unknown* macro call carrying a `do` block
     # takes the DSL route — and a known scaffold form (`if`/`for`/`case`/… with a
     # `do … end`) *also* looks like a macro-with-block, so it must be excluded here
@@ -1237,10 +1253,7 @@ defmodule Mutare.Transform do
 
   # A node that begins a fresh **module** scope, where outer function locals (the hoisted
   # `active_var` binding) are not visible.
-  defp module_scope?({form, _meta, _args}) when form in [:defmodule, :defimpl, :defprotocol],
-    do: true
-
-  defp module_scope?(_node), do: false
+  defp module_scope?(node), do: Calls.kernel_module?(node)
 
   defp emit_one(current, ctx) do
     # A known-macro node carrying `Candidate.Hosted`s weaves a host-supplied selector into the

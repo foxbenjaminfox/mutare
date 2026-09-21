@@ -48,8 +48,8 @@ defmodule Mutare.Mutators.IfCondition do
   # A boolean-valued operator: `Conditional` already forces it to true/false at the
   # node, so a condition mutant here is pure duplication. (Covers `and`/`or`/`&&`/
   # `||`/`not`/`!` and the comparisons/membership.)
-  defp skip?({op, _meta, args}) when is_atom(op) and is_list(args),
-    do: Conditional.boolean_op?(op)
+  defp skip?({op, _meta, args} = node) when is_atom(op) and is_list(args),
+    do: Conditional.boolean_node?(node)
 
   # Bare (un-wrapped) literal `true`/`false`/`nil`, defensively.
   defp skip?(literal) when literal in [true, false, nil], do: true
