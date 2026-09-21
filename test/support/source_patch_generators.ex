@@ -38,7 +38,13 @@ defmodule Mutare.Test.SourcePatchGenerators do
       :unquote,
       :quoted,
       :lazy,
-      :hosted
+      :hosted,
+      :keyed_key,
+      :raw_pipe,
+      :skipped_pipe,
+      :displaced_if,
+      :displaced_pipe,
+      :injected_pipe
     ]
 
   def spellings, do: [:direct, :piped, :grouped]
@@ -108,6 +114,7 @@ defmodule Mutare.Test.SourcePatchGenerators do
 
   def fixture(recipe) do
     {left, bindings, opts} = operand(recipe.operand)
+    {imports, helpers} = scope(recipe.operand)
     left = if recipe.wrapped?, do: "F.identity(#{left})", else: left
     right = "(right = F.tick(divisor, :right))"
 
@@ -133,12 +140,14 @@ defmodule Mutare.Test.SourcePatchGenerators do
 
       def run(n, divisor, enabled) when n <= 20 do
         F.observe(fn ->
+          #{imports}
           result = #{expression}
           {result, #{Enum.join(bindings ++ callee_bindings ++ ["right"], ", ")}}
         end)
       end
 
       def other(n), do: n < 1
+      #{helpers}
     end
     """
 
@@ -210,8 +219,71 @@ defmodule Mutare.Test.SourcePatchGenerators do
   defp operand(:hosted),
     do: {"List.first(filter([F.tick(n, :left)], F.tick(divisor, :condition) > 1), 0)", [], []}
 
+  # An expression in a keyed refinement's *key*: it runs, and binds, like any other.
+  defp operand(:keyed_key),
+    do:
+      {~S|Keyword.get(["#{key = "value"}": F.tick(n, :left), raw: 0], :value)|, ["key"],
+       [call_routes: [{Keyword, :get, 2, [[:expression, raw: :raw], :expression]}]]}
+
+  # A pipe written inside a withheld argument stays as written: no pass may read its stage
+  # as a complete call, or take its operator for Kernel's without resolution saying so.
+  defp operand(:raw_pipe),
+    do:
+      {"F.raw(F.tick(n, :left) |> div(2))", [],
+       [call_routes: [{SourcePatchFixtures, :raw, 1, :raw}]]}
+
+  defp operand(:skipped_pipe),
+    do:
+      {"F.identity((left = F.tick(n, :left)) |> abs())", ["left"],
+       [call_routes: [{SourcePatchFixtures, :identity, 1, :skip}]]}
+
+  # `if/2` displaced by a *function* (imported in `scope/1`): both branches run, and the
+  # condition's binding escapes. Nothing may read it as Kernel's conditional.
+  defp operand(:displaced_if),
+    do:
+      {"elem(if((left = F.tick(n, :left)), do: F.tick(n, :then), else: F.tick(0, :else)), 0)",
+       ["left"], []}
+
+  # The displaced pipes live in helper functions, whose imports are their own: the recipe's
+  # spelling still writes Kernel's `|>` around the call.
+  defp operand(:displaced_pipe), do: {"paired(n)", [], []}
+
+  defp operand(:injected_pipe),
+    do: {"injected(n)", [], [call_routes: [{:*, :|>, 2, [:expression, :interior]}]]}
+
   defp operand(:lazy),
     do:
       {"F.lazy(F.tick(n, :left), enabled)", [],
        [call_routes: [{SourcePatchFixtures, :lazy, 2, [:lazy_expression, :expression]}]]}
+
+  # `{imports written at the head of the observed function, helper definitions}`.
+  defp scope(:displaced_if),
+    do: {"import Kernel, except: [if: 2]\n      import Mutare.Test.TupleConditional", ""}
+
+  defp scope(:displaced_pipe) do
+    {"",
+     """
+     # A `|>` that is a function: both sides are values, and `n < 99` is no stage.
+       defp paired(n) do
+         import Kernel, except: [|>: 2]
+         import Mutare.Test.PairPipe
+         elem(F.tick(n, :left) |> (n < 99), 0)
+       end
+     """}
+  end
+
+  defp scope(:injected_pipe) do
+    {"",
+     """
+     # A `|>` macro installed by another macro, which name resolution cannot expand: the
+       # name-only route in this operand's options is all that says how to read it.
+       defp injected(n) do
+         require Mutare.Test.InjectsBindPipe
+         Mutare.Test.InjectsBindPipe.install()
+         {:ok, F.tick(n, :left)} |> Kernel.+(n - n)
+       end
+     """}
+  end
+
+  defp scope(_operand), do: {"", ""}
 end

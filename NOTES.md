@@ -13005,3 +13005,14 @@ longer compiles. For the other twelve, read against the vocabularies by hand:
 | `17f40589` | a pipe written inside a withheld (`:raw`/`:skip`) argument | no |
 | `b887cd94` | an expression in a keyed refinement's *key* | no |
 | `d0f62657` | a module defined at run time | no, deliberately (see above) |
+
+**The four "no" rows are operands now** (`SourcePatchGenerators`): `:displaced_if` (an `if/2`
+*function*, imported at the head of the observed closure: both branches run, the condition's
+binding escapes), `:displaced_pipe` and `:injected_pipe` (a `|>` function, and a `|>` macro
+installed by another macro under a name-only route; both live in helper functions whose
+imports are their own, so the recipe's spelling still writes Kernel's pipe), `:raw_pipe` and
+`:skipped_pipe` (a pipe written inside a withheld argument), and `:keyed_key` (a binding in a
+keyed refinement's key). 50 pairwise recipes; none found a defect at HEAD. One thing the
+name-only route taught the fixture: `{:*, :|>, 2, …}` governs Kernel's pipes too, as designed,
+so the recipe's own stages stop being direct calls and the per-family counts are exact for
+that operand only in the `:direct` spelling. The semantic comparison holds in all three.
