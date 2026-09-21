@@ -13034,3 +13034,32 @@ Both pass at HEAD. `UseExpansion` already has its adversary (`UsesBindPipe`, a `
 displaces `|>`); `argument_marks` declares no evaluation or scope behaviour for a macro to be
 inconvenient about. A new routing word, or a new delivery that moves code, should arrive with
 the macro that satisfies the word's letter while defeating whatever else the delivery assumed.
+
+### A static baseline read-back: weighed, not built `[dead end]` (2026-09-21)
+
+The idea: beside `verify_invariants`' structural check (every id has a branch), reduce the
+metamutant at `active = 0` (each selector to its catch-all, coverage records erased) and
+require the result to equal the resolved original. It would run without compiling, so over
+`lib/` and on every `Mutare.Test` call, where the source-patch oracle is too dear.
+
+Not built, for three reasons found by laying the emitted shapes out:
+
+1. The reducer is emission inverted: the in-place selector, the bound pipe closure and its
+   tuple export, the lifted dispatcher with `when` alternatives gated per id, the gated
+   `case {active, subject}` of clause mutants, `rescue`/`receive` clauses, match re-exports,
+   and hosted selectors whose wrapper is the host's own. `Manifest` already has to learn
+   every new shape; this would be a third place that must, and a partial reducer that skips
+   what it cannot read checks least where new work lands.
+2. It is blind to what bit. A closure `lhs |> (fn p -> p |> f(y) end).()` reduces to
+   `lhs |> f(y)` whatever order the receiver and `lhs` run in, and an export that traps a
+   binding reduces to the same expression as one that does not. Order, count and scope are
+   run-time facts; the effect trace sees them.
+3. The cheap subset, "a clean copy equals its source once the self-call redirect is undone",
+   undoes exactly the mistake it should catch (a quoted call renamed as recursion), unless
+   it decides for itself which calls are live, and then it shares `QuoteStructure`'s reading
+   and its blind spots.
+
+What it would have caught that nothing else does is a render that reparses differently around
+a spliced selector (NOTES "A unary operator over a selector"). That class fails to compile or
+changes behaviour, and the pairwise recipes now put a selector under each spelling, callee
+and routing word, so the run-time oracle covers it where the vocabulary reaches.
