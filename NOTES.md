@@ -12848,3 +12848,28 @@ spellings; the generated property checks the routed and quoted variations.
 vocabulary detect both its retained-argument scope failure and its dynamic receiver-order
 failure. For the latter probe the argument binding was omitted to isolate the trace mismatch
 from the compile failure. The checkout and compiled beams were not replaced.
+
+### Recursive source-patch comparisons cross quote boundaries (2026-09-21)
+
+`CleanSourcePatchGenerators` extends the semantic oracle to the self-call rewriting behind
+relocated clean clauses. Each recursive step consumes a list tail that neither enabled
+mutation family can alter, so the generated mutants terminate too. The recursive function
+builds and prints quoted payloads containing calls with its own name and arity, records them
+in the existing effect trace, and continues with a mutated arithmetic accumulator. A real
+mutant in a separate function selects its clean copy. The test requires a `:clean` decision
+for the recursive function, its arithmetic mutant, and the unrelated mutants; losing any of
+these cannot silently turn the test into a weaker property.
+
+Seven payload forms (quoted calls, live unquotes, splicing, disabled unquotes, bind_quoted,
+nested quote options and quoted definitions) cross six wrapper treatments (ordinary,
+interior, raw, skipped, keyed and positional keyword) and both direct and piped recursion.
+The fixed tests cover all 84 combinations; 30 generated recipes also vary bounded lists and
+the initial accumulator. Printing the payload is part of the fixture's observable behavior,
+not a normalization in the oracle: quote hygiene metadata may differ between independently
+compiled wrappers, while a wrongly renamed call must remain visible. This does not yet
+cover runtime-created modules or arbitrary recursive programs.
+
+Historical replay in disposable VMs confirms that the new oracle rejects SelfCalls from
+before `226550f4` (quoted calls renamed as recursion) and before `8d59d5fb` (nested quote
+options rewritten as executable escapes). Both failures are semantic source-patch
+mismatches, not compilation failures. No production change was needed for this extension.
