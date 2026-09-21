@@ -86,6 +86,40 @@ defmodule Mutare.RoutedPipeRegressionTest do
     end
   end
 
+  defmodule KeywordRoutes do
+    @behaviour Mutare.CallRouting
+
+    @impl true
+    def call_routes, do: [{Keyword, :get, 2, [{:keyword, [:expression]}, :expression]}]
+  end
+
+  test "operand swapping exports expression bindings through keyword routes" do
+    for {operand, route_opts} <- [
+          {"Keyword.get([value: y = 10], :value)",
+           [call_routes: [{Keyword, :get, 2, [[:expression, value: :expression], :expression]}]]},
+          {"Keyword.get([value: y = 10], :value)", [extensions: [KeywordRoutes]]},
+          {"Keyword.get([value: [nested: y = 10]], :value) |> Keyword.get(:nested)",
+           [
+             call_routes: [
+               {Keyword, :get, 2, [[:expression, value: [nested: :expression]], :expression]}
+             ]
+           ]}
+        ],
+        mutators <- [[:operand_swap], [:operand_swap, :arithmetic]] do
+      source = """
+      defmodule Binding do
+        def run do
+          result = #{operand} |> div(2)
+          {result, y}
+        end
+      end
+      """
+
+      sites = assert_patches(source, mutators, [run: []], route_opts)
+      assert [%{mutator: :operand_swap}] = Enum.filter(sites, &(&1.mutator == :operand_swap))
+    end
+  end
+
   test "operand swapping exports destructure's pattern bindings" do
     source = """
     defmodule Binding do

@@ -687,6 +687,8 @@ defmodule Mutare.Transform.CleanFunctionTest do
             "quote(unquote: false, do: unquote(f(n)))",
             "quote([bind_quoted: [x: n]], do: f(x))",
             "quote(do: quote(do: unquote(f(n))))",
+            "quote(do: quote(bind_quoted: [v: unquote(f(0))], do: v))",
+            "quote(do: quote([line: unquote(f(0))], do: v))",
             "quote(do: quote(do: unquote(unquote(f(n)))))",
             "quote(do: f(unquote(f(n - 1))))",
             "quote(do: [f(n), unquote_splicing([f(n - 1)])])",

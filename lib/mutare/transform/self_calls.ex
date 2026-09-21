@@ -17,9 +17,9 @@ defmodule Mutare.Transform.SelfCalls do
   # A self-call is recognised by shape: the function's own name at its full arity, resolving
   # to no import (a module cannot both define and import one name/arity). Argument routes
   # preserve opaque syntax, including raw values in keyword refinements. Quoted bodies
-  # are data: only quote option values and live unquote expressions can contain executable
-  # self-calls. Renaming quoted calls
-  # can silently change returned data even when both copies compile.
+  # are data: only an executable quote's option values and live unquote expressions can
+  # contain executable self-calls. Renaming quoted calls can silently change returned data
+  # even when both copies compile.
   # Definitions are separate scopes: their heads are declarations, and their bodies'
   # calls belong to the new scope. Leave the entire construct at its ordinary entry
   # points. Quoted definitions still admit live unquotes in the enclosing function.
@@ -194,9 +194,13 @@ defmodule Mutare.Transform.SelfCalls do
       :do ->
         {pair, acc}
 
-      _option ->
+      _option when level == 0 ->
         {value, acc} = walk(value, level, self_call, acc, fun)
         {{key, value}, acc}
+
+      _quoted_option ->
+        # A nested quote's options are data too, even when they contain unquotes.
+        {pair, acc}
     end
   end
 

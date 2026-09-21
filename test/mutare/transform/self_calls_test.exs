@@ -92,6 +92,8 @@ defmodule Mutare.Transform.SelfCallsTest do
         "quote([unquote: false], do: unquote_splicing(f(1)))",
         "quote(bind_quoted: [x: 1], do: unquote(f(x)))",
         "quote(do: quote(do: unquote(f(1))))",
+        "quote(do: quote(bind_quoted: [x: unquote(f(1))], do: f(x)))",
+        "quote(do: quote([line: unquote(f(1))], do: f(2)))",
         "quote(do: quote(do: unquote(unquote(f(1)))))"
       ] do
     test "preserves quoted data: #{source}" do
@@ -112,8 +114,6 @@ defmodule Mutare.Transform.SelfCallsTest do
          "quote([bind_quoted: [x: clean_f(:extra, 1)], unquote: true], do: unquote(clean_f(:extra, x)))"},
         {"quote(line: f(1), unquote: false, do: unquote(f(2)))",
          "quote(line: clean_f(:extra, 1), unquote: false, do: unquote(f(2)))"},
-        {"quote(do: quote(bind_quoted: [x: unquote(f(1))], do: f(x)))",
-         "quote(do: quote(bind_quoted: [x: unquote(clean_f(:extra, 1))], do: f(x)))"},
         {"quote(do: unquote(quote(do: f(unquote(f(1))))))",
          "quote(do: unquote(quote(do: f(unquote(clean_f(:extra, 1))))))"}
       ] do

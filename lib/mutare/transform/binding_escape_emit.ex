@@ -18,7 +18,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
   alias Mutare.AST
   alias Mutare.Coverage.Recorder
-  alias Mutare.Transform.Analyze.QuoteEscape
+  alias Mutare.Transform.Analyze.{CallOptions, QuoteEscape}
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Delivery
   alias Mutare.Transform.{Calls, CoverageEmit, Ctx, Meta, PatternStructure, Resolve, SelectorEmit}
@@ -97,16 +97,50 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
       treatments when is_list(treatments) ->
         Enum.zip(args, treatments)
-        |> Enum.flat_map(fn
-          {arg, treatment} when treatment in [:expression, :interior] -> bound_names(arg, context)
-          {arg, :binding_pattern} -> PatternStructure.bound_var_names(arg)
-          _ -> []
+        |> Enum.flat_map(fn {arg, treatment} ->
+          argument_bindings_for(arg, treatment, context)
         end)
 
       _ ->
         []
     end
   end
+
+  defp argument_bindings_for(arg, treatment, context) when treatment in [:expression, :interior],
+    do: bound_names(arg, context)
+
+  defp argument_bindings_for(arg, :binding_pattern, _context),
+    do: PatternStructure.bound_var_names(arg)
+
+  defp argument_bindings_for(arg, {:keyed, leading, refinements}, context) do
+    case CallOptions.keyword_pairs(arg) do
+      {:ok, pairs, _rewrap} ->
+        inner = if leading == :interior, do: :expression, else: leading
+
+        Enum.flat_map(pairs, fn {key, value} ->
+          treatment = Keyword.get(refinements, AST.key_atom(key), inner)
+          argument_bindings_for(value, treatment, context)
+        end)
+
+      :error ->
+        argument_bindings_for(arg, leading, context)
+    end
+  end
+
+  defp argument_bindings_for(arg, {:keyword, treatments}, context) do
+    case CallOptions.keyword_pairs(arg) do
+      {:ok, pairs, _rewrap} ->
+        Enum.zip(pairs, treatments)
+        |> Enum.flat_map(fn {{_key, value}, treatment} ->
+          argument_bindings_for(value, treatment, context)
+        end)
+
+      :error ->
+        []
+    end
+  end
+
+  defp argument_bindings_for(_arg, _treatment, _context), do: []
 
   # Quote options execute in the surrounding scope. Its body is data, except for
   # live unquotes; a nested quote or disabled unquoting keeps those expressions data.
