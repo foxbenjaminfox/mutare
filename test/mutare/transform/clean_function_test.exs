@@ -209,6 +209,26 @@ defmodule Mutare.Transform.CleanFunctionTest do
     end
   end
 
+  test "a function that displaces its Kernel namesake recurses in the clean copy too" do
+    source = """
+    defmodule Mutare.CleanFunctionFixture do
+      import Kernel, except: [max: 2]
+      def max([], best), do: best
+      def max([n | rest], best) when n > best, do: max(rest, n)
+      def max([_ | rest], best), do: max(rest, best)
+    end
+    """
+
+    result = Transform.transform_string_with_sites(source, mutators: @mutators)
+    assert result.metamutant =~ "_original(rest, n)"
+    compile_purging(@fixture, result.metamutant)
+
+    Selector.put(result.next_id + 1)
+    assert apply(@fixture, :max, [[3, 9, 2], 0]) == 9
+    Selector.put(0)
+    assert apply(@fixture, :max, [[3, 9, 2], 0]) == 9
+  end
+
   test "a same-name pipe at another arity compiles and preserves every mutant" do
     source = """
     defmodule Mutare.CleanFunctionFixture do

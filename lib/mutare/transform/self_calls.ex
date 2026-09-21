@@ -15,7 +15,9 @@ defmodule Mutare.Transform.SelfCalls do
   # entry points.
   #
   # A self-call is recognised by shape: the function's own name at its full arity, resolving
-  # to no import (a module cannot both define and import one name/arity). Argument routes
+  # to no import (a module cannot both define and import one name/arity). That holds for a
+  # `Kernel` name too: a module defining `max/2` has excluded `Kernel`'s, so the call is
+  # its own, displaced or not. Argument routes
   # preserve opaque syntax, including raw values in keyword refinements. Quoted bodies
   # are data: only an executable quote's option values and live unquote expressions can
   # contain executable self-calls. Renaming quoted calls can silently change returned data
@@ -27,7 +29,7 @@ defmodule Mutare.Transform.SelfCalls do
   # Resolve has already expanded executable pipes to calls, so a stage's arity includes
   # its receiver. Quoted pipes remain data, and their spelling is preserved too.
 
-  alias Mutare.Transform.{Calls, Imports, KeywordRouting, Meta, QuoteStructure}
+  alias Mutare.Transform.{Calls, KeywordRouting, Meta, QuoteStructure}
 
   @doc """
   Redirect executable full-arity self-calls of `self_call` in `body` to `replacement`,
@@ -63,7 +65,22 @@ defmodule Mutare.Transform.SelfCalls do
     {{:quote, meta, rebuild.(values)}, acc}
   end
 
-  defp do_walk({_form, _meta, args} = node, 1, self_call, acc, fun) when is_list(args) do
+  # Executable Kernel pipes were desugared by Resolve. A surviving pipe can be withheld
+  # syntax with no resolution at all: neither its operator nor its RHS arity is known.
+  # Leave it intact unless resolution positively identified a displaced operator, whose
+  # operands can be walked as ordinary calls.
+  defp do_walk({:|>, _meta, _args} = pipe, 0, self_call, acc, fun) do
+    if Calls.kernel_call?(pipe),
+      do: {pipe, acc},
+      else: walk_routed_children(pipe, acc, &walk(&1, 0, self_call, &2, fun))
+  end
+
+  defp do_walk(node, 0, self_call, acc, fun) do
+    {node, acc} = walk_routed_children(node, acc, &walk(&1, 0, self_call, &2, fun))
+    if self_call?(node, self_call), do: fun.(node, acc), else: {node, acc}
+  end
+
+  defp do_walk(node, 1, self_call, acc, fun) do
     case QuoteStructure.quoted(node) do
       {:escape, arg, rebuild} ->
         {arg, acc} = walk(arg, 0, self_call, acc, fun)
@@ -81,33 +98,13 @@ defmodule Mutare.Transform.SelfCalls do
     end
   end
 
-  # Executable Kernel pipes were desugared by Resolve. A surviving pipe can be withheld
-  # syntax with no resolution at all: neither its operator nor its RHS arity is known.
-  # Leave it intact unless resolution positively identified a displaced operator, whose
-  # operands can be walked as ordinary calls.
-  defp do_walk({:|>, _meta, _args} = pipe, 0, self_call, acc, fun) do
-    if Calls.kernel_call?(pipe),
-      do: {pipe, acc},
-      else: walk_routed_children(pipe, acc, &walk(&1, 0, self_call, &2, fun))
-  end
-
-  defp do_walk(node, level, self_call, acc, fun) do
-    descend = &walk(&1, level, self_call, &2, fun)
-
-    {node, acc} =
-      if level == 0,
-        do: walk_routed_children(node, acc, descend),
-        else: walk_children(node, acc, descend)
-
-    if level == 0 and self_call?(node, self_call), do: fun.(node, acc), else: {node, acc}
-  end
-
   defp walk_routed_children(node, acc, fun) do
     if definition?(node), do: {node, acc}, else: do_walk_routed_children(node, acc, fun)
   end
 
   @definitions ~w(defmodule defprotocol defimpl def defp defmacro defmacrop defguard defguardp defdelegate)a
 
+  # mutare:ignore[guard_drop] equivalent — a variable named `def` would read as a definition, and be left as it is either way: it has no children
   defp definition?({form, _meta, args} = node) when is_list(args) do
     case Calls.resolved_call(node) do
       {[:Kernel], name, _args, _rebuild} -> name in @definitions
@@ -118,7 +115,7 @@ defmodule Mutare.Transform.SelfCalls do
 
   defp definition?(_node), do: false
 
-  defp do_walk_routed_children({form, meta, args} = node, acc, fun) when is_list(args) do
+  defp do_walk_routed_children({form, meta, args} = node, acc, fun) do
     case Meta.routing(meta) do
       treatments when is_list(treatments) ->
         {form, acc} = fun.(form, acc)
@@ -173,7 +170,7 @@ defmodule Mutare.Transform.SelfCalls do
     end
   end
 
-  defp walk_children({form, meta, args}, acc, fun) when is_list(args) do
+  defp walk_children({form, meta, args}, acc, fun) do
     {form, acc} = fun.(form, acc)
     {args, acc} = fun.(args, acc)
     {{form, meta, args}, acc}
@@ -190,9 +187,9 @@ defmodule Mutare.Transform.SelfCalls do
 
   defp walk_children(node, acc, _fun), do: {node, acc}
 
-  defp self_call?({name, meta, args} = node, {name, arity})
+  defp self_call?({name, _meta, args} = node, {name, arity})
        when is_list(args) and length(args) == arity,
-       do: is_nil(Calls.resolved_call(node)) and not Imports.kernel_displaced?(meta)
+       do: is_nil(Calls.resolved_call(node))
 
   defp self_call?(_node, _self_call), do: false
 end

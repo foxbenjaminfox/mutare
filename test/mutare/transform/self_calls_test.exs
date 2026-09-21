@@ -27,6 +27,29 @@ defmodule Mutare.Transform.SelfCallsTest do
     end
   end
 
+  test "a variable named quote is no quote" do
+    ast = Code.string_to_quoted!("quote = f(1); quote")
+    assert {redirected, true} = SelfCalls.redirect(ast, {:f, 1}, :clean_f, [])
+    assert Macro.to_string(redirected) == "quote = clean_f(1)\nquote"
+  end
+
+  test "a Kernel name the module took out of Kernel is its own function" do
+    ast =
+      Code.string_to_quoted!("import Kernel, except: [max: 2]\nmax(max(a, 1), b)")
+      |> Resolve.annotate()
+
+    assert {{:__block__, _, [_import, redirected]}, true} =
+             SelfCalls.redirect(ast, {:max, 2}, :clean_max, [])
+
+    assert Macro.to_string(redirected) == "clean_max(clean_max(a, 1), b)"
+  end
+
+  test "a qualified Kernel call other than a definition is walked" do
+    ast = Code.string_to_quoted!("Kernel.max(f(1), 2)") |> Resolve.annotate()
+    assert {redirected, true} = SelfCalls.redirect(ast, {:f, 1}, :clean_f, [])
+    assert Macro.to_string(redirected) == "Kernel.max(clean_f(1), 2)"
+  end
+
   test "a displaced definition macro remains an ordinary call" do
     ast = Sourceror.parse_string!("Other.defmodule(f(1))")
     assert {redirected, true} = SelfCalls.redirect(ast, {:f, 1}, :clean_f, [])
@@ -61,7 +84,12 @@ defmodule Mutare.Transform.SelfCallsTest do
         {"[raw: f(1), value: f(2)]", {:keyword, [:raw, :expression]},
          "[raw: f(1), value: clean_f(2)]", true},
         {"[nested: [raw: f(1), value: f(2)]]", {:keyword, [{:keyed, :raw, [value: :expression]}]},
-         "[nested: [raw: f(1), value: clean_f(2)]]", true}
+         "[nested: [raw: f(1), value: clean_f(2)]]", true},
+        {"f(1)", {:hosted, [Mutare.Test.SomeHost]}, "f(1)", false},
+        # Not a literal keyword list: the whole argument takes the fallback treatment.
+        {"f(1)", {:keyed, :raw, [value: :expression]}, "f(1)", false},
+        {"f(1)", {:keyed, :expression, [value: :raw]}, "clean_f(1)", true},
+        {"f(1)", {:keyword, [:expression]}, "f(1)", false}
       ] do
     test "respects #{inspect(treatment)} in #{source}" do
       arg = Sourceror.parse_string!(unquote(source))
@@ -95,7 +123,9 @@ defmodule Mutare.Transform.SelfCallsTest do
         "quote(bind_quoted: [x: 1], do: unquote(f(x)))",
         "quote(do: quote(do: unquote(f(1))))",
         "quote(do: quote(bind_quoted: [x: unquote(f(1))], do: f(x)))",
-        "quote(do: quote(do: unquote(unquote(f(1)))))"
+        "quote(do: quote(do: unquote(unquote(f(1)))))",
+        # A nested quote given two arguments quotes its options as data around them.
+        "quote(do: quote([line: f(1)], do: f(2)))"
       ] do
     test "preserves quoted data: #{source}" do
       ast = Sourceror.parse_string!(unquote(source))
