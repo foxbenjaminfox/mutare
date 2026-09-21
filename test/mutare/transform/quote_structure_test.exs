@@ -28,6 +28,8 @@ defmodule Mutare.Transform.QuoteStructureTest do
     "quote(do: unquote(quote(do: unquote(probe(:live_again)))))",
     "quote(do: unquote(quote(do: quote(do: unquote(probe(:inert_again))))))",
     "quote(bind_quoted: [v: quote(do: unquote(probe(:quote_in_option)))], do: v)",
+    # Compilable, though no pair: the cons is inert, the body's escape still runs.
+    "quote([{:line, 1} | []], do: unquote(probe(:beside_cons)))",
     "quote do\n  probe(:block)\n  unquote(probe(:block_escape))\nend"
   ]
 

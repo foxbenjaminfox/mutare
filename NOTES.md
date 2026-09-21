@@ -13063,3 +13063,17 @@ What it would have caught that nothing else does is a render that reparses diffe
 a spliced selector (NOTES "A unary operator over a selector"). That class fails to compile or
 changes behaviour, and the pairwise recipes now put a selector under each spelling, callee
 and routing word, so the run-time oracle covers it where the vocabulary reaches.
+
+### Dogfooding the two decoders (2026-09-21)
+
+`mix mutare --only` over `quote_structure.ex` and `keyword_routing.ex`: 174 mutants, 93.1%
+(149 killed, 11 survived, 14 no-coverage). `KeywordRouting` had no survivor. All eleven were
+in `QuoteStructure` and said one thing: its tolerance of quote arguments that are not keyword
+lists (`is_list/1` guards, `other` fallbacks, `pair?/1`) was never exercised. Asked, Elixir
+rejects a `quote` whose options are a variable or a call ("expected a keyword list"), so
+that tolerance was unreachable and is removed; `parts/1` crashes on such an argument. Elixir
+does accept a list element that is no pair (`quote([{:line, 1} | []], do: …)`), so that one
+fallback stays, as `:inert`, and the Elixir-oracle test now has a probe beside a cons to
+reach it. `quoted/1` keeps its `is_list/1` guard with an `equivalent` ignore: without it a
+variable named `quote` reads `:inert` where it read `:data`, and no consumer can tell.
+`bench/transform_diff.sh HEAD`: identical over 1,355 snapshots.

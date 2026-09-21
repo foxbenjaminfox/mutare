@@ -10,8 +10,11 @@ defmodule Mutare.Transform.QuoteStructure do
     * `:quoted` — the `do:` body while unquoting is enabled. It is data, except for the
       argument of an `unquote`/`unquote_splicing` in it, which is `:live` again.
     * `:inert` — the `do:` body under `unquote: false` or `bind_quoted:` (which disables
-      unquoting unless `unquote: true` re-enables it), and anything that is not a keyword
-      pair. Nothing in it is ever evaluated.
+      unquoting unless `unquote: true` re-enables it). Nothing in it is ever evaluated.
+
+  Elixir rejects a `quote` whose arguments are not written as lists (a variable, a call), so
+  lists are all `parts/1` reads, and anything else is a crash, not a guess. It does accept a
+  list element that is no pair (`quote([{:line, 1} | []], do: …)`); that element is `:inert`.
 
   Inside `:quoted` data, `quoted/1` reads one node: an escape whose argument is `:live`, a
   nested `quote`, or plain data to keep descending. Elixir quotes a nested quote's body with
@@ -44,7 +47,7 @@ defmodule Mutare.Transform.QuoteStructure do
   rebuilder that puts replacement values back into the arguments' written shape.
   """
   @spec parts([Macro.t()]) :: {[{Macro.t(), state()}], rebuild()}
-  def parts(args) when is_list(args) do
+  def parts(args) do
     body = if unquote_enabled?(args), do: :quoted, else: :inert
     {Enum.flat_map(args, &arg_parts(&1, body)), &rebuild(args, &1)}
   end
@@ -65,39 +68,36 @@ defmodule Mutare.Transform.QuoteStructure do
   def quoted({:quote, meta, [options, body]}),
     do: {:options, options, &{:quote, meta, [&1, body]}}
 
+  # mutare:ignore[guard_drop] equivalent — without it a variable named `quote` reads as `:inert` where it read as `:data`, and a consumer does the same with either: a variable has no children
   def quoted({:quote, _meta, args}) when is_list(args), do: :inert
   def quoted(_node), do: :data
 
-  defp arg_parts({:__block__, _meta, [keywords]}, body) when is_list(keywords),
-    do: arg_parts(keywords, body)
+  # Sourceror wraps a keyword list written in brackets; the pairs inside read the same.
+  defp arg_parts({:__block__, _meta, [keywords]}, body), do: arg_parts(keywords, body)
 
-  defp arg_parts(keywords, body) when is_list(keywords) do
+  defp arg_parts(keywords, body) do
     Enum.map(keywords, fn
       {key, value} -> {value, if(AST.key_atom(key) == :do, do: body, else: :live)}
-      other -> {other, :inert}
+      cons -> {cons, :inert}
     end)
   end
-
-  defp arg_parts(other, _body), do: [{other, :inert}]
 
   defp rebuild(args, values) do
     {args, []} = Enum.map_reduce(args, values, &rebuild_arg/2)
     args
   end
 
-  defp rebuild_arg({:__block__, meta, [keywords]}, values) when is_list(keywords) do
+  defp rebuild_arg({:__block__, meta, [keywords]}, values) do
     {keywords, values} = rebuild_arg(keywords, values)
     {{:__block__, meta, [keywords]}, values}
   end
 
-  defp rebuild_arg(keywords, values) when is_list(keywords) do
+  defp rebuild_arg(keywords, values) do
     Enum.map_reduce(keywords, values, fn
       {key, _value}, [value | values] -> {{key, value}, values}
-      _other, [value | values] -> {value, values}
+      _cons, [value | values] -> {value, values}
     end)
   end
-
-  defp rebuild_arg(_other, [value | values]), do: {value, values}
 
   @missing :__mutare_missing_quote_option__
 
@@ -114,15 +114,13 @@ defmodule Mutare.Transform.QuoteStructure do
   end
 
   defp option_pairs(args) do
-    Enum.flat_map(args, fn
-      {:__block__, _meta, [keywords]} when is_list(keywords) -> Enum.filter(keywords, &pair?/1)
-      keywords when is_list(keywords) -> Enum.filter(keywords, &pair?/1)
-      _other -> []
+    args
+    |> Enum.flat_map(fn
+      {:__block__, _meta, [keywords]} -> keywords
+      keywords -> keywords
     end)
+    |> Enum.filter(&match?({_key, _value}, &1))
   end
-
-  defp pair?({_key, _value}), do: true
-  defp pair?(_other), do: false
 
   defp literal_false?(false), do: true
   defp literal_false?({:__block__, _meta, [false]}), do: true
