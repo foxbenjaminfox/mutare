@@ -20,7 +20,16 @@ defmodule Mutare.Test.CleanSourcePatchGenerators do
   alias Mutare.Test.{SourcePatchFixtures, SourcePatchKeywordRoutes}
 
   def boundaries,
-    do: [:quoted, :live, :spliced, :disabled, :bound, :nested_options, :definition]
+    do: [
+      :quoted,
+      :live,
+      :spliced,
+      :disabled,
+      :bound,
+      :nested_options,
+      :nested_block_options,
+      :definition
+    ]
 
   def routings, do: [:ordinary, :interior, :raw, :skip, :keyed, :keyword]
   def spellings, do: [:direct, :piped]
@@ -85,6 +94,11 @@ defmodule Mutare.Test.CleanSourcePatchGenerators do
 
   defp quoted(:nested_options, call),
     do: "quote(do: quote(bind_quoted: [value: unquote(#{call})], do: walk([], value)))"
+
+  # Options and block as two arguments: Elixir quotes these options with escapes still on,
+  # so this recursion runs, where the one-list `:nested_options` above is data throughout.
+  defp quoted(:nested_block_options, call),
+    do: "quote(do: quote([bind_quoted: [value: unquote(#{call})]], do: walk([], value)))"
 
   defp quoted(:definition, call),
     do: "quote(do: def(walk(xs, acc), do: walk(xs, unquote(#{call}))))"

@@ -229,16 +229,10 @@ defmodule Mutare.Transform.Analyze do
   #
   # The runtime exception is an escaping `unquote(expr)` / `unquote_splicing(expr)`:
   # `expr` is evaluated when the quote is built, so in a runtime quote it can host
-  # ordinary in-place selectors. This is quote-level aware: a single unquote inside
-  # an inner quote only escapes that inner quote and remains data to the outer one;
-  # `quote unquote: false` and implicit `bind_quoted` unquote disabling both
-  # leave the quote raw; `unquote: true` explicitly re-enables escaping.
-  defp analyze_form({:quote, meta, args} = node, :runtime, env)
-       when is_list(args) do
-    if QuoteEscape.quote_unquote_enabled?(args),
-      do: {:quote, meta, QuoteEscape.analyze_quote_args(args, 1, env)},
-      else: node
-  end
+  # ordinary in-place selectors. Which parts of a quote run is `QuoteStructure`'s reading:
+  # a nested quote is inert as a whole, and so is a body whose unquoting is disabled.
+  defp analyze_form({:quote, meta, args}, :runtime, env) when is_list(args),
+    do: {:quote, meta, QuoteEscape.analyze_quote_args(args, env)}
 
   defp analyze_form({:quote, _meta, args} = node, _context, _env)
        when is_list(args),

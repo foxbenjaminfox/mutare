@@ -34,11 +34,11 @@ defmodule Mutare.Transform.Resolve do
   # `fun/N` resolves to an import they get the same import stamp a synthesized `fun(args…)` probe
   # needs for capture mutation.
 
-  alias Mutare.AST
   alias Mutare.CallRouting.Registry, as: Routes
   alias Mutare.CallRouting.Registry.Entry
   alias Mutare.CallRouting.Spec
-  alias Mutare.Transform.{Aliases, Imports, Meta, MetaKeys, ModuleScope, Uses, WrittenPipe}
+  alias Mutare.Transform.{Aliases, Imports, Meta, MetaKeys, ModuleScope, QuoteStructure, Uses}
+  alias Mutare.Transform.WrittenPipe
   alias Mutare.Transform.Resolve.{ArgumentMarks, Arguments, NodeIds, OperandPositions, RouteStamp}
   alias Mutare.Transform.StructuralForms
 
@@ -666,149 +666,43 @@ defmodule Mutare.Transform.Resolve do
 
   # === quote data ============================================================
 
+  # `QuoteStructure` says which parts run; this pass resolves those and leaves data as written.
   defp walk_live_quote_args(args, env) do
-    body_unquote_enabled? = quote_unquote_enabled?(args)
-    Enum.map(args, &walk_live_quote_arg(&1, body_unquote_enabled?, env))
-  end
+    {parts, rebuild} = QuoteStructure.parts(args)
 
-  defp walk_live_quote_arg({:__block__, meta, [kw]}, body_unquote_enabled?, env)
-       when is_list(kw) do
-    {:__block__, meta, [walk_live_quote_keyword(kw, body_unquote_enabled?, env)]}
-  end
-
-  defp walk_live_quote_arg(kw, body_unquote_enabled?, env) when is_list(kw) do
-    walk_live_quote_keyword(kw, body_unquote_enabled?, env)
-  end
-
-  defp walk_live_quote_arg(other, body_unquote_enabled?, env) do
-    if body_unquote_enabled?,
-      do: walk_quoted_data(other, 1, env),
-      else: other
-  end
-
-  defp walk_live_quote_keyword(kw, body_unquote_enabled?, env) do
-    Enum.map(kw, fn
-      {key, value} = pair ->
-        case AST.key_atom(key) do
-          :do when body_unquote_enabled? ->
-            {key, walk_quoted_data(value, 1, env)}
-
-          :do ->
-            pair
-
-          _option ->
-            {key, walk(value, env)}
-        end
-
-      other ->
-        other
+    parts
+    |> Enum.map(fn
+      {value, :live} -> walk(value, env)
+      {value, :quoted} -> walk_quoted_data(value, env)
+      {value, :inert} -> value
     end)
-  end
-
-  defp walk_quoted_data({:quote, meta, args} = node, quote_level, env) when is_list(args) do
-    walked = walk_quoted_quote_args(args, quote_level, env)
-
-    if walked == args, do: node, else: {:quote, meta, walked}
+    |> rebuild.()
   end
 
   # A live unquote is a resolvable head too (`Kernel.SpecialForms.unquote`): stamp it, so a `:skip`
   # route on it is honoured by `Analyze.QuoteEscape` and the escaping argument stays as written.
-  defp walk_quoted_data({form, meta, [arg]}, 1, env)
-       when form in [:unquote, :unquote_splicing] do
-    {meta, _module_key} = stamp_bare_call(form, meta, [arg], env)
-    {form, meta, if(Meta.routing(meta) == :skip, do: [arg], else: [walk(arg, env)])}
-  end
+  defp walk_quoted_data({form, meta, args} = node, env) when is_list(args) do
+    case QuoteStructure.quoted(node) do
+      {:escape, arg, _rebuild} ->
+        {meta, _module_key} = stamp_bare_call(form, meta, [arg], env)
+        {form, meta, if(Meta.routing(meta) == :skip, do: [arg], else: [walk(arg, env)])}
 
-  defp walk_quoted_data({form, _meta, [_arg]} = node, quote_level, _env)
-       when form in [:unquote, :unquote_splicing] and quote_level > 1,
-       do: node
+      {:options, options, rebuild} ->
+        rebuild.(walk_quoted_data(options, env))
 
-  defp walk_quoted_data({form, meta, args}, quote_level, env) when is_list(args),
-    do:
-      {walk_quoted_data(form, quote_level, env), meta,
-       Enum.map(args, &walk_quoted_data(&1, quote_level, env))}
+      :inert ->
+        node
 
-  defp walk_quoted_data({left, right}, quote_level, env),
-    do: {walk_quoted_data(left, quote_level, env), walk_quoted_data(right, quote_level, env)}
-
-  defp walk_quoted_data(list, quote_level, env) when is_list(list),
-    do: Enum.map(list, &walk_quoted_data(&1, quote_level, env))
-
-  defp walk_quoted_data(other, _quote_level, _env), do: other
-
-  defp walk_quoted_quote_args(args, quote_level, env) do
-    body_unquote_enabled? = quote_unquote_enabled?(args)
-    Enum.map(args, &walk_quoted_quote_arg(&1, quote_level, body_unquote_enabled?, env))
-  end
-
-  defp walk_quoted_quote_arg({:__block__, meta, [kw]}, quote_level, body_unquote_enabled?, env)
-       when is_list(kw) do
-    {:__block__, meta, [walk_quoted_quote_keyword(kw, quote_level, body_unquote_enabled?, env)]}
-  end
-
-  defp walk_quoted_quote_arg(kw, quote_level, body_unquote_enabled?, env) when is_list(kw) do
-    walk_quoted_quote_keyword(kw, quote_level, body_unquote_enabled?, env)
-  end
-
-  defp walk_quoted_quote_arg(other, quote_level, body_unquote_enabled?, env) do
-    if body_unquote_enabled?,
-      do: walk_quoted_data(other, quote_level + 1, env),
-      else: other
-  end
-
-  defp walk_quoted_quote_keyword(kw, quote_level, body_unquote_enabled?, env) do
-    Enum.map(kw, fn
-      {key, value} = pair ->
-        case AST.key_atom(key) do
-          :do when body_unquote_enabled? ->
-            {key, walk_quoted_data(value, quote_level + 1, env)}
-
-          :do ->
-            pair
-
-          _option ->
-            {key, walk_quoted_data(value, quote_level, env)}
-        end
-
-      other ->
-        other
-    end)
-  end
-
-  @missing_quote_option :__mutare_missing_quote_option__
-
-  defp quote_unquote_enabled?(args) when is_list(args) do
-    pairs = quote_keyword_pairs(args)
-
-    case AST.opts_get(pairs, :unquote, @missing_quote_option) do
-      @missing_quote_option ->
-        AST.opts_get(pairs, :bind_quoted, @missing_quote_option) == @missing_quote_option
-
-      value ->
-        not literal_false?(value)
+      :data ->
+        {walk_quoted_data(form, env), meta, Enum.map(args, &walk_quoted_data(&1, env))}
     end
   end
 
-  defp quote_keyword_pairs(args) do
-    Enum.flat_map(args, fn
-      {:__block__, _meta, [kw]} when is_list(kw) ->
-        Enum.filter(kw, &keyword_pair?/1)
+  defp walk_quoted_data({left, right}, env),
+    do: {walk_quoted_data(left, env), walk_quoted_data(right, env)}
 
-      {_key, _value} = pair ->
-        [pair]
+  defp walk_quoted_data(list, env) when is_list(list),
+    do: Enum.map(list, &walk_quoted_data(&1, env))
 
-      kw when is_list(kw) ->
-        Enum.filter(kw, &keyword_pair?/1)
-
-      _other ->
-        []
-    end)
-  end
-
-  defp keyword_pair?({_key, _value}), do: true
-  defp keyword_pair?(_other), do: false
-
-  defp literal_false?(false), do: true
-  defp literal_false?({:__block__, _meta, [false]}), do: true
-  defp literal_false?(_other), do: false
+  defp walk_quoted_data(other, _env), do: other
 end

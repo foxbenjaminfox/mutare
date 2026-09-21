@@ -10,55 +10,24 @@ defmodule Mutare.Transform.Analyze.QuoteEscape do
   # an escaping binding, bottom-up, while leaving siblings/descendants live. Re-enters the general
   # descent at one point: `analyze_quote_escape/2`'s `Analyze.annotate/2`.
 
-  alias Mutare.AST
   alias Mutare.Transform.Analyze
-  alias Mutare.Transform.{Candidate, Meta}
+  alias Mutare.Transform.{Candidate, Meta, QuoteStructure}
 
-  # Walk only a quote's block value(s), leaving quote options raw. The values of
-  # `do:` entries are quoted data at `quote_level`; anything under an escaping
-  # `unquote` that reaches level 0 is analyzed as ordinary runtime.
-  def analyze_quote_args(args, quote_level, env) do
-    Enum.map(args, &analyze_quote_arg(&1, quote_level, env))
-  end
+  # Analyze only a quote's `:quoted` body. A `:live` option value is left raw here: it runs,
+  # but this pass offers no mutants in it (the prune pass below still reads its bindings).
+  def analyze_quote_args(args, env) do
+    {parts, rebuild} = QuoteStructure.parts(args)
 
-  defp analyze_quote_arg({:__block__, meta, [kw]}, quote_level, env)
-       when is_list(kw) do
-    {:__block__, meta, [analyze_quote_keyword(kw, quote_level, env)]}
-  end
-
-  defp analyze_quote_arg(kw, quote_level, env) when is_list(kw) do
-    analyze_quote_keyword(kw, quote_level, env)
-  end
-
-  defp analyze_quote_arg(other, _quote_level, _env), do: other
-
-  defp analyze_quote_keyword(kw, quote_level, env) do
-    Enum.map(kw, fn
-      {key, value} = pair ->
-        if AST.key_atom(key) == :do,
-          do: {key, analyze_quoted_data(value, quote_level, env)},
-          else: pair
-
-      other ->
-        other
+    parts
+    |> Enum.map(fn
+      {value, :quoted} -> analyze_quoted_data(value, env)
+      {value, _live_or_inert} -> value
     end)
+    |> rebuild.()
   end
 
-  # A nested `quote` adds one more quote level for its block body. If that quote
-  # disables unquoting, its body is inert data from this analyzer's perspective.
-  # Quote option values are different: they belong to the quote expression itself,
-  # not the quoted block, so the prune pass below still scans them at the current
-  # quote level for escaping bindings.
-  defp analyze_quoted_data({:quote, meta, args} = node, quote_level, env)
-       when is_list(args) do
-    if quote_unquote_enabled?(args),
-      do: {:quote, meta, analyze_quote_args(args, quote_level + 1, env)},
-      else: node
-  end
-
-  # `unquote` and `unquote_splicing` escape exactly one quote level. At level 1,
-  # their argument is a live runtime expression; above that, the whole unquote is
-  # still quoted data relative to the outer quote.
+  # An escape's argument is a live runtime expression; a nested quote is inert as a whole
+  # (`QuoteStructure`).
   #
   # A live unquote argument has one extra binding hazard compared with an ordinary
   # quoted expression: a match inside the argument may bind a variable the caller reads
@@ -69,33 +38,32 @@ defmodule Mutare.Transform.Analyze.QuoteEscape do
   # catch-all/baseline branch leaves the later read undefined. Keep mutating the live
   # argument, but prune only those candidates that would enclose the binding; descendants
   # and siblings that do not enclose it remain live.
-  defp analyze_quoted_data({form, meta, [arg]} = node, 1, env)
-       when form in [:unquote, :unquote_splicing] do
-    # A `:skip`-routed unquote (`{Kernel.SpecialForms, :unquote, :skip}`) is an inert leaf: the
-    # escaping argument stays as written. (The dispatcher never sees an unquote — quoted data is
-    # walked here, not by `analyze/3` — so the stamp is read at this entry.)
-    if Meta.skipped?(node),
-      do: node,
-      else: {form, meta, [analyze_quote_escape(arg, env)]}
+  defp analyze_quoted_data({form, meta, args} = node, env) when is_list(args) do
+    case QuoteStructure.quoted(node) do
+      # A `:skip`-routed unquote (`{Kernel.SpecialForms, :unquote, :skip}`) is an inert leaf: the
+      # escaping argument stays as written. (The dispatcher never sees an unquote — quoted data is
+      # walked here, not by `analyze/3` — so the stamp is read at this entry.)
+      {:escape, arg, rebuild} ->
+        if Meta.skipped?(node), do: node, else: rebuild.(analyze_quote_escape(arg, env))
+
+      {:options, options, rebuild} ->
+        rebuild.(analyze_quoted_data(options, env))
+
+      :inert ->
+        node
+
+      :data ->
+        {analyze_quoted_data(form, env), meta, Enum.map(args, &analyze_quoted_data(&1, env))}
+    end
   end
 
-  defp analyze_quoted_data({form, _meta, [_arg]} = node, quote_level, _env)
-       when form in [:unquote, :unquote_splicing] and quote_level > 1,
-       do: node
+  defp analyze_quoted_data({left, right}, env),
+    do: {analyze_quoted_data(left, env), analyze_quoted_data(right, env)}
 
-  defp analyze_quoted_data({form, meta, args}, quote_level, env) when is_list(args),
-    do:
-      {analyze_quoted_data(form, quote_level, env), meta,
-       Enum.map(args, &analyze_quoted_data(&1, quote_level, env))}
+  defp analyze_quoted_data(list, env) when is_list(list),
+    do: Enum.map(list, &analyze_quoted_data(&1, env))
 
-  defp analyze_quoted_data({left, right}, quote_level, env),
-    do:
-      {analyze_quoted_data(left, quote_level, env), analyze_quoted_data(right, quote_level, env)}
-
-  defp analyze_quoted_data(list, quote_level, env) when is_list(list),
-    do: Enum.map(list, &analyze_quoted_data(&1, quote_level, env))
-
-  defp analyze_quoted_data(other, _quote_level, _env), do: other
+  defp analyze_quoted_data(other, _env), do: other
 
   defp analyze_quote_escape(arg, env) do
     analyzed = Analyze.annotate(arg, env)
@@ -169,8 +137,19 @@ defmodule Mutare.Transform.Analyze.QuoteEscape do
        do: prune_quote_escape_scoped_construct(node)
 
   defp prune_quote_escape_binding_ancestors({:quote, meta, args}) when is_list(args) do
-    {args, child_has?} = prune_quote_escape_live_quote_args(args, 1)
-    node = {:quote, meta, args}
+    {parts, rebuild} = QuoteStructure.parts(args)
+
+    {values, hass} =
+      parts
+      |> Enum.map(fn
+        {value, :live} -> prune_quote_escape_binding_ancestors(value)
+        {value, :quoted} -> prune_quote_escape_quoted_data(value)
+        {value, :inert} -> {value, false}
+      end)
+      |> Enum.unzip()
+
+    child_has? = Enum.any?(hass)
+    node = {:quote, meta, rebuild.(values)}
     node = if child_has?, do: strip_quote_escape_inplace_candidates(node), else: node
 
     {node, child_has?}
@@ -210,147 +189,42 @@ defmodule Mutare.Transform.Analyze.QuoteEscape do
     {nodes, Enum.any?(hass)}
   end
 
-  defp prune_quote_escape_live_quote_args(args, quote_level) do
-    body_unquote_enabled? = quote_unquote_enabled?(args)
+  defp prune_quote_escape_quoted_data({form, meta, args} = node) when is_list(args) do
+    case QuoteStructure.quoted(node) do
+      {:escape, arg, rebuild} ->
+        {arg, has?} = prune_quote_escape_binding_ancestors(arg)
+        node = rebuild.(arg)
+        {if(has?, do: strip_quote_escape_inplace_candidates(node), else: node), has?}
 
-    args
-    |> Enum.map(&prune_quote_escape_live_quote_arg(&1, quote_level, body_unquote_enabled?))
-    |> Enum.unzip()
-    |> then(fn {args, hass} -> {args, Enum.any?(hass)} end)
+      {:options, options, rebuild} ->
+        {options, has?} = prune_quote_escape_quoted_data(options)
+        node = rebuild.(options)
+        {if(has?, do: strip_quote_escape_inplace_candidates(node), else: node), has?}
+
+      :inert ->
+        {node, false}
+
+      :data ->
+        {form, form_has?} = prune_quote_escape_quoted_data(form)
+        {args, args_has?} = prune_quote_escape_quoted_data_each(args)
+        {{form, meta, args}, form_has? or args_has?}
+    end
   end
 
-  defp prune_quote_escape_live_quote_arg(
-         {:__block__, meta, [kw]},
-         quote_level,
-         body_unquote_enabled?
-       )
-       when is_list(kw) do
-    {kw, has?} = prune_quote_escape_live_quote_keyword(kw, quote_level, body_unquote_enabled?)
-    {{:__block__, meta, [kw]}, has?}
-  end
-
-  defp prune_quote_escape_live_quote_arg(kw, quote_level, body_unquote_enabled?)
-       when is_list(kw),
-       do: prune_quote_escape_live_quote_keyword(kw, quote_level, body_unquote_enabled?)
-
-  defp prune_quote_escape_live_quote_arg(other, _quote_level, _body_unquote_enabled?),
-    do: {other, false}
-
-  defp prune_quote_escape_live_quote_keyword(kw, quote_level, body_unquote_enabled?) do
-    kw
-    |> Enum.map(fn
-      {key, value} = pair ->
-        case AST.key_atom(key) do
-          :do when body_unquote_enabled? ->
-            {value, has?} = prune_quote_escape_quoted_data(value, quote_level)
-            {{key, value}, has?}
-
-          :do ->
-            {pair, false}
-
-          :bind_quoted ->
-            {value, has?} = prune_quote_escape_binding_ancestors(value)
-            {{key, value}, has?}
-
-          _ ->
-            {value, has?} = prune_quote_escape_binding_ancestors(value)
-            {{key, value}, has?}
-        end
-
-      other ->
-        {other, false}
-    end)
-    |> Enum.unzip()
-    |> then(fn {kw, hass} -> {kw, Enum.any?(hass)} end)
-  end
-
-  defp prune_quote_escape_quote_args(args, quote_level, body_unquote_enabled?) do
-    args
-    |> Enum.map(&prune_quote_escape_quote_arg(&1, quote_level, body_unquote_enabled?))
-    |> Enum.unzip()
-    |> then(fn {args, hass} -> {args, Enum.any?(hass)} end)
-  end
-
-  defp prune_quote_escape_quote_arg({:__block__, meta, [kw]}, quote_level, body_unquote_enabled?)
-       when is_list(kw) do
-    {kw, has?} = prune_quote_escape_quote_keyword(kw, quote_level, body_unquote_enabled?)
-    {{:__block__, meta, [kw]}, has?}
-  end
-
-  defp prune_quote_escape_quote_arg(kw, quote_level, body_unquote_enabled?) when is_list(kw),
-    do: prune_quote_escape_quote_keyword(kw, quote_level, body_unquote_enabled?)
-
-  defp prune_quote_escape_quote_arg(other, _quote_level, _body_unquote_enabled?),
-    do: {other, false}
-
-  defp prune_quote_escape_quote_keyword(kw, quote_level, body_unquote_enabled?) do
-    kw
-    |> Enum.map(fn
-      {key, value} = pair ->
-        case AST.key_atom(key) do
-          :do when body_unquote_enabled? ->
-            {value, has?} = prune_quote_escape_quoted_data(value, quote_level + 1)
-            {{key, value}, has?}
-
-          :do ->
-            {pair, false}
-
-          _option ->
-            {value, has?} = prune_quote_escape_quoted_data(value, quote_level)
-            {{key, value}, has?}
-        end
-
-      other ->
-        {other, false}
-    end)
-    |> Enum.unzip()
-    |> then(fn {kw, hass} -> {kw, Enum.any?(hass)} end)
-  end
-
-  defp prune_quote_escape_quoted_data({:quote, meta, args}, quote_level)
-       when is_list(args) do
-    {args, child_has?} =
-      prune_quote_escape_quote_args(args, quote_level, quote_unquote_enabled?(args))
-
-    node = {:quote, meta, args}
-    node = if child_has?, do: strip_quote_escape_inplace_candidates(node), else: node
-
-    {node, child_has?}
-  end
-
-  defp prune_quote_escape_quoted_data({form, meta, [arg]}, 1)
-       when form in [:unquote, :unquote_splicing] do
-    {arg, has?} = prune_quote_escape_binding_ancestors(arg)
-    node = {form, meta, [arg]}
-    node = if has?, do: strip_quote_escape_inplace_candidates(node), else: node
-
-    {node, has?}
-  end
-
-  defp prune_quote_escape_quoted_data({form, _meta, [_arg]} = node, quote_level)
-       when form in [:unquote, :unquote_splicing] and quote_level > 1,
-       do: {node, false}
-
-  defp prune_quote_escape_quoted_data({form, meta, args}, quote_level) when is_list(args) do
-    {form, form_has?} = prune_quote_escape_quoted_data(form, quote_level)
-    {args, args_has?} = prune_quote_escape_quoted_data_each(args, quote_level)
-    {{form, meta, args}, form_has? or args_has?}
-  end
-
-  defp prune_quote_escape_quoted_data({left, right}, quote_level) do
-    {left, left_has?} = prune_quote_escape_quoted_data(left, quote_level)
-    {right, right_has?} = prune_quote_escape_quoted_data(right, quote_level)
+  defp prune_quote_escape_quoted_data({left, right}) do
+    {left, left_has?} = prune_quote_escape_quoted_data(left)
+    {right, right_has?} = prune_quote_escape_quoted_data(right)
     {{left, right}, left_has? or right_has?}
   end
 
-  defp prune_quote_escape_quoted_data(list, quote_level) when is_list(list),
-    do: prune_quote_escape_quoted_data_each(list, quote_level)
+  defp prune_quote_escape_quoted_data(list) when is_list(list),
+    do: prune_quote_escape_quoted_data_each(list)
 
-  defp prune_quote_escape_quoted_data(other, _quote_level), do: {other, false}
+  defp prune_quote_escape_quoted_data(other), do: {other, false}
 
-  defp prune_quote_escape_quoted_data_each(list, quote_level) do
+  defp prune_quote_escape_quoted_data_each(list) do
     list
-    |> Enum.map(&prune_quote_escape_quoted_data(&1, quote_level))
+    |> Enum.map(&prune_quote_escape_quoted_data/1)
     |> Enum.unzip()
     |> then(fn {nodes, hass} -> {nodes, Enum.any?(hass)} end)
   end
@@ -379,41 +253,4 @@ defmodule Mutare.Transform.Analyze.QuoteEscape do
         Enum.any?(pairs, fn {_key, position} -> binding_pattern_treatment?(position) end)
 
   defp binding_pattern_treatment?(_treatment), do: false
-
-  @missing_quote_option :__mutare_missing_quote_option__
-
-  def quote_unquote_enabled?(args) when is_list(args) do
-    pairs = quote_keyword_pairs(args)
-
-    case AST.opts_get(pairs, :unquote, @missing_quote_option) do
-      @missing_quote_option ->
-        AST.opts_get(pairs, :bind_quoted, @missing_quote_option) == @missing_quote_option
-
-      value ->
-        not literal_false?(value)
-    end
-  end
-
-  defp quote_keyword_pairs(args) do
-    Enum.flat_map(args, fn
-      {:__block__, _meta, [kw]} when is_list(kw) ->
-        Enum.filter(kw, &keyword_pair?/1)
-
-      {_key, _value} = pair ->
-        [pair]
-
-      kw when is_list(kw) ->
-        Enum.filter(kw, &keyword_pair?/1)
-
-      _other ->
-        []
-    end)
-  end
-
-  defp keyword_pair?({_key, _value}), do: true
-  defp keyword_pair?(_other), do: false
-
-  defp literal_false?(false), do: true
-  defp literal_false?({:__block__, _meta, [false]}), do: true
-  defp literal_false?(_other), do: false
 end

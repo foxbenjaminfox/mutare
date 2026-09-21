@@ -27,9 +27,7 @@ defmodule Mutare.Transform.SelfCalls do
   # Resolve has already expanded executable pipes to calls, so a stage's arity includes
   # its receiver. Quoted pipes remain data, and their spelling is preserved too.
 
-  alias Mutare.AST
-  alias Mutare.Transform.Analyze.QuoteEscape
-  alias Mutare.Transform.{Calls, Imports, KeywordRouting, Meta}
+  alias Mutare.Transform.{Calls, Imports, KeywordRouting, Meta, QuoteStructure}
 
   @doc """
   Redirect executable full-arity self-calls of `self_call` in `body` to `replacement`,
@@ -51,25 +49,37 @@ defmodule Mutare.Transform.SelfCalls do
       else: do_walk(node, level, self_call, acc, fun)
   end
 
-  defp do_walk({:quote, meta, args}, level, self_call, acc, fun) when is_list(args) do
-    enabled? = QuoteEscape.quote_unquote_enabled?(args)
+  # `level` is 0 in live code and 1 in quoted data; `QuoteStructure` says what crosses.
+  defp do_walk({:quote, meta, args}, 0, self_call, acc, fun) when is_list(args) do
+    {parts, rebuild} = QuoteStructure.parts(args)
 
-    {args, acc} =
-      Enum.map_reduce(args, acc, &walk_quote_arg(&1, level, enabled?, self_call, &2, fun))
+    {values, acc} =
+      Enum.map_reduce(parts, acc, fn
+        {value, :live}, acc -> walk(value, 0, self_call, acc, fun)
+        {value, :quoted}, acc -> walk(value, 1, self_call, acc, fun)
+        {value, :inert}, acc -> {value, acc}
+      end)
 
-    {{:quote, meta, args}, acc}
+    {{:quote, meta, rebuild.(values)}, acc}
   end
 
-  defp do_walk({form, meta, [arg]}, 1, self_call, acc, fun)
-       when form in [:unquote, :unquote_splicing] do
-    {arg, acc} = walk(arg, 0, self_call, acc, fun)
-    {{form, meta, [arg]}, acc}
-  end
+  defp do_walk({_form, _meta, args} = node, 1, self_call, acc, fun) when is_list(args) do
+    case QuoteStructure.quoted(node) do
+      {:escape, arg, rebuild} ->
+        {arg, acc} = walk(arg, 0, self_call, acc, fun)
+        {rebuild.(arg), acc}
 
-  # Even stacked unquotes in a nested quote remain data for the outer quote.
-  defp do_walk({form, _meta, [_arg]} = node, level, _self_call, acc, _fun)
-       when form in [:unquote, :unquote_splicing] and level > 1,
-       do: {node, acc}
+      {:options, options, rebuild} ->
+        {options, acc} = walk(options, 1, self_call, acc, fun)
+        {rebuild.(options), acc}
+
+      :inert ->
+        {node, acc}
+
+      :data ->
+        walk_children(node, acc, &walk(&1, 1, self_call, &2, fun))
+    end
+  end
 
   # Executable Kernel pipes were desugared by Resolve. A surviving pipe can be withheld
   # syntax with no resolution at all: neither its operator nor its RHS arity is known.
@@ -162,36 +172,6 @@ defmodule Mutare.Transform.SelfCalls do
         walk_argument(arg, fallback, acc, fun)
     end
   end
-
-  defp walk_quote_arg({:__block__, meta, [kw]}, level, enabled?, self_call, acc, fun)
-       when is_list(kw) do
-    {kw, acc} = walk_quote_arg(kw, level, enabled?, self_call, acc, fun)
-    {{:__block__, meta, [kw]}, acc}
-  end
-
-  defp walk_quote_arg(kw, level, enabled?, self_call, acc, fun) when is_list(kw),
-    do: Enum.map_reduce(kw, acc, &walk_quote_arg(&1, level, enabled?, self_call, &2, fun))
-
-  defp walk_quote_arg({key, value} = pair, level, enabled?, self_call, acc, fun) do
-    case AST.key_atom(key) do
-      :do when enabled? ->
-        {value, acc} = walk(value, level + 1, self_call, acc, fun)
-        {{key, value}, acc}
-
-      :do ->
-        {pair, acc}
-
-      _option when level == 0 ->
-        {value, acc} = walk(value, level, self_call, acc, fun)
-        {{key, value}, acc}
-
-      _quoted_option ->
-        # A nested quote's options are data too, even when they contain unquotes.
-        {pair, acc}
-    end
-  end
-
-  defp walk_quote_arg(other, _level, _enabled?, _self_call, acc, _fun), do: {other, acc}
 
   defp walk_children({form, meta, args}, acc, fun) when is_list(args) do
     {form, acc} = fun.(form, acc)

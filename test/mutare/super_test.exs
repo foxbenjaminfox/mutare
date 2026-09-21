@@ -491,6 +491,34 @@ defmodule Mutare.SuperTest do
       refute Super.in_clauses?(clauses("def f(x), do: x"))
     end
 
+    test "a super Elixir never evaluates is data: nested quotes whole, and disabled unquoting" do
+      # None of these calls the parent (checked against Elixir itself): a nested quote is
+      # quoted with unquoting off, its options included, and `unquote: false` or an
+      # implicit `bind_quoted:` turns the body's escapes into data.
+      for expression <- [
+            "quote(do: quote(do: unquote(unquote(super(x)))))",
+            "quote(do: quote(bind_quoted: [v: unquote(super(x))], do: v))",
+            "quote(unquote: false, do: unquote(super(x)))",
+            "quote(bind_quoted: [v: 1], do: unquote(super(x)))"
+          ] do
+        body = Code.string_to_quoted!(expression)
+        assert {^body, false} = Super.rewrite(body, :sup)
+        refute Super.in_clauses?(clauses("def f(x), do: " <> expression))
+      end
+
+      # A nested quote given its options and block as two arguments is the exception:
+      # Elixir quotes those options with escapes still on, so this `super` runs.
+      two_arguments = "quote(do: quote([line: unquote(super(x))], do: v))"
+      assert {_rewritten, true} = Super.rewrite(Code.string_to_quoted!(two_arguments), :sup)
+      assert Super.in_clauses?(clauses("def f(x), do: " <> two_arguments))
+
+      # `unquote: true` re-enables what `bind_quoted:` disabled.
+      body =
+        Code.string_to_quoted!("quote(bind_quoted: [v: 1], unquote: true, do: unquote(super(x)))")
+
+      assert {_rewritten, true} = Super.rewrite(body, :sup)
+    end
+
     test "rewrite/2 reports found? and replaces only live supers" do
       [{:def, _, [_head | body]}] = clauses("def f(x), do: {super(x), x}")
       {rewritten, true} = Super.rewrite(body, :sup)
@@ -533,18 +561,13 @@ defmodule Mutare.SuperTest do
       assert length(String.split(rendered, "super(x)")) - 1 == 1
     end
 
-    test "in_clauses?/1 frees a super only when both unquotes escape both quotes" do
-      # Two nested quotes put the super at level 2; two stacked unquotes
-      # (`unquote(unquote(super(x)))`) step the level back down to 0, so the super runs
-      # at construction and is live. This pins that each unquote lowers the level by
-      # *exactly one* (`level - 1`): with `1 - level` the second unquote would land at
-      # -1 instead of 0 and the super would wrongly read as data.
-      assert Super.in_clauses?(
+    test "in_clauses?/1 finds no live super in a nested quote, however many unquotes" do
+      # Elixir quotes a nested quote with unquoting off, so stacked unquotes do not step
+      # back out: `quote(do: quote(do: unquote(unquote(f()))))` never calls `f/0`.
+      refute Super.in_clauses?(
                clauses("def f(x), do: quote(do: quote(do: unquote(unquote(super(x)))))")
              )
 
-      # Contrast: a *single* unquote can only escape one of the two quotes, so the
-      # super stays one level deep — data, not detected.
       refute Super.in_clauses?(clauses("def f(x), do: quote(do: quote(do: unquote(super(x))))"))
     end
 

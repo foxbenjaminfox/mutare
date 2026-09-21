@@ -18,10 +18,9 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
   alias Mutare.AST
   alias Mutare.Coverage.Recorder
-  alias Mutare.Transform.Analyze.QuoteEscape
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Delivery
-  alias Mutare.Transform.KeywordRouting
+  alias Mutare.Transform.{KeywordRouting, QuoteStructure}
   alias Mutare.Transform.{Calls, CoverageEmit, Ctx, Meta, PatternStructure, Resolve, SelectorEmit}
 
   @doc "Bindings guaranteed to escape an expression, in their source order."
@@ -69,9 +68,16 @@ defmodule Mutare.Transform.BindingEscapeEmit do
        when form in [:fn, :for, :with, :try, :cond, :receive, :->, :&],
        do: []
 
+  # Live quote parts execute in the surrounding scope: option values, and the arguments
+  # of escapes in a quoted body (`QuoteStructure`).
   defp collect_bindings({:quote, _, args}, context) when is_list(args) do
-    enabled? = QuoteEscape.quote_unquote_enabled?(args)
-    Enum.flat_map(args, &quote_bindings(&1, enabled?, context))
+    {parts, _rebuild} = QuoteStructure.parts(args)
+
+    Enum.flat_map(parts, fn
+      {value, :live} -> bound_names(value, context)
+      {value, :quoted} -> unquote_bindings(value, context)
+      {_value, :inert} -> []
+    end)
   end
 
   defp collect_bindings({form, meta, args}, context) when is_list(args) do
@@ -134,30 +140,21 @@ defmodule Mutare.Transform.BindingEscapeEmit do
     end
   end
 
-  # Quote options execute in the surrounding scope. Its body is data, except for
-  # live unquotes; a nested quote or disabled unquoting keeps those expressions data.
-  defp quote_bindings({:__block__, _, [keywords]}, enabled?, context) when is_list(keywords),
-    do: quote_bindings(keywords, enabled?, context)
+  defp unquote_bindings({form, _, args} = node, context) when is_list(args) do
+    case QuoteStructure.quoted(node) do
+      {:escape, arg, _rebuild} ->
+        bound_names(arg, context)
 
-  defp quote_bindings(keywords, enabled?, context) when is_list(keywords),
-    do: Enum.flat_map(keywords, &quote_bindings(&1, enabled?, context))
+      {:options, options, _rebuild} ->
+        unquote_bindings(options, context)
 
-  defp quote_bindings({key, value}, enabled?, context) do
-    case AST.key_atom(key) do
-      :do -> if enabled?, do: unquote_bindings(value, context), else: []
-      _option -> bound_names(value, context)
+      :inert ->
+        []
+
+      :data ->
+        unquote_bindings(form, context) ++ Enum.flat_map(args, &unquote_bindings(&1, context))
     end
   end
-
-  defp quote_bindings(_, _enabled?, _context), do: []
-
-  defp unquote_bindings({:quote, _, args}, _context) when is_list(args), do: []
-
-  defp unquote_bindings({form, _, [arg]}, context) when form in [:unquote, :unquote_splicing],
-    do: bound_names(arg, context)
-
-  defp unquote_bindings({form, _, args}, context) when is_list(args),
-    do: unquote_bindings(form, context) ++ Enum.flat_map(args, &unquote_bindings(&1, context))
 
   defp unquote_bindings({left, right}, context),
     do: unquote_bindings(left, context) ++ unquote_bindings(right, context)

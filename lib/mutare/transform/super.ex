@@ -32,15 +32,11 @@ defmodule Mutare.Transform.Super do
   # super-free and lifts without a closure. But a quote can *evaluate* a `super` while
   # building the AST: `unquote(super(x))` (the unquote escapes the quote) and
   # `bind_quoted: [x: super(x)]` (an option, evaluated at construction) both run the
-  # `super` now. The walk tracks the quote-nesting level (`walk/4`): a `super` is live
-  # only at level 0; `quote` raises the level for its block, `unquote`/`unquote_splicing`
-  # lower it, and quote *option* values stay at the quote's level — so those live
-  # `super`s are detected and rewritten while the plain quoted ones are left as data.
-  # (Out of scope, like the analyzer: `quote unquote: false` — a rare `unquote(super …)`
-  # there is data, but would still be rewritten; harmless unless that exact shape is
-  # used.)
+  # `super` now. Which parts of a quote run is `Mutare.Transform.QuoteStructure`'s reading,
+  # shared with the analyzer: those live `super`s are detected and rewritten, while a plain
+  # quoted one, a nested quote, and a body under `unquote: false` are left as data.
 
-  alias Mutare.Transform.Resolve
+  alias Mutare.Transform.{QuoteStructure, Resolve}
 
   @doc """
   Whether any clause's *body* contains a rewriteable `super` call or capture.
@@ -70,11 +66,6 @@ defmodule Mutare.Transform.Super do
   # one walk keeps detection and rewriting provably in lock-step.
   @super_canary :__mutare_super_canary__
 
-  # `quote` keys whose value is the *quoted block* (data, one level deeper); every
-  # other quote option (`bind_quoted:`, `unquote:`, `location:`, …) is evaluated when
-  # the quote is built, at the quote's own level.
-  @quote_block_keys ~w(do else after catch rescue)a
-
   defp body_has_super?({_vis, _meta, [_head | body]}) do
     {_ast, found} = walk(body, @super_canary, 0, %{})
     found
@@ -83,13 +74,11 @@ defmodule Mutare.Transform.Super do
   # mutare:ignore[boolean, clause_drop] unreachable — `in_clauses?` only maps over well-formed def/defp clauses, matched by the clause above, so neither the value nor the whole fallback is ever observed
   defp body_has_super?(_), do: false
 
-  # `level` is the quote-nesting depth: 0 is live code, where a `super` runs and is
-  # rewritten; level > 0 is inside a `quote` block, where a `super` is quoted *data*.
-  # `quote` raises the level for its block, `unquote`/`unquote_splicing` lower it (they
-  # escape back toward live code), and a quote's *option* values (notably `bind_quoted`)
-  # stay at the quote's own level — so a `super` in `unquote(super(x))` or
-  # `bind_quoted: [x: super(x)]` is live at construction and *is* rewritten, while one
-  # in the plain quoted body is left as data.
+  # `level` is 0 in live code, where a `super` runs and is rewritten, and 1 in quoted data,
+  # where it is left alone. `Mutare.Transform.QuoteStructure` says what crosses: a live
+  # quote's option values (notably `bind_quoted:`) and an escape's argument are live, so a
+  # `super` in `unquote(super(x))` or `bind_quoted: [x: super(x)]` is rewritten; a nested
+  # quote, or a body whose unquoting is disabled, is data throughout.
 
   defp walk({_form, meta, _args} = node, var, level, context) when is_list(meta),
     do: do_walk(node, var, level, Resolve.context(node, context))
@@ -108,20 +97,37 @@ defmodule Mutare.Transform.Super do
     {{:__block__, meta, statements}, found}
   end
 
-  # A `quote`: split its args (keyword lists) into block values (deeper) and option
-  # values (same level) — see `walk_quote_arg/4`.
-  defp do_walk({:quote, meta, args}, var, level, context) when is_list(args) do
-    {args, found} = walk_quote_args(args, var, level, context)
-    {{:quote, meta, args}, found}
+  defp do_walk({:quote, meta, args}, var, 0, context) when is_list(args) do
+    {parts, rebuild} = QuoteStructure.parts(args)
+
+    {values, found} =
+      map_reduce(parts, fn
+        {value, :live} -> walk(value, var, 0, context)
+        {value, :quoted} -> walk(value, var, 1, context)
+        {value, :inert} -> {value, false}
+      end)
+
+    {{:quote, meta, rebuild.(values)}, found}
   end
 
-  # An `unquote`/`unquote_splicing` inside a quote escapes one level toward live code,
-  # so its argument is evaluated one level shallower. (At level 0 — not inside a quote,
-  # where these are invalid source anyway — it is descended as an ordinary call below.)
-  defp do_walk({unq, meta, [expr]}, var, level, context)
-       when unq in [:unquote, :unquote_splicing] and level > 0 do
-    {expr, found} = walk(expr, var, level - 1, context)
-    {{unq, meta, [expr]}, found}
+  defp do_walk({form, meta, args} = node, var, 1, context) when is_list(args) do
+    case QuoteStructure.quoted(node) do
+      {:escape, arg, rebuild} ->
+        {arg, found} = walk(arg, var, 0, context)
+        {rebuild.(arg), found}
+
+      {:options, options, rebuild} ->
+        {options, found} = walk(options, var, 1, context)
+        {rebuild.(options), found}
+
+      :inert ->
+        {node, false}
+
+      :data ->
+        {form, found_form} = walk(form, var, 1, context)
+        {args, found_args} = walk_many(args, var, 1, context)
+        {{form, meta, args}, found_form or found_args}
+    end
   end
 
   # A `&super/arity` capture (only when live): `super` can only ever be captured at the
@@ -202,40 +208,6 @@ defmodule Mutare.Transform.Super do
     do: walk({:super, meta, []}, var, 0, context)
 
   defp walk_stage(node, var, context), do: walk(node, var, 0, context)
-
-  # Each `quote` arg is a keyword list (an options list and/or the block list); walk
-  # every pair, sending a block key's value one level deeper and every option value
-  # (evaluated when the quote runs) at the quote's own level.
-  defp walk_quote_args(args, var, level, context) do
-    map_reduce(args, fn arg -> walk_quote_arg(arg, var, level, context) end)
-  end
-
-  # mutare:ignore[guard_drop] equivalent — a compilable `quote`'s args are always keyword lists, so a non-list arg can't reach here (a non-list arg doesn't compile)
-  defp walk_quote_arg(pairs, var, level, context) when is_list(pairs) do
-    map_reduce(pairs, fn
-      {key, value} ->
-        sublevel = if block_key?(key), do: level + 1, else: level
-        {value, found} = walk(value, var, sublevel, context)
-        {{key, value}, found}
-
-      other ->
-        walk(other, var, level + 1, context)
-    end)
-  end
-
-  # A non-keyword `quote` arg (unusual): treat wholesale as quoted data.
-  # mutare:ignore[clause_drop] unreachable — a compilable `quote`'s args are always keyword lists (the is_list clause above always matches)
-  defp walk_quote_arg(other, var, level, context), do: walk(other, var, level + 1, context)
-
-  # A keyword key is a bare atom (`Code.string_to_quoted`) or `{:__block__, _, [atom]}`
-  # (Sourceror); recognise a block key in either form.
-  defp block_key?({:__block__, _meta, [key]}), do: block_key?(key)
-
-  # mutare:ignore[guard_drop] equivalent — a non-atom `key in @quote_block_keys` is already `false`, identical to the `_` fallback below
-  defp block_key?(key) when is_atom(key), do: key in @quote_block_keys
-
-  # mutare:ignore[clause_drop] unreachable — keys come from compilable quote option lists, always an atom or `{:__block__, _, [atom]}`
-  defp block_key?(_), do: false
 
   defp walk_many(list, var, level, context) do
     map_reduce(list, fn node -> walk(node, var, level, context) end)

@@ -249,9 +249,11 @@ defmodule Mutare.QuoteUnquoteTest do
     assert mod.value(5) == [1, 3]
   end
 
-  test "prunes live-unquote ancestor mutants for bindings in disabled nested quote options" do
+  test "keeps a live-unquote ancestor mutant above a one-list nested quote, which is inert" do
+    # Options and `do:` in one list: Elixir quotes the nested quote whole with unquoting off,
+    # so `x = y` never runs and no binding escapes for a selector to trap.
     source = """
-    defmodule Mutare.QuoteUnquoteDisabledNestedQuoteOptionFixture do
+    defmodule Mutare.QuoteUnquoteInertNestedQuoteOptionFixture do
       def value(y) do
         x = :outer
 
@@ -261,29 +263,44 @@ defmodule Mutare.QuoteUnquoteTest do
                   end) ++ List.wrap(y + 1))
         end
 
-        {ast, x}
+        # Printed: hygiene context names the compiling wrapper, which differs per reference.
+        {Macro.to_string(ast), x}
       end
     end
     """
 
-    %{metamutant: meta, sites: sites} =
-      Mutare.Transform.transform_string_with_sites(
-        source,
-        file: "quote_unquote_disabled_nested_quote_option.ex",
-        mutators: @arith ++ @list
-      )
+    sites =
+      Mutare.Test.SourcePatch.assert_patches(source, @arith ++ @list, value: [5])
 
-    assert [
-             %Site{
-               mutator: :arithmetic,
-               kind: :in_place,
-               original_code: "y + 1",
-               mutated_code: "y - 1"
-             }
-           ] = sites
+    assert Enum.any?(sites, &(&1.mutator == :list))
+    assert Enum.any?(sites, &(&1.mutator == :arithmetic and &1.original_code == "y + 1"))
+    refute Enum.any?(sites, &(&1.original_code == "x = y"))
+  end
 
-    refute Enum.any?(sites, &(&1.mutator == :list))
-    assert [_ | _] = Mutare.Test.Compile.string(meta)
+  test "prunes live-unquote ancestor mutants for bindings in a nested quote's live options" do
+    # Options and a `do` block as two arguments: the options are quoted with escapes still
+    # on, so `x = y` runs and `x` is read after the quote. A selector around `++` would trap it.
+    source = """
+    defmodule Mutare.QuoteUnquoteLiveNestedQuoteOptionFixture do
+      def value(y) do
+        ast = quote do
+          unquote(List.wrap(quote do
+                    quote bind_quoted: [z: unquote((x = y))] do
+                      z
+                    end
+                  end) ++ List.wrap(y + 1))
+        end
+
+        # Printed: hygiene context names the compiling wrapper, which differs per reference.
+        {Macro.to_string(ast), x}
+      end
+    end
+    """
+
+    sites =
+      Mutare.Test.SourcePatch.assert_patches(source, @arith ++ @list, value: [5])
+
+    assert [%{mutator: :arithmetic, original_code: "y + 1", mutated_code: "y - 1"}] = sites
   end
 
   test "prunes live-unquote ancestor mutants for bindings in runtime quote option values" do

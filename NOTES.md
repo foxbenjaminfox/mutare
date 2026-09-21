@@ -12910,3 +12910,45 @@ ordering fix. Usage and the two comparison hazards it handles are in `bench/READ
 The order of work it supports: widen a generator to a dimension, then consolidate the
 passes that interpret that dimension, holding the refactor to an empty diff here and to the
 source-patch properties for anything the corpus cannot show.
+
+### Which parts of a quote run is one reading, checked against Elixir (2026-09-21)
+
+Six walks each decided for themselves what a `quote` evaluates: `Resolve`, `QuoteEscape`'s
+analysis and its prune, `SelfCalls`, `Super`, and `BindingEscapeEmit`. They counted quote
+levels, and `quote_unquote_enabled?/1` existed twice, verbatim. `Transform.QuoteStructure` now
+holds the reading, shaped like `KeywordRouting`: `parts/1` names each value of a live quote
+`:live`, `:quoted` or `:inert` and returns a rebuilder, `quoted/1` reads one node inside
+quoted data, and neither walks anything. The walkers stay separate, since what a pass does
+with a live expression differs. Analysis still offers no mutants in a live option value
+(`bind_quoted: [r: a + b]` runs unmutated); that is a coverage gap, left as it was.
+
+The level counter was the wrong model, and asking Elixir showed it
+(`quote_structure_test.exs` evaluates 21 probe expressions and requires the decoder to call
+live exactly the probes that ran, in both AST shapes). A nested quote's body is quoted with
+unquoting off, so `unquote(unquote(f()))` two quotes deep never steps back out. Its options
+depend on the argument count: written as two arguments (`quote opts do … end`), the options
+are quoted with escapes still on and an `unquote` there runs; written as one list holding
+`do:` too, the whole quote is inert. No walk had both halves:
+
+- `Super` lowered the level per unquote, so it rewrote `super` in a stacked unquote, in a
+  one-list nested option, and under `unquote: false` or `bind_quoted:` (the last documented
+  as out of scope). Each returned AST then printed `mutare_super.(x)` where the source has
+  `super(x)`, and the clause gained a closure it did not need. A test pinned the stacked
+  case as live; it pinned the model, not the language, and is corrected.
+- `SelfCalls` treated every nested option as data (the `8d59d5fb` fix, right for the
+  one-list form its generator wrote). In the two-argument form the recursion is live and
+  now stays inside the clean copy. Left at the public entry it was harmless. Its test listed
+  `quote([line: unquote(f(1))], do: f(2))` under "preserves quoted data"; that is the
+  two-argument form, and it moved to the redirected list.
+- `QuoteEscape`'s prune treated every nested option as live, so it withheld a `++` mutant
+  above a one-list `x = y` that never runs. That mutant is now offered, and the
+  two-argument form, where the binding does escape, is pruned and checked by `SourcePatch`.
+
+`AST.opts_get/3` returned its default for a key bound to a bare `false` or `nil`
+(`Enum.find_value` reads those as "keep looking"). Sourceror wraps literals, so no
+transform path saw it, but `unquote: false` in a plain AST read as absent. Fixed, since the
+helper is published.
+
+`bench/transform_diff.sh HEAD`: `lib/`, the examples and the 408 earlier fixture programs
+are byte-identical. Only the new `:nested_block_options` boundary moves, by the self-call
+redirect above.

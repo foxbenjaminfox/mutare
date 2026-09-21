@@ -289,15 +289,22 @@ defmodule Mutare.AST do
   @doc """
   Returns the value bound to `key` in a Sourceror-form keyword list.
 
-  Returns `default` when the key is absent. Keys are read with `key_atom/1`, so
-  both `[as: B]` and `[{:as, B}]` match.
+  Returns `default` when the key is absent; a key bound to a bare `false` or `nil` is
+  present. Keys are read with `key_atom/1`, so both `[as: B]` and `[{:as, B}]` match.
   """
   @spec opts_get([Macro.t()], atom(), term()) :: Macro.t() | term()
   def opts_get(opts, key, default \\ nil) when is_list(opts) do
-    Enum.find_value(opts, default, fn
-      {k, value} -> if key_atom(k) == key, do: value
-      _ -> nil
-    end)
+    # The found value is wrapped: a bare `false` or `nil` is a value, not "keep looking".
+    found =
+      Enum.find_value(opts, fn
+        {k, value} -> if key_atom(k) == key, do: {:ok, value}
+        _ -> nil
+      end)
+
+    case found do
+      {:ok, value} -> value
+      nil -> default
+    end
   end
 
   @doc """

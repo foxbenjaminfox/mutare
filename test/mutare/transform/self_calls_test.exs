@@ -95,7 +95,6 @@ defmodule Mutare.Transform.SelfCallsTest do
         "quote(bind_quoted: [x: 1], do: unquote(f(x)))",
         "quote(do: quote(do: unquote(f(1))))",
         "quote(do: quote(bind_quoted: [x: unquote(f(1))], do: f(x)))",
-        "quote(do: quote([line: unquote(f(1))], do: f(2)))",
         "quote(do: quote(do: unquote(unquote(f(1)))))"
       ] do
     test "preserves quoted data: #{source}" do
@@ -116,6 +115,10 @@ defmodule Mutare.Transform.SelfCallsTest do
          "quote([bind_quoted: [x: clean_f(:extra, 1)], unquote: true], do: unquote(clean_f(:extra, x)))"},
         {"quote(line: f(1), unquote: false, do: unquote(f(2)))",
          "quote(line: clean_f(:extra, 1), unquote: false, do: unquote(f(2)))"},
+        # A nested quote given two arguments: Elixir quotes its options with escapes on, so
+        # this call runs (`quote_structure_test.exs` checks that against Elixir). Its body is data.
+        {"quote(do: quote([line: unquote(f(1))], do: f(2)))",
+         "quote(do: quote([line: unquote(clean_f(:extra, 1))], do: f(2)))"},
         {"quote(do: unquote(quote(do: f(unquote(f(1))))))",
          "quote(do: unquote(quote(do: f(unquote(clean_f(:extra, 1))))))"}
       ] do

@@ -100,6 +100,11 @@ defmodule Mutare.ASTTest do
       assert AST.opts_get(opts, :missing, :fallback) == :fallback
     end
 
+    test "a key bound to false or nil is present" do
+      assert AST.opts_get([unquote: false], :unquote, :missing) == false
+      assert AST.opts_get([as: nil], :as, :missing) == nil
+    end
+
     test "ignores a non-pair entry in the list (the fallback clause)" do
       assert AST.opts_get([:junk, {:a, 1}], :a) == 1
       assert AST.opts_get([:junk], :a, :default) == :default
