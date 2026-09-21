@@ -16,24 +16,24 @@ defmodule Mutare.Transform.SelfCalls do
   #
   # A self-call is recognised by shape: the function's own name at its full arity, resolving
   # to no import (a module cannot both define and import one name/arity). The walk does not
-  # ask whether the call sits in a macro's argument or a `quote`, where the rename reaches
-  # code the macro treats as data. If that breaks the compile, the error lands in the clean
-  # copy and poison recovery drops the region (`Mutare.Transform.CleanRegion`).
+  # classify macro arguments. Quoted bodies, however, are data: only quote option values
+  # and live unquote expressions can contain executable self-calls. Renaming quoted calls
+  # can silently change returned data even when both copies compile.
   #
-  # The walk is pipe-aware: a pipe stage's arity includes its receiver, while calls nested in
-  # its arguments keep their own. Without that, `n |> min(10)` inside `min/1` reads as
-  # recursion and is redirected to a clean `min/2` that does not exist. A matched stage
-  # becomes an ordinary call first, so leading arguments stay ahead of the receiver.
+  # Resolve has already expanded executable pipes to calls, so a stage's arity includes
+  # its receiver. Quoted pipes remain data, and their spelling is preserved too.
 
+  alias Mutare.AST
+  alias Mutare.Transform.Analyze.QuoteEscape
   alias Mutare.Transform.{Calls, Imports, Meta}
 
   @doc """
-  Redirect every full-arity self-call of `self_call` in `body` to `replacement`, passing
-  `leading_args` first. Returns the body and whether anything was redirected.
+  Redirect executable full-arity self-calls of `self_call` in `body` to `replacement`,
+  passing `leading_args` first. Returns the body and whether anything was redirected.
   """
   @spec redirect(Macro.t(), {atom(), arity()}, atom(), [Macro.t()]) :: {Macro.t(), boolean()}
   def redirect(body, self_call, replacement, leading_args) do
-    walk(body, self_call, false, fn {_name, _meta, args} = call, _redirected? ->
+    walk(body, 0, self_call, false, fn {_name, _meta, args} = call, _redirected? ->
       # The redirected call is generated: with `leading_args` ahead of the user's own, its
       # argument 0 is no longer what they piped in, so it is not spelled as their pipe.
       {_name, meta, _args} = Meta.drop_written_pipe(call)
@@ -41,27 +41,73 @@ defmodule Mutare.Transform.SelfCalls do
     end)
   end
 
-  defp walk(node, self_call, acc, fun) do
-    {node, acc} = walk_children(node, self_call, acc, fun)
-    if self_call?(node, self_call), do: fun.(node, acc), else: {node, acc}
+  defp walk({:quote, meta, args}, level, self_call, acc, fun) when is_list(args) do
+    enabled? = QuoteEscape.quote_unquote_enabled?(args)
+
+    {args, acc} =
+      Enum.map_reduce(args, acc, &walk_quote_arg(&1, level, enabled?, self_call, &2, fun))
+
+    {{:quote, meta, args}, acc}
   end
 
-  defp walk_children({form, meta, args}, self_call, acc, fun) when is_list(args) do
-    {form, acc} = walk(form, self_call, acc, fun)
-    {args, acc} = walk(args, self_call, acc, fun)
+  defp walk({form, meta, [arg]}, 1, self_call, acc, fun)
+       when form in [:unquote, :unquote_splicing] do
+    {arg, acc} = walk(arg, 0, self_call, acc, fun)
+    {{form, meta, [arg]}, acc}
+  end
+
+  # Even stacked unquotes in a nested quote remain data for the outer quote.
+  defp walk({form, _meta, [_arg]} = node, level, _self_call, acc, _fun)
+       when form in [:unquote, :unquote_splicing] and level > 1,
+       do: {node, acc}
+
+  defp walk(node, level, self_call, acc, fun) do
+    {node, acc} = walk_children(node, acc, &walk(&1, level, self_call, &2, fun))
+    if level == 0 and self_call?(node, self_call), do: fun.(node, acc), else: {node, acc}
+  end
+
+  defp walk_quote_arg({:__block__, meta, [kw]}, level, enabled?, self_call, acc, fun)
+       when is_list(kw) do
+    {kw, acc} = walk_quote_arg(kw, level, enabled?, self_call, acc, fun)
+    {{:__block__, meta, [kw]}, acc}
+  end
+
+  defp walk_quote_arg(kw, level, enabled?, self_call, acc, fun) when is_list(kw),
+    do: Enum.map_reduce(kw, acc, &walk_quote_arg(&1, level, enabled?, self_call, &2, fun))
+
+  defp walk_quote_arg({key, value} = pair, level, enabled?, self_call, acc, fun) do
+    case AST.key_atom(key) do
+      :do when enabled? ->
+        {value, acc} = walk(value, level + 1, self_call, acc, fun)
+        {{key, value}, acc}
+
+      :do ->
+        {pair, acc}
+
+      _option ->
+        {value, acc} = walk(value, level, self_call, acc, fun)
+        {{key, value}, acc}
+    end
+  end
+
+  defp walk_quote_arg(other, _level, _enabled?, _self_call, acc, _fun), do: {other, acc}
+
+  defp walk_children({form, meta, args}, acc, fun) when is_list(args) do
+    {form, acc} = fun.(form, acc)
+    {args, acc} = fun.(args, acc)
     {{form, meta, args}, acc}
   end
 
-  defp walk_children({left, right}, self_call, acc, fun) do
-    {left, acc} = walk(left, self_call, acc, fun)
-    {right, acc} = walk(right, self_call, acc, fun)
+  defp walk_children({left, right}, acc, fun) do
+    {left, acc} = fun.(left, acc)
+    {right, acc} = fun.(right, acc)
     {{left, right}, acc}
   end
 
-  defp walk_children(nodes, self_call, acc, fun) when is_list(nodes),
-    do: Enum.map_reduce(nodes, acc, &walk(&1, self_call, &2, fun))
+  defp walk_children(nodes, acc, fun) when is_list(nodes),
+    do: Enum.map_reduce(nodes, acc, fun)
 
-  defp walk_children(node, _self_call, acc, _fun), do: {node, acc}
+  defp walk_children(node, acc, _fun), do: {node, acc}
 
   defp self_call?({name, meta, args} = node, {name, arity})
        when is_list(args) and length(args) == arity,

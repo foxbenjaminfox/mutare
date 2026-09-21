@@ -510,6 +510,46 @@ defmodule Mutare.Transform.CleanFunctionTest do
   end
 
   describe "a relocated clean copy" do
+    test "preserves quoted return data when an unrelated mutant selects the clean copy" do
+      for expression <- [
+            "quote(do: f(unquote(n + 1)))",
+            "quote(do: unquote(n + 1) |> f())",
+            "quote(unquote: false, do: unquote(f(n)))",
+            "quote([bind_quoted: [x: n]], do: f(x))",
+            "quote(do: quote(do: unquote(f(n))))",
+            "quote(do: quote(do: unquote(unquote(f(n)))))",
+            "quote(do: f(unquote(f(n - 1))))",
+            "quote(do: [f(n), unquote_splicing([f(n - 1)])])",
+            "quote(bind_quoted: [x: f(n - 1)], do: f(x))"
+          ] do
+        source = """
+        defmodule Mutare.CleanFunctionFixture do
+          def f(n) when n > 0, do: Macro.to_string(#{expression})
+          def f(0), do: 1
+          def other(n), do: n + 7
+        end
+        """
+
+        compile_purging(@fixture, source)
+        expected = apply(@fixture, :f, [1])
+        result = Transform.transform_string_with_sites(source, mutators: @mutators)
+
+        assert Enum.any?(
+                 result.clean_decisions,
+                 &match?(%{function: {:f, 1}, verdict: :clean}, &1)
+               )
+
+        other = Enum.find(result.sites, &(&1.original_code == "n + 7"))
+        assert other
+        Mutare.Test.Compile.string(result.metamutant)
+
+        for selection <- [0, other.id] do
+          Selector.put(selection)
+          assert apply(@fixture, :f, [1]) == expected, expression
+        end
+      end
+    end
+
     test "keeps defaults on the dispatcher and sibling calls at their ordinary entries" do
       source = """
       defmodule Mutare.CleanFunctionFixture do

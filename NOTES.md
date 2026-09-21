@@ -11842,8 +11842,12 @@ span, not just the dispatcher's call), and no other region may appear.
   mutant run selection is fixed per VM, so this is sound where it matters; an in-process
   `Selector.put/1` issued *during* a recursion is no longer seen by the steps under way
   (`clean_function_test.exs` pins the new behaviour, where it used to pin the opposite). A
-  self-named call inside a macro argument or a `quote` is renamed too; if that breaks the
-  compile, the error is in the copy and the region goes.
+  self-named call inside a macro argument is renamed too; if that breaks the compile, the
+  error is in the copy and the region goes. The original walk also renamed quoted data,
+  corrected on 2026-09-21: that can silently change a returned AST or `Macro.to_string/1`
+  result only when an unrelated mutant selects the clean copy, yielding false kills after
+  a passing baseline. `SelfCalls` now preserves quoted bodies and redirects only live
+  unquotes and evaluated quote options, respecting nesting and disabled unquoting.
 - *Guard sharing's "clause outside the contract" condition.* It protected macros that count
   their expansions. Lifting already changes that count, and sharing moves it toward the
   source's one.
