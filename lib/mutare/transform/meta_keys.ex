@@ -66,10 +66,14 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_selector`         — marks a selector `case` the emit built           (Render.selector_case, read back by Render)
   #   * `:mutare_operand_of`       — the operator position a node was written in      (Resolve.OperandPositions, read by Site.Parenthesize)
   #   * `:mutare_written_pipe`     — the meta of the `|>` a call was written as, before Resolve made it the direct call (WrittenPipe.direct/2; WrittenPipe.written/1 rebuilds the pipe from it)
+  #   * `:mutare_pipe_group`       — operator metadata needed to undo a right-nested pipe rotation (WrittenPipe)
+  #   * `:mutare_pipe_continuation` — remaining stages around a synthetic prefix, for complete source patches (WrittenPipe)
   @bookkeeping_keys [
     tag_key: :mutare_tag,
     selector_key: :mutare_selector,
     written_pipe_key: :mutare_written_pipe,
+    pipe_group_key: :mutare_pipe_group,
+    pipe_continuation_key: :mutare_pipe_continuation,
     operand_of_key: :mutare_operand_of,
     nid_key: :mutare_nid,
     marks_key: :mutare_marks,

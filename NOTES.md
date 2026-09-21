@@ -12616,3 +12616,20 @@ ordinary node mutations.
 pattern bodies, exercises live mutants, checks the new return sites against source patches,
 and proves lazy arguments stay unevaluated. It also covers local functions, unavailable
 imports and an explicit Kernel import that must retain its condition mutants.
+
+### Right-nested pipelines contain stages, not complete RHS calls `[fixed]` (2026-09-21)
+
+`x |> (abs() |> div(2))` compiles in Elixir: `Kernel.|>/2` flattens its RHS with
+`Macro.unpipe/1` before applying `Macro.pipe/3` to each stage. Resolve applied `Macro.pipe/3`
+to the grouped RHS itself, caught its rejection, and descended into `abs()` as a complete
+call. With operand-swap mutation the remaining outer pipe targeted a selector and failed
+to compile (`misplaced operator ->`).
+
+Resolve now rotates right-nested Kernel pipes before resolving any stage. WrittenPipe keeps
+the operator metadata needed to reverse those rotations, preserving grouped syntax in raw
+regions and source ranges. A synthetic intermediate prefix has no balanced source span:
+`x |> (abs()` cannot be replaced by itself. For mutations that change its piped operand,
+the stamp carries the remaining stages and reporting replaces the complete enclosing group;
+stage-only changes still patch only the stage. Both remain keyed at the stage's line.
+Roundtrip tests cover nested groups and comments; SourcePatch checks the baseline and every
+mutation against its source patch, including operand swaps and removal of an intermediate call.

@@ -269,6 +269,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
           note: note(c),
           variant: variant(c),
           classified: c.classified,
+          position: position(c),
           render?: render?,
           summary?: summary?
         )

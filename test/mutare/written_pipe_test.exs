@@ -26,6 +26,12 @@ defmodule Mutare.WrittenPipeTest do
   for code <- [
         "xs |> Enum.take(2)",
         "xs |> Enum.count()",
+        "x |> (abs() |> div(2))",
+        "x |> (abs() |> (div(2) |> rem(3)))",
+        "x |> ((abs() |> div(2)) |> rem(3))",
+        "(x |> (abs() |> div(2))) |> rem(3)",
+        "x |> (abs |> (div(2) |> (rem(3) |> to_string)))",
+        "x |> (\n  # first stage\n  abs()\n  |> div(2)\n)",
         "n |> to_string",
         "n |> to_string()",
         "n |> Integer.to_string",
@@ -49,6 +55,11 @@ defmodule Mutare.WrittenPipeTest do
     ys = {:ys, [], nil}
 
     assert {:|>, _pipe_meta, [^ys, _stage]} = WrittenPipe.written({head, meta, [ys | rest]})
+  end
+
+  test "right-nested stages resolve with their complete arities" do
+    call = resolved("x |> (abs() |> div(2))")
+    assert {:div, _, [{:abs, _, [{:x, _, nil}]}, {:__block__, _, [2]}]} = call
   end
 
   test "a node built on a piped call's meta that is no stage has no written form" do
@@ -90,5 +101,16 @@ defmodule Mutare.WrittenPipeTest do
 
     assert :erts_debug.flat_size(resolved("xs\n" <> chain)) <
              2 * :erts_debug.flat_size(parsed("xs\n" <> chain))
+  end
+
+  test "nested groups do not double their enclosing context at every rotation" do
+    size = fn n ->
+      stages = Enum.reduce(2..n, "abs()", fn _, stages -> "(#{stages} |> abs())" end)
+      :erts_debug.flat_size(resolved("x |> " <> stages))
+    end
+
+    # Grouped prefixes carry the remaining stages for source patches: quadratic is expected,
+    # but copying that continuation into the grouping history as well makes it exponential.
+    assert size.(16) < 5 * size.(8)
   end
 end

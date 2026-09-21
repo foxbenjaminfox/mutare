@@ -56,7 +56,9 @@ defmodule Mutare.Transform.Analyze.Attach do
   # Build node-level `Candidate.InPlace`s from a node and a mutator result list — the raw
   # material both `offer/4` and the clause-pattern builders attach as in-place candidates.
   def build_candidates(node, muts) do
-    range = NodeRange.get(node)
+    # A prefix synthesized by flattening a grouped RHS has no standalone source span;
+    # its whole-call replacements cover the enclosing group, including the remaining stages.
+    range = node |> WrittenPipe.report_node() |> NodeRange.get()
 
     Enum.map(muts, fn %Dispatch.Result{} = result ->
       # A mutator's own attribution wins; failing one, a rewritten pipe stage's mutant is
@@ -76,8 +78,8 @@ defmodule Mutare.Transform.Analyze.Attach do
         variant: result.variant,
         attribution: attribution,
         attribution_range: attribution_range,
-        # Reported over the whole pipe (no narrower attribution), but keyed at its stage.
-        position: if(is_nil(attribution), do: WrittenPipe.stage_position(node)),
+        # Core's pipe attribution may cover an enclosing group; it still belongs to this stage.
+        position: if(is_nil(attribution) or stage, do: WrittenPipe.stage_position(node)),
         classified: if(stage && attribution, do: {node, result.node})
       }
     end)

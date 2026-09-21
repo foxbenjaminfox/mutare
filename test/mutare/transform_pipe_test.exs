@@ -6,6 +6,20 @@ defmodule Mutare.TransformPipeTest do
   import Mutare.Test.Metamutant
 
   describe "a selector cannot be a bare pipe target (|> hoisting)" do
+    test "operand swaps in a parenthesized pipeline compile" do
+      source = """
+      defmodule ParenthesizedPipe do
+        def f(x), do: x |> (abs() |> div(2))
+      end
+      """
+
+      %{metamutant: meta, sites: sites} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: [:operand_swap])
+
+      assert [%{mutator: :operand_swap}] = sites
+      assert_compiles(meta)
+    end
+
     # `x |> case … end` *parses* but fails to compile (`Kernel.|>/2` can't pipe into
     # a `case`), so these assert the metamutant **compiles**, not just parses.
     test "a mutated middle/first pipe stage compiles" do

@@ -132,15 +132,22 @@ defmodule Mutare.Transform.Resolve do
   defp walk({:|>, meta, [lhs, rhs] = args}, env) do
     {resolved_meta, module_key} = resolve_pipe_call(meta, args, env)
 
-    if module_key != [:Kernel] do
-      walk_bare_call(:|>, resolved_meta, module_key, args, env)
-    else
-      # A route explicitly naming Kernel's pipe accepts only :skip.
-      meta = stamp_routed(resolved_meta, module_key, :|>, args, env)
+    cond do
+      module_key != [:Kernel] ->
+        walk_bare_call(:|>, resolved_meta, module_key, args, env)
 
-      # Nothing `Kernel.|>/2` could pipe into (`x |> unquote(stage)` inside a `quote`, or
-      # source that does not compile): two expressions.
-      direct_stage(meta, lhs, rhs, env) || {:|>, meta, descend(args, env)}
+      match?({:|>, _, [_, _]}, rhs) ->
+        # Kernel flattens a pipeline's RHS before applying Macro.pipe/3. Rotate a
+        # grouped RHS first, so none of its stages is ever resolved one argument short.
+        walk(WrittenPipe.flatten_right(meta, lhs, rhs), env)
+
+      true ->
+        # A route explicitly naming Kernel's pipe accepts only :skip.
+        meta = stamp_routed(resolved_meta, module_key, :|>, args, env)
+
+        # Nothing `Kernel.|>/2` could pipe into (`x |> unquote(stage)` inside a `quote`, or
+        # source that does not compile): two expressions.
+        direct_stage(meta, lhs, rhs, env) || {:|>, meta, descend(args, env)}
     end
   end
 

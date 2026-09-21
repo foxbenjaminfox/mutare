@@ -14,13 +14,20 @@ defmodule Mutare.Transform.WrittenPipe do
   # spelling they wrote. The rest of this module is that obligation, read off the stamp
   # `direct/2` leaves.
   #
-  # The stamp is the `|>` node's **meta** and nothing else (`Meta.written_pipe_meta/1`). The
+  # For an ordinary chain the stamp is the `|>` node's **meta** (`Meta.written_pipe_meta/1`). The
   # call already holds the rest of the pipe — argument 0 is its left side, the call less that
   # argument its stage — so `written/1` rebuilds the pipe from the call, and is the one inverse
   # of the rewrite that every reader of the spelling goes through (`resugar/1` here,
   # `Mutare.Transform.Render` for the metamutant). A stamp that held the pipe itself would be a
   # second copy of the left side, stale once analysis reaches argument 0, and a copy of every
   # upstream prefix down a chain.
+  #
+  # A grouped RHS (`x |> (a() |> b())`) must first be flattened, as Kernel does. Rotations
+  # retain the original operator metadata in `@group`, so `written/1` can undo them. An
+  # intermediate prefix (`a(x)`) has no complete source span of its own: replacing the text
+  # `x |> (a()` would leave the closing parenthesis behind. Its `@continuation` records the
+  # remaining stages, without copying the prefix, so a mutation that changes argument 0 can
+  # report a replacement of the enclosing group. Stage-only changes keep their narrow span.
   #
   #   * `written/1` — the rewritten call stands where the whole `left |> stage` stood, so
   #     `Mutare.Transform.NodeRange.get/1` ranges the written pipe in its stead. The call's own
@@ -40,6 +47,25 @@ defmodule Mutare.Transform.WrittenPipe do
 
   alias Mutare.Mutator.Mutation
   alias Mutare.Transform.{Meta, MetaKeys, NodeRange}
+
+  @group MetaKeys.pipe_group_key()
+  @continuation MetaKeys.pipe_continuation_key()
+
+  @doc "Flatten a right-nested pipe, retaining its grouping for spelling and source patches."
+  @spec flatten_right(keyword(), Macro.t(), Macro.t()) :: Macro.t()
+  def flatten_right(meta, left, {:|>, right_meta, [first, rest]}) do
+    # The continuation belongs to the live prefix, not its spelling history. Copying it
+    # into both would double the enclosing context at every level of a nested group.
+    spelling_meta = Keyword.delete(meta, @continuation)
+    outer = Keyword.put(meta, @group, {spelling_meta, right_meta})
+
+    prefix =
+      right_meta
+      |> Keyword.delete(:parens)
+      |> Keyword.put(@continuation, {outer, rest})
+
+    {:|>, outer, [{:|>, prefix, [left, first]}, rest]}
+  end
 
   @doc """
   Record on `call` — the direct call `Kernel.|>/2`'s own desugaring (`Macro.pipe/3`) made of a
@@ -76,13 +102,38 @@ defmodule Mutare.Transform.WrittenPipe do
          {_head, stage_meta, _args} = Meta.drop_written_pipe(call),
          stage = {head, stage_meta, written_args(head, meta, visible)},
          true <- stage?(left, stage) do
-      {:|>, pipe_meta, [left, stage]}
+      regroup(pipe_meta, left, stage)
     else
       _not_a_pipe -> nil
     end
   end
 
   def written(_node), do: nil
+
+  # Undo a rotation only while the upstream prefix is still a pipe. Emission or mutation
+  # may replace it with a selector, variable or literal; then the flattened spelling is
+  # the valid one. No operand is stored in the grouping stamp.
+  defp regroup(meta, left, stage) do
+    with {original_meta, right_meta} <- Keyword.get(meta, @group),
+         {:|>, _prefix_meta, [input, first]} <- written(left) || left do
+      regroup(original_meta, input, {:|>, right_meta, [first, stage]})
+    else
+      _ -> {:|>, meta, [left, stage]}
+    end
+  end
+
+  @doc "The complete source expression containing a synthetic prefix of a grouped pipe."
+  @spec report_node(Macro.t()) :: Macro.t()
+  def report_node(node), do: continue(node, Meta.written_pipe_meta(node))
+
+  defp continue(node, nil), do: node
+
+  defp continue(node, meta) do
+    case Keyword.get(meta, @continuation) do
+      {outer, rest} -> continue(regroup(outer, node, rest), outer)
+      nil -> node
+    end
+  end
 
   # Whether `stage` is something `Kernel.|>/2` pipes into. The stamp is meta, and meta is copied
   # by whoever rebuilds a node on it: a mutator that turns `div(n, 2)` into `n - 2`, `-n` or a
@@ -114,18 +165,26 @@ defmodule Mutare.Transform.WrittenPipe do
 
   @doc """
   The attribution that reports `mutated` — a replacement for the rewritten call `offered` — at
-  the written stage, when it kept `offered`'s argument 0. `nil` when `offered` was not written
-  as a pipe, or the mutant touched the left side.
+  the written stage, when it kept `offered`'s argument 0. A synthetic prefix of a grouped
+  pipeline that changes argument 0 reports over the enclosing group instead. Otherwise `nil`.
   """
   @spec stage_attribution(Macro.t(), Macro.t()) :: Mutation.Attribution.t() | nil
   def stage_attribution({_head, _meta, [left | _visible]} = offered, mutated) do
-    with {:|>, _pipe_meta, [^left, stage]} <- written(offered),
+    with pipe_meta when is_list(pipe_meta) <- Meta.written_pipe_meta(offered),
          {head, meta, [^left | visible]} <- mutated,
          mutated_stage = Meta.drop_written_pipe({head, meta, visible}),
          true <- stage?(left, mutated_stage) do
-      Mutation.at(stage, mutated_stage)
+      Mutation.at(stage(offered), mutated_stage)
     else
-      _whole_pipe -> nil
+      _whole_pipe ->
+        case Meta.written_pipe_meta(offered) do
+          meta when is_list(meta) ->
+            if Keyword.has_key?(meta, @continuation),
+              do: Mutation.at(report_node(offered), continue(mutated, meta))
+
+          nil ->
+            nil
+        end
     end
   end
 
@@ -140,12 +199,17 @@ defmodule Mutare.Transform.WrittenPipe do
   """
   @spec stage_position(Macro.t()) :: keyword() | nil
   def stage_position(node) do
-    with {:|>, _pipe_meta, [_left, stage]} <- written(node),
-         %{start: start} <- NodeRange.get(stage) do
+    with pipe_meta when is_list(pipe_meta) <- Meta.written_pipe_meta(node),
+         %{start: start} <- NodeRange.get(stage(node)) do
       start
     else
       _unpiped -> nil
     end
+  end
+
+  defp stage({head, meta, [_left | visible]} = call) do
+    {_, stage_meta, _} = Meta.drop_written_pipe(call)
+    {head, stage_meta, written_args(head, meta, visible)}
   end
 
   @doc "Render-side inverse of the rewrite: every rewritten call in `node` as the pipe it was."

@@ -8,6 +8,51 @@ defmodule Mutare.PipeSourcePatchTest do
 
   alias Mutare.Test.{LazyDSL, LazyStageMutator, PipedCallProbe, PipeSyntaxMutator}
 
+  test "parenthesized pipelines resolve complete calls and keep executable source patches" do
+    for body <- [
+          "x |> (abs() |> div(2))",
+          "x |> (abs() |> (div(2) |> rem(3)))",
+          "x |> ((abs() |> div(2)) |> rem(3))",
+          "(x |> (abs() |> div(2))) |> rem(3)",
+          "10 + (x |> (abs() |> div(2)))"
+        ] do
+      source = """
+      defmodule Fixture do
+        def run(x), do: #{body}
+      end
+      """
+
+      sites =
+        assert_patches(source, [:operand_swap, :call_removal, :integer, :return_value],
+          run: [-17],
+          run: [0],
+          run: [8]
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :operand_swap))
+      assert Enum.any?(sites, &(&1.mutator == :call_removal))
+    end
+  end
+
+  test "mutants covering a grouped pipeline remain keyed at the mutated stage" do
+    source = """
+    defmodule Fixture do
+      def run(x) do
+        x |> (
+          abs()
+          |> div(2)
+          |> rem(3)
+        )
+      end
+    end
+    """
+
+    sites = assert_patches(source, [:operand_swap, :call_removal], run: [-17])
+
+    assert [%{line: 4}] = Enum.filter(sites, &(&1.mutator == :call_removal))
+    assert Enum.map(Enum.filter(sites, &(&1.mutator == :operand_swap)), & &1.line) == [5, 6]
+  end
+
   test "a routed stage reported at the stage, in a multi-line chain with a function tail" do
     source = """
     defmodule Fixture do
