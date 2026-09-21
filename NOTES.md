@@ -2064,7 +2064,7 @@ resolves every call's module; it now also looks the call up in the registry and 
 matched call's meta with its per-position routing (`meta[:mutare_macro]`), which the analyzer's
 generic runtime clause reads (one `case Keyword.get(meta, :mutare_macro)`, the `nil` arm is the
 old path byte-for-byte — sigils/ordinary calls untouched). `Render` strips the stamp via its
-allowlist (`@internal_meta_keys`), like the other `:mutare_*` stamps.
+whitelist (`@internal_meta_keys`), like the other `:mutare_*` stamps.
 
 Three load-bearing decisions:
 
@@ -5088,7 +5088,7 @@ the leaf before its enclosing call).
 > read it as the predecessor design, not the live code. Concretely: the live pass no longer
 > uses `Sourceror` ranges at all — it stamps a per-node `meta[:mutare_nid]` in `Resolve` and
 > prunes on nid-equality (see below). Wherever the text says "range", the code now says "nid",
-> and the three denylist rules (rangeable / proper-sub-range / non-list) collapse into "carries
+> and the three blacklist rules (rangeable / proper-sub-range / non-list) collapse into "carries
 > a nid". The *behaviour* is identical; only the identity proxy changed.
 
 A candidate's **footprint** was the source range of the
@@ -5189,11 +5189,11 @@ three regressions above (infix `OperandSwap`, piped `DefaultDrop`, `:qualify`) w
 original mechanism used **`Sourceror` range-equality as a proxy for node identity**, and
 `get_range/1` is **not injective** — distinct AST terms can share a range (`[a, b]` ≡ `a - b`; a
 one-element call-arg list `[0]` ≡ its element `0`). The `nil`/whole-host/`is_list` rules were a
-*denylist* of the non-injective shapes. A collision scan over a varied corpus was reassuring:
+*blacklist* of the non-injective shapes. A collision scan over a varied corpus was reassuring:
 **every** distinct-node range collision puts a **list** (a container borrowing its element/sibling
 range, → `is_list`) or a **form/machinery node** (operator, `.` dot, interpolation `::`, a `:do`
 key — none of which host a value candidate, → the `nil`-shield / form-opacity) on at least one
-side. Never two value-leaves, never a covering non-list footprint vs a value-leaf. So the denylist
+side. Never two value-leaves, never a covering non-list footprint vs a value-leaf. So the blacklist
 was *empirically complete* for those families and that Sourceror — but **empirical, not proven**:
 it rested on two external invariants (Sourceror never ranges bare form atoms; every collision is
 list/machinery-shaped) that a Sourceror upgrade, an unprobed construct (`with`/`try`/exotic
@@ -5212,7 +5212,7 @@ footprint subtree (drawn from that same `original`) carries the matching one. `O
 via `Resolve.nid/1`, collects the nids of covering footprints (a footprint is covering iff its
 minimal changed subtree is a *proper, nid-bearing descendant* — `sub_nid && sub_nid != host_nid`),
 and prunes any non-covering candidate (footprint `nil`) whose host nid is covered. Lists and bare
-atoms carry no meta → no nid → never covering, so **nid-identity subsumes all three denylist rules
+atoms carry no meta → no nid → never covering, so **nid-identity subsumes all three blacklist rules
 *and* both unproven invariants** — the diff (`diff/2`, `reduce/2`) is kept verbatim (still
 meta-insensitive, so the nid the wrapper carries never makes two equal nodes diff), but the
 `NodeRange.get/1` lookups, the `host_range != sub_range` proper-sub-range test, and the explicit
@@ -10681,7 +10681,7 @@ three-clause `case` expansion.
 **The guards were never at risk.** `GuardBuild`'s conjunctions are `:erlang.andalso`/`orelse`
 in `when` position — exactly what `Kernel.and/2`/`or/2` expand to in a guard on every supported
 release, and the same upstream commit adds both to `elixir_rewrite`'s `allowed_guard/2`
-allow-list. A stable target. Only `guard_build_test`'s `accepts?/2` had to move: it evaluated an
+whitelist. A stable target. Only `guard_build_test`'s `accepts?/2` had to move: it evaluated an
 exclusion guard as a body expression through `Code.eval_quoted/2`; it now evaluates it where the
 metamutant does, in a `fn`'s `when`.
 
@@ -11232,7 +11232,7 @@ was removed on 2026-09-20 with `CleanPath` — "Clean regions are attributable" 
 - *A clause outside `CleanPath`'s contract* (`check_clause/3`). The argument differs from a
   clean copy's: nothing new is compiled — the merge *removes* copies — so no unattributable
   compile failure is at stake. What changes is how many times the body's macros expand, and
-  only a body of known functions and allow-listed macros is certain not to notice. This is
+  only a body of known functions and whitelisted macros is certain not to notice. This is
   conservative: a stateful macro already sees several expansions per clause (raw, instrumented,
   clean), and sharing moves the count toward the source's one. Relaxing it needs an argument
   about expansion counts, not about relocation. Definition callbacks see fewer generated
@@ -11789,7 +11789,7 @@ sources with escaped closing delimiters would be the way to pin them.
 
 **What was wrong.** `CleanPath` was a thousand-line classifier of Elixir syntax whose job
 was to decide, without expanding anything, whether a call in a function body was a known
-function, an allow-listed macro, or a bare name that might be a zero-arity macro. That is
+function, an whitelisted macro, or a bare name that might be a zero-arity macro. That is
 the guess Mutare declines to make everywhere else: the transform treats source uniformly,
 and a construct that cannot take what the transform does to it is handled by poison
 recovery, or named by the user in `call_routes:`. The classifier also tried to keep

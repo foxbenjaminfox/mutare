@@ -59,7 +59,7 @@ defmodule Mutare.Options do
           reporters: [{:human | :json | :html | :sarif, String.t() | nil}]
         }
 
-  # The struct, its `@keys` allow-list (`reject_unknown!/1`), and `new/1`'s per-field defaults
+  # The struct, its `@keys` whitelist (`reject_unknown!/1`), and `new/1`'s per-field defaults
   # (via `opt/2`) all derive from the one `Mutare.Options.Registry` source, so a field's default
   # lives in exactly one place and the two construction paths (`defstruct` vs `new/1`) can't drift.
   @field_defaults Registry.defaults()

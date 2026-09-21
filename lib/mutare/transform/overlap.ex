@@ -40,10 +40,10 @@ defmodule Mutare.Transform.Overlap do
   #
   # This is **injective**, which `Sourceror.get_range/1` is not: distinct AST terms can share a
   # range (`[a, b]` ≡ `a - b`; a one-element call-arg list `[0]` ≡ its element `0`), and a
-  # previous range-based version of this pass needed a denylist of three such collision shapes
+  # previous range-based version of this pass needed a blacklist of three such collision shapes
   # (unrangeable form atoms, whole-host equality, list-valued footprints) plus two unproven
   # Sourceror invariants to stay correct. Node identity dissolves all of that: see "What is
-  # covering" below for how each old denylist case falls out of "no metadata → no nid".
+  # covering" below for how each old blacklist case falls out of "no metadata → no nid".
   #
   # The recognition still relies on a covering mutant being "the original with one subtree
   # replaced". `Mutare.Transform.Calls` upholds that for **bare imported calls**: a value-only
