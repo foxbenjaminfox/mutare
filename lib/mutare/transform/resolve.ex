@@ -147,7 +147,8 @@ defmodule Mutare.Transform.Resolve do
   @spec forget(Macro.t()) :: Macro.t()
   def forget(ast) do
     Macro.prewalk(ast, fn
-      {form, meta, args} when is_list(meta) ->
+      {form, meta, args} ->
+        # mutare:ignore[keyword_delete] equivalent — only ever `Keyword.put`, so it occurs once
         {form, Keyword.delete(meta, MetaKeys.resolution_key()), args}
 
       node ->
@@ -417,6 +418,7 @@ defmodule Mutare.Transform.Resolve do
 
     case {module_key, Routes.lookup(env.call_routes, module_key, :|>, 2)} do
       {[:Kernel], %Entry{spec: %Spec{module: :*, name: :|>}}} ->
+        # mutare:ignore[map_keyword] equivalent — a stamp already there holds the same `true`
         {Keyword.put(meta, MetaKeys.kernel_displaced_key(), true), nil}
 
       _ ->
@@ -431,6 +433,7 @@ defmodule Mutare.Transform.Resolve do
 
   defp retain_environment(meta, env) do
     if Meta.routing(meta) == :skip or is_list(Meta.routing(meta)),
+      # mutare:ignore[map_keyword] equivalent — a call walked twice (a flattened pipe) meets one env
       do: Keyword.put(meta, MetaKeys.resolution_key(), env),
       else: meta
   end
@@ -504,7 +507,11 @@ defmodule Mutare.Transform.Resolve do
   defp direct_stage(_pipe_meta, _lhs, _rhs, _env), do: nil
 
   # `Kernel.|>/2`'s own desugaring. It refuses what cannot be piped into (a literal, a `fn`, a
-  # capture, a unary operator) — source that does not compile, left exactly as written.
+  # capture, a unary operator) — source that compiles only as a macro's argument, if at all,
+  # left exactly as written. Sourceror wraps a literal in a one-child `__block__`, which
+  # `Macro.pipe/3` would take for a call and pipe into, making a block of `x |> 1`.
+  defp direct_call(_lhs, {:__block__, _meta, [_literal]}), do: nil
+
   defp direct_call(lhs, rhs) do
     Macro.pipe(lhs, rhs, 0)
   rescue
