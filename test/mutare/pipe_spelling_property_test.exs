@@ -31,6 +31,14 @@ defmodule Mutare.PipeSpellingPropertyTest do
     {Kernel, :max, 2, [:expression, :expression]},
     {Kernel, :div, 2, [:expression, :expression]}
   ]
+
+  # The call-level `:skip` covers a call and its arguments, and a piped value is argument 0: a
+  # function, a no-argument stage, and a structural head.
+  @skip_routes [
+    {Kernel, :max, 2, :skip},
+    {Kernel, :abs, 1, :skip},
+    {Kernel.SpecialForms, :case, :skip}
+  ]
   @inputs [0, 3, -2]
 
   property "a chain means the same however its stages are spelled", numtests: 150 do
@@ -65,6 +73,26 @@ defmodule Mutare.PipeSpellingPropertyTest do
         #{inspect(unrouted, pretty: true)}
         --- with #{inspect(@idle_routes)}
         #{inspect(routed, pretty: true)}
+        """)
+      )
+    end
+  end
+
+  # `:skip` is a statement about the call, so it buries what is piped into a skipped stage
+  # exactly as it buries the direct call's first argument.
+  property "a skipped call is skipped however it is spelled", numtests: 100 do
+    forall {stages, spelling_a, spelling_b} <- chain() do
+      a = observe(stages, spelling_a, call_routes: @skip_routes)
+      b = observe(stages, spelling_b, call_routes: @skip_routes)
+
+      (a == b)
+      |> when_fail(
+        IO.puts("""
+        #{source(stages, spelling_a)}
+        #{inspect(a, pretty: true)}
+        --- with #{inspect(@skip_routes)}
+        #{source(stages, spelling_b)}
+        #{inspect(b, pretty: true)}
         """)
       )
     end

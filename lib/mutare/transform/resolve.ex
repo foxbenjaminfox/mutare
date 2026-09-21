@@ -388,13 +388,10 @@ defmodule Mutare.Transform.Resolve do
   # pipe again, and `WrittenPipe.written/1` is an exact inverse
   # (`resolve_pipe_roundtrip_property_test.exs`). NOTES "The rewrite is Resolve's".
   #
-  # Two `:skip`s read the spelling, both here:
-  #
-  #   * A **stage** under the call-level `:skip` is restamped *withheld*: its left side is
-  #     documented as the skipped call's *sibling*, which keeps its mutants
-  #     (`Repo.insert!(u) |> Mixpanel.track(…)`) — `RouteStamp.withhold_stage/2`.
-  #   * A skipped **`|>`** (`{Kernel, :|>, 2, :skip}`) is an inert leaf, stage and all: the call
-  #     it becomes carries the `:skip`, whatever route its own head took.
+  # A stage under the call-level `:skip` is the skipped call, its piped value included: `:skip`
+  # reads `a |> f(b)` as it reads `f(a, b)`. One `:skip` does read the spelling: a skipped
+  # **`|>`** (`{Kernel, :|>, 2, :skip}`) is an inert leaf, stage and all, so the call it becomes
+  # carries the `:skip`, whatever route its own head took.
   defp direct_stage(pipe_meta, lhs, {head, _meta, _written_args} = rhs, env)
        when head not in [:unquote, :unquote_splicing] do
     case direct_call(lhs, rhs) do
@@ -404,12 +401,7 @@ defmodule Mutare.Transform.Resolve do
       direct ->
         {head, meta, args} = walk(direct, env)
 
-        meta =
-          cond do
-            Meta.routing(pipe_meta) == :skip -> Meta.stamp_skip(meta)
-            Meta.routing(meta) == :skip -> RouteStamp.withhold_stage(meta, env.call_routes)
-            true -> meta
-          end
+        meta = if Meta.routing(pipe_meta) == :skip, do: Meta.stamp_skip(meta), else: meta
 
         WrittenPipe.direct(pipe_meta, {head, meta, args})
     end

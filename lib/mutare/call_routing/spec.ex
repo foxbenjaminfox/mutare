@@ -9,8 +9,8 @@ defmodule Mutare.CallRouting.Spec do
   # A route's `args` is one of:
   #
   #   * the call-level `:skip` — the whole call is an **inert leaf**: the node is never offered to
-  #     the mutators and nothing inside its parentheses is descended (a piped receiver is a sibling
-  #     of the call, not part of it, so it is analyzed as usual). Bare only — a `:skip` inside a
+  #     the mutators and none of its arguments is descended (a piped value is its argument 0, and
+  #     is covered like the rest). Bare only — a `:skip` inside a
   #     per-position list is rejected with a message naming `:raw`;
   #   * a uniform argument *treatment*, applied to every position;
   #   * a per-position list of *positions* (padded with `:expression`);

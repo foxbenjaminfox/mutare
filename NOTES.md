@@ -9244,7 +9244,7 @@ decision mutants and the other lost them. The one deliberate exception stays: re
 on a skipped tail, which belong to the def clause (`Returns` attaches them at the function level,
 the user's explicit call), not to the call.
 
-### A call-level `:skip` must not route the pipe less safely than what it displaced `[done]`
+### A call-level `:skip` must not route the pipe less safely than what it displaced `[superseded — a skipped stage's piped value is skipped with it: see "`:skip` reads no spelling"]`
 
 `:skip` stamps a bare `:skip` and writes no piped stamp, reasoning that a piped receiver is the
 `|>`'s left operand — a sibling of the skipped call, hence ordinary runtime, which is what keeps
@@ -12218,7 +12218,7 @@ Superseded in part by the next entry: a `:skip`ped stage is no longer left a pip
 stays a pipe"), and the respelling moved from `PipeEmit.sugar/1` to `Render` ("The metamutant
 spells pipes as pipes").
 
-### A skipped stage is a withheld call; spelling is render's `[done]` (2026-09-20)
+### A skipped stage is a withheld call; spelling is render's `[done; the withheld stage superseded — see "`:skip` reads no spelling"]` (2026-09-20)
 
 A review of the desugaring found the rule sound and the machinery around it still carrying
 two regimes. Four changes, none of which moves a site.
@@ -12524,3 +12524,50 @@ behind real compiles. Four full runs in a row then passed under the same load (8
 unique fixture module names would remove the lock altogether, at the cost of renaming every
 throwaway `defmodule M`. Not needed at these numbers.
 
+### `:skip` reads no spelling `[done]` (2026-09-21)
+
+Under the call-level `:skip`, `a |> f(b)` kept `a`'s mutants and `f(a, b)` buried them: the one
+exception to "a pipe stage is the call it is sugar for", and the one place a *route* read the
+spelling. It was never chosen. When a stage was the right operand of a `|>` node, a `:skip` on
+the stage could not reach the left operand, and the README mentioned it so nobody would be
+surprised. The desugaring would have ended it by itself; "A skipped stage is a withheld call"
+rebuilt it on purpose, as a *withheld* call — own node offered to nobody, arguments routed
+`[position 0, :raw, …]` — stamped by `Resolve` on a skipped call written as a stage.
+
+**Why it went.** The case made for it was `Repo.insert!(u) |> Mixpanel.track(…)`: skip the
+tracking, keep the insert. Whether a call's first argument is worth mutating is a fact about
+the *callee* and the argument, not about which side of the parenthesis it was written on —
+`Mixpanel.track(Repo.insert!(u), …)` has the same insert. And the vocabulary already says it,
+of both spellings: `{Mixpanel, :track, 3, [:expression, :raw, :raw]}`. What a positional route
+keeps and `:skip` drops, on the call's *own* node, is small: no built-in family offers anything
+on an arbitrary call except as a function tail (return-value mutants, which `:skip` keeps — they
+test the function) or as a condition; the call-matching families work from allow-lists of
+standard-library calls nobody skips. So "withhold the node, descend the arguments" needs no
+word of its own, and the heuristic in the walk — read the spelling, guess the intent — was the
+kind PHILOSOPHY "Every call is ordinary until a route says otherwise" rules out.
+
+**Gone.** `RouteStamp.withhold_stage/2` and its displaced-position rule; `Registry.Entry`'s
+`displaced` and `Registry.carry_displaced/2`, which existed to feed it ("A call-level `:skip`
+must not route the pipe less safely than what it displaced" — moot: with the whole call inert,
+no position is freed for a selector to land in); `Meta.stamp_withheld/2`, `Meta.withheld?/1`
+and the `:mutare_route_withheld` key; `Routed.analyze_withheld_call/2`; the second entry check
+in `Analyze`'s dispatcher and in `Tag`'s walk; the two-answers case in
+`Calls.routed_treatments/1`. `Resolve` still reads one `:skip` off the operator: a skipped
+`|>` itself, whose call becomes the leaf.
+
+**The cost.** A skipped stage in the middle of a chain takes everything upstream with it
+(`… |> MyLogger.debug() |> …`), silently. Core ships no `:skip` route, and the companions' are
+all compile-time declarations nobody pipes into (`live`, `attr`, `slot`, the router macros,
+`sigil_H`), so the exposure is a user's own entry or `--skip-call`, which can say nothing but
+`:skip`. A scan-time note ("this `:skip` matched a stage whose piped value would otherwise
+mutate; route it by position to keep those") would fit the count pass's facts. Not added: the
+behaviour it would announce was an edge case, not a promise.
+
+**Evidence.** `pipe_spelling_property_test.exs` gained "a skipped call is skipped however it
+is spelled" — a function, a no-argument stage and a structural head under `:skip` — which
+fails at `f211fb84` (a skipped `|> max(5)` keeps the upstream mutants `max(…, 5)` buries) and
+passes here. `transform_call_skip_test.exs` holds each piped case to the direct spelling's
+sites, and the positional route to the same sites in both. The `^`-pinned selector on the left
+of a stage — which the skipped-stage test in `pipe_source_patch_test.exs` had been the named
+reason for — is still reached by a stage routed `:interpolated`, and "upstream mutants of a
+routed stage" fails with `Render`'s guard off.

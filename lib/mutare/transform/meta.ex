@@ -154,21 +154,6 @@ defmodule Mutare.Transform.Meta do
     found
   end
 
-  @doc """
-  Whether a call is **withheld**: its own node is offered to no mutator and hosted by no host,
-  while its arguments are still analyzed by the positions of its route. What
-  `Mutare.Transform.Resolve.RouteStamp.withhold_stage/2` makes of a call under the call-level
-  `:skip` that was written as a pipe stage, whose piped value is the skipped call's *sibling* and
-  keeps its mutants. Honoured where `skipped?/1` is: at the entry of
-  `Mutare.Transform.Analyze`'s dispatcher and of `Mutare.Transform.Tag`'s walk, ahead of any
-  form-specific clause.
-  """
-  @spec withheld?(Macro.t()) :: boolean()
-  def withheld?({_form, meta, args}) when is_list(meta) and is_list(args),
-    do: Keyword.get(meta, MetaKeys.route_withheld_key(), false)
-
-  def withheld?(_node), do: false
-
   @typedoc """
   A routed call's resolved identity: the module key (`nil` for a name-only match whose module the
   resolver could not see), the name, and the arity the route matched at.
@@ -199,24 +184,13 @@ defmodule Mutare.Transform.Meta do
   def stamp_routing(meta, routing), do: [{MetaKeys.route_key(), routing} | meta]
 
   @doc """
-  Replace a call's `:skip` stamp with `positions`, and mark the call `withheld?/1`.
-  """
-  @spec stamp_withheld(keyword(), nonempty_list()) :: keyword()
-  def stamp_withheld(meta, [_ | _] = positions) do
-    meta
-    |> Keyword.delete(MetaKeys.route_key())
-    |> stamp_routing(positions)
-    |> Keyword.put(MetaKeys.route_withheld_key(), true)
-  end
-
-  @doc """
   Make a call the call-level `:skip`'s inert leaf, whatever route its own head took — for the
   call a skipped `Kernel.|>/2` becomes (`Mutare.Transform.Resolve`).
   """
   @spec stamp_skip(keyword()) :: keyword()
   def stamp_skip(meta) do
     meta
-    |> Keyword.drop([MetaKeys.route_key(), MetaKeys.route_withheld_key()])
+    |> Keyword.delete(MetaKeys.route_key())
     |> stamp_routing(:skip)
   end
 

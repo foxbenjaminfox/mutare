@@ -151,22 +151,8 @@ defmodule Mutare.Transform.Analyze do
   # rejected or excluded upstream, `Mutare.Transform.StructuralForms`. `Mutare.Transform.Tag`
   # does the same at the head of its guard and pattern walks; `Analyze.Returns` treats a skipped
   # tail as one leaf.
-  #
-  # A **withheld** call (`Meta.withheld?/1` — a `:skip`ped call written as a pipe stage) is
-  # honoured here for the reason `:skip` is: its head may be one with a clause of its own below
-  # (`x |> if(do: …)` under `{Kernel, :if, 2, :skip}`), which would descend what the skip covers.
   defp analyze(node, context, env) do
-    cond do
-      Meta.skipped?(node) -> node
-      context == :runtime -> analyze_runtime(node, env)
-      true -> analyze_form(node, context, env)
-    end
-  end
-
-  defp analyze_runtime(node, env) do
-    if Meta.withheld?(node),
-      do: Routed.analyze_withheld_call(node, env),
-      else: analyze_form(node, :runtime, env)
+    if Meta.skipped?(node), do: node, else: analyze_form(node, context, env)
   end
 
   # `when` guard (position-independent: also covers case/fn clause guards): the
@@ -915,8 +901,7 @@ defmodule Mutare.Transform.Analyze do
   # === known macros ==========================================================
 
   # The known-macro argument *routing* lives in `Mutare.Transform.Analyze.Routed`:
-  # `Routed.analyze_routed_call/4` (and `Routed.analyze_withheld_call/2`, for a `:skip`ped call
-  # written as a pipe stage) route each argument by its
+  # `Routed.analyze_routed_call/4` routes each argument by its
   # declared treatment — a pattern, an opaque `:raw` DSL body, a `:hosted` fragment — driving the
   # descent back through `annotate/2`/`pattern/2`/`offer/4`. The core walk reads the stamp via
   # `Mutare.Transform.Meta.routing/1` and dispatches there.

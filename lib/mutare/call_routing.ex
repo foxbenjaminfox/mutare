@@ -5,12 +5,12 @@ defmodule Mutare.CallRouting do
   A **call route** names a resolved `{module, function, arity}` — a macro or a plain function,
   with the same lookup rules for both — and specifies one of two treatments:
 
-    * **skip the whole call** (`:skip`): the call is an inert leaf. Nothing inside its parentheses
-      is descended and the call node itself is never offered to a mutator. A piped receiver is the
-      `|>`'s other operand, so it is analyzed as usual — except where the skip displaced a route
-      that governs position 0, whose treatment the receiver keeps, since skipping a call must never
-      free a position the displaced route held (skip `Kernel.match?/2` and `1 |> match?(x)`'s
-      receiver stays the pattern it is). A skipped call in
+    * **skip the whole call** (`:skip`): the call is an inert leaf. None of its arguments is
+      descended and the call node itself is never offered to a mutator. A value piped into the
+      call is its first argument and is skipped with the rest, so `a |> f(b)` and `f(a, b)` are
+      skipped alike — and a skipped stage in the middle of a chain takes everything upstream of
+      it along. To leave a call alone and still mutate what flows into it, route it by position
+      instead: `{Mixpanel, :track, 3, [:expression, :raw, :raw]}`. A skipped call in
       tail position still gets the enclosing function's return-value mutants. The word for "this
       call is not worth testing" (`Mixpanel.track/3`, a logger, a metrics emitter). It applies to
       whatever the head resolves to — a function, a macro such as `Kernel.if/2`, or a special form
@@ -36,8 +36,7 @@ defmodule Mutare.CallRouting do
   A piped first argument is a first argument. Mutare treats a piped call as the direct call
   `Kernel.|>/2` would build, so a route, a classifier, a host and a mutator all see
   `from(p in Post, …)` for `(p in Post) |> from(…)`, and a `:raw` declaration reaches the macro
-  as the syntax it is. (The exception is a call routed `:skip`: a value piped *into* it is not
-  part of the skipped call, and still mutates.) That holds at every depth, and for all three
+  as the syntax it is. That holds at every depth, and for all three
   readers alike: a call is routed after its arguments are resolved, so a pipe *inside* an
   argument is a call there too, and `Mutare.Calls` resolves an aliased or imported call found in
   one. Reports keep the pipe the user wrote, and so does any code Mutare leaves alone: a pipe

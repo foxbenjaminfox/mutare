@@ -239,14 +239,14 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   emitter that builds a generated node on the user's meta must drop the stamp**
   (`Meta.drop_written_pipe/1`), or its node is rendered as their pipe (a node `|>` cannot
   pipe into — an operator, a literal — is never spelled as one, so a *mutator* reusing the
-  offered call's meta is safe; NOTES "Who inherits the written-pipe stamp"). Two `:skip`s read the
-  spelling, both in `Resolve`: a skipped *stage*'s piped value is its sibling and keeps its
-  mutants, so the call is restamped *withheld* (`Meta.withheld?/1`), honoured where `:skip` is
-  — at the entry of `Analyze`'s dispatcher and of `Tag`'s walk; a skipped `|>` makes the call
+  offered call's meta is safe; NOTES "Who inherits the written-pipe stamp"). A route reads no
+  spelling either: `:skip` on a stage covers the piped value as the call's argument 0, and the
+  one `:skip` `Resolve` reads off the operator is a skipped `|>` itself, which makes the call
   it becomes the inert leaf. A `|>` node that survives `Resolve` is one `Kernel` could not
   expand, or a displaced operator: ask `Mutare.Transform.Calls.kernel_call?/1`. NOTES "A pipe
   stage is the call it is sugar for", "The rewrite is Resolve's", "A skipped stage is a
-  withheld call; spelling is render's", "Only `Kernel`'s `|>` is the pipe".
+  withheld call; spelling is render's", "`:skip` reads no spelling", "Only `Kernel`'s `|>` is
+  the pipe".
 - **A call is ordinary in every respect its route does not address — evaluation included.**
   Routes are for functions and macros alike, and core never derives which a call is, nor holds
   a mutant back because a callee might be a macro. A call that seems to need special handling

@@ -313,25 +313,4 @@ defmodule Mutare.PipeSourcePatchTest do
       assert emitted =~ "fn mutare_piped ->"
     end
   end
-
-  test "a pinned selector on the left of a skipped stage keeps its precedence" do
-    # `--skip-call` on a macro displaces its route, and the displaced route still answers for the
-    # piped operand: here `:interpolated`, so the literal's mutants are delivered `^`-pinned on
-    # the left of a stage that stays a pipe. Rendered naively, `^case … end |> stage()` reparses
-    # as `^(case … end |> stage())`.
-    source = """
-    defmodule Fixture do
-      import Mutare.Test.PipeSyntaxDSL
-      def run, do: 5 |> interpolated(5)
-    end
-    """
-
-    sites =
-      assert_patches(source, [PipeSyntaxMutator, :integer], [run: []],
-        call_routes: [{Mutare.Test.PipeSyntaxDSL, :interpolated, 2, :skip}]
-      )
-
-    assert Enum.map(sites, & &1.original_code) |> Enum.uniq() == ["5"]
-    assert Enum.all?(sites, &(&1.column == 16))
-  end
 end

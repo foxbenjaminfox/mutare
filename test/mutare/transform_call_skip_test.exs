@@ -191,9 +191,9 @@ defmodule Mutare.TransformCallSkipTest do
       assert skip_sites == []
     end
 
-    test "a piped receiver is a sibling of the skipped call, not part of it — its mutants survive" do
-      # `Repo.insert!(u) |> Mixpanel.track(…)`: the receiver flows *into* the skipped call but is
-      # written outside it. Skipping the call must not silently drop the receiver's mutants.
+    test "a piped value is argument 0 of the skipped call, and as inert as the rest" do
+      # `:skip` reads `a |> f(b)` as it reads `f(a, b)`. To keep the piped value's mutants, route
+      # the call by position instead — which says the same thing of both spellings.
       source = """
       defmodule Piped do
         def f(x), do: (x + 1) |> Mixpanel.track("e", %{n: 2})
@@ -201,18 +201,21 @@ defmodule Mutare.TransformCallSkipTest do
       end
       """
 
-      %{metamutant: meta, sites: sites} =
+      transform = fn routes ->
         Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.IntegerLiteral],
-          call_routes: [{Mixpanel, :track, 3, :skip}]
+          call_routes: routes
         )
+      end
 
-      # Line 2: the piped `x + 1` mutates (arithmetic swap + the `1`); nothing from inside the
-      # parentheses (`"e"`, `2`). Line 3: the same expression *inside* the parentheses is interior
-      # to the leaf, so nothing at all.
-      assert Enum.map(sites, & &1.line) |> Enum.uniq() == [2]
-      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
-      refute Enum.any?(sites, &(&1.original_code == "2"))
+      %{metamutant: meta, sites: sites} = transform.([{Mixpanel, :track, 3, :skip}])
+      assert sites == []
+
+      %{sites: positional} = transform.([{Mixpanel, :track, 3, [:expression, :raw, :raw]}])
+      by_line = Enum.group_by(positional, & &1.line, &{&1.mutator, &1.mutated_code})
+      assert by_line[2] == by_line[3]
+      assert {:arithmetic, "x - 1"} in by_line[2]
+      refute Enum.any?(positional, &(&1.original_code == "2"))
       assert_compiles(meta)
     end
 
@@ -1176,128 +1179,100 @@ defmodule Mutare.TransformCallSkipTest do
     end
   end
 
-  describe "a call-level :skip and the pipe's left operand" do
-    # `:skip` says nothing about positions, so the receiver would fall back to ordinary runtime.
-    # Where the skip displaced a code-provided route, that route still governs the position: a
-    # piped receiver is the call's effective argument 0, and `Kernel.match?/2` routes 0 as
-    # `:pattern`. Getting this wrong splices a selector `case` into a match — uncompilable.
-    test "a skipped macro's piped receiver keeps the displaced route's pattern context" do
-      source = "defmodule PipedSkip do\n  def f(x), do: 1 |> match?(x)\nend\n"
-
-      %{metamutant: skipped_meta, sites: skipped} =
+  describe "a call-level :skip on a call written as a pipe stage" do
+    # A stage is the call it is sugar for, and `:skip` covers that call: the piped value is its
+    # argument 0, as inert as the arguments written in the parentheses. Every test here holds the
+    # piped spelling to what the direct one gets.
+    defp skip_sites(source, routes, mutators) do
+      %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
-          call_routes: [{Kernel, :match?, 2, :skip}]
+          mutators: mutators,
+          call_routes: routes
         )
 
-      %{sites: default} = Mutare.Transform.transform_string_with_sites(source)
+      assert_compiles(meta)
+      Enum.map(sites, &{&1.mutator, &1.mutated_code})
+    end
 
-      # The receiver is a pattern either way: no `integer` selector lands on the `1`.
-      refute Enum.any?(skipped, &(&1.mutator == :integer))
+    defp module(name, body), do: "defmodule #{name} do\n#{body}\nend\n"
 
-      assert Enum.map(skipped, &{&1.mutator, &1.mutated_code}) ==
-               Enum.map(default, &{&1.mutator, &1.mutated_code})
+    # Skipping `Kernel.match?/2` must not free its pattern position for a spliced selector
+    # `case` — with the whole call inert, nothing is spliced anywhere.
+    test "a skipped macro's piped pattern stays untouched" do
+      for {name, macro} <- [{"PipedMatch", "match?"}, {"PipedDestructure", "destructure"}] do
+        piped = module(name, "  def f(x), do: [1] |> #{macro}(x)")
+        direct = module(name, "  def f(x), do: #{macro}([1], x)")
+        routes = [{Kernel, String.to_atom(macro), 2, :skip}]
+        all = Mutare.Mutators.all()
 
-      assert_compiles(skipped_meta)
+        sites = skip_sites(piped, routes, all)
+        refute Enum.any?(sites, &match?({:integer, _}, &1))
+        assert sites == skip_sites(direct, routes, all)
+      end
     end
 
     # A skipped stage is the direct call like any other, so its head may be one the analyzer
-    # has a clause of its own for. The skip still covers everything written in the parentheses.
-    test "a skipped structural head written as a stage keeps its body inert" do
-      source = """
-      defmodule PipedIf do
-        def f(x, a) do
-          (x + 1 > 0)
-          |> if(do: a + 2, else: a + 3)
-        end
-      end
-      """
-
-      %{metamutant: meta, sites: sites} =
-        Mutare.Transform.transform_string_with_sites(source,
-          mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.IntegerLiteral],
-          call_routes: [{Kernel, :if, 2, :skip}]
+    # has a clause of its own for.
+    test "a skipped structural head written as a stage is inert, piped condition included" do
+      piped =
+        module(
+          "PipedIf",
+          "  def f(x, a) do\n    (x + 1 > 0)\n    |> if(do: a + 2, else: a + 3)\n  end"
         )
 
-      assert sites != []
-      assert Enum.map(sites, & &1.line) |> Enum.uniq() == [3]
-      assert_compiles(meta)
+      direct =
+        module("PipedIf", "  def f(x, a) do\n    if(x + 1 > 0, do: a + 2, else: a + 3)\n  end")
+
+      routes = [{Kernel, :if, 2, :skip}]
+      mutators = [Mutare.Mutators.Arithmetic, Mutare.Mutators.IntegerLiteral]
+
+      assert skip_sites(piped, routes, mutators) == []
+      assert skip_sites(direct, routes, mutators) == []
+      assert skip_sites(piped, [], mutators) != []
     end
 
-    test "a skipped call written as a stage in a guard keeps its piped value's mutants" do
-      source = """
-      defmodule PipedGuard do
-        def f(x) when (x + 1) |> is_integer(), do: :yes
-        def f(_x), do: :no
-      end
-      """
-
-      %{metamutant: meta, sites: sites} =
-        Mutare.Transform.transform_string_with_sites(source,
-          mutators: [Mutare.Mutators.Arithmetic, IsIntegerMutator],
-          call_routes: [{Kernel, :is_integer, 1, :skip}]
+    test "a skipped call written as a stage in a guard is inert" do
+      source =
+        module(
+          "PipedGuard",
+          "  def f(x) when (x + 1) |> is_integer(), do: :yes\n  def f(_x), do: :no"
         )
 
-      assert Enum.any?(sites, &(&1.mutator == :arithmetic and &1.original_code == "x + 1"))
-      refute Enum.any?(sites, &(&1.mutator == :is_integer_swap))
-      assert_compiles(meta)
+      mutators = [Mutare.Mutators.Arithmetic, IsIntegerMutator]
 
-      # The mutator does fire on the stage once the route is gone.
-      %{sites: unrouted} =
-        Mutare.Transform.transform_string_with_sites(source, mutators: [IsIntegerMutator])
+      assert skip_sites(source, [{Kernel, :is_integer, 1, :skip}], mutators) == []
 
-      assert Enum.any?(unrouted, &(&1.mutator == :is_integer_swap))
+      # Both fire once the route is gone.
+      unrouted = skip_sites(source, [], mutators)
+      assert Enum.any?(unrouted, &match?({:is_integer_swap, _}, &1))
+      assert {:arithmetic, "x - 1"} in unrouted
     end
 
-    test "a skipped call written as a stage is offered to no mutator" do
-      source = """
-      defmodule PipedOffer do
-        def f(u) do
-          (u + 1) |> Mixpanel.track("e", %{})
-          :ok
-        end
-      end
-      """
-
-      transform = fn routes ->
-        Mutare.Transform.transform_string_with_sites(source,
-          mutators: [Mutare.Mutators.Arithmetic, TrackMutator],
-          call_routes: routes
-        ).sites
-      end
-
-      assert Enum.any?(transform.([]), &(&1.mutator == :track))
-
-      skipped = transform.([{Mixpanel, :track, 3, :skip}])
-      refute Enum.any?(skipped, &(&1.mutator == :track))
-      assert Enum.any?(skipped, &(&1.mutator == :arithmetic))
-    end
-
-    test "the same holds for a binding-pattern macro" do
-      %{metamutant: meta, sites: sites} =
-        Mutare.Transform.transform_string_with_sites(
-          "defmodule PipedDestructure do\n  def f(x), do: [1] |> destructure(x)\nend\n",
-          call_routes: [{Kernel, :destructure, 2, :skip}]
+    test "a skipped call written as a stage is offered to no mutator, and neither is what is piped in" do
+      source =
+        module(
+          "PipedOffer",
+          "  def f(u) do\n    (u + 1) |> Mixpanel.track(\"e\", %{})\n    :ok\n  end"
         )
 
-      refute Enum.any?(sites, &(&1.mutator == :integer))
-      assert_compiles(meta)
+      mutators = [Mutare.Mutators.Arithmetic, TrackMutator]
+
+      assert Enum.any?(skip_sites(source, [], mutators), &match?({:track, _}, &1))
+      assert skip_sites(source, [{Mixpanel, :track, 3, :skip}], mutators) == []
     end
 
-    test "displacing nothing leaves the receiver ordinary runtime, mutants and all" do
-      source = "defmodule PipedPlain do\n  def f(u), do: Enum.reverse(u) |> List.wrap()\nend\n"
+    test "a skipped stage buries the chain piped into it, as the direct call does" do
+      piped = module("PipedPlain", "  def f(u), do: Enum.reverse(u) |> List.wrap()")
+      direct = module("PipedPlain", "  def f(u), do: List.wrap(Enum.reverse(u))")
+      routes = [{List, :wrap, 1, :skip}]
+      all = Mutare.Mutators.all()
 
-      %{metamutant: meta, sites: skipped} =
-        Mutare.Transform.transform_string_with_sites(source,
-          call_routes: [{List, :wrap, 1, :skip}]
-        )
+      sites = skip_sites(piped, routes, all)
+      assert sites == skip_sites(direct, routes, all)
 
-      %{sites: unrouted} = Mutare.Transform.transform_string_with_sites(source)
-
-      assert Enum.map(skipped, &{&1.mutator, &1.mutated_code}) ==
-               Enum.map(unrouted, &{&1.mutator, &1.mutated_code})
-
-      assert {:call_removal, "u"} in Enum.map(skipped, &{&1.mutator, &1.mutated_code})
-      assert_compiles(meta)
+      # The tail's return-value mutants test the function, not the call, and stay.
+      assert Enum.map(sites, &elem(&1, 0)) |> Enum.uniq() == [:return_value]
+      assert {:call_removal, "u"} in skip_sites(piped, [], all)
     end
   end
 

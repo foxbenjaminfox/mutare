@@ -218,11 +218,8 @@ defmodule Mutare.Transform.Calls do
   @spec routed_treatments(Macro.t()) :: [Mutare.CallRouting.routing_treatment()] | :skip | nil
   def routed_treatments(node), do: treatments(node)
 
-  defp treatments({_head, meta, _args} = node) when is_list(meta) do
-    # A withheld call is a `:skip`ped one written as a pipe stage, and answers as it was routed.
-    routing = if Meta.withheld?(node), do: :skip, else: Meta.routing(meta)
-
-    case routing do
+  defp treatments({_head, meta, _args}) when is_list(meta) do
+    case Meta.routing(meta) do
       :skip ->
         :skip
 

@@ -420,11 +420,4 @@ defmodule Mutare.Transform.Analyze.Routed do
               ":routing and classify each call's shape in route_arguments/1."
     end
   end
-
-  # A **withheld** call (`Meta.withheld?/1`): a call under the call-level `:skip` that was written
-  # as a pipe stage. The skip covers the call — offered to no mutator, hosted by no host — and
-  # every argument the user wrote in its parentheses (`:raw`); the piped value is its sibling,
-  # analyzed by position 0 (`RouteStamp.withhold_stage/2`).
-  def analyze_withheld_call({form, meta, args}, env),
-    do: {form, meta, route_macro_args(args, Meta.routing(meta), env)}
 end
