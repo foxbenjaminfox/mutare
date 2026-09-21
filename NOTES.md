@@ -12896,3 +12896,17 @@ consumers against independently compiled source edits.
 
 A disposable-VM comparison across all 408 combinations of the two fixture vocabularies
 produced identical metamutant source and public mutant records before and after this refactor.
+
+### The transform differential is a kept tool (2026-09-21)
+
+The byte-identity comparison behind the `KeywordRouting` refactor ran in a disposable VM and
+was thrown away. `bench/transform_diff.sh BASE_REV` keeps it: one corpus (`lib/`, the
+examples, and both source-patch vocabularies in full: 640 programs), transformed at the base
+revision and in the working tree, then diffed. It reproduces the claim above for `245e91a0`
+(identical) and reports 95 moved metamutants across `e604042d`, the `PipeEmit` scope and
+ordering fix. Usage and the two comparison hazards it handles are in `bench/README.md`
+"Transform differential".
+
+The order of work it supports: widen a generator to a dimension, then consolidate the
+passes that interpret that dimension, holding the refactor to an empty diff here and to the
+source-patch properties for anything the corpus cannot show.

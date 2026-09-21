@@ -294,3 +294,31 @@ This is a compiler-output experiment, not a runtime benchmark or semantic valida
 of a new emitter. Check whether `make_fun`, `call_fun`, or `put_tuple` instructions
 actually remain before optimizing presumed closure or tuple allocations. A smaller
 BEAM or a different comparison instruction alone does not establish faster execution.
+
+# Transform differential
+
+`transform_diff.sh` answers one question about a transform refactor: did anything it writes
+move? It transforms one corpus at a base revision and in the working tree, then diffs the
+rendered metamutant and the recorded Sites.
+
+```sh
+bench/transform_diff.sh HEAD~1            # exits 0 and prints "identical: N snapshots"
+bench/transform_diff.sh v0.3.1 /tmp/work  # keep old/, new/ and transform.diff for reading
+```
+
+The corpus is every source under `lib/` and `examples/*/lib/` with the default mutators, plus
+the full cross-product of both source-patch fixture vocabularies (`SourcePatchGenerators`,
+`CleanSourcePatchGenerators`) under their own mutators and routes. The working tree writes
+the corpus once and both revisions read that file, so a base revision that predates the
+generators is still compared on the same programs. The base is a `git archive` export that
+borrows this checkout's `deps` and a copy of its `_build`; no worktree, branch or stash is
+created.
+
+A transform that raises is recorded as its message, so a base revision lacking a module the
+corpus names (a fixture mutator, an extension) shows up as a differing snapshot rather than
+stopping the run. Sites are written as sorted key-value pairs: a small map iterates its atom
+keys in the order the VM created them, so two agreeing runs would otherwise inspect
+differently.
+
+This checks that output is unchanged, not that it is right. A refactor that means to change
+output is checked by the source-patch properties (`mix test --only property`).
