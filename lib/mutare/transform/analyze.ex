@@ -398,8 +398,9 @@ defmodule Mutare.Transform.Analyze do
   # and the whole node is still offered to mutators for parity (a custom mutator
   # matching an `if`; the built-ins match none). A `:skip` route on `if`/`unless`
   # (`{Kernel, :if, 2, :skip}`) never reaches this clause — `analyze/3` returns the
-  # node first — and a positional route never reaches the node at all
-  # (`Mutare.Transform.StructuralForms`).
+  # node first. Only Kernel's forms have these semantics: a displaced `if`/`unless`
+  # is an ordinary call, honoring its positional route if present. Positional routes
+  # on Kernel's forms are rejected by `Mutare.Transform.StructuralForms`.
   #
   # When the condition binds a variable that escapes into the body (`if (name =
   # lookup()) != nil do …`), the plain path can't host a condition selector (it would
@@ -410,15 +411,19 @@ defmodule Mutare.Transform.Analyze do
   # through to the non-mutating catch-all.
   defp analyze_form({form, meta, [condition, body_kw]} = node, :runtime, env)
        when form in [:if, :unless] and is_list(body_kw) do
-    analyzed_body = analyze(body_kw, :runtime, env)
-    analyzed_condition = analyze(condition, :runtime, env)
+    if Calls.kernel_call?(node) do
+      analyzed_body = analyze(body_kw, :runtime, env)
+      analyzed_condition = analyze(condition, :runtime, env)
 
-    if Conditions.hoist_if?(analyzed_condition, env) do
-      Conditions.hoist_if(form, meta, condition, analyzed_condition, analyzed_body, env)
+      if Conditions.hoist_if?(analyzed_condition, env) do
+        Conditions.hoist_if(form, meta, condition, analyzed_condition, analyzed_body, env)
+      else
+        analyzed_condition = Conditions.finish_condition(analyzed_condition, condition, env)
+        rebuilt = {form, meta, [analyzed_condition, analyzed_body]}
+        Attach.offer(rebuilt, node, env.mutators)
+      end
     else
-      analyzed_condition = Conditions.finish_condition(analyzed_condition, condition, env)
-      rebuilt = {form, meta, [analyzed_condition, analyzed_body]}
-      Attach.offer(rebuilt, node, env.mutators)
+      do_analyze_call_node(node, env)
     end
   end
 

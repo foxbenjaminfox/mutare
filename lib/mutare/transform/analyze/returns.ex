@@ -377,19 +377,21 @@ defmodule Mutare.Transform.Analyze.Returns do
   end
 
   # Whether a construct may be descended at all, rather than delivered whole to the leaf
-  # fallback. Only classification declines, and for two reasons:
+  # fallback. A displaced `if`/`unless` is an ordinary call in both modes: its arguments
+  # need not be return paths, and a route may declare them patterns or raw syntax. Return
+  # mutants belong on the call itself, never inside those arguments.
+  # Classification additionally declines for two reasons:
   #
   #   * an **else-less `with`** returns its first non-matching value as-is — a return path with
   #     no node of its own, so descending as if the `do` tail were the only path would be a
   #     claim about paths this walk cannot see;
   #   * a construct that only *looks* like one — a name at an arity the special form does not
-  #     claim (`@form_arity`), or an `if`/`unless` displaced out of `Kernel`
-  #     (`foreign_conditional?/1`) — is somebody else's function: its `do:`/`else:` are ordinary
+  #     claim (`@form_arity`) — is somebody else's function: its `do:`/`else:` are ordinary
   #     arguments, and it need not return a branch value at all.
   #
   # Attachment descends in both cases: the `do` tail is a position a constant can legally
   # replace, and the `with`'s implicit path can't be mutated anyway.
-  defp descend?(_node, _blocks, :mutate), do: true
+  defp descend?(node, _blocks, :mutate), do: not foreign_conditional?(node)
 
   defp descend?({form, _meta, args} = node, blocks, :classify),
     do: own_arity?(form, args) and paths_visible?(form, blocks) and not foreign_conditional?(node)

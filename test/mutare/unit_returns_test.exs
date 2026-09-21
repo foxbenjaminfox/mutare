@@ -195,7 +195,9 @@ defmodule Mutare.UnitReturnsTest do
         src =
           t("  import Kernel, except: [if: 2]\n  #{replacement}\n  def f(x), do: if(x, do: :ok)")
 
-        assert on_ok(src) == @ok_mutated, replacement
+        # The argument remains a value, but is not a return path; return constants
+        # replace the custom call as a whole.
+        assert on_ok(src) == [convention: ":error"], replacement
       end
 
       # The real `Kernel.if/2` next door still classifies.

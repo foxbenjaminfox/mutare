@@ -11572,9 +11572,10 @@ poison recovery drops them. `StructuralForms.classify/2` keys the `:skip`-only r
 
 Inherited limit: a displacement injected by a `use` Mutare cannot expand is invisible, as for
 every other `Kernel` name (`Imports`, "Scope and limits"). The other structural `Kernel`
-heads (`if`/`unless`, the connectives, `in`) still dispatch in `Analyze` by shape; they were
-not audited here. A name-only pipe route can now override that invisible displacement — see
-"A name-only pipe route overrides the Kernel assumption" below.
+heads (`if`/`unless`, the connectives, `in`) still dispatched in `Analyze` by shape; they were
+not audited here. `if`/`unless` were subsequently fixed — "Only Kernel's conditionals have
+condition slots" below. A name-only pipe route can now override that invisible displacement —
+see "A name-only pipe route overrides the Kernel assumption" below.
 
 ### A routed pipe stage becomes a direct call `[done — extended to every stage: see "A pipe stage is the call it is sugar for"]` (2026-09-19)
 
@@ -12590,3 +12591,28 @@ This declaration also reaches ordinary pipes in its scope. Mutare cannot disting
 hidden custom operator from them; use a module-specific route where resolution can see the
 provider. `displaced_pipe_test.exs` exercises an arbitrary import-injecting macro, checks
 every mutant against its source patch, and pins route-match reporting and Kernel precedence.
+
+### Only Kernel's conditionals have condition slots `[fixed]` (2026-09-21)
+
+`Analyze` recognized `if`/`unless` by name and shape alone. After an explicit displacement
+of Kernel's import, a custom macro still received condition mutants and binding hoists,
+even when its argument route said `:pattern` or `:lazy_expression`. A pattern argument
+became an illegal selector `case` inside a match; an unused binding argument could be
+hoisted out of the macro and evaluated on the baseline.
+
+The runtime clause now asks `Calls.kernel_call?/1` before doing condition analysis. A
+foreign call uses the ordinary call path, including its declared argument routes. This
+reads the existing resolution stamps only: a visible Kernel exclusion suffices even when
+the replacement cannot be loaded, and imports hidden in unexpanded macros remain outside
+what we detect.
+
+`Returns` needed the same boundary in mutation mode (classification already had it).
+A foreign conditional's `do:` argument is not a return branch and may even be routed raw
+syntax. Return mutants now replace the whole call, as for any ordinary call, rather than
+entering that argument independently of the route. Unrouted arguments still receive their
+ordinary node mutations.
+
+`displaced_conditional_test.exs` compiles both custom names with pattern arguments and raw
+pattern bodies, exercises live mutants, checks the new return sites against source patches,
+and proves lazy arguments stay unevaluated. It also covers local functions, unavailable
+imports and an explicit Kernel import that must retain its condition mutants.
