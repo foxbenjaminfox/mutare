@@ -24,10 +24,22 @@ defmodule Mutare.Test.SourcePatchGenerators do
   use PropCheck
 
   alias Mutare.Test.{HostMutator, SourcePatchDynamicMutator, SourcePatchFixtures}
-  alias Mutare.Test.SourcePatchKeywordRoutes
+  alias Mutare.Test.{SourcePatchKeywordRoutes, SourcePatchUnwrapMutator}
 
   def operands,
-    do: [:plain, :binding, :skipped, :raw, :keyed, :keyword, :unquote, :quoted, :lazy, :hosted]
+    do: [
+      :plain,
+      :binding,
+      :block,
+      :skipped,
+      :raw,
+      :keyed,
+      :keyword,
+      :unquote,
+      :quoted,
+      :lazy,
+      :hosted
+    ]
 
   def spellings, do: [:direct, :piped, :grouped]
   def deliveries, do: [:retained, :moved, :split]
@@ -140,7 +152,12 @@ defmodule Mutare.Test.SourcePatchGenerators do
         {_dynamic, delivery} -> [{SourcePatchDynamicMutator, delivery: delivery}]
       end
 
-    hosts = if recipe.operand == :hosted, do: [HostMutator], else: []
+    extra =
+      case recipe.operand do
+        :hosted -> [HostMutator]
+        :block -> [SourcePatchUnwrapMutator]
+        _other -> []
+      end
 
     calls =
       for {n, divisor, enabled} <- [{8, 3, true}, {-7, 2, false}, {0, 0, true}],
@@ -148,7 +165,7 @@ defmodule Mutare.Test.SourcePatchGenerators do
 
     %{
       source: source,
-      mutators: mutators ++ hosts ++ [:relational],
+      mutators: mutators ++ extra ++ [:relational],
       calls: calls ++ [other: [-1], other: [2]],
       opts: opts
     }
@@ -156,6 +173,11 @@ defmodule Mutare.Test.SourcePatchGenerators do
 
   defp operand(:plain), do: {"F.tick(n, :left)", [], []}
   defp operand(:binding), do: {"(left = F.tick(n, :left))", ["left"], []}
+
+  # A statement sequence, whose parentheses are the negation's: the mutant that removes the
+  # negation (`SourcePatchUnwrapMutator`) has to restore them in its replacement text.
+  defp operand(:block),
+    do: {"-(left = F.tick(n, :left); left)", ["left"], []}
 
   defp operand(:skipped),
     do:

@@ -78,6 +78,23 @@ defmodule Mutare.Test.SourcePatchDynamicMutator do
   def mutate(_node, _context), do: :skip
 end
 
+defmodule Mutare.Test.SourcePatchUnwrapMutator do
+  @moduledoc """
+  Replace a negated statement sequence, `-(a; b)`, with the sequence. The replacement is
+  patched over the whole negation, so the parentheses, which group the operator's operand,
+  go with it: the Site's text has to restore them, or the patch splices two statements into
+  an argument list.
+  """
+  @behaviour Mutare.Mutator
+
+  @impl true
+  def name, do: :unwrap
+
+  @impl true
+  def mutate({:-, _meta, [{:__block__, _, [_, _ | _]} = sequence]}), do: [sequence]
+  def mutate(_node), do: :skip
+end
+
 defmodule Mutare.Test.SourcePatchKeywordRoutes do
   @moduledoc false
   @behaviour Mutare.CallRouting

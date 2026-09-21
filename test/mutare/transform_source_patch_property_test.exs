@@ -60,7 +60,7 @@ defmodule Mutare.TransformSourcePatchPropertyTest do
       # A silent loss of the targeted delivery must not make this property vacuous.
       delivered =
         sites
-        |> Enum.reject(&(&1.mutator in [:relational, :host_filter]))
+        |> Enum.reject(&(&1.mutator in [:relational, :host_filter, :unwrap]))
         |> Enum.map(& &1.mutator)
 
       expected =
@@ -72,10 +72,17 @@ defmodule Mutare.TransformSourcePatchPropertyTest do
           {_dynamic, _} -> [:dynamic_arithmetic]
         end
 
-      assert Enum.sort(delivered) == Enum.sort(expected)
+      # The `:block` operand's own negation is one more arithmetic site where that family runs.
+      negation =
+        if recipe.operand == :block and :arithmetic in fixture.mutators,
+          do: [:arithmetic],
+          else: []
+
+      assert Enum.sort(delivered) == Enum.sort(expected ++ negation)
 
       # The hosted fragment's mutants are the host's own, woven inside the DSL call.
       assert Enum.any?(sites, &(&1.mutator == :host_filter)) == (recipe.operand == :hosted)
+      assert Enum.any?(sites, &(&1.mutator == :unwrap)) == (recipe.operand == :block)
       assert Enum.any?(sites, &(&1.mutator == :relational and &1.original_code == "n < 1"))
       true
     rescue

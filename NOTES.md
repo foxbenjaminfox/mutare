@@ -12976,3 +12976,32 @@ requires the host's Sites exactly when that operand is used. Neither found a def
 Still outside both vocabularies, on purpose: a module a fixture creates at run time.
 `SourcePatch` purges what each compile returned, and cannot see a module a function body
 defined; `clean_function_test.exs` keeps that case as a fixed regression.
+
+### Replaying a fix against the generated suites (2026-09-21)
+
+`bench/replay_fix.sh` reverses one fix's `lib/` diff on a copy of the working tree and runs
+both generated source-patch suites: `caught`, or `missed`, which names a generator dimension
+to add. The first version checked out the whole pre-fix `lib/` and reported everything
+caught, 76 tests of 79 failing: that `lib/` also lacks every later fix, so the suites failed
+for those. Reversing one diff isolates the defect, and costs this: of the thirteen fixes of
+2026-09-21 only `b409bb94` still reverses, the rest having had their lines rewritten since
+(by `KeywordRouting` and `QuoteStructure` among others). The tool is for the days after a
+fix, not for archaeology.
+
+`b409bb94` (a statement sequence that loses its parentheses with the wrapper a mutant
+removes) replayed as **missed**. The `:block` operand, `-(left = …; left)` with a fixture
+mutator that removes the negation, makes it **caught**: that mutant's source patch no
+longer compiles. For the other twelve, read against the vocabularies by hand:
+
+| Fix | Construct | In a vocabulary? |
+| --- | --- | --- |
+| `9681d96f` | right-grouped pipeline | yes (`:grouped`) |
+| `8c90d673` | binding in a moved pipe operand | yes (`:binding` × `:moved`) |
+| `226550f4`, `8d59d5fb` | quoted data and quote options in a clean copy | yes (replayed when written) |
+| `e604042d` | retained-argument scope, dynamic receiver order | yes (replayed when written) |
+| `aeb99182` | routed wrappers around a clean copy's recursion | yes (clean `routings/0`) |
+| `2d878283`, `5d636087` | a displaced `if`/`unless`/connective | no |
+| `9b9c1b74` | a name-only route on a pipe stage | no |
+| `17f40589` | a pipe written inside a withheld (`:raw`/`:skip`) argument | no |
+| `b887cd94` | an expression in a keyed refinement's *key* | no |
+| `d0f62657` | a module defined at run time | no, deliberately (see above) |

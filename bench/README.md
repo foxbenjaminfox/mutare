@@ -322,3 +322,23 @@ differently.
 
 This checks that output is unchanged, not that it is right. A refactor that means to change
 output is checked by the source-patch properties (`mix test --only property`).
+
+# Replaying fixes
+
+`replay_fix.sh` asks whether today's generated source-patch suites would have caught a past
+defect. For each fix commit it copies the working tree, reverses that commit's `lib/` changes
+alone, and runs both generated suites there. (Checking out the whole pre-fix `lib/` would
+drop every later fix too, and the suites would fail for those.)
+
+```sh
+bench/replay_fix.sh /tmp/replay e604042d 226550f4 8d59d5fb
+```
+
+Each commit prints `caught`, `missed`, `unrevertable` or `unbuildable`. A `missed` defect
+names a dimension the generators lack: the fix's own regression test shows which construct
+to add to `SourcePatchGenerators` or `CleanSourcePatchGenerators`. After adding it, replay the
+commit again; the working tree is what gets copied, so the new dimension need not be
+committed first. `unrevertable` means later work rewrote the fixed lines, and `unbuildable`
+that the reversed `lib/` does not compile; neither says anything about the oracle.
+
+A replay recompiles what the reversal touched and runs both suites, a few minutes per commit.
