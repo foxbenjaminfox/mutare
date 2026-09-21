@@ -12736,11 +12736,14 @@ keyword boundaries, alias/import resolution inside an island, a displaced pipe i
 and route/mark diagnostics from an island producing no mutants. Existing pipe equivalence,
 source-patch and transform invariant tests continue to cover ordinary Elixir.
 
-**Unrelated verification finding (still open).** The routed-pipe property soak found that
+**Unrelated verification finding `[fixed]` (2026-09-21).** The routed-pipe property soak found that
 removing `!` from a call argument `identity(!(t = b; b))` reports the replacement as a bare
 multi-expression block. Its source patch does not parse: the parentheses inside the negation's
 range were lost. The same minimal probe on an isolated, unchanged `8613a433` produced the same
-invalid patch. This is an existing `Site.Parenthesize` gap, outside the routing-boundary change.
+invalid patch. This was an existing `Site.Parenthesize` gap, outside the routing-boundary change.
+`Parenthesize` now recognises a multi-child `__block__` as a statement sequence and restores
+parentheses when the replaced wrapper consumed them. A single-child Sourceror `__block__` remains
+untouched: it wraps literals and explicit containers rather than a statement sequence.
 
 ### Unresolved regions stay unreadable to later passes `[fixed]` (2026-09-21)
 

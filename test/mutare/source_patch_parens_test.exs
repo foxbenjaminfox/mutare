@@ -224,6 +224,18 @@ defmodule Mutare.SourcePatchParensTest do
       assert [_ | _] = assert_patches(source, [:logical], run: [3], run: [-3])
     end
 
+    test "a multi-expression block whose parentheses went with a negation" do
+      source = """
+      defmodule Fixture do
+        def identity(value), do: value
+        def run(t, b), do: identity(!(t = b; b))
+      end
+      """
+
+      sites = assert_patches(source, [:logical], run: [true, false], run: [false, true])
+      assert Enum.any?(sites, &(&1.mutated_code == "(t = b\nb)"))
+    end
+
     test "a negative literal under a written minus" do
       source = """
       defmodule Fixture do

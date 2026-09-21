@@ -10,6 +10,8 @@ defmodule Mutare.Site.Parenthesize do
   #   * it holds a `do`-block call the user had parenthesized, and the renderer, judging the
   #     replacement alone, dropped the parentheses — `case 0 + (if … end) do` → `0 - if … end`,
   #     which does not parse before the `case`'s own `do`, nor before a clause's `->`.
+  #   * it is a multi-expression block whose parentheses belonged to a wrapper that the mutation
+  #     removed — `identity(!(t = b; b))` → `identity(t = b\nb)`, which does not parse.
   #
   # The first two depend on where the node stands, and are decided by asking the parser rather
   # than a precedence table: write the bare replacement in the operator position the original
@@ -20,6 +22,10 @@ defmodule Mutare.Site.Parenthesize do
   # The third does not: the places a bare `do`-block call cannot stand are many (a block call's
   # head, a clause head, either side of an operator inside one), and the user's parentheses say
   # they were in one. So the replacement is parenthesized wherever it stands.
+  #
+  # The fourth is the replacement itself: a multi-expression `__block__` renders as bare
+  # statements, but can occupy one expression slot only inside parentheses. Parenthesizing it is
+  # harmless even where a bare sequence could stand.
   #
   # A slot the user already parenthesized needs nothing: a node's range stops inside its own
   # parentheses (`Mutare.Transform.NodeRange`), so they are still there after the patch.
@@ -44,7 +50,8 @@ defmodule Mutare.Site.Parenthesize do
     written = WrittenPipe.written(original) || original
 
     if not parenthesized?(written) and
-         (misread_in_position?(code, written) or dropped_block_parentheses?(mutated)),
+         (misread_in_position?(code, written) or dropped_block_parentheses?(mutated) or
+            exposed_expression_block?(mutated)),
        do: "(" <> code <> ")",
        else: code
   end
@@ -114,4 +121,14 @@ defmodule Mutare.Site.Parenthesize do
        do: Keyword.has_key?(meta, :parens) and Keyword.has_key?(meta, :do)
 
   defp parenthesized_block?(_node), do: false
+
+  # --- a multi-expression block whose wrapper owned its parentheses -------------------------
+
+  # A sequence is an expression only while parenthesized. Sourceror records `(a; b)` as a
+  # multi-child `__block__`, but renders that node alone as two bare statements. When a mutation
+  # unwraps it (`!(a; b)` → `(a; b)`), the wrapper's range consumes the original parentheses, so
+  # the report must restore them around the replacement. A single-child `__block__` is the
+  # ordinary Sourceror wrapper for literals and explicit containers, not a statement sequence.
+  defp exposed_expression_block?({:__block__, _meta, [_first, _second | _rest]}), do: true
+  defp exposed_expression_block?(_node), do: false
 end
