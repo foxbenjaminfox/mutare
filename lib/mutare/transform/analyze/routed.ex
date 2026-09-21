@@ -15,7 +15,7 @@ defmodule Mutare.Transform.Analyze.Routed do
 
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Transform.{Candidate, Meta, NodeRange}
+  alias Mutare.Transform.{Candidate, Meta, NodeRange, Resolve}
   alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.{Attach, CallOptions, Syntax}
   alias Mutare.Transform.Suppression
@@ -52,7 +52,7 @@ defmodule Mutare.Transform.Analyze.Routed do
   def analyze_routed_call(node, :skip, _env, _context), do: node
 
   def analyze_routed_call(node, routing, env, context) do
-    context = Map.put(context, :mutators, env.mutators)
+    context = Resolve.context(node, Map.put(context, :mutators, env.mutators))
     {form, meta, args} = Attach.offer(node, node, env.mutators, context)
     routed = CallOptions.mark({form, meta, route_macro_args(args, routing, env)})
     attach_hosted_candidates(routed, node, routing, env, context)
@@ -108,7 +108,7 @@ defmodule Mutare.Transform.Analyze.Routed do
     call = Mutare.Transform.Calls.resolved_routed_call(raw_node)
 
     spec
-    |> Dispatch.host_targets(call, Map.take(context, [:mutators]))
+    |> Dispatch.host_targets(call, Map.take(context, [:mutators, :resolution]))
     |> Enum.map(fn target ->
       %Candidate.Hosted{
         mutator: spec,
@@ -369,7 +369,7 @@ defmodule Mutare.Transform.Analyze.Routed do
 
   defp route_keyword(list, value_treatments, env) when is_list(list) do
     if CallOptions.keyword_list_shaped?(list) do
-      validate_keyword_treatments!(list, value_treatments)
+      CallOptions.validate_keyword_treatments!(list, value_treatments)
 
       Enum.zip_with(list, value_treatments, fn {key, value}, treatment ->
         {key, route_macro_arg(value, treatment, env)}
@@ -403,21 +403,4 @@ defmodule Mutare.Transform.Analyze.Routed do
       Candidate.update_candidates(node, fn candidates ->
         Enum.reject(candidates, &match?(%Candidate.InPlace{}, &1))
       end)
-
-  # A `{:keyword, value_treatments}` routing is a per-pair contract: a list shorter than the pairs
-  # would silently leave the unnamed values raw (an author who *meant* `:raw` can write it), and a
-  # longer one names positions that don't exist — either way the route and the call disagree about
-  # the argument's shape, so fail loud rather than under- or over-route. A static route can only
-  # satisfy this when every call site has the same pair count; variable shapes belong to `:routing`,
-  # whose classifier sees the concrete call.
-  defp validate_keyword_treatments!(pairs, value_treatments) do
-    if length(pairs) != length(value_treatments) do
-      raise ArgumentError,
-            "a {:keyword, value_treatments} macro routing must name exactly one treatment per " <>
-              "pair, but #{length(value_treatments)} treatment(s) were declared for the " <>
-              "#{length(pairs)}-pair `#{Macro.to_string(pairs)}`. Name every pair (use :raw to " <>
-              "leave a value as written); when call sites vary in pair count, register the macro with " <>
-              ":routing and classify each call's shape in route_arguments/1."
-    end
-  end
 end

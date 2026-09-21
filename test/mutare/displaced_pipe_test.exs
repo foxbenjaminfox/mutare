@@ -171,7 +171,8 @@ defmodule Mutare.DisplacedPipeTest do
           Registry.build(routes, [])
         )
 
-      assert Meta.written_pipe_meta(ast)
+      assert {:|>, meta, _args} = ast
+      assert Meta.routed_call(meta) == {[:Kernel], :|>, 2}
       assert Meta.skipped?(ast)
     end
 

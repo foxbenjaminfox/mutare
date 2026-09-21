@@ -52,12 +52,14 @@ defmodule Mutare.Analyze do
   same contract). Structural families in `mutators` are ignored — def-level, clause-level, and
   return-value shapes don't apply to a bare expression subtree.
 
-  The function is pure: it assigns no ids and records no sites. The transform does both when
-  embedding the returned mutations (a host target through the hosted pipeline, a whole-call
-  rebuild through the in-place one). `context` is
-  accepted for call-site symmetry with the mutator callbacks and is currently not consulted:
-  each position's context (pipe stages, patterns, routing) is derived from the subtree,
-  and the specs contain the pipe and behaviour facts.
+  It assigns no ids and records no sites. The transform does both when embedding the returned
+  mutations. Pass the callback's `context` unchanged: it carries the enclosing call's lexical
+  environment and the configured routes and argument marks. Core resolves the declared Elixir
+  island there before analysis, including its pipes, aliases and imports. Nested hosted regions
+  remain syntax until their own hosts declare an island. During a scan, resolution also reports
+  the island's route/mark matches, even when it produces no mutations.
+
+  Without a callback context, the subtree must already carry any resolution its mutations need.
 
   ## Examples
 

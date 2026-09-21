@@ -73,18 +73,21 @@ defmodule Mutare.Mutator.MacroHost do
   island analyzes with every surface — ordinary and hosted — and hosted delivery never nests).
 
   A `:hosted` route is permission and a delivery mode, **not a target list**: the callback
-  receives the whole resolved macro call and locates the fragment(s) to mutate. It
-  need not re-classify the call to do so — `Mutare.Calls.routed_treatments/1` on the
+  receives the whole macro call, with its identity resolved, and locates the fragment(s) to mutate.
+  It need not re-classify the call to do so — `Mutare.Calls.routed_treatments/1` on the
   call's `node` returns the per-argument treatments the route produced, so the `:hosted`
   positions (including values nested under `{:keyword, …}`) can be read back instead of
-  rediscovered. Core leaves hosted fragments raw and does not route nested macros inside them;
-  the same function provides routing information for nested macros traversed by the host.
+  rediscovered. Core preserves hosted fragments as syntax: it neither desugars their pipes nor
+  resolves or routes calls inside them. The DSL owns their meaning. Other arguments follow their own
+  treatments, so an expression argument reaches the host with its Elixir calls resolved.
 
   ## Sub-contracting ordinary Elixir inside a fragment
 
   A hosted fragment may contain ordinary Elixir expressions: everything under an Ecto `^` pin
   is evaluated at runtime. Use core's value mutations for those expressions through
-  `Mutare.Analyze.expression_mutations(island, context.mutators, context)`. It returns each
+  `Mutare.Analyze.expression_mutations(island, context.mutators, context)`. Forward the context
+  unchanged: it retains the enclosing call's lexical environment and configured routes/marks,
+  which core uses to resolve the island before analyzing it. It returns each
   single-point mutant as a rebuild of the expression, produced by the user's actual
   configuration. Relay each rebuild as a `Mutare.Mutator.Mutation` with `producer:` set to the
   returned spec — the host then embeds the mutant, while its

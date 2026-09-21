@@ -49,7 +49,7 @@ defmodule Mutare.Transform.Analyze.Collect do
   #     ordinary branches. Termination of the recursion this permits (a sub-contracted interior
   #     hosting again, whose islands sub-contract again) is structural: every sub-contract
   #     recurses on a strict subtree, and an AST is finite.
-  #   * **Ids, sites, coverage, emission** — collect is pure. The host folds the rebuilds into
+  #   * **Ids, sites, coverage, emission** — collect builds none. The host folds the rebuilds into
   #     its Target `:mutants` (tagging each with its `producer` spec), and the ordinary hosted
   #     pipeline claims ids and records Sites when the Target flows through `HostedEmit`.
   #
@@ -60,17 +60,21 @@ defmodule Mutare.Transform.Analyze.Collect do
   # never *out-mutates* what core itself would deliver on the same code, which is the contract.
 
   alias Mutare.Mutator.{Dispatch, Mutation, Spec}
-  alias Mutare.Transform.{Candidate, Meta, Overlap}
+  alias Mutare.Transform.{Candidate, Meta, Overlap, Resolve, UnitReturns}
   alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.Env
   alias Mutare.Transform.Candidate.Delivery
 
   @structural_callbacks Mutare.Mutator.Structural.behaviour_info(:callbacks)
 
-  # `context` is accepted for call-site symmetry with the mutator callbacks.
+  # The host declares this subtree to be Elixir. Resolve it in the enclosing call's lexical
+  # environment before analysis; foreign regions were deliberately left uninterpreted.
+  # Resolution separately reports diagnostic matches, including islands with no mutants.
   @spec expression_mutations(Macro.t(), [Spec.t() | module()], map()) ::
           [{Spec.t(), Macro.t(), String.t() | nil, Mutation.variant()}]
-  def expression_mutations(subtree, mutators, _context \\ %{}) do
+  def expression_mutations(subtree, mutators, context \\ %{}) do
+    subtree = subtree |> Resolve.expression(context) |> UnitReturns.annotate()
+
     case node_level_specs(mutators) do
       [] ->
         []

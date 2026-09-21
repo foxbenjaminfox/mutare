@@ -10,7 +10,13 @@ defmodule Mutare.Calls do
 
   `resolved_routed_call/1` is the routed-call twin — a call matched by a `call_routes` entry, macro or function. It returns a stable `Mutare.CallRouting.Call` with a natural module atom, the call's arguments (a piped call's operand included, as argument 0), and a source-preserving rebuild function.
 
-  `routed_treatments/1` reads *how a node's macro is registered* — the resolved per-argument routing the merged registry (built-ins + every mutator's/extension's `call_routes/0` + the declarative `:call_routes` option) assigned it. A macro host uses it in two places: on its own call's `node`, to locate the positions the route marked `:hosted` (including values nested under `{:keyword, …}`); and on a nested macro inside a fragment it walks, to read its argument treatments or determine whether the whole call is skipped (`:skip`). In both cases it replaces re-deriving the classification.
+  `routed_treatments/1` reads the per-argument routing already assigned by the merged registry
+  (built-ins, mutators, extensions and configured routes). A host uses it on its own call's
+  `node` to locate the positions marked `:hosted`, including nested keyword values, without
+  re-classifying the call. It also reads nested calls in resolved Elixir arguments. Foreign
+  `:raw`/`:hosted` fragments have not been resolved or routed: their syntax, including pipes,
+  belongs to the DSL. To sub-contract an Elixir island, pass it and the callback context to
+  `Mutare.Analyze.expression_mutations/3`.
 
   ## Example
 
@@ -111,8 +117,8 @@ defmodule Mutare.Calls do
 
   @doc """
   Return the stable call value for a node the call-route resolver matched, or `nil` for any
-  other node. Extension callbacks receive this value directly; the reader remains useful to a
-  host walking nested macro nodes.
+  other node. Extension callbacks receive this value directly. Nested calls have routing
+  stamps only in regions core has resolved as Elixir, not inside raw or hosted syntax.
   """
   @spec resolved_routed_call(Macro.t()) :: Mutare.CallRouting.Call.t() | nil
   defdelegate resolved_routed_call(node), to: Transform.Calls
@@ -131,7 +137,8 @@ defmodule Mutare.Calls do
 
   A keyed refinement reads back in the author form it was written in (`[:expression, timeout: :raw]`).
   A piped call's operand is position 0, as in the direct call it is. A call routed `:skip` returns the
-  bare `:skip`; a call that has no registered route returns `nil`.
+  bare `:skip`; a call with no assigned route returns `nil`, including one inside unresolved
+  foreign syntax.
 
   ## Routing describes arguments; registration identifies ownership
 

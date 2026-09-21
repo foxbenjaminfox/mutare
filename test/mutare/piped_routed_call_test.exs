@@ -62,14 +62,20 @@ defmodule Mutare.PipedRoutedCallTest do
     end
   end
 
-  test "a stage mid-chain holds the upstream chain as its argument 0, the call it is, at every seam" do
+  test "a classifier sees written arguments; expression arguments reach hosts and mutators resolved" do
     transform("n |> stage(x > 1) |> stage(x > 2) |> stage(x > 3)")
 
-    # A call is routed after its arguments are resolved, so a classifier reads what a host and a
-    # mutator do: code in which a pipe is the call it is sugar for at every depth — an upstream
-    # stage in argument 0 included.
-    for {seam, calls} <- reported() do
-      assert Enum.sort(calls) ==
+    calls = reported()
+
+    assert Enum.sort(calls.route_arguments) ==
+             Enum.sort([
+               ["n", "x > 1"],
+               ["n |> stage(x > 1)", "x > 2"],
+               ["n |> stage(x > 1) |> stage(x > 2)", "x > 3"]
+             ])
+
+    for seam <- [:host, :mutate] do
+      assert Enum.sort(calls[seam]) ==
                [
                  ["n", "x > 1"],
                  ["stage(n, x > 1)", "x > 2"],
@@ -79,13 +85,13 @@ defmodule Mutare.PipedRoutedCallTest do
     end
   end
 
-  test "a classifier's arguments are resolved: an aliased call in one reads as its module" do
+  test "a classifier sees an argument's alias as written before its treatment is known" do
     defmodule ResolvedArgumentRouter do
       @behaviour Mutare.CallRouting
       def call_routes, do: [{Mutare.Test.PipedCallDSL, :stage, 2, :routing}]
 
       def route_arguments(%Call{arguments: [source, _condition]} = call) do
-        send(self(), {:source_resolves_to, Mutare.Calls.resolved_call_to(source, Enum, [:map])})
+        send(self(), {:source_written, Macro.to_string(source)})
         Mutare.CallRouting.ArgumentRoutes.new(call, [:expression, :expression])
       end
     end
@@ -97,7 +103,7 @@ defmodule Mutare.PipedRoutedCallTest do
       extensions: [ResolvedArgumentRouter]
     )
 
-    assert_received {:source_resolves_to, {:ok, :map, [_enum, _fun], _rebuild}}
+    assert_received {:source_written, "E.map(n, & &1)"}
   end
 
   test "a routed call nested in an argument reads the same however it was spelled" do

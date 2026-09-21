@@ -32,13 +32,15 @@ defmodule Mutare.Transform.Super do
   # super-free and lifts without a closure. But a quote can *evaluate* a `super` while
   # building the AST: `unquote(super(x))` (the unquote escapes the quote) and
   # `bind_quoted: [x: super(x)]` (an option, evaluated at construction) both run the
-  # `super` now. The walk tracks the quote-nesting level (`walk/3`): a `super` is live
+  # `super` now. The walk tracks the quote-nesting level (`walk/4`): a `super` is live
   # only at level 0; `quote` raises the level for its block, `unquote`/`unquote_splicing`
   # lower it, and quote *option* values stay at the quote's level — so those live
   # `super`s are detected and rewritten while the plain quoted ones are left as data.
   # (Out of scope, like the analyzer: `quote unquote: false` — a rare `unquote(super …)`
   # there is data, but would still be rewritten; harmless unless that exact shape is
   # used.)
+
+  alias Mutare.Transform.Resolve
 
   @doc """
   Whether any clause's *body* contains a rewriteable `super` call or capture.
@@ -61,7 +63,7 @@ defmodule Mutare.Transform.Super do
   that base clause while still matching the shared arity.
   """
   @spec rewrite(Macro.t(), atom()) :: {Macro.t(), boolean()}
-  def rewrite(body, super_var), do: walk(body, super_var, 0)
+  def rewrite(body, super_var), do: walk(body, super_var, 0, %{})
 
   # A throwaway variable name for detection-only walks: the rewritten AST is
   # discarded, only `found?` is read, so the value is irrelevant — but reusing the
@@ -74,7 +76,7 @@ defmodule Mutare.Transform.Super do
   @quote_block_keys ~w(do else after catch rescue)a
 
   defp body_has_super?({_vis, _meta, [_head | body]}) do
-    {_ast, found} = walk(body, @super_canary, 0)
+    {_ast, found} = walk(body, @super_canary, 0, %{})
     found
   end
 
@@ -89,19 +91,36 @@ defmodule Mutare.Transform.Super do
   # `bind_quoted: [x: super(x)]` is live at construction and *is* rewritten, while one
   # in the plain quoted body is left as data.
 
+  defp walk({_form, meta, _args} = node, var, level, context) when is_list(meta),
+    do: do_walk(node, var, level, Resolve.context(node, context))
+
+  defp walk(node, var, level, context), do: do_walk(node, var, level, context)
+
+  # Preserved arguments have no inner resolution stamps. Thread explicit lexical
+  # directives across a live block, keeping its environment local to that block.
+  defp do_walk({:__block__, meta, statements}, var, 0, context) when is_list(statements) do
+    {statements, {found, _context}} =
+      Enum.map_reduce(statements, {false, context}, fn statement, {found, context} ->
+        {rewritten, found_here} = walk(statement, var, 0, context)
+        {rewritten, {found or found_here, Resolve.advance_context(statement, context)}}
+      end)
+
+    {{:__block__, meta, statements}, found}
+  end
+
   # A `quote`: split its args (keyword lists) into block values (deeper) and option
-  # values (same level) — see `walk_quote_arg/3`.
-  defp walk({:quote, meta, args}, var, level) when is_list(args) do
-    {args, found} = walk_quote_args(args, var, level)
+  # values (same level) — see `walk_quote_arg/4`.
+  defp do_walk({:quote, meta, args}, var, level, context) when is_list(args) do
+    {args, found} = walk_quote_args(args, var, level, context)
     {{:quote, meta, args}, found}
   end
 
   # An `unquote`/`unquote_splicing` inside a quote escapes one level toward live code,
   # so its argument is evaluated one level shallower. (At level 0 — not inside a quote,
   # where these are invalid source anyway — it is descended as an ordinary call below.)
-  defp walk({unq, meta, [expr]}, var, level)
+  defp do_walk({unq, meta, [expr]}, var, level, context)
        when unq in [:unquote, :unquote_splicing] and level > 0 do
-    {expr, found} = walk(expr, var, level - 1)
+    {expr, found} = walk(expr, var, level - 1, context)
     {{unq, meta, [expr]}, found}
   end
 
@@ -115,9 +134,26 @@ defmodule Mutare.Transform.Super do
   # not an arg list, so the call clause below skips it; without this clause a
   # capture-only body would lift without a closure, leaving an uncompilable `&super/`.
   # mutare:ignore[guard_drop] equivalent — a compilable `&super/arity` capture always has an atom context; the only non-atom-ctx shape, `&(super(args)/n)`, doesn't compile
-  defp walk({:&, _meta, [{:/, _slash, [{:super, _smeta, ctx}, _arity]}]}, var, 0)
+  defp do_walk({:&, _meta, [{:/, _slash, [{:super, _smeta, ctx}, _arity]}]}, var, 0, _context)
        when is_atom(ctx) do
     {{var, [], nil}, true}
+  end
+
+  # Raw/skipped arguments preserve written pipes, including a bare `super` stage. Keep
+  # the pipe intact and make its stage an anonymous call; Kernel supplies the piped argument.
+  # Restrict the atom-context shape to a stage, so a bare identifier elsewhere stays data.
+  # The boundary's retained environment identifies the operator without routing its contents.
+  defp do_walk({:|>, meta, [left, right]} = pipe, var, 0, context) do
+    {left, found_left} = walk(left, var, 0, context)
+
+    {right, found_right} =
+      if Resolve.kernel_pipe?(pipe, context) do
+        walk_stage(right, var, context)
+      else
+        walk(right, var, 0, context)
+      end
+
+    {{:|>, meta, [left, right]}, found_left or found_right}
   end
 
   # A live `super(args)` call (level 0): rewrite to `<var>.(args)`, still descending the
@@ -126,55 +162,70 @@ defmodule Mutare.Transform.Super do
   # descent below reaching this clause), distinct from the `&super/arity` shorthand
   # above. A quoted-data `super` (level > 0) falls to the n-ary clause below instead —
   # left as-is, but still descended so a nested `unquote` within it is reached.
-  # mutare:ignore[guard_drop] equivalent — a compilable `super` is always a call (list args) or the `&super/n` capture handled above; a bare `super` identifier (atom context) doesn't compile
-  defp walk({:super, meta, args}, var, 0) when is_list(args) do
-    {args, _found} = walk_many(args, var, 0)
+  # mutare:ignore[guard_drop] equivalent — calls have list args; bare pipe stages and captures are handled above
+  defp do_walk({:super, meta, args}, var, 0, context) when is_list(args) do
+    {args, _found} = walk_many(args, var, 0, context)
     {{{:., meta, [{var, [], nil}]}, meta, args}, true}
   end
 
   # Any other n-ary node: descend its form (a remote-call `{:., …}` / anon-call
   # subject can be a node) and its args, at the same level.
-  defp walk({form, meta, args}, var, level) when is_list(args) do
-    {form, found_form} = walk(form, var, level)
-    {args, found_args} = walk_many(args, var, level)
+  defp do_walk({form, meta, args}, var, level, context) when is_list(args) do
+    {form, found_form} = walk(form, var, level, context)
+    {args, found_args} = walk_many(args, var, level, context)
     {{form, meta, args}, found_form or found_args}
   end
 
   # A 2-tuple (a keyword/map pair shape): descend both sides.
-  defp walk({left, right}, var, level) do
-    {left, found_left} = walk(left, var, level)
-    {right, found_right} = walk(right, var, level)
+  defp do_walk({left, right}, var, level, context) do
+    {left, found_left} = walk(left, var, level, context)
+    {right, found_right} = walk(right, var, level, context)
     {{left, right}, found_left or found_right}
   end
 
-  defp walk(list, var, level) when is_list(list), do: walk_many(list, var, level)
+  defp do_walk(list, var, level, context) when is_list(list),
+    do: walk_many(list, var, level, context)
 
   # A leaf (atom form, var, literal): nothing to rewrite.
-  defp walk(leaf, _var, _level), do: {leaf, false}
+  defp do_walk(leaf, _var, _level, _context), do: {leaf, false}
+
+  # Kernel flattens the entire RHS with Macro.unpipe/1: both sides of a grouped
+  # pipeline are stages, including its leftmost bare `super`. Traverse that grammar
+  # without changing the written grouping or treating the outer input as a stage.
+  defp walk_stage({:|>, meta, [left, right]}, var, context) do
+    {left, found_left} = walk_stage(left, var, context)
+    {right, found_right} = walk_stage(right, var, context)
+    {{:|>, meta, [left, right]}, found_left or found_right}
+  end
+
+  defp walk_stage({:super, meta, ctx}, var, context) when is_atom(ctx),
+    do: walk({:super, meta, []}, var, 0, context)
+
+  defp walk_stage(node, var, context), do: walk(node, var, 0, context)
 
   # Each `quote` arg is a keyword list (an options list and/or the block list); walk
   # every pair, sending a block key's value one level deeper and every option value
   # (evaluated when the quote runs) at the quote's own level.
-  defp walk_quote_args(args, var, level) do
-    map_reduce(args, fn arg -> walk_quote_arg(arg, var, level) end)
+  defp walk_quote_args(args, var, level, context) do
+    map_reduce(args, fn arg -> walk_quote_arg(arg, var, level, context) end)
   end
 
   # mutare:ignore[guard_drop] equivalent — a compilable `quote`'s args are always keyword lists, so a non-list arg can't reach here (a non-list arg doesn't compile)
-  defp walk_quote_arg(pairs, var, level) when is_list(pairs) do
+  defp walk_quote_arg(pairs, var, level, context) when is_list(pairs) do
     map_reduce(pairs, fn
       {key, value} ->
         sublevel = if block_key?(key), do: level + 1, else: level
-        {value, found} = walk(value, var, sublevel)
+        {value, found} = walk(value, var, sublevel, context)
         {{key, value}, found}
 
       other ->
-        walk(other, var, level + 1)
+        walk(other, var, level + 1, context)
     end)
   end
 
   # A non-keyword `quote` arg (unusual): treat wholesale as quoted data.
   # mutare:ignore[clause_drop] unreachable — a compilable `quote`'s args are always keyword lists (the is_list clause above always matches)
-  defp walk_quote_arg(other, var, level), do: walk(other, var, level + 1)
+  defp walk_quote_arg(other, var, level, context), do: walk(other, var, level + 1, context)
 
   # A keyword key is a bare atom (`Code.string_to_quoted`) or `{:__block__, _, [atom]}`
   # (Sourceror); recognise a block key in either form.
@@ -186,8 +237,8 @@ defmodule Mutare.Transform.Super do
   # mutare:ignore[clause_drop] unreachable — keys come from compilable quote option lists, always an atom or `{:__block__, _, [atom]}`
   defp block_key?(_), do: false
 
-  defp walk_many(list, var, level) do
-    map_reduce(list, fn node -> walk(node, var, level) end)
+  defp walk_many(list, var, level, context) do
+    map_reduce(list, fn node -> walk(node, var, level, context) end)
   end
 
   # `Enum.map_reduce` accumulating `found?` (any element found a live `super`), where

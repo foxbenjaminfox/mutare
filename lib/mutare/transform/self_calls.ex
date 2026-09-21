@@ -61,6 +61,16 @@ defmodule Mutare.Transform.SelfCalls do
        when form in [:unquote, :unquote_splicing] and level > 1,
        do: {node, acc}
 
+  # Executable Kernel pipes were desugared by Resolve. A surviving pipe can be withheld
+  # syntax with no resolution at all: neither its operator nor its RHS arity is known.
+  # Leave it intact unless resolution positively identified a displaced operator, whose
+  # operands can be walked as ordinary calls.
+  defp walk({:|>, _meta, _args} = pipe, 0, self_call, acc, fun) do
+    if Calls.kernel_call?(pipe),
+      do: {pipe, acc},
+      else: walk_children(pipe, acc, &walk(&1, 0, self_call, &2, fun))
+  end
+
   defp walk(node, level, self_call, acc, fun) do
     {node, acc} = walk_children(node, acc, &walk(&1, level, self_call, &2, fun))
     if level == 0 and self_call?(node, self_call), do: fun.(node, acc), else: {node, acc}

@@ -40,3 +40,9 @@ defmodule Mutare.Test.LazyConditional do
     defmacro unquote(form)(_unused, do: body), do: body
   end
 end
+
+defmodule Mutare.Test.TupleConditional do
+  @moduledoc false
+
+  def unquote(:if)(_condition, branches), do: {branches[:do], branches[:else]}
+end

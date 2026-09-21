@@ -24,12 +24,19 @@ defmodule Mutare.SuperTest do
         def greet(name), do: "base:" <> name
         def tag(x), do: {:base, x}
         def combine(a, b), do: {:base, a, b}
-        defoverridable greet: 1, tag: 1, combine: 2
+        def f(n), do: -n
+        defoverridable greet: 1, tag: 1, combine: 2, f: 1
       end
     end
   end
 
   @base_mod inspect(__MODULE__.Base)
+
+  defmodule UnvisitedPipeRoute do
+    @behaviour Mutare.CallRouting
+    def call_routes, do: [{Mutare.Test.PairPipe, :|>, 2, :routing}]
+    def route_arguments(_call), do: raise("a classifier ran inside preserved syntax")
+  end
 
   setup do
     Selector.put(Selector.baseline())
@@ -97,6 +104,132 @@ defmodule Mutare.SuperTest do
   end
 
   describe "runtime" do
+    test "preserved blocks respect local pipe imports without leaking them to siblings" do
+      for treatment <- [:raw, :skip] do
+        source = """
+        defmodule Child do
+          use #{@base_mod}
+          defp identity(x), do: x
+          def f(n, super) when n > 0 do
+            identity((
+              import Kernel, except: [|>: 2]
+              alias Mutare.Test.PairPipe, as: LocalPipe
+              import LocalPipe
+              n |> super
+            ))
+          end
+          def f(n, super), do: {super, n}
+          def tag(n) when n > 0 do
+            if true do
+              identity((
+                import Kernel, except: [|>: 2]
+                import Mutare.Test.PairPipe
+                n |> :value
+              ))
+            end
+            identity(n |> super)
+          end
+          def tag(n), do: {:fallback, n}
+          def other(n), do: n > 0
+        end
+        """
+
+        sites =
+          Mutare.Test.SourcePatch.assert_patches(
+            source,
+            [:relational],
+            [f: [1, :value], f: [0, :value], tag: [1], tag: [0]],
+            extensions: [UnvisitedPipeRoute],
+            call_routes: [{:*, :identity, 1, treatment}]
+          )
+
+        assert length(sites) == 6
+      end
+    end
+
+    test "a custom pipe in preserved arguments keeps super as a variable" do
+      source = """
+      defmodule Child do
+        import Kernel, except: [|>: 2]
+        import Mutare.Test.PairPipe
+        defp identity(x), do: x
+        def f(n, super) when n > 0, do: identity(n |> super)
+        def f(n, super), do: {super, n}
+        def other(n), do: n > 0
+      end
+      """
+
+      for treatment <- [:raw, :skip] do
+        sites =
+          Mutare.Test.SourcePatch.assert_patches(
+            source,
+            [:relational],
+            [f: [1, :value], f: [0, :value], f: [-1, :value]],
+            extensions: [UnvisitedPipeRoute],
+            call_routes: [{:*, :identity, 1, treatment}]
+          )
+
+        assert Enum.any?(sites, &(&1.line == 5))
+        assert Enum.any?(sites, &(&1.line == 7))
+      end
+    end
+
+    test "preserved bare super pipe stages forward in lifted and clean clauses" do
+      source = """
+      defmodule Child do
+        use #{@base_mod}
+        defp identity(x), do: x
+        def tag(n) when n > 0, do: identity(n |> super)
+        def tag(n), do: {:fallback, n}
+        def other(n), do: n > 0
+      end
+      """
+
+      for treatment <- [:raw, :skip] do
+        sites =
+          Mutare.Test.SourcePatch.assert_patches(
+            source,
+            [:relational],
+            [tag: [1], tag: [0], tag: [-1]],
+            call_routes: [{:*, :identity, 1, treatment}]
+          )
+
+        assert Enum.any?(sites, &(&1.line == 4))
+        assert Enum.any?(sites, &(&1.line == 6))
+      end
+    end
+
+    test "grouped bare super stages forward in preserved lifted and clean clauses" do
+      for expression <- [
+            "n |> (super |> abs())",
+            "n |> (super |> (abs() |> div(2)))",
+            "n |> (abs() |> super)",
+            "n |> ((super |> abs()) |> super)"
+          ],
+          treatment <- [:raw, :skip] do
+        source = """
+        defmodule Child do
+          use #{@base_mod}
+          defp identity(x), do: x
+          def f(n) when n > 0, do: identity(#{expression})
+          def f(n), do: {:fallback, n}
+          def other(n), do: n > 0
+        end
+        """
+
+        sites =
+          Mutare.Test.SourcePatch.assert_patches(
+            source,
+            [:relational],
+            [f: [3], f: [0], f: [-3]],
+            call_routes: [{:*, :identity, 1, treatment}]
+          )
+
+        assert Enum.any?(sites, &(&1.line == 4))
+        assert Enum.any?(sites, &(&1.line == 6))
+      end
+    end
+
     test "every mutant of a lifted super function still forwards super" do
       {_meta, sites, mod} =
         transform("""
@@ -295,6 +428,55 @@ defmodule Mutare.SuperTest do
   end
 
   describe "Super module" do
+    test "grouped RHS nodes are stages, while a pipeline's input stays a value" do
+      for {expression, expected} <- [
+            {"x |> (super |> abs())", "x |> (sup.() |> abs())"},
+            {"x |> ((super |> abs()) |> super)", "x |> ((sup.() |> abs()) |> sup.())"},
+            {"super |> (super |> abs())", "super |> (sup.() |> abs())"},
+            {"quote(do: unquote(x |> (super |> abs())))",
+             "quote(do: unquote(x |> (sup.() |> abs())))"}
+          ] do
+        assert Super.in_clauses?(clauses("def f(x), do: #{expression}"))
+
+        {rewritten, true} = Super.rewrite(Code.string_to_quoted!(expression), :sup)
+        assert Macro.to_string(rewritten) == Macro.to_string(Code.string_to_quoted!(expected))
+      end
+
+      for expression <- ["quote(do: x |> (super |> abs()))", "super |> (abs() |> abs())"] do
+        body = Code.string_to_quoted!(expression)
+        assert {^body, false} = Super.rewrite(body, :sup)
+        refute Super.in_clauses?(clauses("def f(x), do: #{expression}"))
+      end
+    end
+
+    test "bare pipe stages are live only outside quoted data" do
+      for expression <- ["x |> super", "quote(do: unquote(x |> super))"] do
+        defs = clauses("def f(x), do: #{expression}")
+        assert Super.in_clauses?(defs)
+        [{:def, _, [_head | body]}] = defs
+        {rewritten, true} = Super.rewrite(body, :sup)
+        assert Macro.to_string(rewritten) =~ "x |> sup.()"
+      end
+
+      [{:def, _, [_head | body]}] = clauses("def f(x), do: quote(do: x |> super)")
+      assert {^body, false} = Super.rewrite(body, :sup)
+      refute Super.in_clauses?(clauses("def f(x), do: quote(do: x |> super)"))
+      assert Super.rewrite({:super, [], nil}, :sup) == {{:super, [], nil}, false}
+    end
+
+    test "a resolved custom pipe does not turn its bare operand into a super call" do
+      body =
+        """
+        import Kernel, except: [|>: 2]
+        import Mutare.Test.PairPipe
+        x |> (super |> x)
+        """
+        |> Sourceror.parse_string!()
+        |> Mutare.Transform.Resolve.annotate()
+
+      assert {^body, false} = Super.rewrite(body, :sup)
+    end
+
     test "in_clauses?/1 detects a body super but ignores a quoted one" do
       assert Super.in_clauses?(clauses("def f(x), do: super(x)"))
       assert Super.in_clauses?(clauses("def f(x) do\n  g = fn -> super(x) end\n  g.()\nend"))

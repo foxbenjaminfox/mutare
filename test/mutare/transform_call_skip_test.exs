@@ -914,6 +914,48 @@ defmodule Mutare.TransformCallSkipTest do
   end
 
   describe "keyed refinements — [leading, key: treatment, …] over a literal keyword argument" do
+    test "calls in interpolated keys honor their configured skip routes" do
+      source = ~S"""
+      defmodule KeyedSkip do
+        def consume(opts), do: opts
+        def f(xs), do: consume(["#{Enum.reverse(xs)}": 1])
+      end
+      """
+
+      for leading <- [:expression, :lazy_expression, :interior] do
+        routes = [{:*, :consume, 1, [[leading, timeout: :raw]]}]
+
+        %{sites: ordinary} = transform(source, [Mutare.Mutators.CallRemoval], routes)
+        assert [%{original_code: "Enum.reverse(xs)", mutated_code: "xs"}] = ordinary
+
+        %{metamutant: meta, sites: skipped} =
+          transform(source, [Mutare.Mutators.CallRemoval], routes ++ [{Enum, :reverse, 1, :skip}])
+
+        assert skipped == []
+        assert_compiles(meta)
+      end
+    end
+
+    test "aliased calls in interpolated keys retain their mutations" do
+      source = ~S"""
+      defmodule KeyedAlias do
+        alias Enum, as: E
+        def consume(opts), do: opts
+        def f(xs), do: consume(["#{E.reverse(xs)}": 1])
+      end
+      """
+
+      for leading <- [:expression, :lazy_expression, :interior] do
+        %{metamutant: meta, sites: sites} =
+          transform(source, [Mutare.Mutators.CallRemoval], [
+            {:*, :consume, 1, [[leading, timeout: :raw]]}
+          ])
+
+        assert [%{original_code: "E.reverse(xs)", mutated_code: "xs"}] = sites
+        assert_compiles(meta)
+      end
+    end
+
     test "a block key stays raw under a keyed refinement, as the ordinary walk keeps it" do
       # `do:` is a structural label: a selector in its place is malformed, and a macro matching
       # `wrap(do: body)` would not even expand. The value still follows its own position.

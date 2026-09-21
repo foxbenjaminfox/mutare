@@ -21,50 +21,79 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   alias Mutare.Transform.Analyze.QuoteEscape
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Delivery
-  alias Mutare.Transform.{CoverageEmit, Ctx, Meta, PatternStructure, SelectorEmit}
+  alias Mutare.Transform.{CoverageEmit, Ctx, Meta, PatternStructure, Resolve, SelectorEmit}
 
   @doc "Bindings guaranteed to escape an expression, in their source order."
   @spec expression_bindings(Macro.t()) :: [atom()]
-  def expression_bindings(node), do: node |> bound_names() |> Enum.uniq()
+  def expression_bindings(node), do: node |> bound_names(%{}) |> Enum.uniq()
 
-  defp bound_names(node), do: collect_bindings(node)
+  defp bound_names({_form, meta, _args} = node, context) when is_list(meta),
+    do: collect_bindings(node, Resolve.context(node, context))
+
+  defp bound_names(node, context), do: collect_bindings(node, context)
+
+  defp collect_bindings({:__block__, _, statements}, context) when is_list(statements) do
+    {bindings, _context} =
+      Enum.map_reduce(statements, context, fn statement, context ->
+        {bound_names(statement, context), Resolve.advance_context(statement, context)}
+      end)
+
+    List.flatten(bindings)
+  end
+
+  # A withheld stage still receives argument zero when Kernel expands it. Inspect
+  # that complete call so a conditional's branches never become its condition.
+  defp collect_bindings({:|>, meta, args} = pipe, context) do
+    case Resolve.preserved_pipe_call(pipe, context) do
+      nil -> argument_bindings(args, Meta.routing(meta), context)
+      call -> bound_names(call, context)
+    end
+  end
 
   # Only unconditional expression positions export bindings. Clause bodies, short-circuit
   # right operands, and syntax-routed arguments have their own scopes or evaluation rules.
-  defp collect_bindings({:=, _, [pattern, rhs]}),
-    do: bound_names(rhs) ++ PatternStructure.bound_var_names(pattern)
+  defp collect_bindings({:=, _, [pattern, rhs]}, context),
+    do: bound_names(rhs, context) ++ PatternStructure.bound_var_names(pattern)
 
-  defp collect_bindings({form, _, [first | _]})
+  defp collect_bindings({form, _, [first | _]}, context)
        when form in [:case, :if, :unless, :and, :or, :&&, :||],
-       do: bound_names(first)
+       do: bound_names(first, context)
 
-  defp collect_bindings({form, _, _})
+  defp collect_bindings({form, _, _}, _context)
        when form in [:fn, :for, :with, :try, :cond, :receive, :->, :&],
        do: []
 
-  defp collect_bindings({:quote, _, args}) when is_list(args) do
+  defp collect_bindings({:quote, _, args}, context) when is_list(args) do
     enabled? = QuoteEscape.quote_unquote_enabled?(args)
-    Enum.flat_map(args, &quote_bindings(&1, enabled?))
+    Enum.flat_map(args, &quote_bindings(&1, enabled?, context))
   end
 
-  defp collect_bindings({form, meta, args}) when is_list(args) do
-    bound_names(form) ++ argument_bindings(args, Meta.routing(meta))
+  defp collect_bindings({form, meta, args}, context) when is_list(args) do
+    bound_names(form, context) ++ argument_bindings(args, Meta.routing(meta), context)
   end
 
-  defp collect_bindings({left, right}), do: bound_names(left) ++ bound_names(right)
-  defp collect_bindings(list) when is_list(list), do: Enum.flat_map(list, &bound_names/1)
-  defp collect_bindings(_), do: []
+  defp collect_bindings({left, right}, context),
+    do: bound_names(left, context) ++ bound_names(right, context)
 
-  defp argument_bindings(args, routing) do
+  defp collect_bindings(list, context) when is_list(list),
+    do: Enum.flat_map(list, &bound_names(&1, context))
+
+  defp collect_bindings(_, _context), do: []
+
+  defp argument_bindings(args, routing, context) do
     case routing do
-      ordinary when ordinary in [nil, :skip] ->
-        # Skipping mutation does not stop an ordinary call's arguments executing.
-        Enum.flat_map(args, &bound_names/1)
+      nil ->
+        Enum.flat_map(args, &bound_names(&1, context))
+
+      :skip ->
+        # Skip withholds mutation and nested routing, not ordinary evaluation. Unresolved
+        # calls still export their arguments' bindings unless a visible route says otherwise.
+        Enum.flat_map(args, &bound_names(&1, context))
 
       treatments when is_list(treatments) ->
         Enum.zip(args, treatments)
         |> Enum.flat_map(fn
-          {arg, treatment} when treatment in [:expression, :interior] -> bound_names(arg)
+          {arg, treatment} when treatment in [:expression, :interior] -> bound_names(arg, context)
           _ -> []
         end)
 
@@ -75,32 +104,36 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
   # Quote options execute in the surrounding scope. Its body is data, except for
   # live unquotes; a nested quote or disabled unquoting keeps those expressions data.
-  defp quote_bindings({:__block__, _, [keywords]}, enabled?) when is_list(keywords),
-    do: quote_bindings(keywords, enabled?)
+  defp quote_bindings({:__block__, _, [keywords]}, enabled?, context) when is_list(keywords),
+    do: quote_bindings(keywords, enabled?, context)
 
-  defp quote_bindings(keywords, enabled?) when is_list(keywords),
-    do: Enum.flat_map(keywords, &quote_bindings(&1, enabled?))
+  defp quote_bindings(keywords, enabled?, context) when is_list(keywords),
+    do: Enum.flat_map(keywords, &quote_bindings(&1, enabled?, context))
 
-  defp quote_bindings({key, value}, enabled?) do
+  defp quote_bindings({key, value}, enabled?, context) do
     case AST.key_atom(key) do
-      :do -> if enabled?, do: unquote_bindings(value), else: []
-      _option -> bound_names(value)
+      :do -> if enabled?, do: unquote_bindings(value, context), else: []
+      _option -> bound_names(value, context)
     end
   end
 
-  defp quote_bindings(_, _enabled?), do: []
+  defp quote_bindings(_, _enabled?, _context), do: []
 
-  defp unquote_bindings({:quote, _, args}) when is_list(args), do: []
+  defp unquote_bindings({:quote, _, args}, _context) when is_list(args), do: []
 
-  defp unquote_bindings({form, _, [arg]}) when form in [:unquote, :unquote_splicing],
-    do: bound_names(arg)
+  defp unquote_bindings({form, _, [arg]}, context) when form in [:unquote, :unquote_splicing],
+    do: bound_names(arg, context)
 
-  defp unquote_bindings({form, _, args}) when is_list(args),
-    do: unquote_bindings(form) ++ Enum.flat_map(args, &unquote_bindings/1)
+  defp unquote_bindings({form, _, args}, context) when is_list(args),
+    do: unquote_bindings(form, context) ++ Enum.flat_map(args, &unquote_bindings(&1, context))
 
-  defp unquote_bindings({left, right}), do: unquote_bindings(left) ++ unquote_bindings(right)
-  defp unquote_bindings(list) when is_list(list), do: Enum.flat_map(list, &unquote_bindings/1)
-  defp unquote_bindings(_), do: []
+  defp unquote_bindings({left, right}, context),
+    do: unquote_bindings(left, context) ++ unquote_bindings(right, context)
+
+  defp unquote_bindings(list, context) when is_list(list),
+    do: Enum.flat_map(list, &unquote_bindings(&1, context))
+
+  defp unquote_bindings(_, _context), do: []
 
   # === binding-escaping `=` match: tuple re-export =====================================
 

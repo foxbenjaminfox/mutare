@@ -98,4 +98,22 @@ defmodule Mutare.Transform.Analyze.CallOptions do
 
   defp as_call_option(%Candidate.InPlace{} = c), do: %{c | call_option_key?: true}
   defp as_call_option(other), do: other
+
+  # A `{:keyword, value_treatments}` routing is a per-pair contract: a list shorter than the pairs
+  # would silently leave the unnamed values raw (an author who *meant* `:raw` can write it), and a
+  # longer one names positions that don't exist — either way the route and the call disagree about
+  # the argument's shape, so fail loud rather than under- or over-route. A static route can only
+  # satisfy this when every call site has the same pair count; variable shapes belong to `:routing`,
+  # whose classifier sees the concrete call.
+  @doc false
+  def validate_keyword_treatments!(pairs, value_treatments) do
+    if length(pairs) != length(value_treatments) do
+      raise ArgumentError,
+            "a {:keyword, value_treatments} macro routing must name exactly one treatment per " <>
+              "pair, but #{length(value_treatments)} treatment(s) were declared for the " <>
+              "#{length(pairs)}-pair `#{Macro.to_string(pairs)}`. Name every pair (use :raw to " <>
+              "leave a value as written); when call sites vary in pair count, register the macro with " <>
+              ":routing and classify each call's shape in route_arguments/1."
+    end
+  end
 end

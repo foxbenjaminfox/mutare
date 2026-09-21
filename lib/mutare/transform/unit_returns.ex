@@ -97,6 +97,7 @@ defmodule Mutare.Transform.UnitReturns do
 
   alias Mutare.Transform.{Behaviours, Calls, Imports, Meta, ModulePlan}
   alias Mutare.Transform.Analyze.{Returns, Syntax}
+  alias Mutare.Transform.Resolve.Arguments
 
   # The statements that define a function of the enclosing module. `defdelegate` is here for
   # classification only — it names a signature but hides its body, so it can never be *stamped*
@@ -115,21 +116,18 @@ defmodule Mutare.Transform.UnitReturns do
 
   @doc "Stamp every unit-returning function's (and `fn`'s) leaf return tails across the tree."
   @spec annotate(Macro.t()) :: Macro.t()
-  def annotate(ast) do
-    {ast, 0} = Macro.traverse(ast, 0, &enter/2, &leave/2)
-    ast
+  # Follow Resolve's argument boundaries: a withheld fragment has no lexical stamps yet.
+  # A host's explicit island re-entry runs this pass after resolving that fragment.
+  def annotate({:quote, _meta, _args} = node), do: node
+
+  def annotate({form, meta, args} = node) when is_list(args) do
+    {^form, ^meta, args} = stamp_scope(node)
+    {annotate(form), meta, Arguments.walk(args, Meta.routing(meta), &annotate/1)}
   end
 
-  # Nothing *inside* a `quote` is classified. `Resolve` stamps none of it — quoted code resolves
-  # where the macro is invoked, not here — so its calls cannot be read: a bare `raise("x")` there
-  # may be a local `raise/1` that returns, and an `if` there may be anyone's. Heads stay visible
-  # to `stamp_defs/1`, which blocks their signatures; only the bodies are off limits.
-  defp enter({:quote, _meta, _args} = node, depth), do: {node, depth + 1}
-  defp enter(node, 0), do: {stamp_scope(node), 0}
-  defp enter(node, depth), do: {node, depth}
-
-  defp leave({:quote, _meta, _args} = node, depth), do: {node, depth - 1}
-  defp leave(node, depth), do: {node, depth}
+  def annotate({left, right}), do: {annotate(left), annotate(right)}
+  def annotate(list) when is_list(list), do: Enum.map(list, &annotate/1)
+  def annotate(node), do: node
 
   defp stamp_scope({:defmodule, meta, [head, body]} = node) when is_list(body) do
     if ModulePlan.scope_boundary?(node),

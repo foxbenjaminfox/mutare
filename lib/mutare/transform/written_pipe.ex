@@ -1,12 +1,10 @@
 defmodule Mutare.Transform.WrittenPipe do
   @moduledoc false
   # `left |> stage(args)` is sugar for `stage(left, args)`, and `Mutare.Transform.Resolve` makes
-  # every stage `Kernel.|>/2` can pipe into that direct call, across the whole tree (`direct/2`
-  # is the stamp it leaves). Routing, hosting, mutation and delivery all read one call shape, at
-  # every depth: a mutator looking into its node's operands finds calls, never a stage one
-  # argument short. Code Mutare never analyzes (a `:raw` argument, a `:skip`ped call, a clean
-  # copy) is rewritten with the rest and spelled back exactly by `written/1`, so what the
-  # compiler — and any macro handed such a region — receives is the pipe the user wrote.
+  # ordinary Elixir stage into that direct call (`direct/2` is the stamp it leaves).
+  # Routing classifies written arguments first, and raw/hosted regions are never rewritten.
+  # Mutators looking into ordinary expression operands find complete calls. The inverse
+  # `written/1` restores their spelling in reports, clean copies and the emitted program.
   #
   # The metamutant only has to compile, to the program the user wrote (`Mutare.Transform.Render`
   # spells each call as a pipe again). A `Mutare.Site` is held to more: it patches

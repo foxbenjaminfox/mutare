@@ -510,9 +510,16 @@ defmodule Mutare.Transform do
         opts |> Keyword.get(:argument_marks, []) |> Mutare.Mutator.validate_argument_marks!()
       )
 
-    annotated = annotate_tree(parsed, opts, extensions, macros, marks)
-    ctx = record_count_facts(ctx, annotated, macros)
-    transform_node(annotated, ctx)
+    {transformed, ctx} =
+      ConfigMatches.with_islands(ctx.claim.sink, macros, fn record ->
+        annotated = annotate_tree(parsed, opts, extensions, macros, marks, record)
+        ctx = record_count_facts(ctx, annotated, macros)
+        transform_node(annotated, ctx)
+      end)
+
+    # Resolution environments are capabilities for analysis, not part of the emitted program.
+    # Release their registries and diagnostic sinks before fingerprinting or rendering.
+    {Resolve.forget(transformed), ctx}
   end
 
   # The count pass's side channel, read off the annotated tree it already has: which route keys
@@ -606,7 +613,7 @@ defmodule Mutare.Transform do
   # `Enum.reject`) and each known-macro call with its argument routing. Last, `UnitReturns`
   # classifies each module's functions by return shape and stamps a unit-returning function's leaf
   # tails, so the analyzer treats them as non-positions (after `Resolve`, so the stamp survives).
-  defp annotate_tree(parsed, opts, extensions, macros, marks) do
+  defp annotate_tree(parsed, opts, extensions, macros, marks, on_resolve) do
     expanded =
       if Keyword.get(opts, :expand_uses, true),
         do: Uses.annotate(parsed, extensions),
@@ -618,7 +625,8 @@ defmodule Mutare.Transform do
     |> Resolve.annotate(macros,
       warnings: Keyword.get(opts, :warnings, true),
       file: Keyword.get(opts, :file, "nofile"),
-      marks: marks
+      marks: marks,
+      on_resolve: on_resolve
     )
     |> UnitReturns.annotate()
   end

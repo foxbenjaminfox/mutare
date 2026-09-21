@@ -3,7 +3,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
 
   # Known-macro routing stamp for the lexical resolve pass. `Resolve` decides what module a call
   # resolves to; this module turns a matched `Mutare.CallRouting.Spec` into the metadata the analyzer
-  # later reads, including shape-aware classifier validation and pipe-position splitting.
+  # later reads, including shape-aware classifier validation.
 
   alias Mutare.CallRouting.Registry, as: Routes
   alias Mutare.CallRouting.Registry.Entry
@@ -128,7 +128,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   # The walk mirrors the analyzer's: unwrap the Sourceror `{:__block__, _, [list]}` a keyword
   # value takes, recurse into nested `{:keyword, …}` value treatments (zip truncates — a
   # keyword-shaped length mismatch is the analyzer's strict raise, not this warning's job).
-  # The piped LHS is not checked: it isn't among `call.arguments` here.
+  # A piped operand is argument 0 and follows the same checks.
   defp warn_misshapen_keyword_routes(%{warn?: false}, _router, _spec, _call, _routes), do: :ok
 
   defp warn_misshapen_keyword_routes(diag, router, spec, call, routes) do

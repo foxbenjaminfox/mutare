@@ -156,16 +156,16 @@ defmodule Mutare.PipeRegionsTest do
       assert MapSet.size(matched_routes(source, [{:*, :tagged, 1, [:raw]}])) == 0
     end
 
-    test "counts one matched beneath a skipped `|>`, and one matched at the skipped stage itself" do
+    test "a skipped pipe reaches only its own route, not its withheld stage's" do
       source = """
       defmodule Skipped do
-        def f(n), do: n |> tagged(5)
-        defp tagged(a, _b), do: a
+        import Mutare.Test.PipeSyntaxDSL
+        def f(n), do: n |> plus(5)
       end
       """
 
-      routes = [{Kernel, :|>, 2, :skip}, {:*, :tagged, 2, [:expression, :raw]}]
-      assert MapSet.size(matched_routes(source, routes)) == 2
+      routes = [{Kernel, :|>, 2, :skip}, {PipeSyntaxDSL, :plus, 2, [:expression, :raw]}]
+      assert matched_routes(source, routes) == MapSet.new([{[:Kernel], :|>, 2}])
     end
   end
 

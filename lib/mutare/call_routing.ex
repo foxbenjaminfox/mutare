@@ -36,11 +36,13 @@ defmodule Mutare.CallRouting do
   A piped first argument is a first argument. Mutare treats a piped call as the direct call
   `Kernel.|>/2` would build, so a route, a classifier, a host and a mutator all see
   `from(p in Post, …)` for `(p in Post) |> from(…)`, and a `:raw` declaration reaches the macro
-  as the syntax it is. That holds at every depth, and for all three
-  readers alike: a call is routed after its arguments are resolved, so a pipe *inside* an
-  argument is a call there too, and `Mutare.Calls` resolves an aliased or imported call found in
-  one. Reports keep the pipe the user wrote, and so does any code Mutare leaves alone: a pipe
-  inside a `:raw` argument or a `:skip`ped call reaches the macro as the pipe it was written as.
+  as the syntax it is. The enclosing call is normalized before classification, but its
+  arguments are still written syntax: routing decides which regions core may interpret as
+  Elixir. Expression regions are then resolved recursively; `:raw` and `:hosted` regions,
+  including keyword values with those treatments, keep their pipes and are not traversed.
+  A `:skip`ped call's arguments likewise remain untouched. A host that identifies an Elixir
+  island can hand it to `Mutare.Analyze.expression_mutations/3` with its callback context;
+  core resolves that island in the enclosing call's lexical environment.
 
       defmodule MyApp.EctoRouting do
         @behaviour Mutare.CallRouting
@@ -200,11 +202,10 @@ defmodule Mutare.CallRouting do
   aliased, imported, and piped forms: a piped call arrives as the direct call, its piped operand
   as argument 0, so that position is routed by its shape like any other (`Post |> from(…)` and
   `build(x) |> from(…)` need not share a treatment). What sits *inside* the arguments
-  is as the user wrote it, here and in `host/2` and `mutate/2` alike: an upstream stage in
-  argument 0 is still a `|>` node, which `Mutare.Calls.resolved_routed_call/1` reads as its
-  direct call when you need to look into it. One difference remains between the seams: a
-  classifier's arguments are not yet resolved (`Mutare.Calls.resolved_call/1` returns `nil`
-  inside them), a host's and a mutator's are. Return `ArgumentRoutes.new(call, treatments)`, one treatment
+  is as the user wrote it: no pipe desugaring or nested name resolution has run yet. Classify
+  that syntax to establish which arguments belong to Elixir and which belong to the DSL.
+  Hosts and whole-call mutators subsequently see expression arguments resolved and foreign
+  arguments preserved. Return `ArgumentRoutes.new(call, treatments)`, one treatment
   per argument, in the order a static declaration uses. Returned treatments and lengths are
   validated by the transform.
 
@@ -262,11 +263,11 @@ defmodule Mutare.CallRouting do
   Returning `:hosted` leaves that position raw for core and offers the call to every subscribed
   host mutator.
 
-  `call.arguments` are resolved code, the same a host and a mutator are shown: read a call
-  inside one through `Mutare.Calls`, which sees through an alias or an import, and expect a
-  pipe there to be the direct call it is sugar for (`a |> f(b)` is `f(a, b)`). Classify by the
-  *shape* of an argument, which resolution never changes; don't compare nodes for equality
-  with hand-built ones, since resolved nodes carry Mutare's own metadata.
+  `call.arguments` preserve the written syntax at classification. In particular, a pipe
+  inside an argument remains a `{:|>, …}` node: the classifier may be deciding whether that
+  operator even has Elixir semantics. The enclosing call's module, name and arity are
+  resolved; calls nested inside its arguments are not. Nodes can carry Mutare metadata,
+  so match syntax shapes rather than comparing against hand-built ASTs for equality.
 
   The motivating keyword case is `where(q, category: "Foo", deleted_at: nil)`, classified as
   `{:keyword, [:interpolated, :raw]}`: mutate `"Foo"` through a `^`-pinned selector, keep the column-name

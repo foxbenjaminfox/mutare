@@ -130,9 +130,9 @@ defmodule Mutare.Transform.Render do
   defp strip_annotations(other), do: other
 
   # `Mutare.Transform.Resolve` made every `Kernel.|>/2` stage the direct call it is sugar for,
-  # across the whole tree, and emission leaves that call wherever it stood — an argument no
-  # pass touched (`:raw`, a `:skip`ped call, a clean copy), where the spelling is a promise, and
-  # a selector's branches, a stage with no selector, a mutant's operand. Each is spelled as the
+  # in ordinary Elixir, and emission leaves that call wherever it stood — in a clean copy,
+  # a selector's branches, a stage with no selector, or a mutant's operand. Foreign syntax
+  # was withheld by resolution and already keeps its written pipes. Each is spelled as the
   # pipe it was written as (`WrittenPipe.written/1`), around whatever argument 0 it now
   # holds, so a chain renders as flat as the user's source rather than one level deeper per
   # stage — NOTES "Evaluation is a route's to declare" measured 40 KB nested against 17 KB piped

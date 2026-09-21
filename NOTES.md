@@ -12678,3 +12678,103 @@ macros to reproduce the compile failures, checks routed delivery against source 
 and covers unavailable imports, live custom-mutator replacements, and nonbinary custom
 string sigils. The existing Kernel and displaced-pipe/conditional tests cover the other side
 of the boundary.
+
+### Routing precedes interpretation of arguments `[done]` (2026-09-21)
+
+"Hosts read what their DSL will" above assumed that a hosted DSL gave `|>` Elixir's meaning.
+That happened to suit the motivating adapter, but was not a sound host contract. The recent
+arguments-first rewrite crossed a language boundary before the route had identified it. This
+corrects that unreleased change; it is not a compatibility obligation to preserve.
+
+**Classify syntax, then resolve permitted regions.** Resolve still makes an enclosing Elixir
+pipe the complete call it denotes, before looking up its route. But `route_arguments/1` sees
+its arguments as written, with neither nested name resolution nor pipe desugaring. Resolve's
+argument descent follows the resulting treatments: `:raw` and `:hosted` withhold the subtree,
+including values inside keyed and positional keyword routes. A skipped call likewise withholds
+its arguments; a skipped `Kernel.|>/2` withholds the whole pipe before reaching its stage.
+Ordinary Elixir arguments continue to normalize recursively, and reach whole-call mutators
+and hosts in that form. The foreign arguments reach them preserved. No nested classifier is
+invoked in syntax that belongs to the DSL.
+
+**An island is an explicit return to Elixir.** Routed calls retain their lexical environment
+for the callback context. `Mutare.Analyze.expression_mutations/3` uses that context to resolve
+the subtree the host declares to be an expression, then runs the existing collect analysis.
+Aliases, selective/whole imports, a displaced `|>`, configured routes and argument marks all
+come from that environment. A nested host receives the environment at its own call, and can
+sub-contract again. DSL syntax itself introduces no Elixir scope; an island's own lexical
+blocks do. Adapters must forward the callback context when sub-contracting.
+
+**Diagnostics follow actual resolution.** The count pass still parses once and returns every
+scan fact. Islands may match a route or argument mark without producing a single mutant, so
+those facts cannot ride only on returned mutations. `ConfigMatches.with_islands/3` gives the
+count pass an explicit callback backed by an unnamed ETS set of matched keys; it never stores
+ASTs, is deleted in `after`, and has no render-pass counterpart beyond a no-op callback. The
+facts merge with the ordinary pre-pass's matches before the count report returns. A call
+withheld inside foreign syntax no longer counts as a match just because its spelling resembles
+an Elixir call. Resolution environments are stripped from emitted trees and retained report
+forms, so warning flags and diagnostic capabilities cannot affect determinism or outlive analysis.
+
+**Evidence.** `hosted_pipe_syntax_test.exs` compiles a DSL whose `a |> stage(b)` means `b - a`,
+checks its host's mutation against every source patch in both enclosing call spellings, and
+makes any attempt to route `stage` as an Elixir call raise. It also checks static/keyed/nested
+keyword boundaries, alias/import resolution inside an island, a displaced pipe inside one,
+and route/mark diagnostics from an island producing no mutants. Existing pipe equivalence,
+source-patch and transform invariant tests continue to cover ordinary Elixir.
+
+**Unrelated verification finding (still open).** The routed-pipe property soak found that
+removing `!` from a call argument `identity(!(t = b; b))` reports the replacement as a bare
+multi-expression block. Its source patch does not parse: the parentheses inside the negation's
+range were lost. The same minimal probe on an isolated, unchanged `8613a433` produced the same
+invalid patch. This is an existing `Site.Parenthesize` gap, outside the routing-boundary change.
+
+### Unresolved regions stay unreadable to later passes `[fixed]` (2026-09-21)
+
+The routing boundary also constrains readers after Resolve. `SelfCalls` mistook an unstamped
+custom `|>` inside a raw/skipped argument for Kernel's and rewrote its right operand at the
+wrong arity. An unrelated active mutant could then send the clean copy to a different clause.
+Surviving pipes are now left intact unless resolution identifies a displaced operator; ordinary
+Kernel stages have already become calls and still redirect normally. Unresolved recursion
+keeps its public entry point. The quote-aware walk from master is retained.
+
+`UnitReturns` likewise walked into withheld fragments before their islands were resolved.
+An anonymous function calling an imported tuple-returning `if/2` looked unit-returning, so
+its two observable `:ok` arguments were stamped inert. Its tree descent now follows Resolve's
+argument treatments, and collect runs unit classification after island resolution. The hosted
+regression checks both restored custom-conditional mutants against their source patches and
+that actual Kernel unit-return branches remain unmutated.
+
+`BindingEscapeEmit` initially stopped at unresolved calls inside skipped arguments to avoid
+exporting bindings from a hidden lazy macro. Review found that this violated ordinary evaluation:
+`identity(abs(t = 4)) |> div(2)` lost `t` when `identity/1` was skipped. Skip withholds nested
+routing, not evaluation, so the binding reader now descends ordinary nested calls without
+invoking their classifiers. A nested lazy route must be reachable (for example through an
+`:interior` argument) to declare different evaluation rules. SourcePatch regressions cover
+fresh bindings and rebindings in local, remote and anonymous calls, under both outer-only and
+split-selector delivery, and lazy calls whose evaluation routes are visible.
+
+`Super` still has to forward calls when a body is relocated. A preserved `n |> super` has an
+atom-context stage, unlike the argument-list call produced by desugaring. Its quote-aware
+walk now recognizes that stage and rewrites it to `n |> mutare_super.()`, preserving the pipe
+and sharing detection with rewriting. Review also found that an unstamped custom pipe made a
+variable named `super` look like a call. Skipped calls now retain their lexical environment,
+as positional routes already did, and Super carries that environment through its quote-aware
+walk. Resolve can read just the pipe operator's identity there, without descending syntax,
+desugaring it, or running classifiers. Quoted stages and custom operators stay untouched.
+SourcePatch checks Kernel and custom operators in raw/skipped wrappers, in both lifted and
+clean clauses.
+
+Grouped right-hand pipelines need the same forwarding: Kernel flattens their entire RHS
+into stages, so the `super` in `n |> (super |> abs())` is a call too. Super now walks that
+stage grammar while preserving grouping; only the outer pipeline's input is a value.
+Detection and rewriting still share the walk. Regressions cover nested groups, repeated
+`super` stages, quoted data and custom operators, with SourcePatch checking raw/skipped
+wrappers through both lifted and clean clauses.
+
+Preserved blocks can introduce their own imports too. Super now folds explicit alias/import
+directives in source order before interpreting a later pipe, so a locally displaced operator
+does not turn a variable named `super` into a forwarding capture. BindingEscapeEmit uses the
+same lexical context and reads a preserved Kernel stage as its effective call before collecting
+bindings: the keyword argument in `true |> if(do: (t = 4), else: 0)` is a branch list, not the
+condition. Neither reader invokes nested route classifiers or changes the preserved source.
+SourcePatch regressions cover local imports, grouped stages, branch-local bindings, and bindings
+that really do escape from conditions and ordinary call arguments.

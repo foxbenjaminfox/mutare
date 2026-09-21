@@ -1,11 +1,8 @@
 defmodule Mutare.ResolvePipeRoundtripPropertyTest do
   @moduledoc """
-  **Resolving rewrites every pipe, and nothing is lost by it.** `Mutare.Transform.Resolve` makes
-  each `Kernel.|>/2` the call it is sugar for across the whole tree — the regions no later pass
-  touches included: a `:raw` argument, the inside of a `:skip`ped call, a clean copy. Those
-  promise "exactly as written", and keep it because the rewrite is undone exactly where it is
-  observable, in rendered source (`Mutare.Transform.Render`, `Mutare.Site`), both through
-  `Mutare.Transform.WrittenPipe.written/1`:
+  **Resolving and resugaring preserves syntax.** `Mutare.Transform.Resolve` makes each
+  ordinary Elixir `Kernel.|>/2` the call it is sugar for. WrittenPipe inverts those rewrites;
+  routing-withheld foreign syntax already retains its written pipes.
 
       for every module `m`, `resugar(annotate(m))` is `m`, Mutare's own stamps aside.
 

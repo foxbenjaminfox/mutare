@@ -30,6 +30,44 @@ defmodule Mutare.Transform.ConfigMatches do
 
   defstruct skip_lifting: MapSet.new(), routes: MapSet.new(), marks: MapSet.new()
 
+  @doc """
+  Collect resolution facts from host-declared Elixir islands during one count pass.
+
+  The host API returns mutations only, including an empty list when no family produces any.
+  An explicit, scan-local sink therefore carries diagnostics independently of those mutations.
+  It stores keys only, lives for this callback, and is deleted even when an adapter raises.
+  """
+  def with_islands(:count, registry, run) do
+    # A host may generate independent islands in Tasks. The unnamed table belongs to this
+    # scan, but writes through the callback must also work in those child processes.
+    table = :ets.new(__MODULE__, [:set, :public])
+
+    record = fn ast ->
+      matches = collect(ast, registry)
+
+      for {kind, keys} <- [routes: matches.routes, marks: matches.marks], key <- keys do
+        :ets.insert(table, {{kind, key}})
+      end
+
+      :ok
+    end
+
+    try do
+      {tree, ctx} = run.(record)
+
+      matches =
+        Enum.reduce(:ets.tab2list(table), %__MODULE__{}, fn {{kind, key}}, matches ->
+          Map.update!(matches, kind, &MapSet.put(&1, key))
+        end)
+
+      {tree, Mutare.Transform.Ctx.update_matches(ctx, &union(&1, matches))}
+    after
+      :ets.delete(table)
+    end
+  end
+
+  def with_islands(:render, _registry, run), do: run.(fn _ast -> :ok end)
+
   @doc "Collect the route keys and mark-declaration keys the calls in `ast` matched."
   @spec collect(Macro.t(), Registry.registry()) :: t()
   def collect(ast, registry) do

@@ -9,6 +9,9 @@ defmodule Mutare.CallRouting.Call do
   rewrite it like any other. `rebuild.(name, arguments)` preserves the source's bare,
   qualified, or aliased call form; reports still show the pipe the user wrote.
 
+  At classification, arguments retain their written syntax. After routing, hosts see Elixir
+  arguments resolved and `:raw`/`:hosted` fragments preserved, including their pipe operators.
+
   The struct is produced by Mutare. Extension callbacks should match only the fields they need so
   additional fields can be added compatibly. To build one in a test, use `new/4`.
   """

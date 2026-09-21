@@ -163,6 +163,10 @@ defmodule Mutare.Mutator do
       descends an unregistered node itself, so sub-contracting there would produce the same
       mutant twice.
 
+  At sub-contract seams the context also carries opaque resolution state. Forward the context
+  unchanged to `Mutare.Analyze.expression_mutations/3` so Elixir islands retain their lexical
+  environment, call routes and argument marks.
+
   Every key is optional in the type because the base context is empty; dispatch injects the
   configured options, the normalized configuration, and the behaviour set (and, at the
   sub-contract seams above, the enabled specs) before calling a mutator.
@@ -177,7 +181,8 @@ defmodule Mutare.Mutator do
           optional(:config) => term(),
           optional(:behaviours) => MapSet.t(module()),
           optional(:mutators) => [Mutare.Mutator.Spec.t()],
-          optional(:marks) => MapSet.t(atom())
+          optional(:marks) => MapSet.t(atom()),
+          optional(:resolution) => term()
         }
 
   @typedoc """

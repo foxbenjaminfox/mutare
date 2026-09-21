@@ -426,7 +426,11 @@ defmodule Mutare.Site do
   # rewrite's `:attribution` clause (`Mutare.Mutator.Mutation.at/2`) may be a bare keyword-list
   # value (`[asc: p.title]`) or other non-tuple node; it has no head tag, so record `nil` rather
   # than crash on `elem/2`.
-  defp node_form(node) when is_tuple(node), do: elem(node, 0)
+  # A remote form can contain a runtime receiver with routed calls of its own. Their lexical
+  # environments belong only to analysis, never to the retained report or its identity.
+  defp node_form(node) when is_tuple(node),
+    do: node |> elem(0) |> Mutare.Transform.Resolve.forget()
+
   defp node_form(_node), do: nil
 
   defp keyword_key?({:__block__, meta, [atom]}) when is_atom(atom), do: meta[:format] == :keyword

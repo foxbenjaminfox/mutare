@@ -4,6 +4,88 @@ defmodule Mutare.RoutedPipeRegressionTest do
   import Mutare.Test
   import Mutare.Test.SourcePatch
 
+  test "preserved pipe stages export condition bindings but not branch bindings" do
+    for {operand, binding} <- [
+          {"true |> if(do: (t = 4), else: 0)", "nil"},
+          {"false |> unless(do: (t = 4), else: 0)", "nil"},
+          {"(condition = true) |> if(do: (t = 4), else: 0)", "condition"},
+          {"(t = 10; true |> if(do: (t = 4), else: 0))", "t"},
+          {"4 |> case do value -> t = value end", "nil"},
+          {"true |> (if(do: (t = 4), else: 0) |> abs())", "nil"},
+          {"4 |> max(t = 2)", "t"},
+          {"(import Kernel, except: [|>: 2]; import Mutare.Test.PairPipe; 4 |> (t = 2)) |> elem(0)",
+           "t"}
+        ],
+        mutators <- [[:operand_swap], [:operand_swap, :arithmetic]] do
+      source = """
+      defmodule Binding do
+        defp identity(x), do: x
+        def run do
+          result = identity(#{operand}) |> div(2)
+          {result, #{binding}}
+        end
+      end
+      """
+
+      sites =
+        assert_patches(source, mutators, [run: []], call_routes: [{:*, :identity, 1, :skip}])
+
+      assert Enum.any?(sites, &(&1.mutator == :operand_swap))
+    end
+  end
+
+  test "skipped ordinary calls export bindings through nested calls" do
+    for initial <- ["", "t = 0"],
+        operand <- ["abs(t = 4)", ":erlang.abs(t = 4)", "(f = &abs/1).(t = 4)"],
+        mutators <- [[:operand_swap], [:operand_swap, :arithmetic]] do
+      source = """
+      defmodule Binding do
+        defp identity(x), do: x
+        def run do
+          #{initial}
+          result = identity(#{operand}) |> div(2)
+          {result, t}
+        end
+      end
+      """
+
+      sites =
+        assert_patches(source, mutators, [run: []], call_routes: [{:*, :identity, 1, :skip}])
+
+      assert Enum.any?(sites, &(&1.mutator == :operand_swap))
+    end
+  end
+
+  test "interior arguments respect nested calls' declared lazy evaluation" do
+    for {operand, binding} <- [
+          {"identity(Mutare.Test.LazyDSL.lazy(t = 4, true))", "nil"},
+          {"identity(value = Mutare.Test.LazyDSL.lazy(t = 4, true))", "value"},
+          {"identity({value = 4, Mutare.Test.LazyDSL.lazy(t = 4, true)}) |> elem(0)", "value"}
+        ],
+        mutators <- [[:operand_swap], [:operand_swap, :arithmetic]] do
+      source = """
+      defmodule Binding do
+        require Mutare.Test.LazyDSL
+        defp identity(x), do: x
+        def run do
+          result = #{operand} |> div(2)
+          {result, #{binding}}
+        end
+      end
+      """
+
+      sites =
+        assert_patches(source, mutators, [run: []],
+          call_routes: [
+            {:*, :identity, 1, :interior},
+            {Mutare.Test.LazyDSL, :lazy, 2, [:lazy_expression, :expression]}
+          ]
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :operand_swap))
+    end
+  end
+
   for {label, operand, binding, routes} <- [
         {"dynamic remote callee", "(m = Map).get(%{x: 10}, :x)", "m", []},
         {"anonymous callee", "(f = &Kernel.abs/1).(-10)", "f.(1)", []},

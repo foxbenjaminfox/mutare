@@ -225,25 +225,27 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   nested `case`s, because Elixir ≥ 1.21 accepts `:erlang.andalso` only in a guard — NOTES
   "Factor compiler input before rendering" and NOTES "`:erlang.andalso` is guard-only".
 - **A pipe stage is the call it is sugar for; only `Kernel`'s `|>` is the pipe.**
-  `Resolve` turns every `left |> stage(args)` into `stage(left, args)`, across the whole tree,
-  so after it no pass, mutator or host meets a pipe or a call one argument short, at any depth
-  — there is no `pipe_mode`, and nothing to apply before reading a node. A routing classifier
-  is no exception: every call clause in `Resolve` walks the arguments *first* and routes the
-  call after, so `route_arguments/1` reads the resolved code a host and a mutator do. That a
-  call was written as a pipe is the `|>`'s meta, stamped on the call
+  `Resolve` turns ordinary Elixir `left |> stage(args)` into `stage(left, args)`, so later
+  mutators see complete calls. It resolves the enclosing call before classifying its **written
+  arguments**, then descends according to their routes. `:raw`/`:hosted` regions and skipped
+  calls are syntax boundaries: no nested resolution, routing, or pipe desugaring. A host hands
+  an Elixir island back through `Mutare.Analyze.expression_mutations/3` with its context,
+  retaining the lexical environment and configured routes/marks. NOTES "Routing precedes
+  interpretation of arguments". That a resolved call was written as a pipe is the `|>`'s meta,
+  stamped on the call
   (`Meta.written_pipe_meta/1`); `WrittenPipe.written/1` is the one inverse, and three modules
   read the spelling through it: `Mutare.Transform.WrittenPipe` keeps a Site in the user's
   spelling and footprint, `Mutare.Transform.PipeEmit` binds the piped value, and
-  `Mutare.Transform.Render` spells every such call as a pipe again — which is how a `:raw`
-  argument, a `:skip`ped call and a clean copy still reach the compiler as written. So **an
+  `Mutare.Transform.Render` spells every such call as a pipe again, including in clean copies
+  (foreign syntax already keeps its written pipes). So **an
   emitter that builds a generated node on the user's meta must drop the stamp**
   (`Meta.drop_written_pipe/1`), or its node is rendered as their pipe (a node `|>` cannot
   pipe into — an operator, a literal — is never spelled as one, so a *mutator* reusing the
   offered call's meta is safe; NOTES "Who inherits the written-pipe stamp"). A route reads no
   spelling either: `:skip` on a stage covers the piped value as the call's argument 0, and the
-  one `:skip` `Resolve` reads off the operator is a skipped `|>` itself, which makes the call
-  it becomes the inert leaf. A `|>` node that survives `Resolve` is one `Kernel` could not
-  expand, or a displaced operator: ask `Mutare.Transform.Calls.kernel_call?/1`. NOTES "A pipe
+  one `:skip` `Resolve` reads off the operator is a skipped `|>` itself, which withholds the
+  whole pipe before desugaring. In an ordinary expression, a surviving `|>` is skipped, one
+  `Kernel` could not expand, or a displaced operator: ask `Mutare.Transform.Calls.kernel_call?/1`. NOTES "A pipe
   stage is the call it is sugar for", "The rewrite is Resolve's", "A skipped stage is a
   withheld call; spelling is render's", "`:skip` reads no spelling", "Only `Kernel`'s `|>` is
   the pipe".

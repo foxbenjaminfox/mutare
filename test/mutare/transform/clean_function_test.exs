@@ -243,6 +243,84 @@ defmodule Mutare.Transform.CleanFunctionTest do
     end
   end
 
+  test "preserved pipe stages keep their effective arity in clean clauses" do
+    source = """
+    defmodule Mutare.CleanFunctionFixture do
+      def f(0), do: 10
+      def f(n) when n > 0, do: identity(n |> f(f(0)))
+      def f(n, other), do: {n, other}
+      defp identity(value), do: value
+    end
+    """
+
+    for treatment <- [:raw, :skip] do
+      opts = [mutators: [:relational], call_routes: [{:*, :identity, 1, treatment}]]
+      result = Transform.transform_string_with_sites(source, opts)
+
+      control =
+        Transform.transform_string_with_sites(source, opts ++ [clean_functions: false])
+
+      assert result.metamutant =~ "_original("
+      assert result.sites == control.sites
+      selections = [0, result.next_id + 1 | Enum.map(result.sites, & &1.id)]
+
+      outcome = fn ->
+        try do
+          apply(@fixture, :f, [1])
+        rescue
+          error -> {:raised, error.__struct__}
+        end
+      end
+
+      compile_purging(@fixture, control.metamutant)
+
+      expected =
+        for id <- selections, into: %{} do
+          Selector.put(id)
+          {id, outcome.()}
+        end
+
+      Mutare.Test.Compile.string(result.metamutant)
+
+      for id <- selections do
+        Selector.put(id)
+        assert outcome.() == expected[id], "#{treatment}, selection #{id}"
+      end
+    end
+  end
+
+  test "custom pipes in withheld arguments keep their semantics in clean copies" do
+    source = """
+    defmodule Mutare.CleanFunctionFixture do
+      import Kernel, except: [|>: 2]
+      import Mutare.Test.PairPipe
+      def f(0, _other), do: :base
+      def f(n, other) when n > 0, do: identity(0 |> f(other))
+      def f(_other), do: :right
+      defp identity(value), do: value
+      def unrelated(n), do: n + 1
+    end
+    """
+
+    for treatment <- [:raw, :skip] do
+      result =
+        Transform.transform_string_with_sites(source,
+          mutators: [:relational, :arithmetic],
+          call_routes: [{:*, :identity, 1, treatment}],
+          verify_invariants: true
+        )
+
+      assert result.metamutant =~ "_original("
+      compile_purging(@fixture, result.metamutant)
+      unrelated = Enum.find(result.sites, &(&1.original_code == "n + 1"))
+
+      for id <- [0, unrelated.id] do
+        Selector.put(id)
+        assert apply(@fixture, :f, [1, :other]) == {0, :right}
+      end
+    end
+  end
+
   test "a recursion under way finishes in the clean copy; the next entry selects afresh" do
     source = """
     defmodule Mutare.CleanFunctionFixture do

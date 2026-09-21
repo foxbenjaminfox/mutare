@@ -1,7 +1,7 @@
 defmodule Mutare.Transform.SelfCallsTest do
   use ExUnit.Case, async: true
 
-  alias Mutare.Transform.SelfCalls
+  alias Mutare.Transform.{Resolve, SelfCalls}
 
   for source <- [
         "quote(do: f(1))",
@@ -44,5 +44,64 @@ defmodule Mutare.Transform.SelfCallsTest do
              |> Macro.to_string() ==
                unquote(expected) |> Code.string_to_quoted!() |> Macro.to_string()
     end
+  end
+
+  test "unresolved pipes preserve both possible interpretations of the right operand" do
+    for source <- ["n |> f(10)", "f(n) |> f(f(10))", "n |> f()", "n |> f"] do
+      body = Code.string_to_quoted!(source)
+
+      for arity <- [1, 2] do
+        assert SelfCalls.redirect(body, {:f, arity}, :clean, []) == {body, false}
+      end
+    end
+  end
+
+  test "a preserved stage at another arity is not a self-call" do
+    body = Code.string_to_quoted!("n |> f(10)")
+    assert SelfCalls.redirect(body, {:f, 1}, :clean, []) == {body, false}
+  end
+
+  test "calls in the receiver and stage arguments keep their own arities" do
+    body = Code.string_to_quoted!("f(n) |> f(f(10))") |> Resolve.annotate()
+    assert {redirected, true} = SelfCalls.redirect(body, {:f, 1}, :clean, [])
+    assert Macro.to_string(redirected) == "f(clean(n), clean(10))"
+  end
+
+  test "recursive stages include the receiver after any leading arguments" do
+    for body <- ["n |> f()", "n |> f", "n |> f() |> f"] do
+      ast = Code.string_to_quoted!(body) |> Resolve.annotate()
+      leading = [Macro.var(:super, nil)]
+      assert {redirected, true} = SelfCalls.redirect(ast, {:f, 1}, :clean, leading)
+
+      expected =
+        if body == "n |> f() |> f",
+          do: "clean(super, clean(super, n))",
+          else: "clean(super, n)"
+
+      assert Macro.to_string(redirected) == expected
+    end
+  end
+
+  test "nested recursive stages retain their explicit arguments" do
+    body = Code.string_to_quoted!("f(n) |> f(n |> f(10))") |> Resolve.annotate()
+
+    assert {redirected, true} =
+             SelfCalls.redirect(body, {:f, 2}, :clean, [Macro.var(:super, nil)])
+
+    assert Macro.to_string(redirected) == "clean(super, f(n), clean(super, n, 10))"
+  end
+
+  test "a displaced operator walks its right operand as an ordinary call" do
+    body =
+      """
+      import Kernel, except: [|>: 2]
+      import Mutare.Test.PairPipe
+      n |> f(10)
+      """
+      |> Code.string_to_quoted!()
+      |> Resolve.annotate()
+
+    assert {{:__block__, _, [_, _, {:|>, _, [_, {:clean, _, [10]}]}]}, true} =
+             SelfCalls.redirect(body, {:f, 1}, :clean, [])
   end
 end
