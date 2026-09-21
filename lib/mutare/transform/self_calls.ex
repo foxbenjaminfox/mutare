@@ -14,10 +14,11 @@ defmodule Mutare.Transform.SelfCalls do
   # afresh. A call at another arity, a capture, and every other callee keep their ordinary
   # entry points.
   #
-  # A self-call is recognised by shape: the function's own name at its full arity, resolving
-  # to no import (a module cannot both define and import one name/arity). That holds for a
-  # `Kernel` name too: a module defining `max/2` has excluded `Kernel`'s, so the call is
-  # its own, displaced or not. Argument routes
+  # A self-call is recognised by shape alone: the function's own name at its full arity, called
+  # bare. Elixir rejects a bare call that an import and a local function could both answer
+  # ("imported M.f/1 conflicts with local function"), so in a module that compiles, no import
+  # answers it. That holds for a `Kernel` name too: a module defining `max/2` has excluded
+  # `Kernel`'s. Argument routes
   # preserve opaque syntax, including raw values in keyword refinements. Quoted bodies
   # are data: only an executable quote's option values and live unquote expressions can
   # contain executable self-calls. Renaming quoted calls can silently change returned data
@@ -187,9 +188,8 @@ defmodule Mutare.Transform.SelfCalls do
 
   defp walk_children(node, acc, _fun), do: {node, acc}
 
-  defp self_call?({name, _meta, args} = node, {name, arity})
-       when is_list(args) and length(args) == arity,
-       do: is_nil(Calls.resolved_call(node))
+  defp self_call?({name, _meta, args}, {name, arity}) when is_list(args),
+    do: length(args) == arity
 
   defp self_call?(_node, _self_call), do: false
 end
