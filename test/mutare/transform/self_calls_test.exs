@@ -1,7 +1,43 @@
 defmodule Mutare.Transform.SelfCallsTest do
   use ExUnit.Case, async: true
 
-  alias Mutare.Transform.{Resolve, SelfCalls}
+  alias Mutare.Transform.{Meta, Resolve, SelfCalls}
+
+  for {source, treatment, expected, changed?} <- [
+        {"f(f(1))", :raw, "f(f(1))", false},
+        {"f(f(1))", :interior, "f(clean_f(1))", true},
+        {"f(1)", :lazy_expression, "clean_f(1)", true},
+        {"quote(do: f(1))", :interior, "quote(do: f(1))", false},
+        {"[raw: f(1), value: f(2)]", {:keyed, :expression, [raw: :raw]},
+         "[raw: f(1), value: clean_f(2)]", true},
+        {"[raw: f(1), value: f(2)]", {:keyword, [:raw, :expression]},
+         "[raw: f(1), value: clean_f(2)]", true},
+        {"[nested: [raw: f(1), value: f(2)]]", {:keyword, [{:keyed, :raw, [value: :expression]}]},
+         "[nested: [raw: f(1), value: clean_f(2)]]", true}
+      ] do
+    test "respects #{inspect(treatment)} in #{source}" do
+      arg = Sourceror.parse_string!(unquote(source))
+      node = {:consume, Meta.stamp_routing([], [unquote(Macro.escape(treatment))]), [arg]}
+
+      assert {{:consume, _, [actual]}, unquote(changed?)} =
+               SelfCalls.redirect(node, {:f, 1}, :clean_f, [])
+
+      assert actual |> Sourceror.to_string() |> Code.string_to_quoted!() |> Macro.to_string() ==
+               unquote(expected) |> Code.string_to_quoted!() |> Macro.to_string()
+    end
+  end
+
+  test "an interior position preserves a skipped call" do
+    arg = {:f, Meta.stamp_routing([], :skip), [{:f, [], [1]}]}
+    node = {:consume, Meta.stamp_routing([], [:interior]), [arg]}
+    assert SelfCalls.redirect(node, {:f, 1}, :clean_f, []) == {node, false}
+  end
+
+  test "a skipped live unquote remains untouched" do
+    escaped = {:unquote, Meta.stamp_routing([], :skip), [{:f, [], [1]}]}
+    node = {:quote, [], [[do: escaped]]}
+    assert SelfCalls.redirect(node, {:f, 1}, :clean_f, []) == {node, false}
+  end
 
   for source <- [
         "quote(do: f(1))",

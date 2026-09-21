@@ -86,6 +86,42 @@ defmodule Mutare.RoutedPipeRegressionTest do
     end
   end
 
+  test "operand swapping exports destructure's pattern bindings" do
+    source = """
+    defmodule Binding do
+      def run(xs) do
+        result = destructure([a, b], xs) |> Kernel.++([3])
+        {result, a, b}
+      end
+    end
+    """
+
+    for mutators <- [[:operand_swap], [:operand_swap, :list]] do
+      sites = assert_patches(source, mutators, run: [[1, 2]], run: [[1]])
+      assert Enum.any?(sites, &(&1.mutator == :operand_swap))
+    end
+  end
+
+  for name <- [:if, :unless] do
+    test "operand swapping exports arguments of a displaced #{name}" do
+      source = """
+      defmodule Binding do
+        import Kernel, except: [#{unquote(name)}: 2]
+        def #{unquote(name)}(x, y), do: x + y
+        def run(xs) do
+          result = #{unquote(name)}(xs, a = 2) |> div(3)
+          {result, a}
+        end
+      end
+      """
+
+      for mutators <- [[:operand_swap], [:operand_swap, :arithmetic]] do
+        sites = assert_patches(source, mutators, run: [10])
+        assert Enum.any?(sites, &(&1.mutator == :operand_swap))
+      end
+    end
+  end
+
   for {label, operand, binding, routes} <- [
         {"dynamic remote callee", "(m = Map).get(%{x: 10}, :x)", "m", []},
         {"anonymous callee", "(f = &Kernel.abs/1).(-10)", "f.(1)", []},

@@ -42,6 +42,15 @@ defmodule Mutare.Transform.CleanFunctionTest do
     end
   end
 
+  defmodule Syntax do
+    defmacro label({name, _, _}), do: name
+
+    defmacro labels(opts) do
+      {name, _, _} = Keyword.fetch!(opts, :raw)
+      quote do: {unquote(name), unquote(Keyword.fetch!(opts, :value))}
+    end
+  end
+
   # A runtime callee can itself enter another mutation-bearing function. The clean
   # copy must retain this call, with normal selection at that function's entry.
   def observe(value) do
@@ -588,6 +597,46 @@ defmodule Mutare.Transform.CleanFunctionTest do
   end
 
   describe "a relocated clean copy" do
+    test "preserves routed syntax when an unrelated mutant selects the clean copy" do
+      for {expression, route, expected} <- [
+            {"Syntax.label(f(n))", {:label, [:raw]}, :f},
+            {"Syntax.label(f(n))", {:label, :skip}, :f},
+            {"Syntax.labels(raw: f(n), value: f(0))", {:labels, [[raw: :raw]]}, {:f, :zero}}
+          ] do
+        source = """
+        defmodule Mutare.CleanFunctionFixture do
+          alias Mutare.Transform.CleanFunctionTest.Syntax
+          require Syntax
+          def f(n) when n > 0, do: #{expression}
+          def f(0), do: :zero
+          def other(n), do: n + 7
+        end
+        """
+
+        {name, treatment} = route
+
+        result =
+          Transform.transform_string_with_sites(source,
+            mutators: @mutators,
+            call_routes: [{Syntax, name, 1, treatment}]
+          )
+
+        assert Enum.any?(
+                 result.clean_decisions,
+                 &match?(%{function: {:f, 1}, verdict: :clean}, &1)
+               )
+
+        other = Enum.find(result.sites, &(&1.original_code == "n + 7"))
+        assert other
+        compile_purging(@fixture, result.metamutant)
+
+        for selection <- [0, other.id] do
+          Selector.put(selection)
+          assert apply(@fixture, :f, [1]) == expected
+        end
+      end
+    end
+
     test "preserves quoted return data when an unrelated mutant selects the clean copy" do
       for expression <- [
             "quote(do: f(unquote(n + 1)))",

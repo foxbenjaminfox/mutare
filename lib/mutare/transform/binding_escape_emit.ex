@@ -21,7 +21,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   alias Mutare.Transform.Analyze.QuoteEscape
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Delivery
-  alias Mutare.Transform.{CoverageEmit, Ctx, Meta, PatternStructure, Resolve, SelectorEmit}
+  alias Mutare.Transform.{Calls, CoverageEmit, Ctx, Meta, PatternStructure, Resolve, SelectorEmit}
 
   @doc "Bindings guaranteed to escape an expression, in their source order."
   @spec expression_bindings(Macro.t()) :: [atom()]
@@ -55,9 +55,14 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   defp collect_bindings({:=, _, [pattern, rhs]}, context),
     do: bound_names(rhs, context) ++ PatternStructure.bound_var_names(pattern)
 
-  defp collect_bindings({form, _, [first | _]}, context)
-       when form in [:case, :if, :unless, :and, :or, :&&, :||],
-       do: bound_names(first, context)
+  defp collect_bindings({:case, _, [first | _]}, context), do: bound_names(first, context)
+
+  defp collect_bindings({form, meta, [first | _] = args} = node, context)
+       when form in [:if, :unless, :and, :or, :&&, :||] do
+    if Calls.kernel_call?(node),
+      do: bound_names(first, context),
+      else: argument_bindings(args, Meta.routing(meta), context)
+  end
 
   defp collect_bindings({form, _, _}, _context)
        when form in [:fn, :for, :with, :try, :cond, :receive, :->, :&],
@@ -94,6 +99,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
         Enum.zip(args, treatments)
         |> Enum.flat_map(fn
           {arg, treatment} when treatment in [:expression, :interior] -> bound_names(arg, context)
+          {arg, :binding_pattern} -> PatternStructure.bound_var_names(arg)
           _ -> []
         end)
 

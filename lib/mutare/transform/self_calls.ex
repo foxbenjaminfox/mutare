@@ -15,16 +15,17 @@ defmodule Mutare.Transform.SelfCalls do
   # entry points.
   #
   # A self-call is recognised by shape: the function's own name at its full arity, resolving
-  # to no import (a module cannot both define and import one name/arity). The walk does not
-  # classify macro arguments. Quoted bodies, however, are data: only quote option values
-  # and live unquote expressions can contain executable self-calls. Renaming quoted calls
+  # to no import (a module cannot both define and import one name/arity). Argument routes
+  # preserve opaque syntax, including raw values in keyword refinements. Quoted bodies
+  # are data: only quote option values and live unquote expressions can contain executable
+  # self-calls. Renaming quoted calls
   # can silently change returned data even when both copies compile.
   #
   # Resolve has already expanded executable pipes to calls, so a stage's arity includes
   # its receiver. Quoted pipes remain data, and their spelling is preserved too.
 
   alias Mutare.AST
-  alias Mutare.Transform.Analyze.QuoteEscape
+  alias Mutare.Transform.Analyze.{CallOptions, QuoteEscape}
   alias Mutare.Transform.{Calls, Imports, Meta}
 
   @doc """
@@ -41,7 +42,13 @@ defmodule Mutare.Transform.SelfCalls do
     end)
   end
 
-  defp walk({:quote, meta, args}, level, self_call, acc, fun) when is_list(args) do
+  defp walk(node, level, self_call, acc, fun) do
+    if Meta.skipped?(node),
+      do: {node, acc},
+      else: do_walk(node, level, self_call, acc, fun)
+  end
+
+  defp do_walk({:quote, meta, args}, level, self_call, acc, fun) when is_list(args) do
     enabled? = QuoteEscape.quote_unquote_enabled?(args)
 
     {args, acc} =
@@ -50,14 +57,14 @@ defmodule Mutare.Transform.SelfCalls do
     {{:quote, meta, args}, acc}
   end
 
-  defp walk({form, meta, [arg]}, 1, self_call, acc, fun)
+  defp do_walk({form, meta, [arg]}, 1, self_call, acc, fun)
        when form in [:unquote, :unquote_splicing] do
     {arg, acc} = walk(arg, 0, self_call, acc, fun)
     {{form, meta, [arg]}, acc}
   end
 
   # Even stacked unquotes in a nested quote remain data for the outer quote.
-  defp walk({form, _meta, [_arg]} = node, level, _self_call, acc, _fun)
+  defp do_walk({form, _meta, [_arg]} = node, level, _self_call, acc, _fun)
        when form in [:unquote, :unquote_splicing] and level > 1,
        do: {node, acc}
 
@@ -65,16 +72,90 @@ defmodule Mutare.Transform.SelfCalls do
   # syntax with no resolution at all: neither its operator nor its RHS arity is known.
   # Leave it intact unless resolution positively identified a displaced operator, whose
   # operands can be walked as ordinary calls.
-  defp walk({:|>, _meta, _args} = pipe, 0, self_call, acc, fun) do
+  defp do_walk({:|>, _meta, _args} = pipe, 0, self_call, acc, fun) do
     if Calls.kernel_call?(pipe),
       do: {pipe, acc},
-      else: walk_children(pipe, acc, &walk(&1, 0, self_call, &2, fun))
+      else: walk_routed_children(pipe, acc, &walk(&1, 0, self_call, &2, fun))
   end
 
-  defp walk(node, level, self_call, acc, fun) do
-    {node, acc} = walk_children(node, acc, &walk(&1, level, self_call, &2, fun))
+  defp do_walk(node, level, self_call, acc, fun) do
+    descend = &walk(&1, level, self_call, &2, fun)
+
+    {node, acc} =
+      if level == 0,
+        do: walk_routed_children(node, acc, descend),
+        else: walk_children(node, acc, descend)
+
     if level == 0 and self_call?(node, self_call), do: fun.(node, acc), else: {node, acc}
   end
+
+  defp walk_routed_children({form, meta, args} = node, acc, fun) when is_list(args) do
+    case Meta.routing(meta) do
+      treatments when is_list(treatments) ->
+        {form, acc} = fun.(form, acc)
+
+        {args, acc} =
+          Enum.zip(args, treatments)
+          |> Enum.map_reduce(acc, fn {arg, treatment}, acc ->
+            walk_argument(arg, treatment, acc, fun)
+          end)
+
+        {{form, meta, args}, acc}
+
+      nil ->
+        walk_children(node, acc, fun)
+
+      :skip ->
+        {node, acc}
+    end
+  end
+
+  defp walk_routed_children(node, acc, fun), do: walk_children(node, acc, fun)
+
+  defp walk_argument(arg, :raw, acc, _fun), do: {arg, acc}
+  defp walk_argument(arg, {:hosted, _hosts}, acc, _fun), do: {arg, acc}
+
+  # A quote has no executable call at its root; preserve its quote/unquote scope walk.
+  defp walk_argument({:quote, _, _} = arg, :interior, acc, fun), do: fun.(arg, acc)
+  defp walk_argument(arg, :interior, acc, fun), do: walk_routed_children(arg, acc, fun)
+
+  defp walk_argument(arg, {:keyed, leading, refinements}, acc, fun) do
+    case CallOptions.keyword_pairs(arg) do
+      {:ok, pairs, rewrap} ->
+        inner = if leading == :interior, do: :expression, else: leading
+
+        {pairs, acc} =
+          Enum.map_reduce(pairs, acc, fn {key, value}, acc ->
+            treatment = Keyword.get(refinements, AST.key_atom(key), inner)
+            {value, acc} = walk_argument(value, treatment, acc, fun)
+            {{key, value}, acc}
+          end)
+
+        {rewrap.(pairs), acc}
+
+      :error ->
+        walk_argument(arg, leading, acc, fun)
+    end
+  end
+
+  defp walk_argument(arg, {:keyword, treatments}, acc, fun) do
+    case CallOptions.keyword_pairs(arg) do
+      {:ok, pairs, rewrap} ->
+        {pairs, acc} =
+          Enum.zip(pairs, treatments)
+          |> Enum.map_reduce(acc, fn {{key, value}, treatment}, acc ->
+            {value, acc} = walk_argument(value, treatment, acc, fun)
+            {{key, value}, acc}
+          end)
+
+        {rewrap.(pairs), acc}
+
+      :error ->
+        {arg, acc}
+    end
+  end
+
+  defp walk_argument(arg, _treatment, acc, fun), do: fun.(arg, acc)
 
   defp walk_quote_arg({:__block__, meta, [kw]}, level, enabled?, self_call, acc, fun)
        when is_list(kw) do
