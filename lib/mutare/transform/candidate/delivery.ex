@@ -26,7 +26,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
 
   alias Mutare.Mutator.Mutation.Attribution
   alias Mutare.{AST, Site}
-  alias Mutare.Transform.{BindingEscapeEmit, Candidate, Meta, NodeRange}
+  alias Mutare.Transform.{BindingEscapeEmit, Bindings, Candidate, Meta, NodeRange}
 
   @type node_candidate ::
           Candidate.InPlace.t()
@@ -81,10 +81,17 @@ defmodule Mutare.Transform.Candidate.Delivery do
 
   A whole-node replacement (`Candidate.InPlace`, `Candidate.Return`) that binds fewer names than
   `node` does — an argument dropped with the match inside it — is withheld when the dropped
-  name is **fresh** here (not bound on entry) and something **reads it after**: patched into
-  the source, that mutant would not compile, and delivered, its branch could not export the
-  name (`Mutare.Transform.Bindings`). A dropped name nothing reads is simply unexported, and
-  one already bound on entry is exported as the incoming value, so neither withholds.
+  name is one this position cannot export as incoming — **fresh** (not bound on entry), or a
+  **conflict** (an earlier sibling of the same expression writes it, and Elixir lets neither
+  write out before the whole expression) — and something **reads it after**: patched into the
+  source, that mutant would not compile, or delivered, its branch would name the wrong value
+  (`Mutare.Transform.Bindings`). A dropped name nothing reads is simply unexported, and one
+  bound on entry with no conflict is exported as the incoming value, so neither withholds.
+
+  A name the node matches somewhere its route does not read as a value (`lazy(p = 8)`) is a
+  write core cannot vouch for: exported, it may name the stale incoming value; unexported, it
+  may be the write the source lets out. Where that name is bound on entry, in conflict and
+  read after, no delivery is faithful, so every candidate on the node is withheld.
   """
   @spec gate([node_candidate()], Macro.t()) :: [node_candidate()]
   def gate([], _node), do: []
@@ -97,20 +104,29 @@ defmodule Mutare.Transform.Candidate.Delivery do
   end
 
   defp drop_binding_drops(candidates, node) do
-    case needed_fresh_bindings(node) do
-      [] -> candidates
-      needed -> Enum.reject(candidates, &drops_binding?(&1, needed))
+    {bound, conflicts, later} = Meta.bindings(node)
+    escaping = BindingEscapeEmit.expression_bindings(node)
+    read? = fn name -> later == :all or MapSet.member?(later, name) end
+
+    exportable? = fn name ->
+      MapSet.member?(bound, name) and not MapSet.member?(conflicts, name)
     end
-  end
 
-  # The names `node` binds fresh that something reads after it, per its `Bindings` stamp.
-  defp needed_fresh_bindings(node) do
-    {bound, later} = Meta.bindings(node)
+    unvouched =
+      node
+      |> Bindings.matched_names()
+      |> Enum.reject(&(&1 in escaping))
+      |> Enum.filter(
+        &(MapSet.member?(bound, &1) and MapSet.member?(conflicts, &1) and read?.(&1))
+      )
 
-    node
-    |> BindingEscapeEmit.expression_bindings()
-    |> Enum.reject(&MapSet.member?(bound, &1))
-    |> Enum.filter(&(later == :all or MapSet.member?(later, &1)))
+    needed = Enum.filter(escaping, &(read?.(&1) and not exportable?.(&1)))
+
+    cond do
+      unvouched != [] -> []
+      needed == [] -> candidates
+      true -> Enum.reject(candidates, &drops_binding?(&1, needed))
+    end
   end
 
   defp drops_binding?(%kind{} = candidate, needed)

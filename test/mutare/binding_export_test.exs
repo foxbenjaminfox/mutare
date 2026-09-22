@@ -242,42 +242,133 @@ defmodule Mutare.BindingExportTest do
   end
 
   describe "siblings of an expression" do
-    # Elixir resets reads between the arguments of a call (`foo(x = 1, x)` does not compile)
-    # and lets their writes out only after the whole call, the last one winning. A position
-    # may not export a name an earlier sibling writes as "incoming": that write would
-    # override the sibling's. So such a name is fresh there, and a mutant dropping it is
-    # withheld — its delivery would need a selector around the enclosing call.
-    test "an earlier sibling's rebinding is not this position's incoming value" do
+    # Elixir resets reads between the siblings of a call, a tuple, a list, an operator or a
+    # map (`foo(x = 1, x)` does not compile) and lets their writes out only after the whole
+    # expression, the last one winning. A position may not export a name an earlier sibling
+    # writes as "incoming": that write would override the sibling's. So such a name is a
+    # conflict there, and a mutant dropping it is withheld — its delivery would need a
+    # selector around the enclosing expression. Every shape below asserts that the baseline
+    # and whatever is delivered match the source; the conflicting ones deliver nothing.
+    @sibling_shapes [
+      call: "pair(p = :sibling, Enum.count([1], p = fn _ -> true end))",
+      list: "[p = :sibling, Enum.count([1], p = fn _ -> true end)]",
+      tuple: "{p = :sibling, Enum.count([1], p = fn _ -> true end)}",
+      anonymous_callee: "(p = &Function.identity/1).(Enum.count([1], p = fn _ -> true end))",
+      dynamic_receiver: "(p = Kernel).abs(Enum.count([1], p = fn _ -> true end))"
+    ]
+
+    for {shape, expression} <- @sibling_shapes do
+      test "#{shape}: an earlier sibling's rebinding is not this position's incoming value" do
+        source = """
+        defmodule Fixture do
+          defp pair(left, right), do: {left, right}
+
+          def run do
+            p = :incoming
+            result = #{unquote(expression)}
+            {result, p == :sibling}
+          end
+        end
+        """
+
+        assert [] = assert_patches(source, [:collection_arity], [run: []], clean_functions: false)
+      end
+
+      test "#{shape}: an earlier sibling's fresh binding is not readable in this position" do
+        source = """
+        defmodule Fixture do
+          defp pair(left, right), do: {left, right}
+
+          def run do
+            result = #{unquote(expression)}
+            {result, p == :sibling}
+          end
+        end
+        """
+
+        assert [] = assert_patches(source, [:collection_arity], [run: []], clean_functions: false)
+      end
+    end
+
+    test "a keyed route's values are siblings, each other's writes read per treatment" do
+      source = """
+      defmodule Fixture do
+        defp box(opts), do: opts
+
+        def run do
+          p = :incoming
+          values = box(first: p = :sibling, second: Enum.count([1], p = fn _ -> true end))
+          {values, p == :sibling}
+        end
+      end
+      """
+
+      assert [] =
+               assert_patches(source, [:collection_arity], [run: []],
+                 clean_functions: false,
+                 call_routes: [{:*, :box, 1, [[:raw, first: :expression, second: :expression]]}]
+               )
+    end
+
+    test "a compound route's writes reach its sibling positions" do
       source = """
       defmodule Fixture do
         defp pair(left, right), do: {left, right}
 
         def run do
           p = :incoming
-          result = pair(p = :sibling, Enum.count([1], p = fn _ -> true end))
-          {result, p == :sibling}
+          values = pair([item: p = :sibling], Enum.count([1], p = fn _ -> true end))
+          {values, p == :sibling}
         end
       end
       """
 
-      # The source patch leaves `p == :sibling`; an export of the incoming `:incoming` at the
-      # second argument would not. Withheld, and the baseline still matches.
-      assert [] = assert_patches(source, [:collection_arity], [run: []], clean_functions: false)
+      assert [] =
+               assert_patches(source, [:collection_arity], [run: []],
+                 clean_functions: false,
+                 call_routes: [{:*, :pair, 2, [[:raw, item: :expression], :expression]}]
+               )
     end
 
-    test "an earlier sibling's fresh binding is not readable in this position" do
+    test "a conflict on a write core cannot vouch for withholds the node, not the baseline" do
       source = """
       defmodule Fixture do
         defp pair(left, right), do: {left, right}
 
         def run do
-          result = pair(p = :sibling, Enum.count([1], p = fn _ -> true end))
-          {result, p == :sibling}
+          p = :incoming
+          value = pair(p = :sibling, div(p = 8, 2))
+          {value, p}
         end
       end
       """
 
-      assert [] = assert_patches(source, [:collection_arity], [run: []], clean_functions: false)
+      # `p = 8` sits in a `:lazy_expression` position: whether that write escapes is the
+      # callee's. Exported, it may be the stale `:incoming`; trapped, the baseline loses the
+      # `8` the source leaves. Neither is faithful, so `div` gets no selector at all.
+      assert [] =
+               assert_patches(source, [:arithmetic], [run: []],
+                 clean_functions: false,
+                 call_routes: [{Kernel, :div, 2, [:lazy_expression, :expression]}]
+               )
+    end
+
+    test "a parenthesized block sequences its statements wherever it stands" do
+      source = """
+      defmodule Fixture do
+        def run do
+          value = (
+            p = :before
+            Enum.count([1], p = fn _ -> true end)
+          )
+
+          {value, is_function(p, 1)}
+        end
+      end
+      """
+
+      assert [%{mutator: :collection_arity}] =
+               assert_patches(source, [:collection_arity], [run: []], clean_functions: false)
     end
   end
 

@@ -100,7 +100,8 @@ defmodule Mutare.Transform.PipeEmit do
   """
   @spec delivery(Macro.t(), [Candidate.t()]) :: t()
   def delivery({_head, meta, [_zero | _rest]} = node, [_ | _] = candidates) do
-    {bound, _later} = Meta.bindings(node)
+    {bound, conflicts, _later} = Meta.bindings(node)
+    scope = {bound, conflicts}
 
     with pipe_meta when is_list(pipe_meta) <- Meta.written_pipe_meta(node),
          true <- value_position?(Meta.routing(meta)),
@@ -109,19 +110,19 @@ defmodule Mutare.Transform.PipeEmit do
          true <- separable?(written, original, candidates) do
       case Enum.split_with(candidates, &keeps_argument?(&1, written)) do
         {kept, []} ->
-          {:bind, pipe_meta, written, stage_exports(original, kept, bound)}
+          {:bind, pipe_meta, written, stage_exports(original, kept, scope)}
 
         {[], moved} ->
-          exports(original, moved, bound)
+          exports(original, moved, scope)
 
         {kept, moved} ->
-          stage = stage_exports(original, kept, bound)
+          stage = stage_exports(original, kept, scope)
 
           {:split, {:bind, pipe_meta, written, stage},
-           outer_exports(original, stage, moved, bound)}
+           outer_exports(original, stage, moved, scope)}
       end
     else
-      _plain -> exports(original_of(candidates, node), candidates, bound)
+      _plain -> exports(original_of(candidates, node), candidates, scope)
     end
   end
 
@@ -213,37 +214,38 @@ defmodule Mutare.Transform.PipeEmit do
 
   # What the closure exports: the stage's bindings, made after argument 0 enters it. Argument
   # 0's own bindings already escape from the closure invocation's argument expression.
-  defp stage_exports(original, kept, bound) do
-    export_names(stage(original), Enum.map(kept, &stage/1), bound)
+  defp stage_exports(original, kept, scope) do
+    export_names(stage(original), Enum.map(kept, &stage/1), scope)
   end
 
   # What the outer selector of a split exports: the catch-all is the closure application, which
   # binds argument 0's escaping names and rebinds what the closure exported (`stage`).
-  defp outer_exports({_head, _meta, [written | _rest]} = original, stage, moved, bound) do
+  defp outer_exports({_head, _meta, [written | _rest]} = original, stage, moved, scope) do
     fresh =
       written
       |> BindingEscapeEmit.expression_bindings()
       |> Kernel.++(stage)
       |> Enum.uniq()
-      |> Enum.reject(&MapSet.member?(bound, &1))
+      |> Enum.reject(&incoming?(scope, &1))
 
     original
-    |> export_names(Enum.map(moved, &Delivery.selector_branch/1), bound, fresh)
+    |> export_names(Enum.map(moved, &Delivery.selector_branch/1), scope, fresh)
     |> export_binding()
   end
 
-  defp exports(original, candidates, bound) do
+  defp exports(original, candidates, scope) do
     original
-    |> export_names(Enum.map(candidates, &Delivery.selector_branch/1), bound)
+    |> export_names(Enum.map(candidates, &Delivery.selector_branch/1), scope)
     |> export_binding()
   end
 
   # The names a selector over `original` exports, given its live `branches`: every name bound
   # on entry that `original` may rebind — by a match anywhere in it, or by a position its
-  # route declares binding (`destructure/2`) — and every fresh name all the branches bind.
-  # `fresh` defaults to what `original` binds fresh.
+  # route declares binding (`destructure/2`) — unless an earlier sibling writes it (a
+  # conflict: the incoming value read here is not that sibling's), and every other name all
+  # the branches bind. `fresh` defaults to what `original` binds and cannot export as incoming.
   # mutare:ignore-start[operand_swap, call_removal] equivalent — the export tuple is built and matched from this one list, in any order, and a name listed twice matches one value twice
-  defp export_names(original, branches, bound, fresh \\ nil) do
+  defp export_names(original, branches, scope, fresh \\ nil) do
     escaping = BindingEscapeEmit.expression_bindings(original)
 
     rebound =
@@ -251,9 +253,9 @@ defmodule Mutare.Transform.PipeEmit do
       |> Bindings.matched_names()
       |> Kernel.++(escaping)
       |> Enum.uniq()
-      |> Enum.filter(&MapSet.member?(bound, &1))
+      |> Enum.filter(&incoming?(scope, &1))
 
-    fresh = fresh || Enum.reject(escaping, &MapSet.member?(bound, &1))
+    fresh = fresh || Enum.reject(escaping, &incoming?(scope, &1))
 
     shared =
       Enum.reduce(branches, fresh, fn branch, names ->
@@ -265,6 +267,10 @@ defmodule Mutare.Transform.PipeEmit do
   end
 
   # mutare:ignore-end
+
+  # Bound on entry, and no earlier sibling writes it: a branch may name its incoming value.
+  defp incoming?({bound, conflicts}, name),
+    do: MapSet.member?(bound, name) and not MapSet.member?(conflicts, name)
 
   # The stage with a placeholder for argument 0: what binds after the piped value enters.
   # mutare:ignore[atom, tuple] equivalent — any placeholder that binds nothing does

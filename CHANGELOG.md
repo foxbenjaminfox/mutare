@@ -133,7 +133,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads later — a source patch that could not compile, which previously failed the **whole
   metamutant's** compile at the read, attributable to no mutant — is withheld
   (`Candidate.Delivery.gate/2`), and one that drops a fresh binding nothing reads is delivered
-  with the binding unexported.
+  with the binding unexported. A name an earlier sibling of the same expression writes — the
+  callee or another argument of a call, another element of a tuple or list, the other operand
+  — is not exported as incoming either: Elixir lets sibling writes out only after the whole
+  expression, the last one winning, and such an export would override the sibling's.
 - **A withheld candidate no longer shapes the program.** Delivery was planned from every
   candidate before ignore directives, poison `skip_ids` and `emit_ids` withheld some, so an
   ignored or poisoned binding-dropping mutant still trapped a live mutant's binding. Delivery

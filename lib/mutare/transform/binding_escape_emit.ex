@@ -113,6 +113,16 @@ defmodule Mutare.Transform.BindingEscapeEmit do
     end
   end
 
+  @doc """
+  The bindings guaranteed to escape one argument of a routed call, read as its `treatment`
+  says: an `:expression`/`:interior` value's, a `:binding_pattern`'s pattern names, a keyword
+  treatment's pairs by their own treatments, and nothing from a position read as syntax or
+  evaluated at the callee's discretion.
+  """
+  @spec argument_bindings(Macro.t(), term()) :: [atom()]
+  def argument_bindings(arg, treatment),
+    do: arg |> argument_bindings_for(treatment, %{}) |> Enum.uniq()
+
   defp argument_bindings_for(arg, treatment, context) when treatment in [:expression, :interior],
     do: bound_names(arg, context)
 

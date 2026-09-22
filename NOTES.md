@@ -12972,6 +12972,25 @@ delivered wrongly. Delivering it would take a selector around the enclosing call
 shape, for two sibling arguments rebinding one name — and was not built. A routed macro's
 value positions subtract every other position's writes, their order being the macro's.
 
+**Conflicts are a third fact, not a hole in `bound` (third review, same day).** The first
+sibling fix subtracted an earlier sibling's writes from `bound`, which made a real binding
+look fresh: `pair(p = :sibling, div(p = 8, 2))` with `div`'s first position `:lazy_expression`
+then exported nothing for `p` — not as incoming (not in `bound`), not as fresh (a lazy
+position's write is not in `expression_bindings/1`) — and the *baseline* trapped the `8` the
+source leaves. The stamp is now `{bound, conflicts, later}`: a conflict is bound, and not
+exportable as incoming. `PipeEmit` exports a matched-or-escaping name that is bound and not
+in conflict; every other escaping name is exported when all live branches bind it. The gate
+withholds a mutant dropping such a name that is read after — and, for a name matched where
+the route reads no value (the lazy case), bound, in conflict and read after, withholds every
+candidate on the node: exported it may be stale, trapped it may be the write the source lets
+out, so no delivery is faithful. The sibling rule now covers what Elixir's `expand_args` does
+— a call's callee and receiver, a list's and tuple's elements, an operator's operands, a
+keyword pair's key and value, a parenthesized block being a statement sequence wherever it
+stands — and a routed position's writes are read as its treatment says
+(`BindingEscapeEmit.argument_bindings/2`), so a keyed value and a compound route count;
+"other positions' writes" is the union over the other positions, not a set difference
+(two positions writing one name is exactly the case).
+
 Two more from the same review. Existing-name exports were read from `=`/`<-` matches alone,
 so a name a route declares bound (`destructure/2`'s `:binding_pattern`) fell out of the
 export when the node was stamped — the old intersection had exported it; they now come from
