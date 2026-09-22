@@ -537,6 +537,24 @@ defmodule Mutare.TransformDurationTest do
       assert {:integer, "300", "0"} in plain
     end
 
+    # A displaced definer is a DSL's call like any other, and its arguments take the DSL's marks.
+    for {definer, arity, call} <- [
+          {:defmodule, 2, "defmodule(300, do: :ok)"},
+          {:defimpl, 3, "defimpl(300, [for: Atom], do: :ok)"}
+        ] do
+      test "a configured position on a displaced #{definer} leaves the integer alone" do
+        body = """
+        import Kernel, except: [#{unquote(definer)}: #{unquote(arity)}]
+          import MyApp.DSL
+          def f, do: #{unquote(call)}
+        """
+
+        marks = [{MyApp.DSL, unquote(definer), unquote(arity), [0], :timeout}]
+        assert {_meta, []} = value_triples(body, @int, argument_marks: marks)
+        assert {_meta, [{:integer, "300", _} | _]} = value_triples(body, @int)
+      end
+    end
+
     test "the reaction is the reading family's — value-aware, not a blanket pin" do
       # `:infinity` at a configured `:timeout` position is held back and a sibling atom is not; a
       # string there is not a duration at all, so `StringLiteral` (which reads no `:timeout`) fires.

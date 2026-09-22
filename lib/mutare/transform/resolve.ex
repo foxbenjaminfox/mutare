@@ -418,7 +418,6 @@ defmodule Mutare.Transform.Resolve do
 
     case {module_key, Routes.lookup(env.call_routes, module_key, :|>, 2)} do
       {[:Kernel], %Entry{spec: %Spec{module: :*, name: :|>}}} ->
-        # mutare:ignore[map_keyword] equivalent — a stamp already there holds the same `true`
         {Keyword.put(meta, MetaKeys.kernel_displaced_key(), true), nil}
 
       _ ->
@@ -433,7 +432,6 @@ defmodule Mutare.Transform.Resolve do
 
   defp retain_environment(meta, env) do
     if Meta.routing(meta) == :skip or is_list(Meta.routing(meta)),
-      # mutare:ignore[map_keyword] equivalent — a call walked twice (a flattened pipe) meets one env
       do: Keyword.put(meta, MetaKeys.resolution_key(), env),
       else: meta
   end
