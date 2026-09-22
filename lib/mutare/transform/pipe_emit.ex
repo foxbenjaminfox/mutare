@@ -99,6 +99,7 @@ defmodule Mutare.Transform.PipeEmit do
           {kept, moved} ->
             stage = shared_stage_bindings(original, kept)
 
+            # mutare:ignore-start[operand_swap, call_removal] equivalent — the export tuple is built and matched from this one list, in any order, and a name listed twice matches one value twice
             outer =
               written
               |> BindingEscapeEmit.expression_bindings()
@@ -106,6 +107,8 @@ defmodule Mutare.Transform.PipeEmit do
               |> Enum.uniq()
               |> shared_bindings(moved)
               |> export_binding()
+
+            # mutare:ignore-end
 
             {:split, {:bind, pipe_meta, written, stage}, outer}
         end
@@ -158,17 +161,17 @@ defmodule Mutare.Transform.PipeEmit do
   defp layer(candidate, {:split, {:bind, _pipe_meta, written, _exports}, _outer}),
     do: if(keeps_argument?(candidate, written), do: :inner, else: :outer)
 
-  defp layer(_candidate, {:bind, _pipe_meta, _written, _exports}), do: :inner
+  # With no split there is one selector, and either name for it builds the same one.
   defp layer(_candidate, _binding), do: :outer
 
   defp binding({:split, inner, _outer}, :inner), do: inner
   defp binding({:split, _inner, outer}, :outer), do: outer
   defp binding(binding, _layer), do: binding
 
-  # An unrouted call is a function, whose every argument is a value.
+  # An unrouted call is a function, whose every argument is a value. (A skipped call is never
+  # analyzed, so it has no candidates to deliver.)
   defp value_position?(nil), do: true
   defp value_position?([zero | _rest]), do: zero in [:expression, :interior]
-  defp value_position?(_routing), do: false
 
   # A bare call or a call on a statically resolved module has no runtime callee expression to
   # move across argument 0. A dynamic remote/anonymous receiver is evaluated before its
@@ -187,6 +190,7 @@ defmodule Mutare.Transform.PipeEmit do
   end
 
   defp stage_bindings({head, meta, [_zero | rest]}) do
+    # mutare:ignore[atom, tuple] equivalent — any placeholder that binds nothing does
     BindingEscapeEmit.expression_bindings({head, meta, [{:mutare_piped, [], nil} | rest]})
   end
 

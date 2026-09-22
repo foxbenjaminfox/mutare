@@ -203,6 +203,19 @@ defmodule Mutare.PipeSourcePatchTest do
              )
   end
 
+  test "a stage argument's binding is exported only while every kept mutant binds it" do
+    # `String.trim/2` → `String.trim/1` keeps argument 0, so it rides inside the closure, but
+    # binds no `_chars`: the closure may return only what all of its branches bind.
+    source = """
+    defmodule Fixture do
+      def run(s), do: s |> String.trim(_chars = " ") |> String.length()
+    end
+    """
+
+    sites = assert_patches(source, [:default_drop, :string], run: [" a "])
+    assert Enum.any?(sites, &(&1.mutator == :default_drop))
+  end
+
   test "a displaced pipe" do
     source = """
     defmodule Fixture do
