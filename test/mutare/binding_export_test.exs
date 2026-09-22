@@ -57,6 +57,8 @@ defmodule Mutare.BindingExportTest do
     end
   end
 
+  @lazy_div [{Kernel, :div, 2, [:lazy_expression, :expression]}]
+
   @count_calls [
     direct: "Enum.count([1], predicate = fn _ -> true end)",
     piped: "[1] |> Enum.count(predicate = fn _ -> true end)"
@@ -470,6 +472,59 @@ defmodule Mutare.BindingExportTest do
                )
     end
 
+    # A binding a route declares (`destructure/2`'s pattern) is a possible write like a match,
+    # at any depth and under any treatment — here beneath a `:lazy_expression` position,
+    # where it is not a *guaranteed* binding, so only `matched_names/1` can see it.
+    @nested_declared "div(hd(destructure([p], [8])), 2)"
+
+    for outer <- [:ordinary, :routed] do
+      test "#{outer} siblings: an earlier sibling's nested declared write is a conflict" do
+        source = """
+        defmodule Fixture do
+          defp pair(left, right), do: {left, right}
+
+          def run do
+            p = :incoming
+            values = pair(#{@nested_declared}, Enum.count([1], p = fn _ -> true end))
+            {values, p == 8}
+          end
+        end
+        """
+
+        routes =
+          case unquote(outer) do
+            :ordinary -> @lazy_div
+            :routed -> @lazy_div ++ [{:*, :pair, 2, [:expression, :expression]}]
+          end
+
+        assert [] =
+                 assert_patches(source, [:collection_arity], [run: []],
+                   clean_functions: false,
+                   call_routes: routes
+                 )
+      end
+    end
+
+    test "a nested declared write core cannot vouch for withholds the node, not the baseline" do
+      source = """
+      defmodule Fixture do
+        defp pair(left, right), do: {left, right}
+
+        def run do
+          p = :incoming
+          result = pair(p = :sibling, #{@nested_declared})
+          {result, p}
+        end
+      end
+      """
+
+      assert [] =
+               assert_patches(source, [:arithmetic], [run: []],
+                 clean_functions: false,
+                 call_routes: @lazy_div
+               )
+    end
+
     test "a parenthesized block sequences its statements wherever it stands" do
       source = """
       defmodule Fixture do
@@ -490,6 +545,45 @@ defmodule Mutare.BindingExportTest do
   end
 
   describe "a binding a route declares" do
+    for {spelling, expression} <- [
+          direct: "div(hd(destructure([p], [8])), 2)",
+          piped: "hd(destructure([p], [8])) |> div(2)"
+        ] do
+      test "#{spelling}: nested under a lazy position, still a rebinding of a name bound on entry" do
+        source = """
+        defmodule Fixture do
+          def run do
+            p = :incoming
+            result = #{unquote(expression)}
+            {result, p}
+          end
+        end
+        """
+
+        # No `=` in sight and no guaranteed escape through the lazy position: `p` is exported
+        # because a route declares the write, and it is bound on entry with no conflict.
+        assert [_ | _] =
+                 assert_patches(source, [:arithmetic], [run: []],
+                   clean_functions: false,
+                   call_routes: @lazy_div
+                 )
+      end
+
+      test "#{spelling}: the eager control" do
+        source = """
+        defmodule Fixture do
+          def run do
+            p = :incoming
+            result = #{unquote(expression)}
+            {result, p}
+          end
+        end
+        """
+
+        assert [_ | _] = assert_patches(source, [:arithmetic], [run: []], clean_functions: false)
+      end
+    end
+
     # `destructure/2`'s first position is routed `:binding_pattern`: it binds `x` without a
     # `=` in sight, and `x`, bound on entry, is exported like any rebinding.
     for {label, tail} <- [{"beside a match", "(y = 1)"}, {"alone", "1"}] do

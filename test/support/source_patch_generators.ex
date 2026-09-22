@@ -7,9 +7,10 @@ defmodule Mutare.Test.SourcePatchGenerators do
   callee evaluation and selector delivery. An optional identity wrapper adds nesting.
   Values vary independently; the fixed input rows include zero divisors and lazy branches.
 
-  Two names are bound before the expression: `left`, which the `:rebinding` operand rebinds,
-  and `right`, which every stage rebinds and the `:dropped` delivery leaves at its incoming
-  value. Every fixture has a mutation-bearing `other/1`. SourcePatch probes both functions under
+  Two names are bound before the expression: `left`, which the `:rebinding` operand rebinds
+  (and the `:declared` operands rebind through `destructure/2`'s declared `:binding_pattern`
+  position, in the open and beneath a `:lazy_expression` one), and `right`, which every stage
+  rebinds and the `:dropped` delivery leaves at its incoming value. Every fixture has a mutation-bearing `other/1`. SourcePatch probes both functions under
   every mutant, exercising the clean path when a mutant belongs elsewhere as well as the
   baseline and active path. Relational mutations also exercise lifted guard delivery.
 
@@ -33,6 +34,8 @@ defmodule Mutare.Test.SourcePatchGenerators do
       :plain,
       :binding,
       :rebinding,
+      :declared,
+      :declared_lazy,
       :block,
       :skipped,
       :raw,
@@ -197,6 +200,16 @@ defmodule Mutare.Test.SourcePatchGenerators do
   # bound on entry, closed over or not, is its final value.
   defp operand(:rebinding), do: {"(left = F.tick(n, :left))", ["left"], []}
 
+  # The same rebinding made by a position a route declares binding — no `=` in sight — and
+  # then beneath a lazy position, where it is a possible write but no guaranteed binding:
+  # `left` ends `:before` when `lazy/2` skips its argument, and the tick as well.
+  defp operand(:declared), do: {"hd(destructure([left], [F.tick(n, :left)]))", ["left"], []}
+
+  defp operand(:declared_lazy),
+    do:
+      {"F.lazy(hd(destructure([left], [F.tick(n, :left)])), enabled)", ["left"],
+       [call_routes: [{SourcePatchFixtures, :lazy, 2, [:lazy_expression, :expression]}]]}
+
   # A statement sequence, whose parentheses are the negation's: the mutant that removes the
   # negation (`SourcePatchUnwrapMutator`) has to restore them in its replacement text.
   defp operand(:block),
@@ -280,7 +293,9 @@ defmodule Mutare.Test.SourcePatchGenerators do
       {"F.lazy(F.tick(n, :left), enabled)", [],
        [call_routes: [{SourcePatchFixtures, :lazy, 2, [:lazy_expression, :expression]}]]}
 
-  defp prelude(:rebinding), do: "left = :before"
+  defp prelude(operand) when operand in [:rebinding, :declared, :declared_lazy],
+    do: "left = :before"
+
   defp prelude(_operand), do: ""
 
   # `{imports written at the head of the observed function, helper definitions}`.

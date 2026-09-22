@@ -91,9 +91,12 @@ defmodule Mutare.Transform.Bindings do
   end
 
   @doc """
-  Every name a match anywhere inside `node` binds — `=` and `<-` patterns at any depth,
-  whatever scope they bind in. A superset of what escapes: a name here that is already bound
-  on entry may be rebound by the node, and an export naming it costs at worst an identity.
+  Every name a match anywhere inside `node` may bind — `=` and `<-` patterns, and the
+  positions a route declares binding (`destructure/2`'s `:binding_pattern`, keyed refinements
+  included) — at any depth, whatever scope or treatment encloses them. A superset of what is
+  guaranteed to escape: a name here that is already bound on entry may be rebound by the
+  node, and an export naming it costs at worst an identity; and it is what a sibling *may*
+  write, which a conflict must count even where the write's execution is not certain.
   """
   @spec matched_names(Macro.t()) :: [atom()]
   def matched_names(node) do
@@ -102,12 +105,47 @@ defmodule Mutare.Transform.Bindings do
       {match, _meta, [pattern, _value]} = node, acc when match in [:=, :<-] ->
         {node, Enum.reverse(PatternStructure.bound_var_names(pattern)) ++ acc}
 
+      {_form, meta, args} = node, acc when is_list(meta) and is_list(args) ->
+        {node, Enum.reverse(declared_names(args, Meta.routing(meta))) ++ acc}
+
       node, acc ->
         {node, acc}
     end)
     |> elem(1)
     |> Enum.reverse()
     |> Enum.uniq()
+  end
+
+  # The names a call's route declares its positions bind.
+  defp declared_names(args, routes) when is_list(routes) do
+    args
+    |> Enum.zip(routes)
+    |> Enum.flat_map(fn {arg, treatment} -> declared_position_names(arg, treatment) end)
+  end
+
+  defp declared_names(_args, _routing), do: []
+
+  defp declared_position_names(arg, :binding_pattern), do: PatternStructure.bound_var_names(arg)
+
+  defp declared_position_names(arg, {:keyword, _} = treatment),
+    do: declared_keyword_names(arg, treatment)
+
+  defp declared_position_names(arg, {:keyed, _, _} = treatment),
+    do: declared_keyword_names(arg, treatment)
+
+  defp declared_position_names(_arg, _treatment), do: []
+
+  defp declared_keyword_names(arg, treatment) do
+    case KeywordRouting.decode(arg, treatment) do
+      {:pairs, pairs, _rewrap} ->
+        Enum.flat_map(pairs, fn {{key, key_treatment}, {value, value_treatment}} ->
+          declared_position_names(key, key_treatment) ++
+            declared_position_names(value, value_treatment)
+        end)
+
+      {:whole, fallback} ->
+        declared_position_names(arg, fallback)
+    end
   end
 
   @doc "Every variable-shaped name anywhere inside `node` — a read, a binding, or a pattern."

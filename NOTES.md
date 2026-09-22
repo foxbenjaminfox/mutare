@@ -13005,6 +13005,16 @@ keeps argument 0, but its receiver runs before the argument in the source and af
 hoisted operand in the closure; such a candidate takes branch-local delivery. That one
 predates the binding work.
 
+**A declared binding is a possible write at any depth (fifth review).** `matched_names/1`
+read `=`/`<-` alone, so a `:binding_pattern` position nested under a `:lazy_expression` one
+(`div(hd(destructure([p], [8])), 2)` under a lazy `div` route) was in neither the guaranteed
+set (the lazy position hides it) nor the matched set — the baseline trapped `destructure`'s
+rebinding of `p`, a sibling after it got no conflict, and the gate's unvouched check missed
+it. All three consumers read `matched_names/1`, so the fix is there: it now also collects
+the positions a call's route declares binding, keyed refinements included, at any depth.
+The route already stated the fact; what was missing was composing it through the enclosing
+expression, not a special case for `destructure`.
+
 Two more from the same review. Existing-name exports were read from `=`/`<-` matches alone,
 so a name a route declares bound (`destructure/2`'s `:binding_pattern`) fell out of the
 export when the node was stamped — the old intersection had exported it; they now come from
