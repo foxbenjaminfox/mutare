@@ -28,6 +28,35 @@ defmodule Mutare.BindingExportTest do
     end
   end
 
+  # A macro that runs its second position before its first.
+  defmodule ReverseOrder do
+    defmacro sequence(read, write) do
+      quote do
+        unquote(write)
+        unquote(read)
+      end
+    end
+  end
+
+  # `Enum.count(xs)` → `receiver().count(xs)`: argument 0 kept, a callee introduced.
+  defmodule DynamicReceiver do
+    @behaviour Mutare.Mutator
+
+    @impl Mutare.Mutator
+    def name, do: :dynamic_receiver
+
+    @impl Mutare.Mutator
+    def mutate(node) do
+      case Mutare.Calls.resolved_call_to(node, Enum, :count) do
+        {:ok, :count, [values], _rebuild} ->
+          [{{:., [], [{:receiver, [], []}, :count]}, [], [values]}]
+
+        _ ->
+          :skip
+      end
+    end
+  end
+
   @count_calls [
     direct: "Enum.count([1], predicate = fn _ -> true end)",
     piped: "[1] |> Enum.count(predicate = fn _ -> true end)"
@@ -207,6 +236,40 @@ defmodule Mutare.BindingExportTest do
   end
 
   describe "a closed-over pipe stage" do
+    for {spelling, expression} <- [
+          direct: "Enum.count(input())",
+          piped: "input() |> Enum.count()"
+        ] do
+      test "#{spelling}: a replacement introducing a receiver runs it before the operand" do
+        source = """
+        defmodule Fixture do
+          defp input do
+            record(:input)
+            [1]
+          end
+
+          defp receiver do
+            record(:receiver)
+            Enum
+          end
+
+          defp record(event), do: Process.put(:events, [event | Process.get(:events, [])])
+
+          def run do
+            Process.put(:events, [])
+            result = #{unquote(expression)}
+            {result, :lists.reverse(Process.get(:events))}
+          end
+        end
+        """
+
+        # The original callee is inert, and the replacement keeps argument 0 — but its own
+        # callee runs, and before the argument. Hoisting the operand would reverse the two.
+        assert [_] =
+                 assert_patches(source, [DynamicReceiver], [run: []], clean_functions: false)
+      end
+    end
+
     # Elixir itself rejects `(m = 1) |> div(m)` with no `m` bound before: only a rebinding
     # can be read by the stage, so these are the shapes that exist.
     test "reading what argument 0 rebinds keeps ordinary delivery" do
@@ -350,6 +413,60 @@ defmodule Mutare.BindingExportTest do
                assert_patches(source, [:arithmetic], [run: []],
                  clean_functions: false,
                  call_routes: [{Kernel, :div, 2, [:lazy_expression, :expression]}]
+               )
+    end
+
+    for {shape, expression} <- [
+          call: "pair(div(p = 8, 2), Enum.count([1], p = fn _ -> true end))",
+          list: "[div(p = 8, 2), Enum.count([1], p = fn _ -> true end)]"
+        ] do
+      test "#{shape}: a sibling's write in a lazy position is a possible write, so a conflict" do
+        source = """
+        defmodule Fixture do
+          defp pair(left, right), do: {left, right}
+
+          def run do
+            p = :incoming
+            values = #{unquote(expression)}
+            {values, p == 8}
+          end
+        end
+        """
+
+        # `div`'s first position is `:lazy_expression`: its `p = 8` is no guaranteed binding,
+        # but it may run, and the source's patch leaves it as the outgoing `p`. The count
+        # selector may not export `:incoming` over it.
+        assert [] =
+                 assert_patches(source, [:collection_arity], [run: []],
+                   clean_functions: false,
+                   call_routes: [{Kernel, :div, 2, [:lazy_expression, :expression]}]
+                 )
+      end
+    end
+
+    test "a routed macro's positions read each other whatever their written order" do
+      source = """
+      defmodule Fixture do
+        require Mutare.BindingExportTest.ReverseOrder
+
+        def run do
+          Mutare.BindingExportTest.ReverseOrder.sequence(
+            is_function(p, 1),
+            Enum.count([1], p = fn _ -> true end)
+          )
+        end
+      end
+      """
+
+      # The macro runs its second position first: the count's `p` is read by the first. The
+      # dropping mutant has no compiling patch, and `later` for a routed position is every
+      # other position's references, so it is withheld.
+      assert [] =
+               assert_patches(source, [:collection_arity], [run: []],
+                 clean_functions: false,
+                 call_routes: [
+                   {ReverseOrder, :sequence, 2, [:lazy_expression, :lazy_expression]}
+                 ]
                )
     end
 

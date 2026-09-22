@@ -141,6 +141,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   candidate before ignore directives, poison `skip_ids` and `emit_ids` withheld some, so an
   ignored or poisoned binding-dropping mutant still trapped a live mutant's binding. Delivery
   is now planned from the candidates that get a branch.
+- **A pipe-stage replacement that introduces a dynamic receiver is no longer closed over.**
+  The shared closure evaluates the piped operand ahead of the stage; a replacement that keeps
+  the operand but calls through a receiver expression of its own (`receiver().count(xs)` for
+  `xs |> Enum.count()`) ran that receiver after the operand, where the source runs it before.
+  Such a candidate is delivered branch-locally.
 - **A pipe stage that reads what its piped operand rebinds is no longer closed over.** The
   one-shot closure a written pipe's stages share is created before its argument runs, so a
   stage reading (or rebinding) a name the operand rebinds (`m = 10; (m = 1) |> div(m)`) saw the

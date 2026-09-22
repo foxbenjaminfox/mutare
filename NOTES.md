@@ -12991,6 +12991,20 @@ stands — and a routed position's writes are read as its treatment says
 "other positions' writes" is the union over the other positions, not a set difference
 (two positions writing one name is exactly the case).
 
+**Conflicts are possible writes; hoisting is the replacement's to earn (fourth review).**
+The conflict sets were read with the *guaranteed* readers, so a sibling's `div(p = 8, 2)`
+under a `:lazy_expression` route contributed no conflict, and the next sibling's dropping
+mutant exported the stale `:incoming` over the `8` the source leaves — a false survivor.
+Conflicts now come from `possible_writes/1`: what a sibling is guaranteed to bind plus any
+match anywhere in it (over-counting withholds a mutant; under-counting corrupts one). For the
+same reason a routed macro's positions, whose order is the macro's, now see every other
+position's references as `later`, not the written suffix — a macro running its second
+position first made the first's read invisible to the gate. And `PipeEmit.keeps_argument?/2`
+now asks the *replacement* for an inert callee too: `Enum.count(xs)` → `receiver().count(xs)`
+keeps argument 0, but its receiver runs before the argument in the source and after the
+hoisted operand in the closure; such a candidate takes branch-local delivery. That one
+predates the binding work.
+
 Two more from the same review. Existing-name exports were read from `=`/`<-` matches alone,
 so a name a route declares bound (`destructure/2`'s `:binding_pattern`) fell out of the
 export when the node was stamped — the old intersection had exported it; they now come from

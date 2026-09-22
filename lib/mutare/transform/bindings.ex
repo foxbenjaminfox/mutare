@@ -43,9 +43,12 @@ defmodule Mutare.Transform.Bindings do
   # and a `Kernel` `if`/`unless` condition. A statement's write clears a conflict on the name.
   # The siblings of an expression — a call's callee and arguments, a tuple's or list's
   # elements, an operator's operands, a keyword pair's key and value — each get the entry set
-  # with what the siblings before them write added to `conflicts`. A routed macro's value
-  # positions take every other position's writes as conflicts, their order being the macro's,
-  # each position's writes read as its treatment says (`BindingEscapeEmit.argument_bindings/2`).
+  # with what the siblings before them **may** write added to `conflicts`: a match anywhere
+  # in the sibling, whether or not its execution or escape is certain (a `:lazy_expression`
+  # position's `p = 8` is not a guaranteed binding, but it is a possible write, and the
+  # sibling after it may not export the stale `p`). A routed macro's positions take every
+  # other position's possible writes as conflicts, their order being the macro's, and see
+  # every other position's references as `later` for the same reason.
   # A module body binds nothing for the definitions inside it. Nothing under a `quote`, a
   # routed foreign region, or a skipped call is stamped: nothing there is offered.
   #
@@ -430,7 +433,7 @@ defmodule Mutare.Transform.Bindings do
     {args, referenced, binds?} =
       case Meta.routing(meta) do
         routes when is_list(routes) -> routed_arguments(args, routes, scope, later)
-        _unrouted -> sequence(args, conflict(scope, escaping(form)), later, :siblings)
+        _unrouted -> sequence(args, conflict(scope, possible_writes(form)), later, :siblings)
       end
 
     {form, form_referenced, form_binds?} = walk(form, scope, union(later, referenced))
@@ -479,12 +482,15 @@ defmodule Mutare.Transform.Bindings do
   end
 
   # `{node, treatment}` positions in a macro's hands: each is walked as its treatment says,
-  # with every other position's writes as conflicts.
+  # with every other position's possible writes as conflicts and every other position's
+  # references as later — the macro, not the written order, says which runs first.
   defp positions(positions, scope, later) do
     writes =
       Enum.map(positions, fn {node, treatment} ->
-        BindingEscapeEmit.argument_bindings(node, treatment)
+        BindingEscapeEmit.argument_bindings(node, treatment) ++ matched_names(node)
       end)
+
+    all_referenced = referenced_names(Enum.map(positions, &elem(&1, 0)))
 
     positions
     |> Enum.with_index()
@@ -494,7 +500,7 @@ defmodule Mutare.Transform.Bindings do
       others = writes |> List.delete_at(i) |> List.flatten()
 
       {node, node_referenced, node_binds?} =
-        position(node, treatment, conflict(scope, others), union(later, referenced))
+        position(node, treatment, conflict(scope, others), union(later, all_referenced))
 
       {[node | acc], union(referenced, node_referenced), binds? or node_binds?}
     end)
@@ -518,7 +524,7 @@ defmodule Mutare.Transform.Bindings do
       Enum.scan(items, scope, fn item, entry ->
         case kind do
           :statements -> bind(entry, escaping(item))
-          :siblings -> conflict(entry, escaping(item))
+          :siblings -> conflict(entry, possible_writes(item))
           :unsequenced -> entry
         end
       end)
@@ -533,6 +539,9 @@ defmodule Mutare.Transform.Bindings do
   end
 
   defp escaping(node), do: BindingEscapeEmit.expression_bindings(node)
+
+  # What `node` may write: what it is guaranteed to bind, and any match anywhere in it.
+  defp possible_writes(node), do: escaping(node) ++ matched_names(node)
 
   defp union(:all, _names), do: :all
   defp union(_names, :all), do: :all

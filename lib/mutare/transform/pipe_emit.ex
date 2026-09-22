@@ -283,10 +283,16 @@ defmodule Mutare.Transform.PipeEmit do
   defp export_binding([]), do: :inline
   defp export_binding(names), do: {:export, names}
 
+  # Keeping argument 0 is necessary, not sufficient: a replacement whose own callee runs —
+  # a dynamic receiver the mutator introduced — would run it after the hoisted operand,
+  # where the source runs it before. Such a candidate takes branch-local delivery.
   defp keeps_argument?(%Candidate.InPlace{pin?: false, mutated: written}, written), do: true
 
-  defp keeps_argument?(%Candidate.InPlace{pin?: false, mutated: {_h, _m, [zero | _]}}, written),
-    do: zero == written
+  defp keeps_argument?(
+         %Candidate.InPlace{pin?: false, mutated: {_h, _m, [zero | _]} = mutated},
+         written
+       ),
+       do: zero == written and inert_callee?(mutated)
 
   defp keeps_argument?(_candidate, _written), do: false
 
