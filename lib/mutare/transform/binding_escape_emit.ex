@@ -23,7 +23,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   alias Mutare.Transform.{KeywordRouting, QuoteStructure}
   alias Mutare.Transform.{Calls, CoverageEmit, Ctx, Meta, PatternStructure, Resolve, SelectorEmit}
 
-  @doc "Bindings guaranteed to escape an expression, in their source order."
+  @doc "Bindings guaranteed to escape an expression, each once, in the order they are bound (a match's right-hand side before its pattern)."
   @spec expression_bindings(Macro.t()) :: [atom()]
   def expression_bindings(node), do: node |> bound_names(%{}) |> Enum.uniq()
 
