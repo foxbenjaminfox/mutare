@@ -11,8 +11,6 @@ defmodule Mutare.BindingExportTest do
   import Mutare.Test, only: [compile_metamutant: 3, with_active_mutant: 2]
   import Mutare.Test.SourcePatch, only: [assert_patches: 4]
 
-  alias Mutare.Transform.BindingEscapeEmit
-
   # `Enum.count(xs, p)` → `Enum.any?(xs, p)`: a second family on the same call, one that keeps
   # the binding argument the collection-arity mutant drops.
   defmodule KeepPredicate do
@@ -243,10 +241,87 @@ defmodule Mutare.BindingExportTest do
     end
   end
 
-  describe "what escapes an unresolved call" do
-    test "its do block is a scope of its own; the arguments before it export" do
-      call = Sourceror.parse_string!("with_retries(a = 1, b = 2) do\n  c = 3\nend")
-      assert BindingEscapeEmit.expression_bindings(call) == [:a, :b]
+  describe "siblings of an expression" do
+    # Elixir resets reads between the arguments of a call (`foo(x = 1, x)` does not compile)
+    # and lets their writes out only after the whole call, the last one winning. A position
+    # may not export a name an earlier sibling writes as "incoming": that write would
+    # override the sibling's. So such a name is fresh there, and a mutant dropping it is
+    # withheld — its delivery would need a selector around the enclosing call.
+    test "an earlier sibling's rebinding is not this position's incoming value" do
+      source = """
+      defmodule Fixture do
+        defp pair(left, right), do: {left, right}
+
+        def run do
+          p = :incoming
+          result = pair(p = :sibling, Enum.count([1], p = fn _ -> true end))
+          {result, p == :sibling}
+        end
+      end
+      """
+
+      # The source patch leaves `p == :sibling`; an export of the incoming `:incoming` at the
+      # second argument would not. Withheld, and the baseline still matches.
+      assert [] = assert_patches(source, [:collection_arity], [run: []], clean_functions: false)
+    end
+
+    test "an earlier sibling's fresh binding is not readable in this position" do
+      source = """
+      defmodule Fixture do
+        defp pair(left, right), do: {left, right}
+
+        def run do
+          result = pair(p = :sibling, Enum.count([1], p = fn _ -> true end))
+          {result, p == :sibling}
+        end
+      end
+      """
+
+      assert [] = assert_patches(source, [:collection_arity], [run: []], clean_functions: false)
+    end
+  end
+
+  describe "a binding a route declares" do
+    # `destructure/2`'s first position is routed `:binding_pattern`: it binds `x` without a
+    # `=` in sight, and `x`, bound on entry, is exported like any rebinding.
+    for {label, tail} <- [{"beside a match", "(y = 1)"}, {"alone", "1"}] do
+      test "counts as a rebinding of a name bound on entry (#{label})" do
+        source = """
+        defmodule Fixture do
+          def run(x) do
+            result = length(destructure([x], [8])) + #{unquote(tail)}
+            {result, x}
+          end
+        end
+        """
+
+        assert [_ | _] =
+                 assert_patches(source, [:arithmetic], [run: [100]], clean_functions: false)
+      end
+    end
+  end
+
+  describe "an unresolved call is ordinary, whatever its keywords are named" do
+    for {label, call} <- [
+          {"only do", "value(do: n = 8)"},
+          {"do first", "value(do: n = 8, other: 0)"},
+          {"do last", "value(other: 0, do: n = 8)"}
+        ] do
+      test "a local function taking options exports its `do:` binding (#{label})" do
+        source = """
+        defmodule Fixture do
+          defp value(opts), do: Keyword.fetch!(opts, :do)
+
+          def run do
+            result = div(#{unquote(call)}, 2)
+            {result, n}
+          end
+        end
+        """
+
+        assert [_ | _] =
+                 assert_patches(source, [:arithmetic], [run: []], clean_functions: false)
+      end
     end
   end
 

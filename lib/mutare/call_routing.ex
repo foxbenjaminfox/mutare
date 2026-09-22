@@ -92,12 +92,13 @@ defmodule Mutare.CallRouting do
   `:lazy_expression`: Mutare mutates the argument exactly as it would an `:expression`, and
   never evaluates it ahead of the call — every branch hands the callee the expression itself.
   A position routed as syntax (`:raw`, a pattern, `:hosted`, …) is never evaluated ahead either.
-  `:lazy_expression` can only switch that optimisation off, so it is safe to declare wherever
-  you are unsure; the price is a larger metamutant for long chains of such stages. One thing
-  it does not promise: a name the argument binds **fresh** (`lazy(x = f())`, with no `x` bound
-  before the call) is the callee's to scope, so Mutare does not export it past the call's
-  selector — under `:expression` it would. A name already bound before the call is exported
-  either way, whatever the argument rebinds it to.
+  `:lazy_expression` changes two things, and nothing else: the argument is never evaluated
+  ahead of the call, and a name it binds **fresh** (`lazy(x = f())`, with no `x` bound before
+  the call) is the callee's to scope, so Mutare does not carry it past the call's selector —
+  under `:expression` it would. A name already bound before the call is carried either way,
+  whatever the argument rebinds it to. So it is safe to declare wherever you are unsure,
+  provided the position does not bind fresh names read after the call; the price is a larger
+  metamutant for long chains of such stages.
 
   ## The vocabulary, tiered
 

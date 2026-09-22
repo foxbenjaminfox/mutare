@@ -1663,7 +1663,14 @@ argument is a plain keyword list *led by* `:do` as a do-block (it stamps
 `do:`/`end:` meta), so `for x <- xs, do: x, into: %{}` re-renders in block form
 with `into` stranded inside the body — source that still parses and fails only
 at compile. `normalize_for_options/1` moves `do:` to the end of the option list,
-which keeps that branch from firing.
+which keeps that branch from firing. The same branch fires for any call whose
+final keyword list is led by `do:` and holds an ordinary key too —
+`value(do: n = 8, other: 0)`, a function taking options — stranding `other 0`
+in the body, which does not compile. Reordering would change a function's
+argument, so `normalize_mixed_blocks/1` (2026-09-22) wraps such a list as a
+literal instead: the formatter brackets it and still normalizes into it, so a
+selector under `do:` renders as anywhere. A list of block keys alone is a
+correct do-block and is left to the formatter.
 
 **Dead end: exempting keyword-format keys (2026-09-18, Elixir 1.19.5).** Only a
 block key *lacking* `format: :keyword` renders as invalid `[:key => value]`, and a
@@ -12946,12 +12953,33 @@ fresh rule then applies, which is what applied to everything before), never over
 export naming an unbound name does not compile); `later` may over-count (a mutant withheld in
 vain), never miss. `PipeEmit` exports `matched ∩ bound` plus the fresh names every live branch
 binds; `Delivery.gate/2` withholds a whole-node replacement that drops a fresh name in `later`,
-in both passes, so counts and ids agree. The `later` set applies no scoping at all — a fresh
-name read outside its scope is a source error, so counting it costs nothing — and the walk
-sequences a function's arguments like statements but not a routed macro's, treats a module
-body as binding nothing for its definitions, and hands an *unresolved* call's `do` block a
-scope of its own (`BindingEscapeEmit.expression_bindings/1` agrees: `test`, `describe`,
-`schema` blocks are scopes, and a macro that splices its block inline is the odd one).
+in both passes, so counts and ids agree. The `later` set stops at the body of a definition, a
+`fn` or a clause (Elixir lets no binding out of one) and applies no scoping inside it — a
+fresh name read outside its scope is a source error, so counting it costs nothing. The walk
+treats a module body as binding nothing for its definitions.
+
+**Siblings are not statements (follow-up review, same day).** The first cut sequenced a
+call's arguments like a block's statements. Elixir does not: reads reset between the
+arguments of a call, a tuple, a list, an operator or a map (`foo(x = 1, x)` does not
+compile), and their writes come out only after the whole expression, the last one winning.
+Two consequences, both traced by the reviewer: an earlier sibling's fresh binding was
+claimed readable in the next argument (an export of it would not compile), and — silently —
+an export of an *incoming* value at the second argument (`p = :incoming; pair(p = :sibling,
+count(xs, p = f))` under the dropping mutant) overrode the first argument's write, `false`
+where the patch gives `true`. So a sibling now sees the entry set *less* what the siblings
+before it write; such a name is fresh there, and the dropping mutant is withheld rather than
+delivered wrongly. Delivering it would take a selector around the enclosing call — a new
+shape, for two sibling arguments rebinding one name — and was not built. A routed macro's
+value positions subtract every other position's writes, their order being the macro's.
+
+Two more from the same review. Existing-name exports were read from `=`/`<-` matches alone,
+so a name a route declares bound (`destructure/2`'s `:binding_pattern`) fell out of the
+export when the node was stamped — the old intersection had exported it; they now come from
+matched *and* escaping names. And the first cut's rule that an unresolved call's `do` block
+is a scope of its own broke an ordinary local function taking options (`value(do: n = 8)`):
+it is gone, per "every call is ordinary until a route says otherwise" — a scoping macro is
+routed `:lazy_expression`. The `do:`-first spelling of that call surfaced a separate,
+pre-existing rendering defect, fixed in `Render` ("Keyword-`do:` normalization").
 
 Two things came out beside it. `:lazy_expression` had been documented as safe to declare
 wherever unsure; it is, for a name bound before the call (exported either way now), and not

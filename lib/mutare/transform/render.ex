@@ -21,6 +21,7 @@ defmodule Mutare.Transform.Render do
     ast
     |> Macro.prewalk(&(&1 |> written_spelling() |> strip_annotations()))
     |> normalize_keyword_blocks()
+    |> normalize_mixed_blocks()
     |> normalize_for_options()
     |> Sourceror.to_string(Mutare.AST.render_opts())
   end
@@ -76,6 +77,38 @@ defmodule Mutare.Transform.Render do
       other ->
         other
     end)
+  end
+
+  # The same block form is chosen for *any* call whose final keyword list is led by `do:`,
+  # and if that list also holds an ordinary key (`value(do: n, other: 0)`, a function taking
+  # options) the key is stranded inside the body. Reordering, `normalize_for_options/1`'s
+  # remedy for a `for`, would change an ordinary function's argument; instead the list is
+  # wrapped as a literal, which the formatter brackets (`value(do: n, other: 0)` again) and
+  # still normalizes into — a selector under `do:` renders as it does anywhere. A list of
+  # block keys alone (`do:`/`else:`) is a correct do-block and is left to it.
+  @block_keys [:do, :else, :rescue, :catch, :after]
+
+  defp normalize_mixed_blocks(ast) do
+    Macro.prewalk(ast, fn
+      {form, meta, args} = node when is_list(args) and form != :for and form != :__block__ ->
+        case Enum.split(args, -1) do
+          {lead, [[{_key, _value} | _] = opts]} ->
+            if mixed_block_list?(opts),
+              do: {form, meta, lead ++ [{:__block__, [], [opts]}]},
+              else: node
+
+          _other ->
+            node
+        end
+
+      other ->
+        other
+    end)
+  end
+
+  defp mixed_block_list?([{first, _} | _] = opts) do
+    Enum.all?(opts, &match?({key, _} when is_atom(key), &1)) and first in @block_keys and
+      Enum.any?(opts, fn {key, _} -> key not in @block_keys end)
   end
 
   # Once keyword-syntax keys are unwrapped, Sourceror may choose the block form for

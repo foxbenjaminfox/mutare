@@ -87,6 +87,8 @@ defmodule Mutare.Transform.Candidate.Delivery do
   one already bound on entry is exported as the incoming value, so neither withholds.
   """
   @spec gate([node_candidate()], Macro.t()) :: [node_candidate()]
+  def gate([], _node), do: []
+
   def gate(candidates, node) do
     candidates
     |> filter_policy()

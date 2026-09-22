@@ -239,17 +239,21 @@ defmodule Mutare.Transform.PipeEmit do
   end
 
   # The names a selector over `original` exports, given its live `branches`: every name bound
-  # on entry that `original` may rebind, and every fresh name all the branches bind. `fresh`
-  # defaults to what `original` binds fresh.
+  # on entry that `original` may rebind — by a match anywhere in it, or by a position its
+  # route declares binding (`destructure/2`) — and every fresh name all the branches bind.
+  # `fresh` defaults to what `original` binds fresh.
   # mutare:ignore-start[operand_swap, call_removal] equivalent — the export tuple is built and matched from this one list, in any order, and a name listed twice matches one value twice
   defp export_names(original, branches, bound, fresh \\ nil) do
-    rebound = original |> Bindings.matched_names() |> Enum.filter(&MapSet.member?(bound, &1))
+    escaping = BindingEscapeEmit.expression_bindings(original)
 
-    fresh =
-      fresh ||
-        original
-        |> BindingEscapeEmit.expression_bindings()
-        |> Enum.reject(&MapSet.member?(bound, &1))
+    rebound =
+      original
+      |> Bindings.matched_names()
+      |> Kernel.++(escaping)
+      |> Enum.uniq()
+      |> Enum.filter(&MapSet.member?(bound, &1))
+
+    fresh = fresh || Enum.reject(escaping, &MapSet.member?(bound, &1))
 
     shared =
       Enum.reduce(branches, fresh, fn branch, names ->

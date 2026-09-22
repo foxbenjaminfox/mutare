@@ -143,6 +143,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stage reading (or rebinding) a name the operand rebinds (`m = 10; (m = 1) |> div(m)`) saw the
   value captured at creation; the metamutant failed to compile. Such a stage keeps ordinary
   branch-local delivery.
+- **A call taking options led by `do:` renders again.** The metamutant is rendered by the
+  stdlib formatter, which spells any call whose final keyword list starts with `do:` as a
+  do-block; with an ordinary key beside it (`value(do: n, other: 0)`, a function taking
+  options) that key was stranded inside the block, and the metamutant did not compile. Such
+  a list is now rendered bracketed; a list of block keys alone is the do-block it always was.
 - **The coverage probe runs under the mutants' `:schedulers` trim.** It kept every scheduler,
   on the assumption that what a suite executes does not depend on the count — but a branch on
   `System.schedulers_online/0` does, and so does the interleaving ExUnit's `max_cases` allows.

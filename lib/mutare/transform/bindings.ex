@@ -30,12 +30,15 @@ defmodule Mutare.Transform.Bindings do
   # definition's head patterns; a block's statements in order, each adding what
   # `Mutare.Transform.BindingEscapeEmit.expression_bindings/1` says escapes it, so an unrouted
   # call is a function here too; the clauses of `case`/`cond`/`fn`/`receive`/`try`/`with`/
-  # `for`, each seeing its own patterns; and a `Kernel` `if`/`unless` condition. A function's
-  # argument list is sequenced like statements; a routed macro's is not. A module body binds
-  # nothing for the definitions inside it, and the `do` block of a call core cannot resolve is
-  # a scope of its own — the one shape where an unknown macro is likelier than a function.
-  # Nothing under a `quote`, a routed foreign region, or a skipped call is stamped: nothing
-  # there is offered.
+  # `for`, each seeing its own patterns; and a `Kernel` `if`/`unless` condition. The siblings
+  # of an argument list, a tuple, a list or an operator are **not** sequenced: Elixir resets
+  # reads between them (`foo(x = 1, x)` does not compile) and lets their writes out only after
+  # the whole expression, the last one winning. So a sibling sees the entry set *less* what
+  # the siblings before it write — a name an earlier sibling rebinds is not one this position
+  # may export as "incoming", since that write would override the sibling's. A routed macro's
+  # value positions subtract every other position's writes, their order being the macro's. A
+  # module body binds nothing for the definitions inside it. Nothing under a `quote`, a routed
+  # foreign region, or a skipped call is stamped: nothing there is offered.
   #
   # `later` is every variable-shaped name in what follows the node in evaluation order — the
   # later siblings, then the enclosing node's, out to the body the node is in — with the match
@@ -57,7 +60,6 @@ defmodule Mutare.Transform.Bindings do
   @definitions [:def, :defp, :defmacro, :defmacrop]
   @modules [:defmodule, :defimpl, :defprotocol]
   @structural [:case, :cond, :if, :unless, :with, :for, :try, :receive]
-  @block_keys [:do, :else, :rescue, :catch, :after]
   @values [:expression, :interior, :lazy_expression]
 
   @doc """
@@ -242,10 +244,11 @@ defmodule Mutare.Transform.Bindings do
   # The subject (or condition) is evaluated first, and what it binds the clauses see.
   defp structural({form, meta, [subject, blocks]}, bound, later)
        when form in [:case, :if, :unless] and is_list(blocks) do
-    {subject, subject_referenced, subject_binds?} =
-      walk(subject, bound, union(later, referenced_names(blocks)))
-
     {blocks, referenced, binds?} = blocks(form, blocks, union(bound, escaping(subject)), later)
+
+    {subject, subject_referenced, subject_binds?} =
+      walk(subject, bound, union(later, referenced))
+
     binds? = subject_binds? or binds?
 
     {{form, stamp_if(meta, binds?, bound, later), [subject, blocks]},
@@ -311,9 +314,8 @@ defmodule Mutare.Transform.Bindings do
   # The keyword blocks of a structural form (or of a definition, read as a `try`'s). A `->`
   # clause list is scoped per clause; a plain block is a statement sequence. An `else:` sees
   # `outer` — a `with`'s `else` never sees its clauses' bindings. What a block binds never
-  # leaves the form, so nothing is read after it — except under an unresolved call's `do`
-  # (`:call`), a macro that may splice its block inline.
-  defp blocks(form, blocks, bound, later, outer \\ nil) do
+  # leaves the form, so nothing is read after it.
+  defp blocks(form, blocks, bound, _later, outer \\ nil) do
     outer = outer || bound
 
     blocks
@@ -322,10 +324,9 @@ defmodule Mutare.Transform.Bindings do
       {key, value}, {acc, referenced, binds?} ->
         name = AST.key_atom(key)
         scope = if name == :else, do: outer, else: bound
-        value_later = if form == :call, do: union(later, referenced), else: MapSet.new()
 
         {value, value_referenced, value_binds?} =
-          block(form, name, value, scope, value_later)
+          block(form, name, value, scope, MapSet.new())
 
         {[{key, value} | acc], union(referenced, value_referenced), binds? or value_binds?}
 
@@ -358,28 +359,28 @@ defmodule Mutare.Transform.Bindings do
   # A clause's body sees its patterns, or what its head expression binds; what it binds is
   # read by nothing after it. (A bare `->`, outside any form this pass reads, keeps `later`.)
   defp clause({:->, meta, [heads, body]}, kind, bound, later) do
-    {heads, names, heads_referenced, heads_binds?} =
-      clause_heads(heads, kind, bound, union(later, referenced_names(body)))
-
+    names = clause_names(heads, kind)
     body_later = if kind == :bare, do: later, else: MapSet.new()
     {body, referenced, binds?} = scoped(body, union(bound, names), body_later)
+
+    {heads, heads_referenced, heads_binds?} =
+      clause_heads(heads, kind, bound, union(later, referenced))
+
     {{:->, meta, [heads, body]}, union(heads_referenced, referenced), heads_binds? or binds?}
   end
 
   defp clause(other, _kind, bound, later), do: walk(other, bound, later)
 
+  defp clause_names([head], :expression), do: escaping(head)
+  defp clause_names(heads, _kind), do: heads |> Enum.flat_map(&pattern_names/1) |> MapSet.new()
+
   defp clause_heads([head], :expression, bound, later) do
     {head, referenced, binds?} = walk(head, bound, later)
-    {[head], escaping(head), referenced, binds?}
-  end
-
-  defp clause_heads(heads, kind, _bound, _later) when kind in [:pattern, :bare] do
-    names = heads |> Enum.flat_map(&pattern_names/1) |> MapSet.new()
-    {heads, names, referenced_names(heads), matched_names(heads) != []}
+    {[head], referenced, binds?}
   end
 
   defp clause_heads(heads, _kind, _bound, _later),
-    do: {heads, MapSet.new(), referenced_names(heads), matched_names(heads) != []}
+    do: {heads, referenced_names(heads), matched_names(heads) != []}
 
   defp pattern_names({:when, _meta, args}) do
     {patterns, _guard} = Enum.split(args, -1)
@@ -388,54 +389,45 @@ defmodule Mutare.Transform.Bindings do
 
   defp pattern_names(pattern), do: PatternStructure.bound_var_names(pattern)
 
-  # --- calls: arguments in sequence, a `do` block of an unresolved call in its own scope ----
+  # --- calls: siblings share the entry set, less what the ones before them write --------------
 
-  defp call({form, meta, args} = node, bound, later) do
-    {form, form_referenced, form_binds?} = walk(form, bound, union(later, referenced_names(args)))
-
+  defp call({form, meta, args}, bound, later) do
     {args, referenced, binds?} =
       case Meta.routing(meta) do
         routes when is_list(routes) -> routed_arguments(args, routes, bound, later)
-        _unrouted -> plain_arguments(node, args, bound, later)
+        _unrouted -> sequence(args, bound, later, false)
       end
 
+    # The callee expression runs first, so everything the arguments reference follows it.
+    {form, form_referenced, form_binds?} = walk(form, bound, union(later, referenced))
     binds? = form_binds? or binds?
 
     {{form, stamp_if(meta, binds?, bound, later), args}, union(form_referenced, referenced),
      binds?}
   end
 
-  defp plain_arguments(node, args, bound, later) do
-    case Enum.split(args, -1) do
-      {lead, [[{key, _} | _] = blocks]} when is_list(blocks) ->
-        if AST.key_atom(key) in @block_keys and keyword?(blocks) and
-             is_nil(Calls.resolved_call(node)) do
-          {lead, inner, lead_referenced, lead_binds?} =
-            sequence_bound(lead, bound, union(later, referenced_names(blocks)), true)
-
-          {blocks, referenced, binds?} = blocks(:call, blocks, inner, later)
-          {lead ++ [blocks], union(lead_referenced, referenced), lead_binds? or binds?}
-        else
-          sequence(args, bound, later)
-        end
-
-      _other ->
-        sequence(args, bound, later)
-    end
-  end
-
-  # A keyword list whose keys Sourceror may have wrapped.
-  defp keyword?(list),
-    do: Enum.all?(list, &(match?({_key, _value}, &1) and AST.key_atom(elem(&1, 0)) != nil))
-
-  # A route says how each position is read: only the value positions are walked, and a
-  # macro's arguments are not sequenced — nothing says it evaluates them in order.
+  # A route says how each position is read: only the value positions are walked. A macro
+  # places its arguments as it likes, so each value position subtracts every other one's writes.
   defp routed_arguments(args, routes, bound, later) do
-    args
-    |> Enum.zip(routes)
+    positions = Enum.zip(args, routes)
+
+    writes =
+      for {arg, route} <- positions, route in @values, reduce: [] do
+        acc -> [{arg, escaping(arg)} | acc]
+      end
+
+    positions
     |> Enum.reverse()
     |> Enum.reduce({[], MapSet.new(), false}, fn {arg, route}, {acc, referenced, binds?} ->
-      {arg, arg_referenced, arg_binds?} = position(arg, route, bound, union(later, referenced))
+      others =
+        for {other, names} <- writes,
+            other != arg,
+            reduce: MapSet.new(),
+            do: (acc -> union(acc, names))
+
+      {arg, arg_referenced, arg_binds?} =
+        position(arg, route, MapSet.difference(bound, others), union(later, referenced))
+
       {[arg | acc], union(referenced, arg_referenced), binds? or arg_binds?}
     end)
   end
@@ -449,25 +441,40 @@ defmodule Mutare.Transform.Bindings do
   defp position(arg, {:keyed, _, _} = treatment, bound, later),
     do: keyword_position(arg, treatment, bound, later)
 
+  # A declared binding position (`destructure/2`'s pattern) binds, whatever its syntax.
+  defp position(arg, :binding_pattern, _bound, _later),
+    do: {arg, referenced_names(arg), PatternStructure.bound_var_names(arg) != []}
+
   defp position(arg, _treatment, _bound, _later), do: opaque(arg)
 
   defp keyword_position(arg, treatment, bound, later) do
     case KeywordRouting.decode(arg, treatment) do
       {:pairs, pairs, rewrap} ->
+        writes =
+          for {{_key, _key_treatment}, {value, value_treatment}} <- pairs,
+              value_treatment in @values,
+              reduce: MapSet.new() do
+            acc -> union(acc, escaping(value))
+          end
+
         {pairs, referenced, binds?} =
           pairs
           |> Enum.reverse()
           |> Enum.reduce({[], MapSet.new(), false}, fn {{key, key_treatment},
                                                         {value, value_treatment}},
                                                        {acc, referenced, binds?} ->
+            # Its own writes are the node's to export; every other value's are not readable.
+            own = if value_treatment in @values, do: escaping(value), else: MapSet.new()
+            entry = MapSet.difference(bound, MapSet.difference(writes, own))
+
             {value, value_referenced, value_binds?} =
-              position(value, value_treatment, bound, union(later, referenced))
+              position(value, value_treatment, entry, union(later, referenced))
 
             {key, key_referenced, key_binds?} =
               position(
                 key,
                 key_treatment,
-                bound,
+                entry,
                 union(later, union(referenced, value_referenced))
               )
 
@@ -492,29 +499,25 @@ defmodule Mutare.Transform.Bindings do
 
   defp scoped(body, bound, later), do: walk(body, bound, later)
 
-  # Items evaluated in order: each is followed by what the ones after it reference, and
-  # (`sequenced?`) sees what the ones before it bind.
+  # Items evaluated in order, each followed by what the ones after it reference. Statements
+  # (`sequenced?`) see what the ones before them bind; siblings of an expression see the entry
+  # set less what the ones before them write — a write only the expression's end lets out.
   defp sequence(items, bound, later, sequenced? \\ true) do
-    {items, _bound, referenced, binds?} = sequence_bound(items, bound, later, sequenced?)
-    {items, referenced, binds?}
-  end
+    writes = Enum.map(items, &escaping/1)
 
-  defp sequence_bound(items, bound, later, sequenced?) do
     entries =
-      if sequenced?,
-        do: Enum.scan(items, bound, fn item, acc -> union(acc, escaping(item)) end),
-        else: Enum.map(items, fn _item -> bound end)
-
-    {items, referenced, binds?} =
-      items
-      |> Enum.zip([bound | entries])
-      |> Enum.reverse()
-      |> Enum.reduce({[], MapSet.new(), false}, fn {item, entry}, {acc, referenced, binds?} ->
-        {item, item_referenced, item_binds?} = walk(item, entry, union(later, referenced))
-        {[item | acc], union(referenced, item_referenced), binds? or item_binds?}
+      writes
+      |> Enum.scan(bound, fn names, entry ->
+        if sequenced?, do: union(entry, names), else: MapSet.difference(entry, names)
       end)
 
-    {items, List.last(entries) || bound, referenced, binds?}
+    items
+    |> Enum.zip([bound | entries])
+    |> Enum.reverse()
+    |> Enum.reduce({[], MapSet.new(), false}, fn {item, entry}, {acc, referenced, binds?} ->
+      {item, item_referenced, item_binds?} = walk(item, entry, union(later, referenced))
+      {[item | acc], union(referenced, item_referenced), binds? or item_binds?}
+    end)
   end
 
   defp escaping(node), do: node |> BindingEscapeEmit.expression_bindings() |> MapSet.new()
