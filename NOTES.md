@@ -8628,6 +8628,50 @@ a *partial* dump from a failed probe — an id attributed to file A may also be 
 the aborted run never reached, so its covering-file set is silently incomplete and selection built
 on it can manufacture false survivors; retry-then-degrade is the sound shape.
 
+### A deep `setup_all` hid its frame below the reported stack `[fixed — backtrace fallback]`
+Dogfooding `mix mutare --only lib/mutare/transform/binding_escape_emit.ex` ran for hours: 185 of
+the 251 covered ids were **unlabeled**, so each of those mutants ran the whole unit suite (~150 s
+at 4 schedulers, against 2–35 s for a narrowed one). Instrumenting the sandbox's helper showed
+every unlabeled hit came from a `setup_all` — twelve test modules run the transform over fixtures
+there — and each had the same shape: no `$process_label` (ExUnit 1.19 labels test processes, not
+`setup_all` ones), no `$callers`, and a `current_stacktrace` of exactly 20 frames without the
+`{Mod, :__ex_unit__, 2}` frame that `stacktrace_label/1` looks for. The frame was there, 31–45
+frames down in the unabridged `:backtrace`.
+
+Two VM facts combine:
+
+  - `current_stacktrace` keeps only `backtrace_depth` innermost frames (8 by default; ExUnit sets
+    20). OTP has no read-only accessor for the flag: `system_flag/2` returns the old value only by
+    setting a new one, for every process.
+  - It reports a run of frames with one return address **once**. Five levels of a self-recursive
+    call show as one frame, so a recursive walker is already compressed there, and the frame was
+    still more than 20 *distinct* call sites away. The same fact means a probe can't learn the
+    cap by recursing through one call site; the reported length never grows.
+
+Who else meets it: any `setup_all` whose *first* instrumented hit is deep — the recovery result
+is memoized per process, failure included, so the first hit decides for the whole process — and
+on Elixir 1.18, where no test process is labeled, any test body that way. A scoped run (`--only`,
+`--since`, `--line`) makes it likelier: the shallow entry function that would have labeled the
+process first is not instrumented. It never produced a false survivor, only whole-suite runs,
+with nothing reported.
+
+The fix (`Mutare.Coverage.HelperTemplate`, `stacktrace_label/1`): when the reported frames name no
+ExUnit owner **and** their count is the cap, the outer frames may be missing, so the frame readers
+run again over the `:backtrace` dump. Its `(Module:function/arity + offset)` frame lines are
+decoded with `:erl_scan` (exact for quoted and escaped atoms, and stdlib, so the helper stays
+dependency-free); an undecodable line is skipped, which can only leave an id unlabeled. The dump is
+costly — it prints the stack's live terms — so it is read only on that condition, and at most once
+per memoized recovery. The cap is measured rather than read: `stack_cut?/1` grows the helper's own
+stack until the reported length passes the length under test (no cut) or stops growing (the cap),
+alternating between two call sites to get past the collapsing above. Rejected: raising the flag
+around the read — global, so a concurrent test's exception would lose or gain frames.
+
+Result on the same run: 0 unlabeled ids (the 185 are now whole-file ids of their `setup_all`
+modules), and the file's run took 13 minutes. Regressions: `helper_template_test.exs` reaches `hit/1` from
+a `__ex_unit__/2` dispatch, a test body with a quoted and escaped Unicode name, and a plain
+function, each below the cap — after asserting the reported stack really lost the entry frame, so
+a larger `backtrace_depth` cannot pass them vacuously.
+
 ### PropCheck counter-examples DETS corruption under concurrent workers `[fixed]`
 Found dogfooding mutare on itself with `--workers 4`. `PropCheck.App` starts
 `PropCheck.CounterStrike` at *application boot* — i.e. on every `mix test` invocation,

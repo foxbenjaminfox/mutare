@@ -507,13 +507,73 @@ defmodule Mutare.Coverage.HelperTemplate do
   # cross-file-dependency limitation `:coverage` mode already has for ordinary per-file attribution
   # (`:full` is the escape hatch) — the only change is that `setup_all` no longer gets the extra
   # whole-suite conservatism the unlabeled bucket used to give it.
+  #
+  # `current_stacktrace` holds only the VM's `backtrace_depth` innermost frames (20 under ExUnit),
+  # and a `setup_all` that runs deep code — a recursive walker, a layered fixture builder — can
+  # bury its dispatch frame below them. So when the frames read find nothing and there are as
+  # many as the cap allows, the outer frames may be missing: they are read from the process's
+  # unabridged `:backtrace` instead (`backtrace_frames/1`). That dump is costly, which is why it
+  # is read only then, and why the recovery result is memoized (`recovery_label/0`) — NOTES "A
+  # deep `setup_all` hid its frame below the reported stack".
   defp stacktrace_label(pid) do
     case Process.info(pid, :current_stacktrace) do
       {:current_stacktrace, stack} ->
-        named_frame(stack) || dispatched_test_frame(stack) || on_exit_frame(stack)
+        frame_label(stack) ||
+          if stack_cut?(length(stack)), do: pid |> backtrace_frames() |> frame_label()
 
       _ ->
         nil
+    end
+  end
+
+  defp frame_label(stack),
+    do: named_frame(stack) || dispatched_test_frame(stack) || on_exit_frame(stack)
+
+  # Whether a `current_stacktrace` of `length` frames may have lost its outer frames, i.e. whether
+  # `length` is the cap. OTP reads `backtrace_depth` only by setting it (for every process), so
+  # measure it instead: grow our own stack a frame at a time until its reported length passes
+  # `length` (the cap is higher, so nothing was cut) or stops growing (the cap, which `length`
+  # cannot exceed).
+  defp stack_cut?(length), do: stack_cap(length, -1, :a) <= length
+
+  # The VM reports a run of frames with one return address once, so a recursion through a single
+  # call site would never grow the reported stack; the recursion alternates between two.
+  defp stack_cap(length, previous, site) do
+    {:current_stacktrace, stack} = Process.info(self(), :current_stacktrace)
+    own = length(stack)
+
+    cond do
+      own == previous -> own
+      own > length -> own
+      site == :a -> max(stack_cap(length, own, :b), own)
+      true -> max(stack_cap(length, own, :a), own)
+    end
+  end
+
+  # `pid`'s whole stack, as `{module, function, arity, []}` frames innermost first, read from its
+  # `:backtrace` dump: the `Program counter:` line and each `Return addr` line end in
+  # `(Module:function/arity + offset)`, with atoms in Erlang syntax, which `:erl_scan` reads
+  # exactly (quoting and escapes included). A line it cannot read is skipped: a frame lost here
+  # can only leave an id unlabeled (whole suite), never misattribute it.
+  defp backtrace_frames(pid) do
+    case Process.info(pid, :backtrace) do
+      {:backtrace, dump} ->
+        ~r/(?:Program counter:|Return addr) 0x[[:xdigit:]]+ \((.+) \+ \d+\)$/m
+        |> Regex.scan(dump, capture: :all_but_first)
+        |> Enum.flat_map(fn [mfa] -> backtrace_frame(mfa) end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp backtrace_frame(mfa) do
+    with chars when is_list(chars) <- :unicode.characters_to_list(mfa),
+         {:ok, [{:atom, _, mod}, {:":", _}, {:atom, _, fun}, {:/, _}, {:integer, _, arity}], _} <-
+           :erl_scan.string(chars) do
+      [{mod, fun, arity, []}]
+    else
+      _ -> []
     end
   end
 

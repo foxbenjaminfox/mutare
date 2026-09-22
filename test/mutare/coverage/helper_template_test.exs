@@ -15,6 +15,41 @@ defmodule Mutare.Coverage.HelperTemplateTest.OnExitFixture do
   end
 end
 
+# Stand-ins for ExUnit's generated setup dispatch (`__ex_unit__/2`) and a test body that reach
+# their innermost call through more distinct frames than `current_stacktrace` reports, so the
+# owning frame shows only in the process's `:backtrace` — a `setup_all` running a deep walker.
+defmodule Mutare.Coverage.HelperTemplateTest.DeepFixture do
+  @moduledoc false
+
+  def __ex_unit__(frames, fun) do
+    descend(frames, fun)
+    :ok
+  end
+
+  def unquote(:"test it's a \\ ünïcode → name")(frames, fun) do
+    descend(frames, fun)
+    :ok
+  end
+
+  def plain(frames, fun) do
+    descend(frames, fun)
+    :ok
+  end
+
+  # Two call sites, alternated: the VM reports a run of frames with one return address once.
+  def descend(0, fun), do: fun.()
+
+  def descend(n, fun) when rem(n, 2) == 0 do
+    descend(n - 1, fun)
+    :ok
+  end
+
+  def descend(n, fun) do
+    descend(n - 1, fun)
+    :ok
+  end
+end
+
 defmodule Mutare.Coverage.HelperTemplateTest do
   # The coverage helper is a real, compiled module (`Mutare.Coverage.HelperTemplate`) whose
   # *source* is copied verbatim into each sandbox as `:mutare_cov` — so in a normal run its
@@ -28,7 +63,7 @@ defmodule Mutare.Coverage.HelperTemplateTest do
   use ExUnit.Case, async: false
 
   alias Mutare.Coverage.HelperTemplate, as: H
-  alias Mutare.Coverage.HelperTemplateTest.OnExitFixture
+  alias Mutare.Coverage.HelperTemplateTest.{DeepFixture, OnExitFixture}
 
   # Tables are created once and owned by the (module-lifetime) setup_all process, so they
   # survive across every test. `hit([777])` here runs *inside* `__ex_unit__/2`, exercising the
@@ -316,6 +351,29 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       assert :ets.lookup(H.agg_table(), 777) == [{777}]
     end
 
+    test "a setup_all dispatch below the reported stack is recovered from the backtrace" do
+      run_deep(:__ex_unit__, [871])
+
+      assert :ets.lookup(H.attr_table(), {DeepFixture, 871}) == [{{DeepFixture, 871}}]
+      assert :ets.lookup(H.wholefile_table(), 871) == [{871}]
+      assert :ets.lookup(H.unlabeled_table(), 871) == []
+    end
+
+    test "a test body below the reported stack keeps its exact name, however it is quoted" do
+      name = :"test it's a \\ ünïcode → name"
+      run_deep(name, [872])
+
+      assert :ets.lookup(H.test_table(), {DeepFixture, name, 872}) == [{{DeepFixture, name, 872}}]
+      assert :ets.lookup(H.unlabeled_table(), 872) == []
+    end
+
+    test "a deep stack with no ExUnit frame anywhere stays unlabeled" do
+      run_deep(:plain, [873])
+
+      assert :ets.lookup(H.unlabeled_table(), 873) == [{873}]
+      refute Enum.any?(:ets.tab2list(H.attr_table()), fn {{_mod, id}} -> id == 873 end)
+    end
+
     test "a runnable test name records the id to the per-test table (narrowable)" do
       run_in(fn -> H.hit([111, 112]) end, label: {PerTestMod, :"test does a thing"})
 
@@ -565,6 +623,30 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       assert 601 in payload.aggregate[nil]
       refute Enum.any?(Map.values(payload.by_file), &(601 in Map.get(&1, nil, [])))
     end
+  end
+
+  # Run `DeepFixture.<entry>` in a bare spawn, hitting `ids` below more frames than the reported
+  # stack holds — after checking that the reported stack really has lost the entry frame, so a
+  # raised `backtrace_depth` cannot make these tests pass without the backtrace read.
+  defp run_deep(entry, ids) do
+    parent = self()
+    frames = 100
+
+    run_in(
+      fn ->
+        apply(DeepFixture, entry, [
+          frames,
+          fn ->
+            {:current_stacktrace, stack} = Process.info(self(), :current_stacktrace)
+            send(parent, {:reported, Enum.any?(stack, &match?({DeepFixture, ^entry, 2, _}, &1))})
+            H.hit(ids)
+          end
+        ])
+      end,
+      label: nil
+    )
+
+    assert_received {:reported, false}
   end
 
   # A live, labeled process to stand in a worker's `$callers` chain; killed on test exit.
