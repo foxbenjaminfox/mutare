@@ -168,10 +168,13 @@ defmodule Mutare.Transform.PipeEmit do
   defp binding({:split, _inner, outer}, :outer), do: outer
   defp binding(binding, _layer), do: binding
 
-  # An unrouted call is a function, whose every argument is a value. (A skipped call is never
-  # analyzed, so it has no candidates to deliver.)
+  # An unrouted call is a function, whose every argument is a value.
   defp value_position?(nil), do: true
   defp value_position?([zero | _rest]), do: zero in [:expression, :interior]
+
+  # A skipped call keeps only the mutants that replace it whole, as a function's tail.
+  # mutare:ignore[boolean] equivalent — those keep no argument 0, so they never ride the closure
+  defp value_position?(:skip), do: false
 
   # A bare call or a call on a statically resolved module has no runtime callee expression to
   # move across argument 0. A dynamic remote/anonymous receiver is evaluated before its
