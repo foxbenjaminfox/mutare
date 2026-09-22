@@ -10,7 +10,12 @@ defmodule Mutare.Test.SourcePatchGenerators do
   Two names are bound before the expression: `left`, which the `:rebinding` operand rebinds
   (and the `:declared` operands rebind through `destructure/2`'s declared `:binding_pattern`
   position, in the open and beneath a `:lazy_expression` one), and `right`, which every stage
-  rebinds and the `:dropped` delivery leaves at its incoming value. Every fixture has a mutation-bearing `other/1`. SourcePatch probes both functions under
+  rebinds and the `:dropped` delivery leaves at its incoming value. The deliveries cross two
+  emitters: the ordinary selector around the arithmetic (`:retained`, `:moved`, `:split`,
+  `:dropped`) and the structural pattern selector, in which the whole expression is the RHS
+  of a mutated `=` pattern (`:matched`) or the value of a mutated `destructure/2`
+  (`:destructured`) — the same operand bound beneath each does not exercise the same
+  implementation. Every fixture has a mutation-bearing `other/1`. SourcePatch probes both functions under
   every mutant, exercising the clean path when a mutant belongs elsewhere as well as the
   baseline and active path. Relational mutations also exercise lifted guard delivery.
 
@@ -57,7 +62,8 @@ defmodule Mutare.Test.SourcePatchGenerators do
 
   def spellings, do: [:direct, :piped, :grouped]
   # `:dropped` removes the stage's second argument, and with it the `right` binding it made.
-  def deliveries, do: [:retained, :moved, :split, :dropped]
+  # `:matched` and `:destructured` mutate a pattern the expression is the value of.
+  def deliveries, do: [:retained, :moved, :split, :dropped, :matched, :destructured]
 
   # `:binding` is a dynamic callee whose receiver expression itself binds a name read later.
   def callees, do: [:static, :dynamic, :binding]
@@ -152,7 +158,7 @@ defmodule Mutare.Test.SourcePatchGenerators do
           #{imports}
           #{prelude(recipe.operand)}
           right = :absent
-          result = #{expression}
+          #{result(recipe.delivery, expression)}
           {result, #{Enum.join(bindings ++ callee_bindings ++ ["right"], ", ")}}
         end)
       end
@@ -167,6 +173,7 @@ defmodule Mutare.Test.SourcePatchGenerators do
     # test failures.
     mutators =
       case {recipe.callee, recipe.delivery} do
+        {_callee, structural} when structural in [:matched, :destructured] -> [:pattern_swap]
         {:static, :retained} -> [:arithmetic]
         {:static, :moved} -> [:operand_swap]
         {:static, :split} -> [:arithmetic, :operand_swap]
@@ -192,6 +199,17 @@ defmodule Mutare.Test.SourcePatchGenerators do
       opts: opts
     }
   end
+
+  # The statement binding `result`: the expression itself, or — under a structural delivery —
+  # the value of a pattern the swap mutates, whose two names are then observed together.
+  defp result(:matched, expression),
+    do: "{result, marker} = {#{expression}, :marker}\n          result = {result, marker}"
+
+  defp result(:destructured, expression),
+    do:
+      "destructure([result, marker], [#{expression}, :marker])\n          result = {result, marker}"
+
+  defp result(_delivery, expression), do: "result = #{expression}"
 
   defp operand(:plain), do: {"F.tick(n, :left)", [], []}
   defp operand(:binding), do: {"(left = F.tick(n, :left))", ["left"], []}

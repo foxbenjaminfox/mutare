@@ -627,6 +627,154 @@ defmodule Mutare.BindingExportTest do
     end
   end
 
+  describe "a structural pattern selector exports what its expression binds" do
+    # The tuple-export delivery runs a `=`'s RHS, or a binding macro's whole call, inside a
+    # selector branch: what that expression binds beyond the pattern is trapped there unless
+    # the export carries it out. Each case below once diverged from its source patch at the
+    # *baseline*, or failed the whole metamutant's compile.
+    for {label, prelude} <- [{"rebinding", "values = :before"}, {"fresh", ""}] do
+      test "a match RHS argument's #{label} escapes with the pattern" do
+        source = """
+        defmodule Fixture do
+          def run do
+            #{unquote(prelude)}
+            {low, high} = Enum.min_max(values = [1, 2])
+            {low, high, values}
+          end
+        end
+        """
+
+        # Original `{1, 2, [1, 2]}`; the swap `{2, 1, [1, 2]}` — never `:before`, never unbound.
+        sites = assert_patches(source, [:pattern_swap], [run: []], clean_functions: false)
+        assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
+      end
+
+      test "a binding macro's value argument's #{label} escapes with the pattern" do
+        source = """
+        defmodule Fixture do
+          def run do
+            #{unquote(prelude)}
+            destructure([low, high], values = [1, 2])
+            {low, high, values}
+          end
+        end
+        """
+
+        sites = assert_patches(source, [:pattern_swap], [run: []], clean_functions: false)
+        assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
+      end
+    end
+
+    test "a declared binding nested in a match RHS escapes with the pattern" do
+      source = """
+      defmodule Fixture do
+        def run do
+          x = :before
+          y = :before
+          {a, b} = List.to_tuple(destructure([x, y], [1, 2]))
+          {a, b, x, y}
+        end
+      end
+      """
+
+      # Original `{1, 2, 1, 2}`: the inner `destructure/2` is a value here, not a statement,
+      # so only the outer pattern is offered — and its export must still carry `x` and `y`.
+      sites = assert_patches(source, [:pattern_swap], [run: []], clean_functions: false)
+      assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
+    end
+
+    test "a fresh RHS binding nothing reads stays trapped, unexported" do
+      source = """
+      defmodule Fixture do
+        def run do
+          {low, high} = Enum.min_max(values = [1, 2])
+          {low, high}
+        end
+      end
+      """
+
+      %{metamutant: meta, sites: sites} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.PatternSwap]
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
+      assert meta =~ "{low, high} ="
+      refute meta =~ "values} ="
+    end
+
+    test "a pin the RHS may rebind anywhere withholds the pattern's candidates" do
+      # Elixir reads `^x` from before the whole match; the generated `case RHS do {^x, y} …`
+      # would read it after the RHS rebound it, so `run(2)` would match where the source raises.
+      # The chain-only check (`{^x, y} = {x, _} = e`) missed a rebinding inside an argument.
+      source = """
+      defmodule Fixture do
+        def run(value) do
+          x = 1
+          {^x, y} = Function.identity({x = value, :ok})
+          {x, y}
+        end
+      end
+      """
+
+      assert [] =
+               assert_patches(source, [:pattern_swap], [run: [1], run: [2]],
+                 clean_functions: false
+               )
+    end
+
+    test "a re-homed whole-call mutant dropping a fresh binding read later is withheld" do
+      # `Mutare.Test.UnpackMutator` replaces `unpack/2`'s value with a literal — dropping the
+      # `v` the value bound. Read after, that patch would not compile; the pattern swap, which
+      # keeps the value, is still delivered, and its export carries `v` out.
+      source = unpack_fixture("", "{x - y, v}")
+
+      sites =
+        assert_patches(source, [:pattern_swap, Mutare.Test.UnpackMutator], [run: []],
+          clean_functions: false
+        )
+
+      assert Enum.map(sites, & &1.mutator) == [:pattern_swap]
+    end
+
+    test "a re-homed whole-call mutant dropping a fresh binding nothing reads is delivered" do
+      source = unpack_fixture("", "x - y")
+
+      sites =
+        assert_patches(source, [:pattern_swap, Mutare.Test.UnpackMutator], [run: []],
+          clean_functions: false
+        )
+
+      assert Enum.sort(Enum.map(sites, & &1.mutator)) == [:pattern_swap, :unpack_call]
+    end
+
+    test "a re-homed whole-call mutant dropping a rebinding leaves the incoming value" do
+      # The source patch `unpack([x, y], [9, 9])` leaves `v == :before`; so must the branch.
+      source = unpack_fixture("v = :before", "{x - y, v}")
+
+      sites =
+        assert_patches(source, [:pattern_swap, Mutare.Test.UnpackMutator], [run: []],
+          clean_functions: false
+        )
+
+      assert Enum.sort(Enum.map(sites, & &1.mutator)) == [:pattern_swap, :unpack_call]
+    end
+  end
+
+  defp unpack_fixture(prelude, result) do
+    """
+    defmodule Fixture do
+      import Mutare.Test.QueryDSL
+
+      def run do
+        #{prelude}
+        unpack([x, y], v = [5, 2])
+        #{result}
+      end
+    end
+    """
+  end
+
   defp count_fixture(call, directive) do
     """
     defmodule Fixture do

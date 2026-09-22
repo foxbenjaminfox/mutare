@@ -68,6 +68,7 @@ defmodule Mutare.TransformSourcePatchPropertyTest do
 
       expected =
         case {recipe.callee, recipe.delivery} do
+          {_callee, structural} when structural in [:matched, :destructured] -> [:pattern_swap]
           {:static, :retained} -> [:arithmetic]
           {:static, :moved} -> [:operand_swap]
           {:static, :split} -> [:arithmetic, :operand_swap]

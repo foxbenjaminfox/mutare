@@ -14,9 +14,10 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   #   * a `for` qualifier                                       → `analyze_match_statement/2`
 
   alias Mutare.AST
-  alias Mutare.Transform.{Calls, Candidate, Meta, NodeRange, PatternStructure}
+  alias Mutare.Transform.{BindingEscapeEmit, Bindings, Calls, Candidate, Meta, NodeRange}
   alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.Attach
+  alias Mutare.Transform.PatternStructure
 
   # === match (`=`) pattern structure =========================================
 
@@ -45,7 +46,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
         {raw_pattern, rebuild_mutant} ->
           node
           |> Analyze.annotate(env)
-          |> attach_macro_pattern_candidates(raw_pattern, rebuild_mutant, env)
+          |> attach_macro_pattern_candidates(node, raw_pattern, rebuild_mutant, env)
       end
     end
   end
@@ -56,9 +57,9 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # analyzes as ordinary runtime. A `for` qualifier deliberately stops here — a bare macro
   # call as a qualifier is a *filter* (its truthiness selects iterations), so rewriting it to
   # a binding would silently drop the filter; only a `=` (already a binding qualifier) is safe.
-  def analyze_match_statement({:=, _meta, [raw_lhs, raw_rhs]} = match, env) do
+  def analyze_match_statement({:=, _meta, [_raw_lhs, _raw_rhs]} = match, env) do
     analyzed = Analyze.annotate(match, env)
-    attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, env)
+    attach_match_pattern_candidates(analyzed, match, env)
   end
 
   def analyze_match_statement(other, env), do: Analyze.annotate(other, env)
@@ -72,15 +73,13 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # whole-call mutation off the node — because the `=` node is **never offered** to mutators
   # (see the `analyze({:=, …})` clause), so the analyzed node carries no prior in-place
   # candidates to combine with. If that ever changes, this needs the macro path's re-home.
-  defp attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, env) do
-    candidates =
-      match_pattern_candidates(raw_lhs, raw_rhs, PatternStructure.mutators(env.mutators))
-
+  defp attach_match_pattern_candidates(analyzed, match, env) do
+    candidates = match_pattern_candidates(match, PatternStructure.mutators(env.mutators))
     Attach.put_candidates_if_any(analyzed, candidates)
   end
 
-  defp match_pattern_candidates(raw_lhs, raw_rhs, structural) do
-    if rhs_chain_rebinds_lhs_pin?(raw_lhs, raw_rhs) do
+  defp match_pattern_candidates({:=, _meta, [raw_lhs, raw_rhs]} = match, structural) do
+    if rhs_rebinds_lhs_pin?(raw_lhs, raw_rhs) do
       []
     else
       case pattern_export_with_mutations(raw_lhs, structural) do
@@ -88,7 +87,10 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
           []
 
         {lhs, range, export, mutations} ->
-          export = export_with_rhs_chain(export, raw_rhs)
+          export =
+            export
+            |> export_with_rhs_chain(raw_rhs)
+            |> export_with_scope(raw_rhs, match)
 
           Enum.map(mutations, fn {mutator, mutated} ->
             %Candidate.MatchPattern{
@@ -173,12 +175,18 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # whole-call `Candidate.InPlace` would survive as an ordinary selector and
   # poison the build. When the pattern binds nothing (or isn't rangeable) there is no escape to
   # re-export, so an in-place selector is already safe and `analyzed` is left untouched.
-  defp attach_macro_pattern_candidates(analyzed, raw_pattern, rebuild_mutant, env) do
+  #
+  # The pattern's own vars are not all that must ride the tuple: the branch runs the **whole
+  # call**, so what its other positions bind (`destructure([x, y], v = f())`) would be trapped
+  # too — `export_with_scope/3` adds those, read through the scope stamped on the call.
+  defp attach_macro_pattern_candidates(analyzed, raw_node, raw_pattern, rebuild_mutant, env) do
     case pattern_export_context(raw_pattern) do
       nil ->
         analyzed
 
       {pattern, range, export, used} ->
+        export = export_with_scope(export, raw_node, raw_node)
+
         pattern_candidates =
           macro_pattern_candidates(pattern, range, export, used, rebuild_mutant, env)
 
@@ -365,20 +373,67 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
     end
   end
 
-  # The tuple-export rewrite evaluates a chained RHS (`mid = value`) as the inner `case`
-  # scrutinee, then matches the outer LHS inside that case. Usually that preserves the source's
-  # right-to-left match order. It does not when the outer LHS pins a name that a chain pattern
-  # rebinds: in the source, `^x` keeps the value from before the whole match, while inside the
-  # generated case it sees the chain's new `x`. Decline structural candidates for exactly that
-  # intersection so the baseline remains the original match. Preserving these candidates would
-  # require snapshotting every pinned value before evaluating the chain, including fresh-name
-  # and export plumbing; this rare shape is safer to leave unmutated.
-  defp rhs_chain_rebinds_lhs_pin?(raw_lhs, raw_rhs) do
+  # What the selector must carry out beyond the pattern's own vars: the names `expression`
+  # — a `=`'s RHS, or the whole binding-macro call — binds that its branch would otherwise
+  # trap. Every branch evaluates `expression` whole (the `=`'s RHS is common to all of them;
+  # a macro branch runs the call with only the pattern changed), so it is read exactly as
+  # `Mutare.Transform.PipeEmit` reads an ordinary selector's export, from the scope stamped
+  # on `node` (`Mutare.Transform.Bindings`):
+  #
+  #   * a name **bound on entry** and in no conflict that the expression *may* rebind — a
+  #     match anywhere in it, or a position its route declares binding — is exported: at
+  #     worst a branch names the incoming value, which is what the source leaves.
+  #   * a name bound **fresh** is exported when something reads it after the node. Every
+  #     built-in branch binds it; a re-homed whole-call branch that does not is withheld by
+  #     `Candidate.Delivery.gate/2`, so the export never depends on which candidates are live.
+  #     A fresh name nothing reads stays trapped, unread — and unexported it gains no warning
+  #     the source lacked (the source's own binding went unread too).
+  #
+  # These positions have no siblings, so the conflict set is empty in practice; it is read all
+  # the same so the reading stays the one rule. A name the pattern (or the chain) already
+  # exports is skipped — `export_with_rhs_chain/2` carries those with their occurrence
+  # multiplicity, which this reading does not know.
+  defp export_with_scope(export, expression, node) do
+    {bound, conflicts, later} = Meta.bindings(node)
+    existing = export |> export_vars() |> MapSet.new(fn {name, _meta, _ctx} -> name end)
+    escaping = BindingEscapeEmit.expression_bindings(expression)
+
+    incoming? = fn name ->
+      MapSet.member?(bound, name) and not MapSet.member?(conflicts, name)
+    end
+
+    read? = fn name -> later == :all or MapSet.member?(later, name) end
+
+    extra =
+      (Bindings.matched_names(expression) ++ escaping)
+      |> Enum.uniq()
+      |> Enum.reject(&MapSet.member?(existing, &1))
+      |> Enum.filter(&(incoming?.(&1) or (&1 in escaping and read?.(&1))))
+      |> Enum.map(&{&1, [], nil})
+
+    case extra do
+      [] -> export
+      _ -> export_tuple(export_vars(export) ++ extra)
+    end
+  end
+
+  # The tuple-export rewrite evaluates the RHS as the inner `case` scrutinee, then matches the
+  # outer LHS inside that case. Usually that preserves the source's semantics. It does not when
+  # the outer LHS pins a name the RHS may rebind — a chain link (`{^x, y} = {x, z} = e`), or a
+  # match anywhere inside it (`{^x, y} = f({x = v, :ok})`): in the source, `^x` keeps the
+  # value from before the whole match, while inside the generated case it sees the RHS's new
+  # `x`, so a match the source rejects can succeed. Decline structural candidates for exactly
+  # that intersection, read over the RHS's *possible* writes (a match anywhere, a declared
+  # binding position), so the baseline remains the original match. Preserving these
+  # candidates would require snapshotting every pinned value before evaluating the RHS,
+  # including fresh-name and export plumbing; this rare shape is safer to leave unmutated.
+  defp rhs_rebinds_lhs_pin?(raw_lhs, raw_rhs) do
     pinned = pinned_var_names(raw_lhs)
 
-    Enum.any?(rhs_chain_patterns(raw_rhs), fn pattern ->
-      Enum.any?(PatternStructure.bound_var_names(pattern), &MapSet.member?(pinned, &1))
-    end)
+    writes =
+      BindingEscapeEmit.expression_bindings(raw_rhs) ++ Bindings.matched_names(raw_rhs)
+
+    Enum.any?(writes, &MapSet.member?(pinned, &1))
   end
 
   defp pinned_var_names(pattern) do

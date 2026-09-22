@@ -12931,6 +12931,51 @@ call's evaluation order and still tuple-export shared bindings. SourcePatch regr
 the retained-argument case and compare both baseline and mutant behavior for an effectful dynamic
 receiver.
 
+### The structural pattern selector exports what its expression binds `[fixed]` (2026-09-22)
+
+The scope work above repaired ordinary selectors (`PipeEmit`). The two structural
+deliveries — a `=`'s LHS in statement position (`Candidate.MatchPattern`) and a binding
+macro's pattern (`Candidate.MacroPattern`), both through `BindingEscapeEmit`'s tuple export
+— built their export on their own: the pattern's variables, plus the links of a `=` chain
+along the RHS's spine. Yet each branch runs the RHS (or the whole macro call) *inside* a
+selector clause, so anything else it bound was trapped there. `{low, high} =
+Enum.min_max(values = [1, 2])` then failed the metamutant's compile at the next read of
+`values` (fresh), or — worse, silently — left `values` at its earlier value at the
+*baseline* (rebinding); `destructure([low, high], values = [1, 2])` the same; and a declared
+binding nested in the RHS (`List.to_tuple(destructure([x, y], [1, 2]))`) likewise. The
+general binding-drop gate was no backstop: it read `InPlace`/`Return` only. Reviewer's
+finding, reproduced by its regression cases before the fix.
+
+`Analyze.MatchPatterns.export_with_scope/3` now extends both exports by the one reading
+`PipeEmit` uses, from the stamp `Bindings` leaves on the `=` or the call: a name bound on
+entry (no conflict — these positions have no siblings, so none in practice) that the
+expression may rebind, by a match anywhere or a declared position, is exported by every
+branch; a fresh name is exported when something reads it after the node, and otherwise
+stays trapped, unread — which also keeps the warning profile the source's (its own binding
+went unread too). Every built-in branch binds the same names: the `=`'s RHS is common to all,
+and a pattern mutant keeps the rest of the call. The one branch that can differ is a custom
+mutator's whole-call mutation re-homed as a `MacroPattern` branch (`UnpackMutator` replaces
+the value with a literal), so `Delivery.gate/2` now reads `MacroPattern.mutant_expr` as it
+reads an `InPlace` branch and withholds one that drops a fresh name read later. The export
+therefore depends on `later`, not on which candidates are live — nothing to plan after
+`claim_items`. The chain links keep their occurrence-multiplicity treatment; the scope
+reading adds each further name once and skips what the tuple already carries.
+
+**The pin check stops where the writes do.** `{^x, y} = Function.identity({x = value,
+:ok})`: Elixir reads a pin from before the whole match, the generated `case` from after its
+scrutinee rebound `x`, so `run(2)` matched where the source raises — and the old check read
+the chain spine alone. `rhs_rebinds_lhs_pin?/2` now reads the RHS's possible writes
+(`expression_bindings/1` ++ `matched_names/1`) and withholds the structural candidates on any
+intersection with the LHS's pins; the rest of the statement is mutated as before. Preserving
+them would take a snapshot of every pinned value ahead of the RHS; still not worth it.
+
+The generated vocabulary gained the dimension this was missing, per the review: two
+structural *deliveries*, `:matched` (the expression is the RHS of a swapped `=` pattern) and
+`:destructured` (the value of a swapped `destructure/2`), crossed by `pairwise/0` with every
+operand — the `:binding` callee's `receiver = F.receiver()` inside the RHS is exactly the
+first finding. `binding_export_test.exs` pins the reviewer's cases, the unread-fresh
+non-export, and the three whole-call outcomes.
+
 ### What a selector exports is the scope's to say `[fixed]` (2026-09-22)
 
 The export set of an in-place selector — the names its branches return through the tuple and

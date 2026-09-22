@@ -417,9 +417,11 @@ defmodule Mutare.Transform.Candidate do
     #
     # `original`/`mutated` are the LHS pattern before/after (the focused one-line diff)
     # and `range` locates it; `export` is the shared `{vars}` tuple (built once from the
-    # pattern's `bound_var_names`, so every branch and the outer match agree on it — plus,
-    # for a **chained** match `<pat> = mid = e`, the chain vars `mid` binds, which escape the
-    # scrutinee and so must ride the tuple too; see `Analyze.MatchPatterns.export_with_rhs_chain/2`);
+    # pattern's `bound_var_names`, so every branch and the outer match agree on it — plus
+    # what the RHS binds, which the branch would otherwise trap: a **chained** match's
+    # `mid` (`<pat> = mid = e`, `Analyze.MatchPatterns.export_with_rhs_chain/2`) and, read
+    # through the scope stamped on the `=`, any other name the RHS binds fresh and is read
+    # after, or bound on entry and may rebind — `export_with_scope/3`);
     # `raw_rhs` is the un-emitted matched expression the mutant branch matches (the
     # baseline branch uses the *emitted* rhs, so nested mutations there still fire). Only
     # mutations that preserve the bound-variable set are admitted (swaps always do;
@@ -459,7 +461,9 @@ defmodule Mutare.Transform.Candidate do
     #
     # `original`/`mutated` are the pattern before/after (the focused one-line diff) and
     # `range` locates it; `export` is the shared `{vars}` tuple (built from the pattern's
-    # `bound_var_names`, so every branch and the outer match agree); `mutant_expr` is the
+    # `bound_var_names`, so every branch and the outer match agree — plus what the call's
+    # other positions bind, `destructure([x, y], v = f())`, read through the scope stamped on
+    # the call: `Analyze.MatchPatterns.export_with_scope/3`); `mutant_expr` is the
     # *raw* macro call (or `|>` pipe) with the mutated pattern substituted — what the mutant
     # branch runs (the baseline branch runs the *emitted* call so nested mutations in the
     # value arg still fire). Only bound-set-preserving mutations are admitted (swaps always;

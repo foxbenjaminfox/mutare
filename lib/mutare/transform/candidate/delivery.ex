@@ -79,14 +79,17 @@ defmodule Mutare.Transform.Candidate.Delivery do
   ignoring their formatting metadata; other AST shapes are left alone. This uses actual
   candidates, so a disabled or opted-out family never suppresses another family's replacement.
 
-  A whole-node replacement (`Candidate.InPlace`, `Candidate.Return`) that binds fewer names than
-  `node` does — an argument dropped with the match inside it — is withheld when the dropped
-  name is one this position cannot export as incoming — **fresh** (not bound on entry), or a
-  **conflict** (an earlier sibling of the same expression writes it, and Elixir lets neither
-  write out before the whole expression) — and something **reads it after**: patched into the
-  source, that mutant would not compile, or delivered, its branch would name the wrong value
-  (`Mutare.Transform.Bindings`). A dropped name nothing reads is simply unexported, and one
-  bound on entry with no conflict is exported as the incoming value, so neither withholds.
+  A whole-node replacement (`Candidate.InPlace`, `Candidate.Return`, or a whole-call mutation
+  re-homed as a `Candidate.MacroPattern` branch running `mutant_expr`) that binds fewer names
+  than `node` does — an argument dropped with the match inside it — is withheld when the
+  dropped name is one this position cannot export as incoming — **fresh** (not bound on
+  entry), or a **conflict** (an earlier sibling of the same expression writes it, and Elixir
+  lets neither write out before the whole expression) — and something **reads it after**:
+  patched into the source, that mutant would not compile, or delivered, its branch would name
+  the wrong value (`Mutare.Transform.Bindings`). A dropped name nothing reads is simply
+  unexported, and one bound on entry with no conflict is exported as the incoming value, so
+  neither withholds. A structural pattern mutant keeps its node's bound set (thin mode) and
+  the rest of the expression, so it never drops a name.
 
   A name the node matches somewhere its route does not read as a value (`lazy(p = 8)`) is a
   write core cannot vouch for: exported, it may name the stale incoming value; unexported, it
@@ -131,11 +134,18 @@ defmodule Mutare.Transform.Candidate.Delivery do
 
   defp drops_binding?(%kind{} = candidate, needed)
        when kind in [Candidate.InPlace, Candidate.Return] do
-    kept = candidate |> selector_branch() |> BindingEscapeEmit.expression_bindings()
-    Enum.any?(needed, &(&1 not in kept))
+    candidate |> selector_branch() |> drops_any?(needed)
   end
 
+  defp drops_binding?(%Candidate.MacroPattern{mutant_expr: branch}, needed),
+    do: drops_any?(branch, needed)
+
   defp drops_binding?(_candidate, _needed), do: false
+
+  defp drops_any?(branch, needed) do
+    kept = BindingEscapeEmit.expression_bindings(branch)
+    Enum.any?(needed, &(&1 not in kept))
+  end
 
   defp filter_policy(candidates) do
     Enum.reject(candidates, fn
