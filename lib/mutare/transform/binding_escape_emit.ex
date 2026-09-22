@@ -80,8 +80,12 @@ defmodule Mutare.Transform.BindingEscapeEmit do
     end)
   end
 
-  defp collect_bindings({form, meta, args}, context) when is_list(args) do
-    bound_names(form, context) ++ argument_bindings(args, Meta.routing(meta), context)
+  # A `do` block handed to a call core cannot resolve is the one shape where an unknown macro
+  # is likelier than a function, and a macro's block is a scope of its own (`test`, `describe`,
+  # `schema`, a `with_retries do … end`): only the arguments before it export.
+  defp collect_bindings({form, meta, args} = node, context) when is_list(args) do
+    bound_names(form, context) ++
+      argument_bindings(plain_arguments(node), Meta.routing(meta), context)
   end
 
   defp collect_bindings({left, right}, context),
@@ -91,6 +95,22 @@ defmodule Mutare.Transform.BindingEscapeEmit do
     do: Enum.flat_map(list, &bound_names(&1, context))
 
   defp collect_bindings(_, _context), do: []
+
+  @block_keys [:do, :else, :rescue, :catch, :after]
+
+  defp plain_arguments({_form, meta, args} = node) do
+    with nil <- Meta.routing(meta),
+         {lead, [[{key, _} | _] = blocks]} <- Enum.split(args, -1),
+         true <- AST.key_atom(key) in @block_keys and block_keywords?(blocks),
+         nil <- Calls.resolved_call(node) do
+      lead
+    else
+      _ -> args
+    end
+  end
+
+  defp block_keywords?(blocks),
+    do: Enum.all?(blocks, &(match?({_key, _value}, &1) and AST.key_atom(elem(&1, 0)) != nil))
 
   defp argument_bindings(args, routing, context) do
     case routing do

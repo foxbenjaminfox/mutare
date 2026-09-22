@@ -60,7 +60,7 @@ defmodule Mutare.Transform.Analyze.Collect do
   # never *out-mutates* what core itself would deliver on the same code, which is the contract.
 
   alias Mutare.Mutator.{Dispatch, Mutation, Spec}
-  alias Mutare.Transform.{Candidate, Meta, Overlap, Resolve, UnitReturns}
+  alias Mutare.Transform.{Bindings, Candidate, Meta, Overlap, Resolve, UnitReturns}
   alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.Env
   alias Mutare.Transform.Candidate.Delivery
@@ -73,7 +73,11 @@ defmodule Mutare.Transform.Analyze.Collect do
   @spec expression_mutations(Macro.t(), [Spec.t() | module()], map()) ::
           [{Spec.t(), Macro.t(), String.t() | nil, Mutation.variant()}]
   def expression_mutations(subtree, mutators, context \\ %{}) do
-    subtree = subtree |> Resolve.expression(context) |> UnitReturns.annotate()
+    subtree =
+      subtree
+      |> Resolve.expression(context)
+      |> UnitReturns.annotate()
+      |> Bindings.annotate(island?: true)
 
     case node_level_specs(mutators) do
       [] ->
@@ -132,7 +136,7 @@ defmodule Mutare.Transform.Analyze.Collect do
     own =
       candidates
       |> Enum.filter(&match?(%Candidate.InPlace{}, &1))
-      |> Delivery.gate()
+      |> Delivery.gate(stripped)
       |> Enum.map(&{rev_path, &1})
 
     lowered = Enum.flat_map(hosted, &lower_hosted(&1, stripped, rev_path))

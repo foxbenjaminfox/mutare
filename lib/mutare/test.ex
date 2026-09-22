@@ -4,7 +4,7 @@ defmodule Mutare.Test do
 
   Import this module into an `ExUnit.Case` to test a mutator at three levels:
 
-    * `node_mutations/3` tests the replacements returned for one parsed node;
+    * `node_mutations/2` tests the replacements returned for one parsed node;
     * `diffs/3`, `diffs_for/4`, and `metamutant_source/3` test what the full source transform produces;
     * `compile_metamutant/3` and `with_active_mutant/2` (or `observe_mutant/3`, which composes them) verify that selecting a mutant changes the compiled program's behaviour.
 

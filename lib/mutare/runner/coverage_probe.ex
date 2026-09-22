@@ -156,7 +156,9 @@ defmodule Mutare.Runner.CoverageProbe do
   a fixed `:partition` entry (e.g. `MIX_TEST_PARTITION=1`) when `:partition_env` is
   on, so the partitioned suite finds a valid database (the probe is a single
   sequential run, so one fixed partition suffices — `Mutare.Runner.Partitions`); the
-  `:max_heap_mb` cap; and a `:cap` (ms, or `nil` for uncapped) bounding the probe's
+  `:max_heap_mb` cap; the mutants' `:schedulers` trim, so the probe executes what a mutant
+  run will (a suite may branch on the scheduler count, and ExUnit's concurrency follows it);
+  and a `:cap` (ms, or `nil` for uncapped) bounding the probe's
   wall clock via the same injected self-halt watcher a per-mutant run uses — an
   overrun exits `Mutare.Sandbox.Command.Exit.timeout/0` and degrades to run-all
   like any other non-zero probe exit (see the moduledoc). The probe adds its own

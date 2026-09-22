@@ -7,7 +7,9 @@ defmodule Mutare.Test.SourcePatchGenerators do
   callee evaluation and selector delivery. An optional identity wrapper adds nesting.
   Values vary independently; the fixed input rows include zero divisors and lazy branches.
 
-  Every fixture has a mutation-bearing `other/1`. SourcePatch probes both functions under
+  Two names are bound before the expression: `left`, which the `:rebinding` operand rebinds,
+  and `right`, which every stage rebinds and the `:dropped` delivery leaves at its incoming
+  value. Every fixture has a mutation-bearing `other/1`. SourcePatch probes both functions under
   every mutant, exercising the clean path when a mutant belongs elsewhere as well as the
   baseline and active path. Relational mutations also exercise lifted guard delivery.
 
@@ -23,13 +25,14 @@ defmodule Mutare.Test.SourcePatchGenerators do
   """
   use PropCheck
 
-  alias Mutare.Test.{HostMutator, SourcePatchDynamicMutator, SourcePatchFixtures}
-  alias Mutare.Test.{SourcePatchKeywordRoutes, SourcePatchUnwrapMutator}
+  alias Mutare.Test.{HostMutator, SourcePatchDropMutator, SourcePatchDynamicMutator}
+  alias Mutare.Test.{SourcePatchFixtures, SourcePatchKeywordRoutes, SourcePatchUnwrapMutator}
 
   def operands,
     do: [
       :plain,
       :binding,
+      :rebinding,
       :block,
       :skipped,
       :raw,
@@ -50,7 +53,8 @@ defmodule Mutare.Test.SourcePatchGenerators do
     ]
 
   def spellings, do: [:direct, :piped, :grouped]
-  def deliveries, do: [:retained, :moved, :split]
+  # `:dropped` removes the stage's second argument, and with it the `right` binding it made.
+  def deliveries, do: [:retained, :moved, :split, :dropped]
 
   # `:binding` is a dynamic callee whose receiver expression itself binds a name read later.
   def callees, do: [:static, :dynamic, :binding]
@@ -143,6 +147,8 @@ defmodule Mutare.Test.SourcePatchGenerators do
       def run(n, divisor, enabled) when n <= 20 do
         F.observe(fn ->
           #{imports}
+          #{prelude(recipe.operand)}
+          right = :absent
           result = #{expression}
           {result, #{Enum.join(bindings ++ callee_bindings ++ ["right"], ", ")}}
         end)
@@ -153,13 +159,15 @@ defmodule Mutare.Test.SourcePatchGenerators do
     end
     """
 
-    # None of these mutations deletes a binding. Arithmetic failures are valid observable
-    # outcomes; invalid generated source or source patches are test failures.
+    # Only `:dropped` deletes a binding, of a name bound before the expression. Arithmetic
+    # failures are valid observable outcomes; invalid generated source or source patches are
+    # test failures.
     mutators =
       case {recipe.callee, recipe.delivery} do
         {:static, :retained} -> [:arithmetic]
         {:static, :moved} -> [:operand_swap]
         {:static, :split} -> [:arithmetic, :operand_swap]
+        {:static, :dropped} -> [SourcePatchDropMutator]
         {_dynamic, delivery} -> [{SourcePatchDynamicMutator, delivery: delivery}]
       end
 
@@ -184,6 +192,10 @@ defmodule Mutare.Test.SourcePatchGenerators do
 
   defp operand(:plain), do: {"F.tick(n, :left)", [], []}
   defp operand(:binding), do: {"(left = F.tick(n, :left))", ["left"], []}
+
+  # `left` is bound before the expression (`prelude/1`): what a branch exports for a name
+  # bound on entry, closed over or not, is its final value.
+  defp operand(:rebinding), do: {"(left = F.tick(n, :left))", ["left"], []}
 
   # A statement sequence, whose parentheses are the negation's: the mutant that removes the
   # negation (`SourcePatchUnwrapMutator`) has to restore them in its replacement text.
@@ -267,6 +279,9 @@ defmodule Mutare.Test.SourcePatchGenerators do
     do:
       {"F.lazy(F.tick(n, :left), enabled)", [],
        [call_routes: [{SourcePatchFixtures, :lazy, 2, [:lazy_expression, :expression]}]]}
+
+  defp prelude(:rebinding), do: "left = :before"
+  defp prelude(_operand), do: ""
 
   # `{imports written at the head of the observed function, helper definitions}`.
   defp scope(:displaced_if),

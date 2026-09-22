@@ -74,14 +74,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The same holds beneath the node a mutator is offered: its operands are resolved code too, so
   `Mutare.Calls.resolved_call/1` answers `Enum.count/1` for `xs |> Enum.count()` found as an
-  operand, where it answered `nil` for the pipe. **A routing classifier reads the same code**
-  (breaking for adapters): a call is now routed after its arguments are resolved, so
-  `route_arguments/1` is handed arguments that carry Mutare's metadata, in which
-  `Mutare.Calls` resolves an aliased or imported call and a pipe is the direct call. A
-  classifier that matches argument shapes is unaffected; one that matched a `|>` inside an
-  argument, or compared argument nodes for equality, must change. A function tail
-  written `… |> case do … end` gets the return-value mutants of its clauses, as the same
-  `case` written directly always has, in place of `nil`/`:mutare` over the whole pipe.
+  operand, where it answered `nil` for the pipe. **A routing classifier does not** (breaking
+  for adapters): the call handed to `route_arguments/1` is resolved — its identity, and its
+  complete argument list with the piped operand at position 0 — but its arguments are still
+  the written syntax, and Mutare interprets only the regions the classifier's routes say are
+  Elixir. So a `|>` *inside* an argument is still a `|>` there, and an aliased call inside an
+  argument still carries the alias. A classifier that matches argument shapes is unaffected;
+  one that read a piped call one argument short must count the piped operand. After routing,
+  a whole-call `mutate/2` or `host/2` sees the Elixir regions resolved and the `:raw`/`:hosted`
+  regions as written; an island a host hands back through
+  `Mutare.Analyze.expression_mutations/3` is resolved in the enclosing lexical environment the
+  host's context carries. A function tail written `… |> case do … end` gets the return-value
+  mutants of its clauses, as the same `case` written directly always has, in place of
+  `nil`/`:mutare` over the whole pipe.
 
   A routed call gains what 0.3.1 withheld from a piped one: a classifier routes the piped
   operand by shape, `call.rebuild` can rewrite it, and it may be routed `:hosted` (previously a
@@ -112,6 +117,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{Mixpanel, :track, 3, [:expression, :raw, :raw]}`.
 
 ### Fixed
+
+- **A selector exports what its scope allows, not what its branches happen to share.** An
+  in-place selector is a `case`, whose branches trap what they bind; the bindings a mutated
+  expression makes are returned through a tuple and rebound outside. Which names could be
+  exported was decided from the branches alone: the names every branch bound. So a mutant that
+  dropped a *rebinding* (`p = :before; Enum.count(xs, p = f)` → `Enum.count(xs)`) kept the
+  original's binding out of the export too, and the metamutant's **baseline** left `p ==
+  :before` where the source leaves the function — a divergence in every run, observed or not.
+  A new pre-pass (`Mutare.Transform.Bindings`) stamps each binding-bearing node with the names
+  bound on entry and the names read after it. A name bound on entry is now exported by every
+  branch — one that does not rebind it names the incoming value, as the source does — whether
+  the position is routed `:expression`, `:lazy_expression`, or not at all. A name bound fresh
+  is exported when every live branch binds it; a mutant that drops a fresh binding something
+  reads later — a source patch that could not compile, which previously failed the **whole
+  metamutant's** compile at the read, attributable to no mutant — is withheld
+  (`Candidate.Delivery.gate/2`), and one that drops a fresh binding nothing reads is delivered
+  with the binding unexported.
+- **A withheld candidate no longer shapes the program.** Delivery was planned from every
+  candidate before ignore directives, poison `skip_ids` and `emit_ids` withheld some, so an
+  ignored or poisoned binding-dropping mutant still trapped a live mutant's binding. Delivery
+  is now planned from the candidates that get a branch.
+- **A pipe stage that reads what its piped operand rebinds is no longer closed over.** The
+  one-shot closure a written pipe's stages share is created before its argument runs, so a
+  stage reading (or rebinding) a name the operand rebinds (`m = 10; (m = 1) |> div(m)`) saw the
+  value captured at creation; the metamutant failed to compile. Such a stage keeps ordinary
+  branch-local delivery.
+- **The coverage probe runs under the mutants' `:schedulers` trim.** It kept every scheduler,
+  on the assumption that what a suite executes does not depend on the count — but a branch on
+  `System.schedulers_online/0` does, and so does the interleaving ExUnit's `max_cases` allows.
+  A mutant every mutant run would execute could be filed `:no_coverage`. Only the one compile
+  keeps the whole machine now.
 
 - **A call nested under the same function keeps its mutants.** Removing the outer call of
   `String.upcase(String.upcase(s))` leaves the program that replacing the inner call with `s`

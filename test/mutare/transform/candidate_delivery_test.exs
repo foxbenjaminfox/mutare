@@ -11,15 +11,15 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
   defp op(o), do: {o, [], [{:a, [], nil}, {:b, [], nil}]}
   defp clause, do: Sourceror.parse_string!("def f(_), do: :ok")
 
-  describe "gate/1 duplicate return constants" do
+  describe "gate/2 duplicate return constants" do
     test "node-level constants win regardless of order, literal wrapping, or metadata" do
       for value <- [:mutare, nil, false, 0, 0.0, "mutare"] do
         node = %Candidate.InPlace{mutated: {:__block__, [line: 10], [value]}}
         return = %Candidate.Return{mutated: value}
 
-        assert Delivery.gate([node, return]) === [node]
-        assert Delivery.gate([return, node]) === [node]
-        assert Delivery.gate([return]) === [return]
+        assert gate([node, return]) === [node]
+        assert gate([return, node]) === [node]
+        assert gate([return]) === [return]
       end
     end
 
@@ -27,7 +27,7 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
       node = %Candidate.InPlace{mutated: AST.literal(0)}
       return = %Candidate.Return{mutated: AST.literal(0.0)}
 
-      assert Delivery.gate([node, return]) === [node, return]
+      assert gate([node, return]) === [node, return]
     end
 
     test "a candidate removed by its policy cannot suppress a return replacement" do
@@ -40,7 +40,7 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
       }
 
       return = %Candidate.Return{mutated: AST.literal(:mutare)}
-      assert Delivery.gate([node, return]) == [return]
+      assert gate([node, return]) == [return]
     end
 
     test "non-scalar replacements and other candidate kinds are left alone" do
@@ -50,7 +50,7 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
           %Candidate.Return{mutated: replacement}
         ]
 
-        assert Delivery.gate(candidates) == candidates
+        assert gate(candidates) == candidates
       end
 
       candidates = [
@@ -58,7 +58,7 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
         %Candidate.Return{mutated: AST.literal(:mutare)}
       ]
 
-      assert Delivery.gate(candidates) == candidates
+      assert gate(candidates) == candidates
     end
   end
 
@@ -302,4 +302,7 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
       assert Delivery.site(7, candidate, "lib/x.ex", {true, false}).summary == nil
     end
   end
+
+  # A node binding nothing: the binding-drop withholding (`binding_export_test.exs`) is inert.
+  defp gate(candidates), do: Delivery.gate(candidates, {:site, [], []})
 end

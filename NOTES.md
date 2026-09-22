@@ -12924,6 +12924,52 @@ call's evaluation order and still tuple-export shared bindings. SourcePatch regr
 the retained-argument case and compare both baseline and mutant behavior for an effectful dynamic
 receiver.
 
+### What a selector exports is the scope's to say `[fixed]` (2026-09-22)
+
+The export set of an in-place selector — the names its branches return through the tuple and
+rebind outside — was the intersection of what the original and every candidate branch bound.
+That reads the expression and nothing else, and the expression cannot tell two cases apart:
+
+* a name **already bound on entry**, which every branch can export whatever it does with it —
+  a branch that does not rebind it names the incoming value, exactly what the source leaves
+  after a rebinding a mutant removed. The intersection dropped it from the export, so the
+  *catch-all's* rebinding stayed trapped and the baseline diverged (`p = :before;
+  Enum.count(xs, p = f)` under the `count/1` mutant left `p == :before` even at mutant 0).
+* a name **bound fresh**, which only the branches binding it can export. A mutant dropping it
+  is source-valid only if nothing reads the name later; otherwise its patch would not compile,
+  and the intersection left the catch-all's binding trapped so that the later read failed the
+  whole metamutant's compile — a poison attributable to no mutant.
+
+So `Mutare.Transform.Bindings` runs after `UnitReturns` and stamps every binding-bearing node
+with `{bound on entry, referenced after}`, each one-sided on purpose: `bound` may miss (the
+fresh rule then applies, which is what applied to everything before), never over-claim (an
+export naming an unbound name does not compile); `later` may over-count (a mutant withheld in
+vain), never miss. `PipeEmit` exports `matched ∩ bound` plus the fresh names every live branch
+binds; `Delivery.gate/2` withholds a whole-node replacement that drops a fresh name in `later`,
+in both passes, so counts and ids agree. The `later` set applies no scoping at all — a fresh
+name read outside its scope is a source error, so counting it costs nothing — and the walk
+sequences a function's arguments like statements but not a routed macro's, treats a module
+body as binding nothing for its definitions, and hands an *unresolved* call's `do` block a
+scope of its own (`BindingEscapeEmit.expression_bindings/1` agrees: `test`, `describe`,
+`schema` blocks are scopes, and a macro that splices its block inline is the odd one).
+
+Two things came out beside it. `:lazy_expression` had been documented as safe to declare
+wherever unsure; it is, for a name bound before the call (exported either way now), and not
+for a name the argument binds fresh, which is the callee's to scope — the doc says so. And
+delivery is now planned from the candidates that get a branch, after `claim_items`: an ignored,
+poison-skipped or unselected candidate is absent from the program and must not decide what it
+exports. The closure a written pipe's stages share had a third hole of the same family: it is
+created before its argument runs, so a stage that reads a name the operand *rebinds* saw the
+captured value (`m = 10; (m = 1) |> div(m)` — the only shape Elixir accepts; with no earlier
+`m` it rejects the pipe itself). Such a stage keeps branch-local delivery.
+
+The source-patch recipes gained the two dimensions this was missing: a `:rebinding` operand
+(the name bound before the expression) and a `:dropped` delivery (the stage's second argument
+gone, with the `right` binding it made — bound before the expression too, so the patch is
+valid and reads the incoming value). `binding_export_test.exs` pins the rebinding cases across
+head, `case` and `with` patterns, the fresh-and-read withholding, the ignore/`skip_ids`/
+`emit_ids` withholding, and the closure guard.
+
 ### Generated source-patch comparisons exercise effects and scope (2026-09-21)
 
 The activation soak proves isolation, not that a mutant implements its reported edit.

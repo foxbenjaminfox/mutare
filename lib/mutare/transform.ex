@@ -183,6 +183,7 @@ defmodule Mutare.Transform do
     Analyze,
     Behaviours,
     BindingEscapeEmit,
+    Bindings,
     Calls,
     Candidate,
     Candidate.Delivery,
@@ -629,6 +630,7 @@ defmodule Mutare.Transform do
       on_resolve: on_resolve
     )
     |> UnitReturns.annotate()
+    |> Bindings.annotate()
   end
 
   # Prepend `@compile {:no_warn_undefined, {:mutare_cov, :hit, 1}}` to every module
@@ -1227,7 +1229,7 @@ defmodule Mutare.Transform do
   defp emit(node, ctx) do
     # Drop redundant leaf candidates a call-rewriting mutator already covers (ModeSwap's
     # mode atom / `shift` key vs AtomLiteral), *before* id assignment — so they leave no id
-    # or site and ids stay contiguous (like `gate_candidates/1`). A no-op when nothing is
+    # or site and ids stay contiguous (like `gate_candidates/2`). A no-op when nothing is
     # covering. Cross-node, so it can't ride the per-node postwalk below: the postwalk is
     # post-order (the leaf is visited before its enclosing call), too late to suppress it.
     node = Overlap.resolve(node)
@@ -1276,7 +1278,7 @@ defmodule Mutare.Transform do
         HostedEmit.emit(
           current,
           hosted,
-          gate_candidates(candidates_of(current)),
+          gate_candidates(candidates_of(current), current),
           ctx,
           &emit_hosted_inplace/3
         )
@@ -1332,7 +1334,7 @@ defmodule Mutare.Transform do
   defp node_delivery_route(node) do
     case case_candidates_of(node) do
       [] ->
-        node |> candidates_of() |> gate_candidates() |> Delivery.classify_node_candidates()
+        node |> candidates_of() |> gate_candidates(node) |> Delivery.classify_node_candidates()
 
       clause_candidates ->
         Delivery.classify_node_candidates(clause_candidates)
@@ -1341,7 +1343,7 @@ defmodule Mutare.Transform do
 
   # Apply mutator opt-outs and suppress duplicate return constants *before* id assignment,
   # shared with the collect walk via `Candidate.Delivery.gate/1` (see there for the policy).
-  defp gate_candidates(candidates), do: Delivery.gate(candidates)
+  defp gate_candidates(candidates, node), do: Delivery.gate(candidates, node)
 
   defp emit_site({:try, _, [blocks]} = node, candidates, ctx) when is_list(blocks) do
     case RescueEmit.emit(node, candidates, ctx) do
@@ -1353,14 +1355,23 @@ defmodule Mutare.Transform do
   defp emit_site(node, candidates, ctx), do: emit_selector_site(node, candidates, ctx)
 
   defp emit_selector_site(node, candidates, ctx) do
-    # A call written as a pipe binds its piped value once, so a chain of mutated stages stays
-    # linear; a candidate that moves that operand goes in a selector around the closure
-    # instead. `Mutare.Transform.PipeEmit` decides and places; every other node is one selector.
-    delivery = PipeEmit.delivery(node, candidates)
-
+    # Every candidate claims its id and records its site; only the live ones — not ignored,
+    # not poison-skipped, inside `emit_ids` — get a branch. Delivery is planned from those
+    # alone: a withheld candidate is absent from the program, so it must not decide what the
+    # program exports. A call written as a pipe binds its piped value once, so a chain of
+    # mutated stages stays linear; a candidate that moves that operand goes in a selector
+    # around the closure instead. `Mutare.Transform.PipeEmit` decides and places; every other
+    # node is one selector.
     {claimed, ctx} =
       SelectorEmit.claim_items(candidates, ctx, {&Delivery.site/4, &Delivery.line/1}, fn id,
                                                                                          candidate ->
+        {id, candidate}
+      end)
+
+    delivery = PipeEmit.delivery(node, Enum.map(claimed, &elem(&1, 1)))
+
+    claimed =
+      Enum.map(claimed, fn {id, candidate} ->
         {layer, branch} = PipeEmit.branch(candidate, delivery, ctx)
         witness = ImportWitness.for_candidate(candidate)
         {layer, {candidate, {:->, [], [[id], ImportWitness.wrap(branch, witness)]}}}

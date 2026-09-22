@@ -26,7 +26,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
 
   alias Mutare.Mutator.Mutation.Attribution
   alias Mutare.{AST, Site}
-  alias Mutare.Transform.{Candidate, NodeRange}
+  alias Mutare.Transform.{BindingEscapeEmit, Candidate, Meta, NodeRange}
 
   @type node_candidate ::
           Candidate.InPlace.t()
@@ -62,7 +62,8 @@ defmodule Mutare.Transform.Candidate.Delivery do
   ]
 
   @doc """
-  Filter one node's candidates by mutator policy, then drop duplicate return constants.
+  Filter `node`'s candidates by mutator policy, drop duplicate return constants, and withhold
+  a mutant whose source patch could not compile because it drops a binding a later read needs.
 
   Run *before* id assignment, so a dropped candidate leaves no id, selector, or site — it simply
   doesn't exist for this run (unlike a poisoned id, which is recorded). The analyzer records
@@ -77,13 +78,46 @@ defmodule Mutare.Transform.Candidate.Delivery do
   the node-level candidate, regardless of candidate order. Compare literal values strictly,
   ignoring their formatting metadata; other AST shapes are left alone. This uses actual
   candidates, so a disabled or opted-out family never suppresses another family's replacement.
+
+  A whole-node replacement (`Candidate.InPlace`, `Candidate.Return`) that binds fewer names than
+  `node` does — an argument dropped with the match inside it — is withheld when the dropped
+  name is **fresh** here (not bound on entry) and something **reads it after**: patched into
+  the source, that mutant would not compile, and delivered, its branch could not export the
+  name (`Mutare.Transform.Bindings`). A dropped name nothing reads is simply unexported, and
+  one already bound on entry is exported as the incoming value, so neither withholds.
   """
-  @spec gate([node_candidate()]) :: [node_candidate()]
-  def gate(candidates) do
+  @spec gate([node_candidate()], Macro.t()) :: [node_candidate()]
+  def gate(candidates, node) do
     candidates
     |> filter_policy()
     |> drop_duplicate_returns()
+    |> drop_binding_drops(node)
   end
+
+  defp drop_binding_drops(candidates, node) do
+    case needed_fresh_bindings(node) do
+      [] -> candidates
+      needed -> Enum.reject(candidates, &drops_binding?(&1, needed))
+    end
+  end
+
+  # The names `node` binds fresh that something reads after it, per its `Bindings` stamp.
+  defp needed_fresh_bindings(node) do
+    {bound, later} = Meta.bindings(node)
+
+    node
+    |> BindingEscapeEmit.expression_bindings()
+    |> Enum.reject(&MapSet.member?(bound, &1))
+    |> Enum.filter(&(later == :all or MapSet.member?(later, &1)))
+  end
+
+  defp drops_binding?(%kind{} = candidate, needed)
+       when kind in [Candidate.InPlace, Candidate.Return] do
+    kept = candidate |> selector_branch() |> BindingEscapeEmit.expression_bindings()
+    Enum.any?(needed, &(&1 not in kept))
+  end
+
+  defp drops_binding?(_candidate, _needed), do: false
 
   defp filter_policy(candidates) do
     Enum.reject(candidates, fn

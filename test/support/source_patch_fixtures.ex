@@ -73,9 +73,11 @@ end
 
 defmodule Mutare.Test.SourcePatchDynamicMutator do
   @moduledoc """
-  Supply retained- and moved-operand candidates on a dynamic `div/2` call, which the
-  built-in arithmetic families correctly cannot identify as an Erlang call. Both variants
-  retain every argument expression, so even binding-bearing source patches still compile.
+  Supply retained-, moved- and dropped-operand candidates on a dynamic `div/2` call, which
+  the built-in arithmetic families correctly cannot identify as an Erlang call. The first two
+  retain every argument expression; `:dropped` (`receiver.abs(left)`) removes the second
+  argument, and the binding of `right` it made — a name the fixture binds before the
+  expression, so the patch still compiles and reads the incoming value.
   """
   @behaviour Mutare.Mutator
 
@@ -86,15 +88,40 @@ defmodule Mutare.Test.SourcePatchDynamicMutator do
   def mutate({{:., dot_meta, [receiver, :div]}, meta, [left, right]}, %{opts: opts}) do
     retained = {{:., dot_meta, [receiver, :rem]}, meta, [left, right]}
     moved = {{:., dot_meta, [receiver, :div]}, meta, [right, left]}
+    dropped = {{:., dot_meta, [receiver, :abs]}, meta, [left]}
 
     case Keyword.fetch!(opts, :delivery) do
       :retained -> [retained]
       :moved -> [moved]
       :split -> [retained, moved]
+      :dropped -> [dropped]
     end
   end
 
   def mutate(_node, _context), do: :skip
+end
+
+defmodule Mutare.Test.SourcePatchDropMutator do
+  @moduledoc """
+  `div(left, right)` → `abs(left)`: the static twin of the dynamic mutator's `:dropped`
+  delivery. The second argument goes, and with it the `right` binding it made.
+  """
+  @behaviour Mutare.Mutator
+
+  @impl true
+  def name, do: :drop_argument
+
+  # A bare `div/2` is Kernel's by arity, as the built-in families read it; the recipes write
+  # no other.
+  @impl true
+  def mutate({:div, meta, [left, _right]}), do: [{:abs, meta, [left]}]
+
+  def mutate(node) do
+    case Mutare.Calls.resolved_call_to(node, Kernel, :div) do
+      {:ok, :div, [left, _right], rebuild} -> [rebuild.(:abs, [left])]
+      _other -> []
+    end
+  end
 end
 
 defmodule Mutare.Test.SourcePatchUnwrapMutator do

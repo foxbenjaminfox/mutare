@@ -71,6 +71,7 @@ defmodule Mutare.TransformSourcePatchPropertyTest do
           {:static, :retained} -> [:arithmetic]
           {:static, :moved} -> [:operand_swap]
           {:static, :split} -> [:arithmetic, :operand_swap]
+          {:static, :dropped} -> [:drop_argument]
           {_dynamic, :split} -> [:dynamic_arithmetic, :dynamic_arithmetic]
           {_dynamic, _} -> [:dynamic_arithmetic]
         end

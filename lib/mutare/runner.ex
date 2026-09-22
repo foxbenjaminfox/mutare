@@ -20,7 +20,7 @@ defmodule Mutare.Runner do
 
   The per-mutant phase runs `:workers` mutants concurrently, each its own OS process — a full `mix test` BEAM — in the shared sandbox. Left alone, every such BEAM would start a scheduler thread per core, and the phase would oversubscribe the CPU by the worker count; so each is trimmed to `:schedulers` threads (`+S`, see `Mutare.Sandbox.Command.Invocation.emulator_flags_env/1`), and the two options divide `System.schedulers_online/0` between them. Whichever is omitted is derived from the other so that `workers × schedulers` fits the machine, derived workers never above the default's clamp; with neither, workers are half the schedulers, capped at 4 — more of them buy little (what a worker fills is the serial stretch of another's run: boot, app start, `async: false` tests, IO waits) and each costs a BEAM's memory. `schedulers: :all` trims nothing. Whatever the suite derives from the scheduler count follows the trim — ExUnit's default `max_cases` above all.
 
-  The baseline runs under the same trim, so it checks the suite is green at the concurrency a mutant run gets and measures what such a run takes. Each run then has a wall-clock cap: an explicit `:timeout` in ms, or `baseline × :timeout_multiplier` (default 3.0), with a floor. (A configuration that does oversubscribe — `schedulers: :all`, or explicit counts whose product exceeds the machine — scales the cap by half the oversubscription, since wall time then legitimately inflates past the baseline.) A mutation can turn a terminating loop infinite, so the run is capped; a capped run counts as `:timeout` — a kill, since the hang is observable misbehavior. The one compile and the coverage probe run alone and keep every scheduler.
+  The baseline runs under the same trim, so it checks the suite is green at the concurrency a mutant run gets and measures what such a run takes. Each run then has a wall-clock cap: an explicit `:timeout` in ms, or `baseline × :timeout_multiplier` (default 3.0), with a floor. (A configuration that does oversubscribe — `schedulers: :all`, or explicit counts whose product exceeds the machine — scales the cap by half the oversubscription, since wall time then legitimately inflates past the baseline.) A mutation can turn a terminating loop infinite, so the run is capped; a capped run counts as `:timeout` — a kill, since the hang is observable misbehavior. The coverage probe runs under the same trim, so what it records is what a mutant run executes; only the one compile runs alone and keeps every scheduler.
 
   The cap can still be overrun by a slow-but-finite run — concurrent runs share memory bandwidth, disk and any database even when they do not share cores — and survivors are the most exposed (a kill exits at its first failing test; a survivor must run its entire selected set). A false `:timeout` is a false kill hiding a true survivor, so by default (`:confirm_timeouts`) a streamed `:timeout` is *provisional*: after the stream drains, each timed-out mutant is re-run sequentially — no contention — with the same cap, and that verdict is recorded instead. Only a repeat overrun records `:timeout`; a genuine hang pays one extra cap. `confirm_timeouts: false` (`--no-confirm-timeouts`) records the first overrun as-is. A wall-clock `:time_budget` covers this confirmation pass too: confirmations already launched are allowed to finish, but no new confirmation run starts after the deadline.
 
@@ -296,11 +296,14 @@ defmodule Mutare.Runner do
         max_heap_mb: options.max_heap_mb
       ]
 
-      # The baseline alone also takes the mutants' `:schedulers` trim: it then checks the
-      # suite is green at the concurrency a mutant run gets, and times it at a mutant run's
-      # speed, which the cap below is a multiple of. The probe's time is nobody's yardstick
-      # and its record does not depend on the scheduler count, so it keeps the whole machine.
-      baseline_opts = [{:schedulers, options.schedulers} | fixed_opts]
+      # Both also take the mutants' `:schedulers` trim. The baseline then checks the suite is
+      # green at the concurrency a mutant run gets, and times it at a mutant run's speed,
+      # which the cap below is a multiple of. The probe records what the suite *executes*, and
+      # that can follow the scheduler count — a branch on `System.schedulers_online/0`,
+      # ExUnit's `max_cases` and the interleaving it allows — so it runs under the mutants'
+      # conditions too, or a mutant could be filed `:no_coverage` for a line every mutant run
+      # would execute. Only the one compile keeps the whole machine.
+      fixed_opts = [{:schedulers, options.schedulers} | fixed_opts]
 
       with {:ok, baseline_ms} <-
              run_baseline(
@@ -308,7 +311,7 @@ defmodule Mutare.Runner do
                sandbox,
                options.baseline_runs,
                options.baseline_retries,
-               baseline_opts
+               fixed_opts
              ) do
         # Verbose-only detail: the baseline timing the cap is scaled from.
         on_phase.({:baseline_done, baseline_ms})

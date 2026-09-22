@@ -1,0 +1,265 @@
+defmodule Mutare.BindingExportTest do
+  @moduledoc """
+  What a selector exports is decided by the scope the expression stands in
+  (`Mutare.Transform.Bindings`), by the live candidates alone, and — for a closed-over pipe
+  stage — only where argument 0's bindings are not read by the stage. Each case here is a
+  source patch that once diverged from its metamutant, or a mutant that once failed the whole
+  metamutant's compile.
+  """
+  use ExUnit.Case, async: false
+
+  import Mutare.Test, only: [compile_metamutant: 3, with_active_mutant: 2]
+  import Mutare.Test.SourcePatch, only: [assert_patches: 4]
+
+  alias Mutare.Transform.BindingEscapeEmit
+
+  # `Enum.count(xs, p)` → `Enum.any?(xs, p)`: a second family on the same call, one that keeps
+  # the binding argument the collection-arity mutant drops.
+  defmodule KeepPredicate do
+    @behaviour Mutare.Mutator
+
+    @impl Mutare.Mutator
+    def name, do: :keep_predicate
+
+    @impl Mutare.Mutator
+    def mutate(node) do
+      case Mutare.Calls.resolved_call_to(node, Enum, :count) do
+        {:ok, :count, [values, predicate], rebuild} -> [rebuild.(:any?, [values, predicate])]
+        _ -> []
+      end
+    end
+  end
+
+  @count_calls [
+    direct: "Enum.count([1], predicate = fn _ -> true end)",
+    piped: "[1] |> Enum.count(predicate = fn _ -> true end)"
+  ]
+
+  describe "a name bound on entry is exported by every branch" do
+    for {spelling, call} <- @count_calls do
+      test "#{spelling}: a mutant that drops its rebinding leaves the incoming value" do
+        source = count_fixture(unquote(call), "")
+
+        # Original `{1, true}`; the `count/1` patch `{1, false}`, `predicate` still `:before`.
+        assert [_ | _] =
+                 assert_patches(source, [:collection_arity], [run: []], clean_functions: false)
+      end
+    end
+
+    test "a head pattern's variable, inside a lifted function" do
+      source = """
+      defmodule Fixture do
+        def run(predicate) when predicate != nil do
+          result = Enum.count([1], predicate = fn _ -> true end)
+          {result, is_function(predicate, 1)}
+        end
+      end
+      """
+
+      sites =
+        assert_patches(source, [:collection_arity, :relational], [run: [:before]],
+          clean_functions: false
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :collection_arity))
+      assert Enum.any?(sites, &(&1.mutator == :relational))
+    end
+
+    test "a case clause's pattern variable" do
+      source = """
+      defmodule Fixture do
+        def run(input) do
+          case input do
+            {:ok, predicate} ->
+              result = Enum.count([1], predicate = fn _ -> true end)
+              {result, is_function(predicate, 1)}
+
+            :error ->
+              :error
+          end
+        end
+      end
+      """
+
+      sites =
+        assert_patches(source, [:collection_arity], [run: [{:ok, :before}], run: [:error]],
+          clean_functions: false
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :collection_arity))
+    end
+
+    test "a with clause's pattern variable" do
+      source = """
+      defmodule Fixture do
+        def run(input) do
+          with {:ok, predicate} <- input do
+            result = Enum.count([1], predicate = fn _ -> true end)
+            {result, is_function(predicate, 1)}
+          end
+        end
+      end
+      """
+
+      sites =
+        assert_patches(source, [:collection_arity], [run: [{:ok, :before}], run: [:error]],
+          clean_functions: false
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :collection_arity))
+    end
+
+    for {spelling, call} <- [direct: "div(marker = 8, 2)", piped: "(marker = 8) |> div(2)"] do
+      test "#{spelling}: under a conservative :lazy_expression route as under :expression" do
+        source = """
+        defmodule Fixture do
+          def run do
+            marker = :before
+            result = #{unquote(call)}
+            {result, marker}
+          end
+        end
+        """
+
+        # `:lazy_expression` only switches eager delivery off; `marker` is bound before the
+        # call, so both `div/2` and its `rem/2` mutant leave `marker == 8` outside.
+        assert [_ | _] =
+                 assert_patches(source, [:arithmetic], [run: []],
+                   clean_functions: false,
+                   call_routes: [{Kernel, :div, 2, [:lazy_expression, :expression]}]
+                 )
+      end
+    end
+  end
+
+  describe "a name bound fresh" do
+    test "read later: a mutant that drops it is withheld, and the metamutant still compiles" do
+      source = count_fixture("Enum.count([1], predicate = fn _ -> true end)", "")
+      source = String.replace(source, "predicate = :before\n", "")
+
+      # Patched into the source, `Enum.count([1])` leaves `is_function(predicate, 1)` reading an
+      # unbound name; delivered, its branch could export nothing for it. Before the withholding
+      # the whole metamutant failed to compile at that read, attributable to no mutant.
+      assert [] = assert_patches(source, [:collection_arity], [run: []], clean_functions: false)
+    end
+
+    test "read by nothing: the mutant is delivered, its binding simply unexported" do
+      source = """
+      defmodule Fixture do
+        def run, do: Enum.count([1], predicate = fn _ -> true end)
+      end
+      """
+
+      assert [_] = assert_patches(source, [:collection_arity], [run: []], clean_functions: false)
+    end
+
+    test "rebound later before any read: withheld all the same (a read is over-approximated)" do
+      source = """
+      defmodule Fixture do
+        def run do
+          result = Enum.count([1], predicate = fn _ -> true end)
+          predicate = :after
+          {result, predicate}
+        end
+      end
+      """
+
+      assert [] = assert_patches(source, [:collection_arity], [run: []], clean_functions: false)
+    end
+  end
+
+  describe "delivery is planned from the live candidates" do
+    for {spelling, call} <- @count_calls do
+      test "#{spelling}: an ignored binding-dropping candidate cannot trap the live one's binding" do
+        source = count_fixture(unquote(call), "# mutare:ignore[collection_arity]")
+
+        {[module], sites} =
+          compile_metamutant(source, [KeepPredicate, :collection_arity], clean_functions: false)
+
+        kept = Enum.find(sites, &(&1.mutator == :keep_predicate))
+        assert kept, "expected the live any?/2 mutation"
+
+        assert with_active_mutant(0, fn -> module.run() end) == {1, true}
+        assert with_active_mutant(kept.id, fn -> module.run() end) == {true, true}
+      end
+    end
+
+    for withhold <- [:skip_ids, :emit_ids] do
+      test "a candidate withheld by #{withhold} cannot trap the live one's binding" do
+        source = count_fixture("Enum.count([1], predicate = fn _ -> true end)", "")
+        mutators = [KeepPredicate, :collection_arity]
+
+        {_modules, sites} = compile_metamutant(source, mutators, clean_functions: false)
+        dropping = Enum.find(sites, &(&1.mutator == :collection_arity))
+        kept = Enum.find(sites, &(&1.mutator == :keep_predicate))
+
+        withheld =
+          case unquote(withhold) do
+            :skip_ids -> [skip_ids: MapSet.new([dropping.id])]
+            :emit_ids -> [emit_ids: MapSet.new([kept.id])]
+          end
+
+        {[module], _sites} =
+          compile_metamutant(source, mutators, [clean_functions: false] ++ withheld)
+
+        assert with_active_mutant(0, fn -> module.run() end) == {1, true}
+        assert with_active_mutant(kept.id, fn -> module.run() end) == {true, true}
+      end
+    end
+  end
+
+  describe "a closed-over pipe stage" do
+    # Elixir itself rejects `(m = 1) |> div(m)` with no `m` bound before: only a rebinding
+    # can be read by the stage, so these are the shapes that exist.
+    test "reading what argument 0 rebinds keeps ordinary delivery" do
+      source = """
+      defmodule Fixture do
+        def run do
+          m = 10
+          result = (m = 1) |> div(m)
+          {result, m}
+        end
+      end
+      """
+
+      # The closure is created before its argument rebinds `m`: inside it `m` would be the
+      # value captured at creation. Once the metamutant failed to compile at that read; now
+      # such a stage is delivered branch-locally, like a direct call.
+      assert [_ | _] = assert_patches(source, [:arithmetic], [run: []], clean_functions: false)
+    end
+
+    test "rebinding what argument 0 rebinds keeps ordinary delivery too" do
+      source = """
+      defmodule Fixture do
+        def run do
+          m = 10
+          result = (m = 1) |> div(m = 5)
+          {result, m}
+        end
+      end
+      """
+
+      assert [_ | _] = assert_patches(source, [:arithmetic], [run: []], clean_functions: false)
+    end
+  end
+
+  describe "what escapes an unresolved call" do
+    test "its do block is a scope of its own; the arguments before it export" do
+      call = Sourceror.parse_string!("with_retries(a = 1, b = 2) do\n  c = 3\nend")
+      assert BindingEscapeEmit.expression_bindings(call) == [:a, :b]
+    end
+  end
+
+  defp count_fixture(call, directive) do
+    """
+    defmodule Fixture do
+      def run do
+        predicate = :before
+        #{directive}
+        result = #{call}
+        {result, is_function(predicate, 1)}
+      end
+    end
+    """
+  end
+end

@@ -2,7 +2,7 @@ defmodule Mutare.Report do
   @moduledoc """
   Renders mutation results for the human report.
 
-  Diffs are patched against the original source via `Sourceror.patch_string` at the site's recorded range, so untouched source stays byte-identical and a survivor reads as a precise source-range change.
+  Diffs are patched against the original source via `Sourceror.patch_string` at the site's recorded range, so untouched source stays byte-identical and a survivor reads as a precise source-range change. A replacement is parenthesized where its position would otherwise reread it (`!(a == b)` → `(a == b)` beside a `|>`, a `-1` for the `0.75` of `-0.75`), on the assumption that binary operators are spaced as `mix format` writes them: in unformatted `a-0`, a `-1` replacement is patched as `a--1`.
 
   The mutation score and tallies in the report come from `Mutare.Score`, which also implements the CI gates; this module only renders.
   """
