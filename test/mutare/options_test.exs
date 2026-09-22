@@ -273,7 +273,7 @@ defmodule Mutare.OptionsTest do
       budget = System.schedulers_online()
 
       assert Options.new(workers: 2).schedulers == max(1, div(budget, 2))
-      assert Options.new(schedulers: 2).workers == max(1, div(budget, 2))
+      assert Options.new(schedulers: 2).workers == min(4, max(1, div(budget, 2)))
 
       default = Options.new([])
       assert default.schedulers == max(1, div(budget, default.workers))

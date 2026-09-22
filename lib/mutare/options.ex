@@ -109,8 +109,9 @@ defmodule Mutare.Options do
 
   `:workers` (concurrent mutant runs) and `:schedulers` (scheduler threads per
   run) divide `System.schedulers_online/0` between them, so the runs do not
-  oversubscribe the CPU. Whichever is omitted is derived from the other; with
-  neither, workers are half the schedulers capped at 4. `schedulers: :all` leaves
+  oversubscribe the CPU. Whichever is omitted is derived from the other, workers
+  never above the default's clamp; with neither, workers are half the schedulers
+  capped at 4. `schedulers: :all` leaves
   every run every scheduler. Both are resolved here, so the struct carries
   concrete values.
 

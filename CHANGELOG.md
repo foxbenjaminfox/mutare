@@ -24,9 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--workers 4` used to ask a 16-core machine for 64 busy threads — slower runs, and
   slow-but-finite mutants pushed past their timeout. Each worker is now trimmed with `+S` to
   the new **`:schedulers`** option (`--schedulers N`), and the two divide the machine: give
-  either and the other defaults to your schedulers divided by it; give neither and you get the
-  old worker default (half your schedulers, capped at 4) with the schedulers split among them —
-  4 × 4 on 16 cores, 4 × 2 on 8. `schedulers: :all` (`--schedulers all`) restores untrimmed
+  `--workers` and each gets your schedulers divided by it; give `--schedulers` and workers are
+  your schedulers divided by it, capped at 4 as the default is (pass both to run more BEAMs);
+  give neither and you get the old worker default (half your schedulers, capped at 4) with the
+  schedulers split among them — 4 × 4 on 16 cores, 4 × 2 on 8. `schedulers: :all` (`--schedulers all`) restores untrimmed
   workers. What to expect: a trimmed run sees fewer `System.schedulers_online/0`, so ExUnit's
   default `max_cases` shrinks with it; the baseline runs under the same trim (it validates the
   suite at that concurrency, and an async-heavy suite's baseline is slower for it), while the one compile and the

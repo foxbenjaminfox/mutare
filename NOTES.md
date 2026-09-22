@@ -4453,8 +4453,10 @@ env var could not do (it also throttled Mutare's own scan). The budget is
 Mutare itself shrinks what is divided and no inherited flag needs parsing. The
 no-flags worker default keeps its clamp at 4, now for the remaining reasons: a
 BEAM's memory per worker, the boot stampede, a database per worker under
-`:partition_env`. A given `--schedulers` derives workers *unclamped* — the user
-who types `--schedulers 1` on a big box has asked for that many BEAMs. Unmeasured:
+`:partition_env`. Those reasons hold for a lone `--schedulers` too, so the workers it
+derives keep the clamp: `--schedulers 2` on a 64-core box is read as "trim each
+worker to two", not as a request for 32 BEAMs (and 32 databases under
+`:partition_env`); naming both is how to ask for that. Unmeasured:
 whether the clamp should now rise on many-core machines, since oversubscription no
 longer argues against it. The lock contention itself is measured and negligible — per-worker
 isolation (`MIX_BUILD_PATH` or full source copies) was not pursued; see

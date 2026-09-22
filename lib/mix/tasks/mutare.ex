@@ -161,7 +161,8 @@ defmodule Mix.Tasks.Mutare do
                                           #   your schedulers ÷ workers, so the workers
                                           #   share the machine instead of each taking
                                           #   all of it; given alone, workers become
-                                          #   your schedulers ÷ this)
+                                          #   your schedulers ÷ this, capped at 4 like
+                                          #   the default — pass both for more)
       mix mutare --schedulers all         # don't trim the workers' schedulers
       mix mutare --full                   # run the whole suite for every mutant
                                           #   (default: only the test cases that cover it)
@@ -320,8 +321,9 @@ defmodule Mix.Tasks.Mutare do
         # worker is a full `mix test` BEAM)
         workers: 4,
         # scheduler threads per worker (`+S`), so that workers × schedulers fits the
-        # machine; default: the schedulers ÷ workers (and if only this is set, workers
-        # default to the schedulers ÷ this). The baseline runs trimmed the same way.
+        # machine; default: the schedulers ÷ workers (if only this is set, workers are
+        # the schedulers ÷ this, capped at 4 like the default). The baseline runs
+        # trimmed the same way.
         # :all leaves every worker every scheduler.
         schedulers: 4,
         # give each concurrent worker a distinct partition id under this env var

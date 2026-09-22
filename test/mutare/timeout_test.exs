@@ -53,8 +53,9 @@ defmodule Mutare.TimeoutTest do
     refute Enum.any?(run.results, &(&1.status == :survived and &1.site.original_form == :-))
   end
 
-  # The false-timeout side of the contract: the cap is scaled from an *uncontended*
-  # baseline but mutants run under worker contention, so a slow-but-finite run can
+  # The false-timeout side of the contract: the baseline runs alone, but mutant runs
+  # share memory bandwidth, disk and any database with their siblings even when the
+  # scheduler trim keeps them off each other's cores, so a slow-but-finite run can
   # overrun the cap without hanging. The fixture manufactures that deterministically:
   # the *first* mutant run drops a marker file and sleeps past the cap (a provisional
   # timeout); the sequential confirmation re-run sees the marker, finishes fast, and

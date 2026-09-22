@@ -23,14 +23,20 @@ defmodule Mutare.Options.Parallelism do
 
   Whatever was given is returned untouched; a missing side is derived from the other so the
   product stays within the budget (floored — a spare core is kinder than an oversubscribed
-  one), and never below one. Resolving an already-resolved pair returns it unchanged.
+  one), and never below one. Workers derived from a given `schedulers` keep the default's
+  clamp: a lone `--schedulers 2` asks for a trim, not for as many BEAMs as the machine can
+  fit — the memory, boot and database costs that clamp the default do not go away because
+  the trim was named. Both at once is the way to ask for more. Resolving an already-resolved
+  pair returns it unchanged.
 
       iex> Mutare.Options.Parallelism.resolve(nil, nil, 16)
       {4, 4}
       iex> Mutare.Options.Parallelism.resolve(8, nil, 16)
       {8, 2}
       iex> Mutare.Options.Parallelism.resolve(nil, 2, 16)
-      {8, 2}
+      {4, 2}
+      iex> Mutare.Options.Parallelism.resolve(nil, 2, 64)
+      {4, 2}
       iex> Mutare.Options.Parallelism.resolve(nil, :all, 16)
       {4, :all}
   """
@@ -42,7 +48,10 @@ defmodule Mutare.Options.Parallelism do
   end
 
   def resolve(nil, :all, budget), do: {default_workers(budget), :all}
-  def resolve(nil, schedulers, budget), do: {share(budget, schedulers), schedulers}
+
+  def resolve(nil, schedulers, budget),
+    do: {min(share(budget, schedulers), @max_default_workers), schedulers}
+
   def resolve(workers, nil, budget), do: {workers, share(budget, workers)}
   def resolve(workers, schedulers, _budget), do: {workers, schedulers}
 

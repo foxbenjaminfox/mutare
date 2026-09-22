@@ -31,7 +31,8 @@ defmodule Mutare.Options.ParallelismTest do
   end
 
   # The point of the feature. The given side may itself exceed the budget (more workers than
-  # cores); then the derived side bottoms out at one rather than the product fitting.
+  # cores); then the derived side bottoms out at one rather than the product fitting. Derived
+  # workers also stop at the default's clamp, so a lone `:schedulers` may leave cores spare.
   property "a derived side keeps the product within the budget, and wastes less than one share" do
     forall {given_side, budget, which} <-
              {pos_integer(), pos_integer(), oneof([:workers, :scheds])} do
@@ -46,7 +47,8 @@ defmodule Mutare.Options.ParallelismTest do
       if given_side > budget do
         derived == 1
       else
-        workers * scheds <= budget and workers * scheds > budget - given_side and
+        workers * scheds <= budget and
+          (workers * scheds > budget - given_side or (which == :scheds and workers == 4)) and
           Parallelism.oversubscription(workers, scheds, budget) <= 1.0
       end
     end
@@ -55,8 +57,16 @@ defmodule Mutare.Options.ParallelismTest do
   property "with nothing given, workers stay a small constant and the pair fits the budget" do
     forall budget <- pos_integer() do
       {workers, scheds} = Parallelism.resolve(nil, nil, budget)
-      workers in 1..4 and (budget == 1 or workers * scheds <= budget)
+      workers in 1..4 and workers * scheds <= budget
     end
+  end
+
+  test "a lone :schedulers keeps the workers clamp" do
+    assert Parallelism.resolve(nil, 2, 64) == {4, 2}
+    assert Parallelism.resolve(nil, 8, 64) == {4, 8}
+    assert Parallelism.resolve(nil, 16, 64) == {4, 16}
+    assert Parallelism.resolve(nil, 32, 64) == {2, 32}
+    assert Parallelism.resolve(nil, 1, 3) == {3, 1}
   end
 
   test "the defaults on common machines" do
