@@ -65,6 +65,7 @@ defmodule Mutare.Transform.Bindings do
 
   alias Mutare.AST
   alias Mutare.Transform.{BindingEscapeEmit, Calls, KeywordRouting, Meta, PatternStructure}
+  alias Mutare.Transform.Resolve
 
   @typedoc "Names bound on entry, those an earlier sibling writes, and names referenced after (`:all` when unknown)."
   @type stamp :: {MapSet.t(atom()), MapSet.t(atom()), MapSet.t(atom()) | :all}
@@ -97,24 +98,57 @@ defmodule Mutare.Transform.Bindings do
   guaranteed to escape: a name here that is already bound on entry may be rebound by the
   node, and an export naming it costs at worst an identity; and it is what a sibling *may*
   write, which a conflict must count even where the write's execution is not certain.
+
+  Inside a skipped call's arguments, which Resolve did not walk, a call's route is read
+  through the environment the skipped call retains (`Resolve.preserved_routing/2`), as
+  `BindingEscapeEmit.expression_bindings/1` reads it: skip withholds mutation, not evaluation.
   """
   @spec matched_names(Macro.t()) :: [atom()]
-  def matched_names(node) do
-    node
-    |> Macro.prewalk([], fn
-      {match, _meta, [pattern, _value]} = node, acc when match in [:=, :<-] ->
-        {node, Enum.reverse(PatternStructure.bound_var_names(pattern)) ++ acc}
+  def matched_names(node), do: node |> matched(%{}) |> Enum.uniq()
 
-      {_form, meta, args} = node, acc when is_list(meta) and is_list(args) ->
-        {node, Enum.reverse(declared_names(args, Meta.routing(meta))) ++ acc}
+  defp matched({:__block__, _meta, statements}, context) when is_list(statements) do
+    {names, _context} =
+      Enum.map_reduce(statements, context, fn statement, context ->
+        {matched(statement, context), Resolve.advance_context(statement, context)}
+      end)
 
-      node, acc ->
-        {node, acc}
-    end)
-    |> elem(1)
-    |> Enum.reverse()
-    |> Enum.uniq()
+    List.flatten(names)
   end
+
+  defp matched({match, _meta, [pattern, value]}, context) when match in [:=, :<-] do
+    PatternStructure.bound_var_names(pattern) ++
+      matched(pattern, context) ++ matched(value, context)
+  end
+
+  # A surviving pipe is a withheld Kernel stage, read as the call it denotes, or an operator.
+  defp matched({:|>, _meta, _args} = pipe, context) do
+    context = Resolve.context(pipe, context)
+
+    case Resolve.preserved_pipe_call(pipe, context) do
+      nil -> matched_call(pipe, context)
+      call -> matched(call, context)
+    end
+  end
+
+  defp matched({_form, meta, args} = node, context) when is_list(meta) and is_list(args),
+    do: matched_call(node, Resolve.context(node, context))
+
+  defp matched({form, meta, _context}, context) when is_list(meta), do: matched(form, context)
+
+  defp matched({left, right}, context), do: matched(left, context) ++ matched(right, context)
+
+  defp matched(list, context) when is_list(list), do: Enum.flat_map(list, &matched(&1, context))
+
+  defp matched(_leaf, _context), do: []
+
+  defp matched_call({form, _meta, args} = node, context) do
+    declared_names(args, routing(node, context)) ++
+      matched(form, context) ++ matched(args, context)
+  end
+
+  # A stamped call's route, or the static route a call inside a skipped argument resolves to.
+  defp routing({_form, meta, _args} = node, context),
+    do: Meta.routing(meta) || Resolve.preserved_routing(node, context)
 
   # The names a call's route declares its positions bind.
   defp declared_names(args, routes) when is_list(routes) do

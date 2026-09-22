@@ -143,6 +143,58 @@ defmodule Mutare.Transform.Resolve do
     end
   end
 
+  # A read-only route for a call in a preserved region — an argument of a skipped call, which
+  # this pass did not walk — so the binding readers (`Mutare.Transform.BindingEscapeEmit`,
+  # `Mutare.Transform.Bindings`) can read its declared positions: skip withholds mutation and
+  # nested routing, not evaluation, and `destructure/2` binds under a skipped wrapper as it
+  # does anywhere. The call's identity is resolved through the boundary's retained
+  # environment, advanced by local directives, and looked up in the registry as `RouteStamp`
+  # would; only a **static** route answers — a `:routing` classifier is never invoked in a
+  # region it was withheld from, and reads as unrouted. Nothing is stamped or rewritten. A
+  # stamped call answers from its stamp (`Meta.routing/1`) and never reaches here.
+  @doc false
+  @spec preserved_routing(Macro.t(), map()) :: :skip | [Spec.position()] | nil
+  def preserved_routing({form, meta, args}, %{resolution: env})
+      when is_list(meta) and is_list(args) do
+    case preserved_identity(form, meta, args, env) do
+      nil -> nil
+      {module_key, fun} -> static_routing(module_key, fun, length(args), env)
+    end
+  end
+
+  def preserved_routing(_node, _context), do: nil
+
+  defp preserved_identity({:., _dot_meta, [{:__aliases__, _am, path}, fun]}, _meta, _args, env)
+       when is_atom(fun),
+       do: {Aliases.resolve_path(path, env.aliases), fun}
+
+  defp preserved_identity({:., _dot_meta, [mod, fun]}, _meta, _args, _env) when is_atom(fun) do
+    case Aliases.resolve_node(mod, %{}) do
+      nil -> nil
+      module_key -> {module_key, fun}
+    end
+  end
+
+  defp preserved_identity(fun, meta, args, env) when is_atom(fun) do
+    meta = Imports.stamp(fun, meta, args, env.imports, env.kernel)
+    {bare_module_key(fun, length(args), meta, env), fun}
+  end
+
+  defp preserved_identity(_form, _meta, _args, _env), do: nil
+
+  defp static_routing(module_key, fun, arity, env) do
+    case Routes.lookup(env.call_routes, module_key, fun, arity) do
+      %Entry{spec: %Spec{args: :routing}} ->
+        nil
+
+      %Entry{spec: spec} ->
+        if StructuralForms.applies?(module_key, fun, spec), do: Spec.routing(spec, arity)
+
+      nil ->
+        nil
+    end
+  end
+
   @doc false
   @spec forget(Macro.t()) :: Macro.t()
   def forget(ast) do

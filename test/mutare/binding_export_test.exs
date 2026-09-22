@@ -57,6 +57,19 @@ defmodule Mutare.BindingExportTest do
     end
   end
 
+  # `destructure([x, y], v)` → `x = 9`: a whole-call mutation that binds one pattern name and
+  # drops the other, re-homed as a `MacroPattern` branch of the tuple-export selector.
+  defmodule ReplaceWithAssignment do
+    @behaviour Mutare.Mutator
+
+    @impl Mutare.Mutator
+    def name, do: :replace_with_assignment
+
+    @impl Mutare.Mutator
+    def mutate({:destructure, _meta, [_pattern, _value]}), do: [{:=, [], [{:x, [], nil}, 9]}]
+    def mutate(_node), do: :skip
+  end
+
   @lazy_div [{Kernel, :div, 2, [:lazy_expression, :expression]}]
 
   @count_calls [
@@ -759,6 +772,124 @@ defmodule Mutare.BindingExportTest do
 
       assert Enum.sort(Enum.map(sites, & &1.mutator)) == [:pattern_swap, :unpack_call]
     end
+  end
+
+  describe "a re-homed whole-call mutant must fill the fixed export tuple" do
+    # `ReplaceWithAssignment` turns `destructure([x, y], v)` into `x = 9`: a valid source
+    # mutation wherever nothing reads `y` after. The branch returns the selector's tuple
+    # `{x, y}` all the same, so unless the scope supplies `y` the branch cannot fill it.
+    test "a fresh pattern name nothing reads: withheld, not a manufactured compile error" do
+      source = destructure_fixture("", "x")
+
+      assert [] =
+               assert_patches(source, [ReplaceWithAssignment], [run: []], clean_functions: false)
+    end
+
+    test "the same name bound on entry: delivered, the tuple names the incoming value" do
+      source = destructure_fixture("y = :before", "x")
+
+      assert [_] =
+               assert_patches(source, [ReplaceWithAssignment], [run: []], clean_functions: false)
+    end
+
+    test "a fresh pattern name read after: withheld as any binding drop is" do
+      source = destructure_fixture("", "{x, y}")
+
+      assert [] =
+               assert_patches(source, [ReplaceWithAssignment], [run: []], clean_functions: false)
+    end
+  end
+
+  describe "a skipped call's arguments keep their binding facts" do
+    # Skip withholds mutation and nested routing, not evaluation: `destructure/2` binds under a
+    # skipped wrapper as anywhere. Resolve does not walk a skipped call's arguments, so the
+    # nested call carries no route stamp; the binding readers resolve its static route through
+    # the environment the skipped call retains instead.
+    @skip_to_tuple [call_routes: [{List, :to_tuple, 1, :skip}], clean_functions: false]
+
+    for {label, prelude} <- [{"rebinding", "left = :before\n    right = :before"}, {"fresh", ""}] do
+      test "a declared #{label} under a skipped wrapper escapes a structural selector" do
+        source = skipped_match_fixture(unquote(prelude))
+
+        # Original `{1, 2, 1, 2}`; the swap `{2, 1, 1, 2}` — never `:before`, never unbound.
+        sites = assert_patches(source, [:pattern_swap], [run: []], @skip_to_tuple)
+        assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
+      end
+    end
+
+    test "a declared rebinding under a skipped wrapper escapes an ordinary selector" do
+      source = """
+      defmodule Fixture do
+        def run do
+          n = :before
+          result = div(hd(destructure([n], [8])), 2)
+          {result, n}
+        end
+      end
+      """
+
+      # Original `{4, 8}`; `div` → `rem` `{0, 8}`.
+      sites =
+        assert_patches(source, [:arithmetic], [run: []],
+          call_routes: [{Kernel, :hd, 1, :skip}],
+          clean_functions: false
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+    end
+
+    test "a declared rebinding under a skipped wrapper reaches the pin check" do
+      source = """
+      defmodule Fixture do
+        def run(value) do
+          x = 1
+          {^x, y} = List.to_tuple(destructure([x, spare], [value, :ok]))
+          {x, y}
+        end
+      end
+      """
+
+      assert [] = assert_patches(source, [:pattern_swap], [run: [1], run: [2]], @skip_to_tuple)
+    end
+
+    test "a written pipe under a skipped wrapper is read as the call it denotes" do
+      source = """
+      defmodule Fixture do
+        def run do
+          left = :before
+          {low, high} = List.to_tuple([left] |> destructure([1]) |> Kernel.++([2]))
+          {low, high, left}
+        end
+      end
+      """
+
+      sites = assert_patches(source, [:pattern_swap], [run: []], @skip_to_tuple)
+      assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
+    end
+  end
+
+  defp skipped_match_fixture(prelude) do
+    """
+    defmodule Fixture do
+      def run do
+        #{prelude}
+        {low, high} = List.to_tuple(destructure([left, right], [1, 2]))
+        {low, high, left, right}
+      end
+    end
+    """
+  end
+
+  defp destructure_fixture(prelude, result) do
+    """
+    defmodule Fixture do
+      def run do
+        #{prelude}
+        destructure([x, y], [1, 2])
+        #{result}
+      end
+    end
+    """
   end
 
   defp unpack_fixture(prelude, result) do

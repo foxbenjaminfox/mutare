@@ -80,8 +80,8 @@ defmodule Mutare.Transform.BindingEscapeEmit do
     end)
   end
 
-  defp collect_bindings({form, meta, args}, context) when is_list(args) do
-    bound_names(form, context) ++ argument_bindings(args, Meta.routing(meta), context)
+  defp collect_bindings({form, _meta, args} = node, context) when is_list(args) do
+    bound_names(form, context) ++ argument_bindings(args, routing(node, context), context)
   end
 
   defp collect_bindings({left, right}, context),
@@ -91,6 +91,11 @@ defmodule Mutare.Transform.BindingEscapeEmit do
     do: Enum.flat_map(list, &bound_names(&1, context))
 
   defp collect_bindings(_, _context), do: []
+
+  # A stamped call's route, or — for a call Resolve did not walk, inside a skipped call's
+  # argument — the static route its identity resolves to through the retained environment.
+  defp routing({_form, meta, _args} = node, context),
+    do: Meta.routing(meta) || Resolve.preserved_routing(node, context)
 
   defp argument_bindings(args, routing, context) do
     case routing do

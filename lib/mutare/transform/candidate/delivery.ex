@@ -89,7 +89,12 @@ defmodule Mutare.Transform.Candidate.Delivery do
   the wrong value (`Mutare.Transform.Bindings`). A dropped name nothing reads is simply
   unexported, and one bound on entry with no conflict is exported as the incoming value, so
   neither withholds. A structural pattern mutant keeps its node's bound set (thin mode) and
-  the rest of the expression, so it never drops a name.
+  the rest of the expression, so it never drops a name. A re-homed `MacroPattern` branch
+  returns the selector's **fixed export tuple**, which names every variable of the pattern
+  whether the source reads it after or not, so such a branch must also bind every name in
+  that tuple the scope cannot supply as incoming — `x = 9` for `destructure([x, y], v)`
+  leaves the tuple's `y` unbound even where nothing reads `y`, and is withheld: a valid
+  source mutation, but one this delivery cannot carry.
 
   A name the node matches somewhere its route does not read as a value (`lazy(p = 8)`) is a
   write core cannot vouch for: exported, it may name the stale incoming value; unexported, it
@@ -125,22 +130,28 @@ defmodule Mutare.Transform.Candidate.Delivery do
 
     needed = Enum.filter(escaping, &(read?.(&1) and not exportable?.(&1)))
 
-    cond do
-      unvouched != [] -> []
-      needed == [] -> candidates
-      true -> Enum.reject(candidates, &drops_binding?(&1, needed))
-    end
+    if unvouched != [],
+      do: [],
+      else: Enum.reject(candidates, &drops_binding?(&1, needed, exportable?))
   end
 
-  defp drops_binding?(%kind{} = candidate, needed)
+  defp drops_binding?(%kind{} = candidate, needed, _exportable?)
        when kind in [Candidate.InPlace, Candidate.Return] do
     candidate |> selector_branch() |> drops_any?(needed)
   end
 
-  defp drops_binding?(%Candidate.MacroPattern{mutant_expr: branch}, needed),
-    do: drops_any?(branch, needed)
+  defp drops_binding?(
+         %Candidate.MacroPattern{mutant_expr: branch, export: export},
+         needed,
+         exportable?
+       ) do
+    required = export |> Bindings.referenced_names() |> Enum.reject(exportable?)
+    drops_any?(branch, Enum.uniq(needed ++ required))
+  end
 
-  defp drops_binding?(_candidate, _needed), do: false
+  defp drops_binding?(_candidate, _needed, _exportable?), do: false
+
+  defp drops_any?(_branch, []), do: false
 
   defp drops_any?(branch, needed) do
     kept = BindingEscapeEmit.expression_bindings(branch)

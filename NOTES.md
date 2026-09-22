@@ -12931,6 +12931,51 @@ call's evaluation order and still tuple-export shared bindings. SourcePatch regr
 the retained-argument case and compare both baseline and mutant behavior for an effectful dynamic
 receiver.
 
+### A skipped call's arguments keep their binding facts `[fixed]` (2026-09-22)
+
+Review of the structural-export fix below found the boundary it stopped at. Resolve does
+not walk a skipped call's arguments (`Resolve.Arguments.walk/3`), so a `destructure/2`
+nested there carries no `:binding_pattern` stamp, and both binding readers — the guaranteed
+`expression_bindings/1` and the possible `matched_names/1` — read its pattern as a plain
+list of reads. `{low, high} = List.to_tuple(destructure([left, right], [1, 2]))` under
+`{List, :to_tuple, 1, :skip}` then exported nothing for `left`/`right`: a compile failure at
+the next read (fresh), the earlier value at the baseline (rebinding); the same shape under
+an arithmetic selector (`div(hd(destructure([n], [8])), 2)` with `hd/1` skipped) trapped `n`;
+and the broadened pin check, fed by the same readers, saw no write to `x` in `{^x, y} =
+List.to_tuple(destructure([x, spare], …))`. The declaration was in the registry; skipping
+the *parent* kept it from this occurrence.
+
+The invariant the reviewer named is the right one: withholding a subtree from mutation must
+not let an enclosing transformation assume away its bindings. Skip withholds mutation and
+nested routing, not evaluation — the reading `BindingEscapeEmit` already took for a skipped
+call's arguments, and for a preserved Kernel stage through the environment a skipped call
+retains (`Resolve.preserved_pipe_call/2`). `Resolve.preserved_routing/2` extends that
+reading to a call's route: the identity through the retained environment, advanced by local
+directives, then the registry's **static** route, exactly as `RouteStamp.stamp/6` would
+stamp it — but nothing is stamped or rewritten, and a `:routing` classifier is never
+invoked in a region it was withheld from (it reads as unrouted). Both readers consult it for
+an unstamped call, which meant `matched_names/1` became a context-threaded walk like
+`expression_bindings/1` (it was a `Macro.prewalk`), reading a surviving pipe as the call it
+denotes on the way. Raw and hosted positions stay unread as Elixir: they are foreign syntax,
+which a skipped call's arguments are not.
+
+**The gate fills the tuple it asks for (same review).** A re-homed whole-call branch returns
+the selector's fixed export tuple, which names every pattern variable whether the source
+reads it after or not; the gate checked the branch against the source-level `needed` set
+alone. `destructure([x, y], [1, 2]); x` with a custom mutation to `x = 9` — valid source —
+passed, and its branch's `{x, y}` referenced an unbound `y`: compile poison manufactured by
+delivery. `drops_binding?/3` now also requires of a `MacroPattern` branch every export name
+the scope cannot supply as incoming; such a mutation is withheld, which is conservative
+omission of a valid mutation, not proof against its patch. Making the primary export
+liveness-aware would deliver it, and was not done: the chain's multiplicity treatment and
+the stamp's over-approximation of `later` would both need re-deriving for a custom-mutator
+shape nobody has yet written.
+
+`SourcePatchGenerators` gained the `:declared_skipped` operand, crossed by the covering
+array with every delivery, the two structural ones included; `binding_export_test.exs` pins
+the four skipped shapes (structural, ordinary, pin, a written pipe under the wrapper) and
+the three whole-call tuple outcomes.
+
 ### The structural pattern selector exports what its expression binds `[fixed]` (2026-09-22)
 
 The scope work above repaired ordinary selectors (`PipeEmit`). The two structural

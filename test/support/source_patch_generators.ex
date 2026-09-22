@@ -9,7 +9,7 @@ defmodule Mutare.Test.SourcePatchGenerators do
 
   Two names are bound before the expression: `left`, which the `:rebinding` operand rebinds
   (and the `:declared` operands rebind through `destructure/2`'s declared `:binding_pattern`
-  position, in the open and beneath a `:lazy_expression` one), and `right`, which every stage
+  position, in the open, beneath a `:lazy_expression` one and beneath a skipped call), and `right`, which every stage
   rebinds and the `:dropped` delivery leaves at its incoming value. The deliveries cross two
   emitters: the ordinary selector around the arithmetic (`:retained`, `:moved`, `:split`,
   `:dropped`) and the structural pattern selector, in which the whole expression is the RHS
@@ -41,6 +41,7 @@ defmodule Mutare.Test.SourcePatchGenerators do
       :rebinding,
       :declared,
       :declared_lazy,
+      :declared_skipped,
       :block,
       :skipped,
       :raw,
@@ -228,6 +229,13 @@ defmodule Mutare.Test.SourcePatchGenerators do
       {"F.lazy(hd(destructure([left], [F.tick(n, :left)])), enabled)", ["left"],
        [call_routes: [{SourcePatchFixtures, :lazy, 2, [:lazy_expression, :expression]}]]}
 
+  # And beneath a skipped wrapper, whose arguments Resolve never walks: the declared position
+  # has no route stamp, and is read through the environment the skipped call retains.
+  defp operand(:declared_skipped),
+    do:
+      {"F.identity(hd(destructure([left], [F.tick(n, :left)])))", ["left"],
+       [call_routes: [{SourcePatchFixtures, :identity, 1, :skip}]]}
+
   # A statement sequence, whose parentheses are the negation's: the mutant that removes the
   # negation (`SourcePatchUnwrapMutator`) has to restore them in its replacement text.
   defp operand(:block),
@@ -311,8 +319,9 @@ defmodule Mutare.Test.SourcePatchGenerators do
       {"F.lazy(F.tick(n, :left), enabled)", [],
        [call_routes: [{SourcePatchFixtures, :lazy, 2, [:lazy_expression, :expression]}]]}
 
-  defp prelude(operand) when operand in [:rebinding, :declared, :declared_lazy],
-    do: "left = :before"
+  defp prelude(operand)
+       when operand in [:rebinding, :declared, :declared_lazy, :declared_skipped],
+       do: "left = :before"
 
   defp prelude(_operand), do: ""
 
