@@ -96,9 +96,10 @@ defmodule Mutare.Runner.CoverageProbeTest do
         assert selection == {:selective, %{1 => :no_coverage, 2 => :no_coverage}}
 
         assert CoverageProbe.summarize(selection) ==
-                 %{covered: 0, no_coverage: 2, run_all?: false}
+                 %{tests: 0, files: 0, suite: 0, no_coverage: 2, run_all?: false, degrade: nil}
 
         refute CoverageProbe.broad_runs?(selection)
+        assert CoverageProbe.broad_ids(selection) == MapSet.new()
       end
     end
   end
@@ -124,31 +125,59 @@ defmodule Mutare.Runner.CoverageProbeTest do
   end
 
   describe "summarize/1" do
-    test ":run_all carries no per-mutant counts" do
-      assert CoverageProbe.summarize(:run_all) ==
-               %{covered: 0, no_coverage: 0, run_all?: true}
+    test "run-all carries no per-mutant counts, and the reason it degraded" do
+      degrade = %{cause: :probe_failed, exit_status: 1}
+
+      assert CoverageProbe.summarize({:run_all, degrade}) ==
+               %{tests: 0, files: 0, suite: 0, no_coverage: 0, run_all?: true, degrade: degrade}
     end
 
-    test "a selective selection counts covered vs. no-coverage mutants" do
+    test "a selective selection counts each run shape apart from no-coverage" do
       selection =
         {:selective,
          %{
            1 => {:run, []},
            2 => {:run, ["test/a_test.exs"]},
            3 => :no_coverage,
-           4 => {:run, ["test/b_test.exs"]},
+           4 => {:run, ["test/b_test.exs", "--only", "test:test alpha"]},
            5 => :no_coverage
          }}
 
       assert CoverageProbe.summarize(selection) ==
-               %{covered: 3, no_coverage: 2, run_all?: false}
+               %{tests: 1, files: 1, suite: 1, no_coverage: 2, run_all?: false, degrade: nil}
     end
 
     test "an all-covered selection reports zero no-coverage" do
       selection = {:selective, %{1 => {:run, []}, 2 => {:run, []}}}
 
       assert CoverageProbe.summarize(selection) ==
-               %{covered: 2, no_coverage: 0, run_all?: false}
+               %{tests: 0, files: 0, suite: 2, no_coverage: 0, run_all?: false, degrade: nil}
+    end
+  end
+
+  describe "shape/1 and broad_ids/1" do
+    test "reads a run's shape off its args: bare = suite, --only = tests, else files" do
+      assert CoverageProbe.shape([]) == :suite
+      assert CoverageProbe.shape(["test/a_test.exs"]) == :files
+      assert CoverageProbe.shape(["test/a_test.exs", "--only", "test:test alpha"]) == :tests
+    end
+
+    test "names the whole-suite mutants of a selective selection, or :all under run-all" do
+      selection =
+        {:selective,
+         %{
+           1 => {:run, []},
+           2 => {:run, ["test/a_test.exs"]},
+           3 => :no_coverage,
+           4 => {:run, []}
+         }}
+
+      assert CoverageProbe.broad_ids(selection) == MapSet.new([1, 4])
+      assert CoverageProbe.broad_runs?(selection)
+
+      run_all = {:run_all, %{cause: :probe_timed_out, cap_ms: 1_000}}
+      assert CoverageProbe.broad_ids(run_all) == :all
+      assert CoverageProbe.broad_runs?(run_all)
     end
   end
 end

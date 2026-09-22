@@ -63,9 +63,10 @@ defmodule Mutare.Runner.CoverageProbe do
 
   Coverage is advisory, never authoritative. Anything uncertain — a non-zero
   probe exit, an unreadable dump, or missing capture tables — degrades to
-  `:run_all`: we never skip a mutant on doubt. A valid empty dump means none of
+  run-all (`{:run_all, degrade}`, the reason attached): we never skip a mutant on
+  doubt. A valid empty dump means none of
   the emitted mutants ran; focused selection can legitimately leave the entire
-  aggregate empty. But because `:run_all` makes every covered mutant run the
+  aggregate empty. But because run-all makes every covered mutant run the
   whole suite — prohibitive on a large project — a failed probe run is retried
   once before degrading: the baseline was green moments earlier, so a probe
   failure is usually a flaky test, and one extra suite run is cheap next to a
@@ -73,8 +74,14 @@ defmodule Mutare.Runner.CoverageProbe do
   default a generous multiple of the per-mutant cap, since instrumentation adds
   overhead a plain baseline doesn't have; `:probe_timeout` sets an explicit cap
   instead): a pathological interaction between the coverage capture and the
-  target's hot loops must degrade to `:run_all`, not hang the whole run at the
+  target's hot loops must degrade to run-all, not hang the whole run at the
   probe stage forever.
+
+  Every path into "run the whole suite" is loud. The selection's `summarize/1` counts
+  whole-suite runs apart from narrowed ones and carries the run-all reason, and
+  `broad_ids/1` names the mutants concerned, so `Mutare.Runner`'s `{:coverage_done, …}`
+  event lets `Mutare.Report.Live` say so in every mode but `--quiet` and mark each such
+  mutant as it runs — a silent whole-suite run reads as a hang, or as Mutare being slow.
   """
 
   alias Mutare.{Coverage, Schema, Selector}
@@ -91,6 +98,10 @@ defmodule Mutare.Runner.CoverageProbe do
   # that whole class of degradations for the price of one extra suite run.
   @probe_attempts 2
 
+  # The `mix test` filter flag `:tests` narrowing writes (`only_args/1`) and `shape/1` reads
+  # back — the one spelling, so a narrowed run is recognised by the flag that narrows it.
+  @only_flag "--only"
+
   @typedoc """
   What the probe decided for one mutant:
 
@@ -103,21 +114,42 @@ defmodule Mutare.Runner.CoverageProbe do
   @type outcome :: {:run, [String.t()]} | :no_coverage
 
   @typedoc """
+  Why the probe degraded to run-all (`t:selection/0`): the probe run exited non-zero
+  (`:probe_failed`, with its exit status), it overran its wall-clock cap
+  (`:probe_timed_out`, with the cap in ms), or it exited green but its dump was
+  unreadable (`:dump_unreadable`, with `Mutare.Coverage.read_dump/2`'s error). Data,
+  not text: `Mutare.Report.Live.Lines` renders it, and the API caller reads it.
+  """
+  @type degrade ::
+          %{cause: :probe_failed, exit_status: non_neg_integer()}
+          | %{cause: :probe_timed_out, cap_ms: pos_integer() | nil}
+          | %{cause: :dump_unreadable, error: term()}
+
+  @typedoc """
   What the probe decided for the whole run:
 
-    * `:run_all` — coverage is unusable or uncertain (the probe failed, the dump
-      couldn't be read, or capture tables were missing).
+    * `{:run_all, degrade}` — coverage is unusable or uncertain (the probe failed, the
+      dump couldn't be read, or capture tables were missing — `t:degrade/0` says which).
       Run *every* mutant against the whole suite — never skip on doubt.
     * `{:selective, outcomes}` — a per-mutant decision. `outcomes` is **total**:
       every mutant id maps to an explicit `outcome`, so a `:no_coverage` mutant
       is named, never implied by a missing key.
   """
-  @type selection :: :run_all | {:selective, %{pos_integer() => outcome()}}
+  @type selection :: {:run_all, degrade()} | {:selective, %{pos_integer() => outcome()}}
+
+  @typedoc """
+  The shape of one mutant's test run, read off its `t:outcome/0` args by `shape/1`:
+  `:suite` (the whole suite), `:files` (its covering test files), or `:tests` (those
+  files narrowed to the covering test cases). `Mutare.Result.selection` records the
+  shape a mutant actually ran, with `:app` for a whole-suite run an umbrella narrowed to
+  the owning app and its dependents (`Mutare.Runner.MutantRun`).
+  """
+  @type shape :: :suite | :files | :tests
 
   @doc """
   Build the per-mutant test selection (see `t:selection/0`).
 
-  Never fails: every uncertainty degrades to the conservative `:run_all`. The
+  Never fails: every uncertainty degrades to the conservative run-all. The
   green check and timing live in `Mutare.Runner.Baseline`, which runs first.
 
   `opts` are the probe run's options (`t:Mutare.Sandbox.Command.Invocation.run_opts/0`):
@@ -126,7 +158,7 @@ defmodule Mutare.Runner.CoverageProbe do
   sequential run, so one fixed partition suffices — `Mutare.Runner.Partitions`); the
   `:max_heap_mb` cap; and a `:cap` (ms, or `nil` for uncapped) bounding the probe's
   wall clock via the same injected self-halt watcher a per-mutant run uses — an
-  overrun exits `Mutare.Sandbox.Command.Exit.timeout/0` and degrades to `:run_all`
+  overrun exits `Mutare.Sandbox.Command.Exit.timeout/0` and degrades to run-all
   like any other non-zero probe exit (see the moduledoc). The probe adds its own
   `:coverage` option; `[]` (the default) sets nothing else.
   """
@@ -140,51 +172,80 @@ defmodule Mutare.Runner.CoverageProbe do
     root = Path.expand(sandbox)
     dump = Path.join(root, Recorder.dump_file())
 
-    with true <- Exit.success?(attempt_probe(sandbox, root, dump, opts, @probe_attempts)),
+    with :ok <- attempt_probe(sandbox, root, dump, opts, @probe_attempts),
          {:ok, coverage} <- Coverage.read_dump(dump, Mutare.RuntimeId.index(schema.sites)) do
       select(mode, schema, coverage)
     else
-      _ -> :run_all
+      {:error, %{cause: _} = degrade} -> {:run_all, degrade}
+      {:error, error} -> {:run_all, %{cause: :dump_unreadable, error: error}}
     end
   end
 
   @doc """
-  Summarise a `t:selection/0` for display (e.g. the `--verbose` coverage note): how
-  many mutants got per-file / whole-suite selection (`covered`) versus were skipped as
-  `:no_coverage`. `:run_all` (coverage unusable or uncertain) carries no per-mutant
-  counts — every covered mutant runs the whole suite — so its counts are zero and
-  `run_all?` is true. Pure (no IO), so it is unit-testable without a probe run.
+  Summarise a `t:selection/0` for display (the `{:coverage_done, …}` phase event
+  `Mutare.Report.Live` renders): how many mutants run under each `t:shape/0` —
+  `tests`, `files`, `suite` — versus were skipped as `no_coverage`. A whole-suite
+  run under `:tests`/`:coverage` is the slowdown nobody asked for, so it is counted
+  apart, never folded into a "covered" total. `{:run_all, degrade}` (coverage unusable
+  or uncertain) carries no per-mutant counts — every covered mutant runs the whole
+  suite — so its counts are zero, `run_all?` is true, and `degrade` says why. Pure (no
+  IO), so it is unit-testable without a probe run.
   """
   @spec summarize(selection()) :: %{
-          covered: non_neg_integer(),
+          tests: non_neg_integer(),
+          files: non_neg_integer(),
+          suite: non_neg_integer(),
           no_coverage: non_neg_integer(),
-          run_all?: boolean()
+          run_all?: boolean(),
+          degrade: degrade() | nil
         }
-  def summarize(:run_all), do: %{covered: 0, no_coverage: 0, run_all?: true}
+  def summarize({:run_all, degrade}),
+    do: %{tests: 0, files: 0, suite: 0, no_coverage: 0, run_all?: true, degrade: degrade}
 
   def summarize({:selective, outcomes}) do
-    {covered, no_coverage} =
-      Enum.reduce(outcomes, {0, 0}, fn
-        {_id, :no_coverage}, {covered, none} -> {covered, none + 1}
-        {_id, {:run, _args}}, {covered, none} -> {covered + 1, none}
+    counts =
+      Enum.reduce(outcomes, %{tests: 0, files: 0, suite: 0, no_coverage: 0}, fn
+        {_id, :no_coverage}, acc -> Map.update!(acc, :no_coverage, &(&1 + 1))
+        {_id, {:run, args}}, acc -> Map.update!(acc, shape(args), &(&1 + 1))
       end)
 
-    %{covered: covered, no_coverage: no_coverage, run_all?: false}
+    Map.merge(counts, %{run_all?: false, degrade: nil})
   end
 
   @doc """
-  Does `selection` hold a whole-suite run — `:run_all`, or any `{:run, []}` outcome
+  The ids whose run is the whole suite (`{:run, []}`) in a selective selection — what
+  the live display marks in flight, so a run that takes fifty times its neighbours is
+  explained on the line that shows it. `:all` under run-all. Pure.
+  """
+  @spec broad_ids(selection()) :: :all | MapSet.t(pos_integer())
+  def broad_ids({:run_all, _degrade}), do: :all
+
+  def broad_ids({:selective, outcomes}),
+    do: for({id, {:run, []}} <- outcomes, into: MapSet.new(), do: id)
+
+  @doc """
+  The `t:shape/0` of a run with these `mix test` args: `[]` is the whole suite, args
+  carrying a `--only` filter are narrowed test cases, anything else is whole files. The
+  reader of the argv `select/3` builds (`only_args/1` writes the flag this reads).
+  """
+  @spec shape([String.t()]) :: shape()
+  def shape([]), do: :suite
+  def shape(args), do: if(@only_flag in args, do: :tests, else: :files)
+
+  @doc """
+  Does `selection` hold a whole-suite run — run-all, or any `{:run, []}` outcome
   (`:full` mode's covered mutants; an id covered only from an unlabeled process)?
   `Mutare.Runner` reads the umbrella dependency graph (a Mix boot) only when it does,
   since that graph narrows nothing else. Pure.
   """
   @spec broad_runs?(selection()) :: boolean()
-  def broad_runs?(:run_all), do: true
+  def broad_runs?({:run_all, _degrade}), do: true
 
   def broad_runs?({:selective, outcomes}),
     do: Enum.any?(outcomes, &match?({_id, {:run, []}}, &1))
 
-  # Run the probe, retrying a failed attempt while attempts remain. A cap overrun
+  # Run the probe, retrying a failed attempt while attempts remain; `:ok` on a green
+  # run, else `{:error, degrade}` naming why (`t:degrade/0`). A cap overrun
   # (`Exit.timed_out?/1`) is NOT retried: the overrun is systematic — the retry
   # would just burn another full cap and overrun again. Each attempt clears the
   # dump first: `ExUnit.after_suite/1` writes it even for a failing suite, so a
@@ -195,7 +256,7 @@ defmodule Mutare.Runner.CoverageProbe do
 
     cond do
       Exit.success?(status) ->
-        status
+        :ok
 
       not Exit.timed_out?(status) and attempts_left > 1 ->
         Logger.warning(
@@ -207,21 +268,30 @@ defmodule Mutare.Runner.CoverageProbe do
 
       true ->
         # The baseline already confirmed the suite green, so a non-zero probe is
-        # unexpected — and silently degrading to run-all (every covered mutant runs
-        # the whole suite) is a big, invisible slowdown. Surface it.
+        # unexpected — and degrading to run-all (every covered mutant runs the whole
+        # suite) is a big slowdown. The reporter gets the headline through the returned
+        # degrade (`{:coverage_done, …}`); the probe's own output — the diagnostic, too
+        # long for a status line — is logged here, and is all a caller with no reporter
+        # (`--quiet`, the direct API) sees.
         Logger.warning(
           probe_failure(status, opts[:cap]) <>
             "; falling back to run-all selection " <>
             "(every covered mutant runs the whole suite). Probe output:\n#{Output.output_tail(output, 15)}"
         )
 
-        status
+        {:error, degrade(status, opts[:cap])}
     end
+  end
+
+  defp degrade(status, cap) do
+    if Exit.timed_out?(status),
+      do: %{cause: :probe_timed_out, cap_ms: cap},
+      else: %{cause: :probe_failed, exit_status: status}
   end
 
   # One instrumented baseline run: the metamutant self-records coverage. A non-zero
   # exit means the dump may be partial (for example `max_failures` can abort before
-  # later files run), so the caller treats it as uncertainty → retry/`:run_all`
+  # later files run), so the caller treats it as uncertainty → retry/run-all
   # (`attempt_probe/5` owns that policy). The `:coverage` run option carries the
   # dump path and the path-normalisation root (`Invocation.environment/2`).
   defp run_probe(sandbox, root, dump, opts) do
@@ -243,10 +313,10 @@ defmodule Mutare.Runner.CoverageProbe do
   @doc """
   Compute the per-mutant `t:selection/0` from an already-decoded coverage dump.
 
-  The pure core of `run/5` (no IO): given the `mode`, the `Mutare.Schema` (for the
+  The pure core of `run/4` (no IO): given the `mode`, the `Mutare.Schema` (for the
   total id list), and a valid `Mutare.Coverage.t()`, it returns a **total**
   `{:selective, outcomes}`. An empty aggregate marks every mutant `:no_coverage`;
-  `run/5` handles probe failures and unusable dumps before selection. Exposed so
+  `run/4` handles probe failures and unusable dumps before selection. Exposed so
   the mode reconciliation — including `:tests` narrowing and its whole-file/whole-suite
   fallbacks — is unit-testable without spawning a probe.
   """
@@ -316,7 +386,7 @@ defmodule Mutare.Runner.CoverageProbe do
   # test name with spaces (`"test foo bar"`) is one argv token needing no shell quoting; `mix test`
   # splits `test:<name>` on the first `:` (`ExUnit.Filters.parse/1`), so a name with a `:` survives.
   defp only_args(names) do
-    names |> Enum.sort() |> Enum.flat_map(&["--only", "test:" <> &1])
+    names |> Enum.sort() |> Enum.flat_map(&[@only_flag, "test:" <> &1])
   end
 
   defp run_args([]), do: {:run, []}

@@ -122,6 +122,34 @@ defmodule Mutare.Report.LiveTest do
       assert counter =~ "~1m 2s left"
     end
 
+    test "the in-flight line marks a mutant the probe gave the whole suite" do
+      state = %{
+        phase: :running,
+        width: 120,
+        spinner: 0,
+        current: site(id: 7, file: "lib/cache.ex", line: 22),
+        total: 10,
+        counts: %{},
+        started_at: 0,
+        broad_ids: MapSet.new([7]),
+        app_scoped?: false
+      }
+
+      [activity, _counter] = Lines.status_block(state, 1_000)
+      assert activity =~ "testing lib/cache.ex:22  relational  >= → > · whole suite"
+
+      [narrowed, _] = Lines.status_block(%{state | current: site(id: 8)}, 1_000)
+      refute narrowed =~ "whole suite"
+
+      [everything, _] =
+        Lines.status_block(%{state | broad_ids: :all, current: site(id: 8)}, 1_000)
+
+      assert everything =~ " · whole suite"
+
+      [app, _] = Lines.status_block(%{state | app_scoped?: true}, 1_000)
+      assert app =~ " · app + dependents"
+    end
+
     test "the in-flight line uses the cheap summary for a deferred (un-rendered) site" do
       # On a `mix mutare` scan the in-flight site carries no Sourceror `*_code` (deferred), only
       # the cheap `Macro` `summary`. The activity line must read that, not crash trying to render
@@ -271,14 +299,42 @@ defmodule Mutare.Report.LiveTest do
     end
   end
 
+  # A `{:coverage_done, …}` payload as `Mutare.Runner` assembles it: the probe summary
+  # (`CoverageProbe.summarize/1`) plus the cap, mode, umbrella scoping, and broad ids.
+  defp coverage(overrides) do
+    Map.merge(
+      %{
+        tests: 120,
+        files: 6,
+        suite: 0,
+        no_coverage: 8,
+        run_all?: false,
+        degrade: nil,
+        cap_ms: 9300,
+        mode: :tests,
+        app_scoped?: false,
+        broad_ids: MapSet.new()
+      },
+      Map.new(overrides)
+    )
+  end
+
   describe "detail_line/1" do
     test "renders the per-phase ✓ notes" do
       assert Lines.detail_line({:compiled, 4200}) == "  ✓ compiled in 4.2s"
       assert Lines.detail_line({:baseline_done, 3100}) == "  ✓ baseline green in 3.1s"
 
-      assert Lines.detail_line(
-               {:coverage_done, %{covered: 134, no_coverage: 8, run_all?: false, cap_ms: 9300}}
-             ) == "  ✓ coverage: 134 covered · 8 no-coverage · cap 9.3s"
+      assert Lines.detail_line({:coverage_done, coverage([])}) ==
+               "  ✓ coverage: 120 narrowed to tests · 6 per-file · 8 no-coverage · cap 9.3s"
+    end
+
+    test "the coverage breakdown lists only the shapes that occur, whole-suite included" do
+      assert Lines.detail_line({:coverage_done, coverage(tests: 0, files: 0, suite: 134)}) ==
+               "  ✓ coverage: 134 whole-suite · 8 no-coverage · cap 9.3s"
+
+      assert Lines.detail_line({:coverage_done, coverage(suite: 14)}) ==
+               "  ✓ coverage: 120 narrowed to tests · 6 per-file · 14 whole-suite · " <>
+                 "8 no-coverage · cap 9.3s"
     end
 
     test "a run-all coverage outcome names the fallback instead of counts" do
@@ -294,6 +350,73 @@ defmodule Mutare.Report.LiveTest do
       assert Lines.detail_line(event) ==
                "  ↺ could not disable type-signature inference for apps/late/mix.exs " <>
                  "(it defines no module of its own to hook); the compile may be much slower"
+    end
+  end
+
+  describe "coverage_notes/2 — whole-suite runs are news in every mode" do
+    test "a narrowed selection is no news: nothing non-verbose, the ✓ breakdown verbose" do
+      assert Lines.coverage_notes(coverage([]), false) == []
+
+      assert Lines.coverage_notes(coverage([]), true) ==
+               ["  ✓ coverage: 120 narrowed to tests · 6 per-file · 8 no-coverage · cap 9.3s"]
+    end
+
+    test "whole-suite runs under a narrowing mode leave a ↺ line, counted against the covered" do
+      summary = coverage(suite: 14, broad_ids: MapSet.new([3, 9]))
+
+      assert Lines.coverage_notes(summary, false) == [
+               "  ↺ 14 of 140 covered mutants run the whole suite: their line ran only in " <>
+                 "processes no test owns (a spawned process, a setup's on_exit), so no " <>
+                 "covering test can be picked"
+             ]
+
+      # Verbose adds the breakdown after the news.
+      assert [news, "  ✓ coverage: " <> _] = Lines.coverage_notes(summary, true)
+      assert news =~ "14 of 140 covered mutants run the whole suite"
+
+      # Singular agreement.
+      assert [line] = Lines.coverage_notes(coverage(tests: 0, files: 0, suite: 1), false)
+      assert line =~ "1 of 1 covered mutant runs the whole suite"
+    end
+
+    test "an umbrella's whole-suite run is named as the app's" do
+      assert [line] = Lines.coverage_notes(coverage(suite: 2, app_scoped?: true), false)
+      assert line =~ "run the whole suite of its app and dependents:"
+    end
+
+    test "--full asked for whole-suite runs, so they are no news" do
+      assert Lines.coverage_notes(coverage(tests: 0, files: 0, suite: 134, mode: :full), false) ==
+               []
+
+      assert [line] =
+               Lines.coverage_notes(coverage(tests: 0, files: 0, suite: 134, mode: :full), true)
+
+      assert line =~ "134 whole-suite"
+    end
+
+    test "a run-all degrade leaves a ⚠ line naming its cause, in every mode" do
+      failed = coverage(run_all?: true, degrade: %{cause: :probe_failed, exit_status: 1})
+
+      assert Lines.coverage_notes(failed, false) == [
+               "  ⚠ coverage probe exited 1 (its output is logged above) — every covered " <>
+                 "mutant runs the whole suite (no per-mutant selection)"
+             ]
+
+      assert [_news, "  ✓ coverage: run-all (no per-mutant selection) · cap 9.3s"] =
+               Lines.coverage_notes(failed, true)
+
+      timed_out = coverage(run_all?: true, degrade: %{cause: :probe_timed_out, cap_ms: 93_000})
+      assert [line] = Lines.coverage_notes(timed_out, false)
+      assert line =~ "⚠ coverage probe overran its 93.0s cap (raise --probe-timeout"
+      assert line =~ "every covered mutant runs the whole suite"
+
+      unreadable = coverage(run_all?: true, degrade: %{cause: :dump_unreadable, error: :enoent})
+      assert [line] = Lines.coverage_notes(unreadable, false)
+      assert line =~ "⚠ coverage dump unreadable (:enoent)"
+
+      scoped = coverage(run_all?: true, app_scoped?: true, degrade: failed.degrade)
+      assert [line] = Lines.coverage_notes(scoped, false)
+      assert line =~ "runs the whole suite of its app and dependents"
     end
   end
 
@@ -476,10 +599,7 @@ defmodule Mutare.Report.LiveTest do
       Live.phase(live, {:baseline_done, 3100})
       Live.phase(live, :coverage_probe)
 
-      Live.phase(
-        live,
-        {:coverage_done, %{covered: 134, no_coverage: 8, run_all?: false, cap_ms: 9300}}
-      )
+      Live.phase(live, {:coverage_done, coverage(suite: 2, broad_ids: MapSet.new([1]))})
 
       Live.phase(live, {:run_config, %{workers: 8, schedulers: 2, partition_env: nil}})
       Live.phase(live, {:running, 142})
@@ -489,7 +609,8 @@ defmodule Mutare.Report.LiveTest do
         site: site(file: "lib/a.ex", line: 3, original_code: ">=", mutated_code: ">"),
         status: :killed,
         duration_ms: 400,
-        output: nil
+        output: nil,
+        selection: :suite
       })
 
       Live.report(live, %Result{
@@ -530,14 +651,18 @@ defmodule Mutare.Report.LiveTest do
       assert out =~ "✓ compiled in 4.2s"
       assert out =~ "running baseline suite…"
       assert out =~ "✓ baseline green in 3.1s"
-      assert out =~ "✓ coverage: 134 covered · 8 no-coverage · cap 9.3s"
+      assert out =~ "↺ 2 of 128 covered mutants run the whole suite"
+
+      assert out =~
+               "✓ coverage: 120 narrowed to tests · 6 per-file · 2 whole-suite · 8 no-coverage · cap 9.3s"
+
       # The worker count, and each worker's scheduler trim, ride onto the running line.
       assert out =~ "testing 142 mutant(s) · 8 workers × 2 schedulers…"
 
-      # A line per mutant — kills included (unlike non-verbose) — with durations.
-      # The label is padded to 8 then a 2-space gap, so "KILLED" → 4 trailing spaces,
-      # "NOCOV" → 5; a no-coverage mutant (duration 0) gets no time suffix.
-      assert out =~ "KILLED    lib/a.ex:3  relational  >= → >  0.4s"
+      # A line per mutant — kills included (unlike non-verbose) — with durations, and a
+      # broad run named as such. The label is padded to 8 then a 2-space gap, so "KILLED" →
+      # 4 trailing spaces, "NOCOV" → 5; a no-coverage mutant (duration 0) gets no time suffix.
+      assert out =~ "KILLED    lib/a.ex:3  relational  >= → >  (whole suite)  0.4s"
       assert out =~ "SURVIVED  lib/a.ex:7  arithmetic  + → -  0.6s"
       assert out =~ "NOCOV     lib/b.ex:2  relational"
 

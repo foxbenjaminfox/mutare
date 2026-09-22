@@ -150,7 +150,14 @@ defmodule Mutare.Runner do
       full recompile the user would otherwise read as a hang.
     * `{:compiled, ms}`
     * `{:baseline_done, ms}`
-    * `{:coverage_done, summary}`
+    * `{:coverage_done, summary}` — the probe's per-mutant selection, once the umbrella
+      scopes are known: `Mutare.Runner.CoverageProbe.summarize/1`'s counts (`tests`,
+      `files`, `suite`, `no_coverage`, `run_all?`, `degrade`) plus `cap_ms` (the derived
+      per-mutant cap), `mode` (the `:test_selection`), `app_scoped?` (an umbrella narrows
+      each whole-suite run to the owning app and its dependents) and `broad_ids` (the
+      mutant ids that run the whole suite, or `:all` under run-all). A whole-suite run
+      nobody asked for — run-all, or a `suite` count under `:tests`/`:coverage` — is
+      rendered in every mode but `--quiet`, since a silent one reads as a hang.
     * `{:run_config, cfg}`
     * `{:confirming_timeouts, count}` — the sequential re-run of provisional
       timeouts is starting (see the timeouts section above)
@@ -313,6 +320,21 @@ defmodule Mutare.Runner do
         # will run — see `app_scopes/3` and `Mutare.Runner.MutantRun`'s broadening.
         scopes = app_scopes(context.project, sandbox, selection)
 
+        # The selection's breakdown, the derived cap, and — for the display to mark each
+        # in flight — which mutants run the whole suite (or, `app_scoped?`, their app's).
+        # Fired after the scopes are known, so the note can say which of the two it is.
+        on_phase.(
+          {:coverage_done,
+           selection
+           |> CoverageProbe.summarize()
+           |> Map.merge(%{
+             cap_ms: cap,
+             mode: options.test_selection,
+             app_scoped?: map_size(scopes) > 0,
+             broad_ids: CoverageProbe.broad_ids(selection)
+           })}
+        )
+
         # The run configuration the verbose running line reports (workers and their
         # schedulers); fired just before `{:running, total}` so the reporter has it when it
         # renders the label.
@@ -365,19 +387,14 @@ defmodule Mutare.Runner do
 
   # The coverage probe, announced and run after a green baseline under the fixed (pre-pool)
   # run options `opts` (partition + heap cap) plus its own `cap`. Returns the per-mutant test
-  # selection.
+  # selection; `run_mutants/4` fires its `{:coverage_done, …}` once the umbrella scopes are in.
   defp probe_coverage(schema, sandbox, %Context{} = context, cap, opts) do
     options = context.options
     on_phase = Context.hook(context, :on_phase)
     on_phase.(:coverage_probe)
 
     probe_opts = [{:cap, probe_cap(cap, options)} | opts]
-    selection = CoverageProbe.run(sandbox, schema, options.test_selection, probe_opts)
-
-    # Verbose-only detail: the per-mutant coverage breakdown plus the derived timeout
-    # cap (the probe summary is pure; this assembles the display payload).
-    on_phase.({:coverage_done, Map.put(CoverageProbe.summarize(selection), :cap_ms, cap)})
-    selection
+    CoverageProbe.run(sandbox, schema, options.test_selection, probe_opts)
   end
 
   # The umbrella narrowing map. Reading the declared inter-app graph costs one Mix

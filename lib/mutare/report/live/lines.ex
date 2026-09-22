@@ -123,6 +123,55 @@ defmodule Mutare.Report.Live.Lines do
   end
 
   @doc """
+  The persistent lines the coverage probe's `{:coverage_done, summary}` leaves, in order:
+  the whole-suite news, if any, in every mode — a `⚠` when the probe degraded to run-all
+  (naming why), a `↺` when mutants nobody asked to run the whole suite will (covered only
+  from processes no test owns) — then, in verbose, the `✓` selection breakdown with the
+  derived cap. A `:full` run asked for whole-suite runs, so it gets no news line. Whole-suite
+  runs are the one cost that makes a run look stuck, so their line is not a verbose detail.
+  """
+  @spec coverage_notes(map(), boolean()) :: [String.t()]
+  def coverage_notes(summary, verbose?) do
+    Enum.reject(
+      [coverage_news(summary), if(verbose?, do: detail_line({:coverage_done, summary}))],
+      &is_nil/1
+    )
+  end
+
+  # Run-all: the reason, and what it costs.
+  defp coverage_news(%{run_all?: true, degrade: degrade} = summary) do
+    "  ⚠ #{degrade_reason(degrade)} — every covered mutant runs #{broad_label(summary)} " <>
+      "(no per-mutant selection)"
+  end
+
+  # Whole-suite runs under a narrowing mode: how many, and why a test could not be picked.
+  defp coverage_news(%{mode: mode, suite: suite} = summary)
+       when mode in [:tests, :coverage] and suite > 0 do
+    covered = suite + summary.tests + summary.files
+
+    "  ↺ #{suite} of #{covered} covered mutant#{plural(covered)} run#{if(suite == 1, do: "s")} " <>
+      "#{broad_label(summary)}: their line ran only in processes no test owns (a spawned " <>
+      "process, a setup's on_exit), so no covering test can be picked"
+  end
+
+  defp coverage_news(_summary), do: nil
+
+  defp degrade_reason(%{cause: :probe_failed, exit_status: status}),
+    do: "coverage probe exited #{status} (its output is logged above)"
+
+  defp degrade_reason(%{cause: :probe_timed_out, cap_ms: cap}),
+    do:
+      "coverage probe overran its #{humanize_ms(cap)} cap (raise --probe-timeout if the " <>
+        "instrumented suite is legitimately slow)"
+
+  defp degrade_reason(%{cause: :dump_unreadable, error: error}),
+    do: "coverage dump unreadable (#{inspect(error)})"
+
+  # What "the whole suite" is for this run: an umbrella narrows it to the owning app's.
+  defp broad_label(%{app_scoped?: true}), do: "the whole suite of its app and dependents"
+  defp broad_label(_summary), do: "the whole suite"
+
+  @doc """
   Renders the app-build seed's outcome (`Mutare.Sandbox.Seed.summary/0`) as a persistent
   status line, or `nil` for a `:skipped` seed (the broad-run default — no line even in
   verbose). `:seeded` shows the reused vs recompiling beam counts; `:partial` adds how many
@@ -237,14 +286,14 @@ defmodule Mutare.Report.Live.Lines do
 
   @doc """
   The verbose per-mutant line: every status's `verbose_leave/1` label (coloured when
-  `color?`), the shared descriptor, and a duration suffix for a mutant that actually ran
-  (`duration_ms > 0` — so a no-coverage/ignored/poisoned mutant, which launched no suite,
-  shows no time).
+  `color?`), the shared descriptor, `(whole suite)` / `(app + dependents)` for a broad run,
+  and a duration suffix for a mutant that actually ran (`duration_ms > 0` — so a
+  no-coverage/ignored/poisoned mutant, which launched no suite, shows no time).
   """
   @spec verbose_line(Result.t(), boolean()) :: String.t()
   def verbose_line(%Result{status: status, duration_ms: ms} = result, color?) do
     labelled(verbose_leave(status), result.site, color?) <>
-      duration_suffix(ms) <> diagnostic_suffix(result)
+      selection_suffix(result) <> duration_suffix(ms) <> diagnostic_suffix(result)
   end
 
   # A padded status label (coloured when `color?`) then the mutant descriptor. `color?` is
@@ -263,6 +312,12 @@ defmodule Mutare.Report.Live.Lines do
 
   defp duration_suffix(ms) when is_integer(ms) and ms > 0, do: "  " <> humanize_ms(ms)
   defp duration_suffix(_ms), do: ""
+
+  # A broad run is named on its line (`Mutare.Result.selection`); a narrowed one — the
+  # norm — is not.
+  defp selection_suffix(%Result{selection: :suite}), do: "  (whole suite)"
+  defp selection_suffix(%Result{selection: :app}), do: "  (app + dependents)"
+  defp selection_suffix(%Result{}), do: ""
 
   # `file:line  <describe>`, the one-liner for the permanent leave-behind / verbose lines (whose
   # result sites carry `*_code` — eager, or hydrated for survivors).
@@ -310,7 +365,23 @@ defmodule Mutare.Report.Live.Lines do
   # scan's un-hydrated site needs no `Sourceror` render just to show progress; the permanent
   # leave-behind / verbose lines stay on `descriptor/1` (hydrated `*_code`).
   defp activity(%{current: nil}), do: "testing mutants…"
-  defp activity(%{current: %Site{} = site}), do: "testing #{live_descriptor(site)}"
+
+  defp activity(%{current: %Site{} = site} = state),
+    do: "testing #{live_descriptor(site)}#{broad_marker(state, site)}"
+
+  # ` · whole suite` on an in-flight mutant the probe gave the whole suite (`broad_ids`
+  # from `{:coverage_done, …}`, or every mutant under run-all): the run that takes many
+  # times its neighbours' is explained on the line that shows it.
+  defp broad_marker(%{broad_ids: :all} = state, _site), do: " · " <> broad_short(state)
+
+  defp broad_marker(%{broad_ids: %MapSet{} = ids} = state, %Site{id: id}) do
+    if MapSet.member?(ids, id), do: " · " <> broad_short(state), else: ""
+  end
+
+  defp broad_marker(_state, _site), do: ""
+
+  defp broad_short(%{app_scoped?: true}), do: "app + dependents"
+  defp broad_short(_state), do: "whole suite"
 
   # The scanning line's payload: per-file progress with a running mutant tally
   # once the first file is in, else the bare label (during file discovery).
@@ -320,15 +391,23 @@ defmodule Mutare.Report.Live.Lines do
 
   defp scan_activity(_state), do: @phase_labels.scanning
 
-  # The coverage-probe detail (verbose): the per-mutant selection breakdown and the
-  # derived per-mutant timeout cap. `run_all?` means coverage was unusable/uncertain,
-  # so every covered mutant runs the whole suite (no per-mutant selection).
+  # The coverage-probe detail (verbose): the per-mutant selection breakdown by shape
+  # (only the non-zero shapes) and the derived per-mutant timeout cap. `run_all?` means
+  # coverage was unusable/uncertain, so every covered mutant runs the whole suite (no
+  # per-mutant selection) — the `⚠` news line says why; this line just closes the phase.
   defp coverage_note(%{run_all?: true, cap_ms: cap}) do
     "coverage: run-all (no per-mutant selection) · cap #{humanize_ms(cap)}"
   end
 
-  defp coverage_note(%{covered: covered, no_coverage: no_coverage, cap_ms: cap}) do
-    "coverage: #{covered} covered · #{no_coverage} no-coverage · cap #{humanize_ms(cap)}"
+  defp coverage_note(%{no_coverage: no_coverage, cap_ms: cap} = summary) do
+    shapes =
+      for {key, label} <- [tests: "narrowed to tests", files: "per-file", suite: "whole-suite"],
+          n = Map.fetch!(summary, key),
+          n > 0,
+          do: "#{n} #{label}"
+
+    "coverage: " <>
+      Enum.join(shapes ++ ["#{no_coverage} no-coverage", "cap #{humanize_ms(cap)}"], " · ")
   end
 
   # `done/total · X survived · Y killed[ · …extras] · elapsed[ · ~eta left]`.

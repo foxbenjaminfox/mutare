@@ -25,7 +25,8 @@ defmodule Mutare.Report.JsonTest do
       status: status,
       duration_ms: opts[:duration_ms],
       output: opts[:output],
-      exit_status: opts[:exit_status]
+      exit_status: opts[:exit_status],
+      selection: opts[:selection]
     }
   end
 
@@ -96,6 +97,16 @@ defmodule Mutare.Report.JsonTest do
     [bare] = decode([result(:survived)])["files"]["lib/a.ex"]["mutants"]
     refute Map.has_key?(bare, "statusReason")
     refute Map.has_key?(bare, "duration")
+  end
+
+  test "records which tests the run covered as testSelection, only for a mutant that ran" do
+    for shape <- [:suite, :app, :files, :tests] do
+      [mutant] = decode([result(:killed, selection: shape)])["files"]["lib/a.ex"]["mutants"]
+      assert mutant["testSelection"] == Atom.to_string(shape)
+    end
+
+    [bare] = decode([result(:no_coverage)])["files"]["lib/a.ex"]["mutants"]
+    refute Map.has_key?(bare, "testSelection")
   end
 
   test "records a compact harness-error diagnostic as statusReason" do

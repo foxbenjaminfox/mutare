@@ -13,15 +13,24 @@ defmodule Mutare.Result do
           | :poisoned
           | :harness_error
 
+  @typedoc """
+  Which tests a mutant's run covered: the whole `:suite`, its owning `:app` and that
+  app's dependents (a whole-suite run an umbrella narrowed), its covering test
+  `:files`, or the covering `:tests` within them (`Mutare.Runner.CoverageProbe`).
+  `nil` for a mutant that launched no run (`ran?/1` is false).
+  """
+  @type selection :: :suite | :app | :files | :tests | nil
+
   @type t :: %__MODULE__{
           site: Site.t(),
           status: status(),
           duration_ms: non_neg_integer() | nil,
           output: String.t() | nil,
-          exit_status: non_neg_integer() | nil
+          exit_status: non_neg_integer() | nil,
+          selection: selection()
         }
 
-  defstruct [:site, :status, :duration_ms, :output, :exit_status]
+  defstruct [:site, :status, :duration_ms, :output, :exit_status, :selection]
 
   # --- status classification -------------------------------------------------
   # The single home for the scoring semantics the reporters and the runner share (see

@@ -222,10 +222,12 @@ defmodule Mix.Tasks.Mutare do
                                           #   --max-survivors the result set is partial, so
                                           #   CI gates are skipped
       mix mutare --verbose                # print details at each step: a
-                                          #   line per mutant (with its duration) plus
+                                          #   line per mutant (with its duration, and
+                                          #   "(whole suite)" when it ran that) plus
                                           #   per-phase detail — compile time, baseline
-                                          #   timing, coverage breakdown, timeout cap,
-                                          #   worker count. (--quiet wins over it)
+                                          #   timing, coverage breakdown by run shape,
+                                          #   timeout cap, worker count. (--quiet wins
+                                          #   over it)
 
   ### Flaky tests: expect mutation testing to find them
 

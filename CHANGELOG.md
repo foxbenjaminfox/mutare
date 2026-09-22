@@ -17,6 +17,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The argument is mutated exactly like an `:expression`, and is handed to the callee unevaluated
   in every branch. Accepted in `call_routes:` and from `call_routes/0` alike.
 
+- **Whole-suite runs are announced, in every mode but `--quiet`.** A mutant whose line the
+  probe saw only from a process no test owns (a spawned process, a `setup`'s `on_exit`) runs
+  the whole suite, and so does every covered mutant when the probe itself fails or overruns
+  its cap. Both used to be silent — the first even under `--verbose` — and a run that stalls
+  on one such mutant read as a hang. The live display now leaves a line after the probe (`↺ 14
+  of 140 covered mutants run the whole suite …`, or `⚠ coverage probe exited 1 …` naming the
+  cause), marks each such mutant on its in-flight line (`· whole suite`) and, under
+  `--verbose`, on its own line (`(whole suite)`); the verbose breakdown counts the shapes apart
+  (`120 narrowed to tests · 6 per-file · 14 whole-suite`). `Mutare.Result` records what ran as
+  `selection` (`:suite`/`:app`/`:files`/`:tests`), and the JSON report carries it as
+  `testSelection`. For hook authors: `{:coverage_done, summary}` now carries `tests`/`files`/
+  `suite` counts (not `covered`), the run-all `degrade` reason, `mode`, `app_scoped?` and
+  `broad_ids`; `Mutare.Runner.CoverageProbe.run/4` returns `{:run_all, degrade}` in place of
+  `:run_all`.
+
 ### Changed
 
 - **The concurrent mutant runs share the machine instead of each taking all of it.** Every

@@ -9,7 +9,8 @@ defmodule Mutare.Run.Context do
   `on_phase` receives both the phase-transition atoms (`:compiling` → `:baseline`
   → `:coverage_probe` → `{:running, total}`) and structured **detail** events fired
   alongside them — `{:compiled, ms}`, `{:baseline_done, ms}`, `{:coverage_done,
-  summary}`, `{:run_config, cfg}` (from `Mutare.Runner`), and `{:seed_app_build,
+  summary}` (the test selection, whole-suite runs counted apart — see `Mutare.Runner`),
+  `{:run_config, cfg}` (from `Mutare.Runner`), and `{:seed_app_build,
   summary}` and `{:inference_override_declined, info}` (what `Mutare.Sandbox` reports
   back from materialising, relayed by the runner during `:compiling`: what the app-build
   `_build` seed did and each `mix.exs` whose inference override did not land) — carrying

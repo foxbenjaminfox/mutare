@@ -8672,6 +8672,43 @@ a `__ex_unit__/2` dispatch, a test body with a quoted and escaped Unicode name, 
 function, each below the cap — after asserting the reported stack really lost the entry frame, so
 a larger `backtrace_depth` cannot pass them vacuously.
 
+### Whole-suite runs are announced `[done]` (2026-09-22)
+Prompted by the observation that a run which falls back to the whole suite "looks stuck", or
+makes the speed claim look false. Three fallbacks were silent, unevenly: the run-level run-all
+degrade had a `Logger.warning` (visible, but printed under the animated block, which garbles it)
+and a verbose-only `✓` note; the per-mutant whole-suite outcome (`{:run, []}`, an id covered
+only from an unlabeled process) was invisible even under `--verbose` — `summarize/1` folded it
+into `covered`, and the only reader that told it apart was `broad_runs?/1`, for the umbrella
+graph decision; the `:tests` → whole-file fallback was uncounted. All reporting, no change to
+selection itself:
+
+- **`summarize/1` counts the shapes apart** (`tests`/`files`/`suite`/`no_coverage`) instead of
+  a `covered` total; `shape/1` reads a run's shape off its argv (the `--only` flag `only_args/1`
+  writes — one `@only_flag`, so builder and reader cannot drift). `broad_ids/1` names the
+  whole-suite mutants.
+- **Run-all carries its reason.** `run/4` returns `{:run_all, degrade}` — `:probe_failed` with
+  the exit status, `:probe_timed_out` with the cap, `:dump_unreadable` with the error — as data,
+  rendered by `Lines`; the `Logger.warning` with the probe's output tail stays, because the tail
+  is the diagnostic and is all a caller with no reporter (`--quiet`, the direct API) sees. So
+  under `mix mutare` a probe failure is mentioned twice: the logged tail and the reporter's `⚠`
+  headline. Accepted — the same shape as the harness-error warnings' known caveat above.
+- **The news line follows the poison precedent, not the seed one.** `{:poison_round, …}` and
+  `{:macro_poison, …}` leave a line in every mode because each costs a recompile the user would
+  read as a hang; the app-build seed's `:fallback` is verbose-only. A whole-suite run is the
+  former kind of cost. `Lines.coverage_notes/2` renders the `⚠`/`↺` news in every mode and the
+  `✓` breakdown in verbose; a `:full` run asked for whole-suite runs, so it gets no news.
+- **The in-flight line marks the mutant** (`· whole suite`, or `· app + dependents` when the
+  umbrella narrows it). `Live` keeps `broad_ids` from `{:coverage_done, …}` rather than the
+  `on_start` hook growing a second argument: `on_start` is documented as "called with each
+  `Mutare.Site`", custom hooks depend on it, and the id set is one run-level fact the reporter
+  can hold. The verbose per-mutant line reads `Mutare.Result.selection` instead — the shape that
+  actually ran, `:app` included, recorded by `MutantRun` where `broaden/3` decides it.
+- **`{:coverage_done, …}` fires after the umbrella scopes are read**, so the note can say which
+  suite "the whole suite" is; `probe_coverage/5` no longer fires it.
+- **JSON:** `testSelection` on each mutant that ran. The report schema does not forbid extra
+  properties and the web component ignores them; a tool over the report can list the mutants
+  that ran broad, which no line in the live display does per mutant except under `--verbose`.
+
 ### PropCheck counter-examples DETS corruption under concurrent workers `[fixed]`
 Found dogfooding mutare on itself with `--workers 4`. `PropCheck.App` starts
 `PropCheck.CounterStrike` at *application boot* — i.e. on every `mix test` invocation,

@@ -10,7 +10,7 @@ defmodule Mutare.Runner.MutantRun do
   # Returns a `%Mutare.Result{}`; the streaming pass (`Mutare.Runner.Stream`) calls `run/2`.
 
   alias Mutare.{Result, Site}
-  alias Mutare.Runner.{Hydrate, Partitions, RunCtx}
+  alias Mutare.Runner.{CoverageProbe, Hydrate, Partitions, RunCtx}
   alias Mutare.Sandbox.Command
 
   require Logger
@@ -42,13 +42,13 @@ defmodule Mutare.Runner.MutantRun do
     %Result{site: site, status: :ignored, duration_ms: 0, output: nil}
   end
 
-  defp classify(%RunCtx{selection: :run_all} = ctx, site, partition),
-    do: run_mutant(ctx, site, broaden([], site, ctx.scopes), partition)
+  defp classify(%RunCtx{selection: {:run_all, _degrade}} = ctx, site, partition),
+    do: run_selected(ctx, site, [], partition)
 
   defp classify(%RunCtx{selection: {:selective, outcomes}} = ctx, site, partition) do
     case Map.fetch(outcomes, site.id) do
       {:ok, {:run, test_args}} ->
-        run_mutant(ctx, site, broaden(test_args, site, ctx.scopes), partition)
+        run_selected(ctx, site, test_args, partition)
 
       {:ok, :no_coverage} ->
         %Result{site: site, status: :no_coverage, duration_ms: 0, output: nil}
@@ -57,21 +57,31 @@ defmodule Mutare.Runner.MutantRun do
       # practice; a missing id is a bug, not a no-coverage signal — run it rather
       # than silently drop a mutant from the score.
       :error ->
-        run_mutant(ctx, site, broaden([], site, ctx.scopes), partition)
+        run_selected(ctx, site, [], partition)
     end
+  end
+
+  # Run the mutant's selected tests, widened for an umbrella (`broaden/3`), and record
+  # on the result the shape that actually ran (`Mutare.Result.selection`).
+  defp run_selected(%RunCtx{} = ctx, site, test_args, partition) do
+    {selection, args} = broaden(test_args, site, ctx.scopes)
+    run_mutant(ctx, site, args, selection, partition)
   end
 
   # A whole-suite run (`[]` args) in an umbrella would run *every* app. Narrow it to
   # the mutant's owning app + its dependents (`scopes`, the safe superset of
-  # possible killers; see `Mutare.Project.app_test_scopes/3`). A non-empty selection
-  # (coverage already attributed it to specific files) is left untouched, and an
-  # empty scope (single project, unknown app, or an unreadable graph) means run
-  # everything — never narrow on doubt.
+  # possible killers; see `Mutare.Project.app_test_scopes/3`) — the `:app` selection
+  # shape. A non-empty selection (coverage already attributed it to specific files) is
+  # left untouched, and an empty scope (single project, unknown app, or an unreadable
+  # graph) means run everything — never narrow on doubt.
   defp broaden([], %Site{file: file}, scopes) when map_size(scopes) > 0 do
-    Map.get(scopes, owning_app(file, scopes), [])
+    case Map.get(scopes, owning_app(file, scopes), []) do
+      [] -> {:suite, []}
+      app_args -> {:app, app_args}
+    end
   end
 
-  defp broaden(test_args, _site, _scopes), do: test_args
+  defp broaden(test_args, _site, _scopes), do: {CoverageProbe.shape(test_args), test_args}
 
   # Resolve an `apps/<app>/…` sandbox path to its owning app by matching the path
   # segment against the *known* `scopes` keys — never `String.to_atom/1` on a path
@@ -127,7 +137,7 @@ defmodule Mutare.Runner.MutantRun do
   # innocent run reaped under someone else's memory pressure, an external kill) is
   # one excluded-from-score harness error; the cost of retrying a real one is the
   # host. Fail toward the host's safety.
-  defp run_mutant(%RunCtx{options: options} = ctx, site, test_args, partition) do
+  defp run_mutant(%RunCtx{options: options} = ctx, site, test_args, selection, partition) do
     result =
       ctx
       |> run_mutant_attempt(
@@ -150,7 +160,7 @@ defmodule Mutare.Runner.MutantRun do
         :ok
     end
 
-    record(site, result)
+    record(site, result, selection)
   end
 
   # `retries` is the general `:harness_retries` budget; `boot_retries` the dedicated
@@ -158,7 +168,7 @@ defmodule Mutare.Runner.MutantRun do
   # outcome, so a boot failure that later degrades to a plain harness error still draws
   # its general retries, and vice versa. Only the two retryable outcomes recurse; every
   # real verdict (and the recovered kills) falls through unretried — as does
-  # `:sigkilled`, deliberately (see `run_mutant/4`: retrying a likely-OOM-killed
+  # `:sigkilled`, deliberately (see `run_mutant/5`: retrying a likely-OOM-killed
   # mutant re-detonates it on the host).
   defp run_mutant_attempt(%RunCtx{} = ctx, site, test_args, partition, retries, boot_retries) do
     result =
@@ -221,13 +231,14 @@ defmodule Mutare.Runner.MutantRun do
   defp kill_outcome?(outcome),
     do: outcome in [:failed, :timeout, :suite_compile_error, :atom_exhausted, :app_start_failure]
 
-  defp record(%Site{} = site, result) do
+  defp record(%Site{} = site, result, selection) do
     %Result{
       site: site,
       status: status_for(result.outcome),
       duration_ms: result.duration_ms,
       output: result.output,
-      exit_status: result.exit_status
+      exit_status: result.exit_status,
+      selection: selection
     }
   end
 
@@ -258,7 +269,7 @@ defmodule Mutare.Runner.MutantRun do
 
   # A `:sigkilled` run also gets a *specific* message: exit 137 is the OS's, not
   # the suite's, and its signature cause is the kernel OOM killer reaping a mutant
-  # made to allocate unboundedly. Deliberately not retried (see `run_mutant/4`),
+  # made to allocate unboundedly. Deliberately not retried (see `run_mutant/5`),
   # and the actionable mitigation — a per-process heap cap on the sandbox runs —
   # is named here.
   defp warn_harness_error(%Site{} = site, %{outcome: :sigkilled} = result) do
@@ -319,7 +330,7 @@ defmodule Mutare.Runner.MutantRun do
   # An OS SIGKILL (almost always the kernel OOM killer reaping a runaway-allocation
   # mutant) is likewise a harness error by *verdict* — the suite never reached one.
   # The `:sigkilled` outcome is an internal refinement like `:boot_failure`, but
-  # driving the opposite retry behavior (none — see `run_mutant/4`) and its own
+  # driving the opposite retry behavior (none — see `run_mutant/5`) and its own
   # warning; reporters never see it as a status.
   defp status_for(:sigkilled), do: :harness_error
   # The mutation broke the test suite's own compilation — it can't even build

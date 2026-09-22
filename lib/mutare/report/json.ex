@@ -74,7 +74,15 @@ defmodule Mutare.Report.Json do
     |> put_present(:statusReason, status_reason(result))
     |> put_present(:description, site.note)
     |> put_present(:duration, result.duration_ms)
+    |> put_present(:testSelection, selection(result.selection))
   end
+
+  # Mutare's addition to the schema's `MutantResult` (the schema permits extra
+  # properties; the report web component ignores them): which tests the mutant's run
+  # covered — `Mutare.Result.selection/0` by name — so a tool over the report can find
+  # the mutants that ran the whole suite. Absent for a mutant that launched no run.
+  defp selection(nil), do: nil
+  defp selection(shape) when is_atom(shape), do: Atom.to_string(shape)
 
   defp status_reason(%Result{status: :harness_error} = result),
     do: HarnessDiagnostic.summary(result)

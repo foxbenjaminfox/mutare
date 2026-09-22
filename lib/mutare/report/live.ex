@@ -34,6 +34,8 @@ defmodule Mutare.Report.Live do
             phase: nil,
             scan: nil,
             run_config: nil,
+            broad_ids: MapSet.new(),
+            app_scoped?: false,
             current: nil,
             spinner: 0,
             drawn: 0,
@@ -83,12 +85,14 @@ defmodule Mutare.Report.Live do
   Phase transitions are `:scanning`, `:compiling`, `:baseline`, `:coverage_probe`,
   `{:running, total}`, and `{:confirming_timeouts, count}` (the post-stream
   confirmation pass, announced while the phase stays `:running`). Detail events are
-  verbose-only notes: `{:compiled, ms}`, `{:baseline_done, ms}`, `{:coverage_done,
-  summary}`, `{:run_config, cfg}` (stashed for the `{:running, total}` label),
-  `{:seed_app_build, summary}`, and `{:inference_override_declined, info}`.
+  verbose-only notes: `{:compiled, ms}`, `{:baseline_done, ms}`, `{:run_config, cfg}`
+  (stashed for the `{:running, total}` label), `{:seed_app_build, summary}`, and
+  `{:inference_override_declined, info}`. `{:coverage_done, summary}` is verbose for
+  its breakdown, but its whole-suite news (a run-all degrade, or mutants that will run
+  the whole suite under a narrowing mode) leaves a line in every mode, as do
   `{:poison_round, info}` (a compile-poison recovery round) and `{:macro_poison, info}`
-  (the macro-expansion fallback skipping an inline DSL macro) each leave a permanent
-  line in every mode, not just verbose. Unrecognised events are ignored.
+  (the macro-expansion fallback skipping an inline DSL macro). Unrecognised events are
+  ignored.
   """
   @spec phase(GenServer.server(), phase_event()) :: :ok
   def phase(server, phase), do: GenServer.cast(server, {:phase, phase})
@@ -188,18 +192,29 @@ defmodule Mutare.Report.Live do
   end
 
   # The verbose-only structured detail events the runner fires alongside the phase
-  # starts (`{:compiled, ms}`, `{:baseline_done, ms}`, `{:coverage_done, summary}`).
-  # Each renders a `✓` scrollback note via `Lines.detail_line/1` when verbose, and
-  # is a no-op otherwise — so the runner emits them unconditionally without knowing
-  # whether anyone is listening.
+  # starts (`{:compiled, ms}`, `{:baseline_done, ms}`). Each renders a `✓` scrollback
+  # note via `Lines.detail_line/1` when verbose, and is a no-op otherwise — so the
+  # runner emits them unconditionally without knowing whether anyone is listening.
   def handle_cast({:phase, {:compiled, _ms} = event}, state),
     do: {:noreply, maybe_detail(state, event)}
 
   def handle_cast({:phase, {:baseline_done, _ms} = event}, state),
     do: {:noreply, maybe_detail(state, event)}
 
-  def handle_cast({:phase, {:coverage_done, _summary} = event}, state),
-    do: {:noreply, maybe_detail(state, event)}
+  # The coverage probe's selection. Its whole-suite news — run-all, or mutants no one asked
+  # to run the whole suite — leaves a line in **every** mode (`Lines.coverage_notes/2`): a
+  # whole-suite run takes many times its neighbours', and unexplained it reads as a hang.
+  # The `✓` breakdown stays verbose. The broad ids are kept so the activity line can mark
+  # each such mutant in flight.
+  def handle_cast({:phase, {:coverage_done, summary}}, state) do
+    state = %{
+      state
+      | broad_ids: Map.get(summary, :broad_ids, MapSet.new()),
+        app_scoped?: Map.get(summary, :app_scoped?, false)
+    }
+
+    {:noreply, Enum.reduce(Lines.coverage_notes(summary, state.verbose), state, &note(&2, &1))}
+  end
 
   # The app-build `_build` seed's outcome (reported by `Mutare.Sandbox`, relayed by the runner
   # during the compile phase). A verbose-only `✓`/`↺` scrollback note surfacing the
