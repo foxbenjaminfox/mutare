@@ -196,8 +196,10 @@ defmodule Mutare.Manifest do
     acc = walk(ast, nil, var, %{regions: [], mentions: [], clean: [], relocated: %{}, defps: []})
 
     %__MODULE__{
+      # mutare:ignore[collection_arity, call_removal] equivalent — every reader of regions filters them, and blame collects into sets
       regions: Enum.reverse(acc.regions),
       mentions: Enum.reverse(acc.mentions),
+      # mutare:ignore[operand_swap] equivalent — sorted next
       clean: Enum.sort_by(acc.clean ++ relocated_spans(acc), & &1.lo)
     }
   end
@@ -401,13 +403,31 @@ defmodule Mutare.Manifest do
       %{ids: [1], clean: []}
       iex> Mutare.Manifest.blame_at_line(manifest, 5)
       %{ids: [], clean: []}
+
+  Nested and overlapping owners:
+
+      iex> manifest = %Mutare.Manifest{
+      ...>   regions: [
+      ...>     %{ids: [1, 2, 3], lo: 3, hi: 8},
+      ...>     %{ids: [1, 2], lo: 5, hi: 6},
+      ...>     %{ids: [2, 3], lo: 5, hi: 6}
+      ...>   ]
+      ...> }
+      iex> Mutare.Manifest.blame_at_line(manifest, 5)
+      %{ids: [1, 2, 3], clean: []}
+      iex> Mutare.Manifest.blame_at_line(manifest, 4)
+      %{ids: [1, 2, 3], clean: []}
+      iex> Mutare.Manifest.blame_at_line(%{manifest | regions: Enum.take(manifest.regions, 2)}, 5)
+      %{ids: [1, 2], clean: []}
   """
   @spec blame_at_line(t(), pos_integer()) :: %{
           ids: [pos_integer()],
           clean: [clean_range()]
         }
+  # mutare:ignore-start[pattern_swap, operand_swap] equivalent — ids come from regions and ranges from clean spans, whichever list is first
   def blame_at_line(%__MODULE__{regions: regions, clean: clean}, line) do
     containing = Enum.filter(regions ++ clean, fn r -> r.lo <= line and line <= r.hi end)
+    # mutare:ignore-end
     min_span = containing |> Enum.map(&(&1.hi - &1.lo)) |> Enum.min(fn -> nil end)
     narrowest = Enum.filter(containing, &(&1.hi - &1.lo == min_span))
 
@@ -627,17 +647,18 @@ defmodule Mutare.Manifest do
            do: %{range: range, part: :branch, lo: lo, hi: hi}
 
     acc = %{acc | clean: push(span, acc.clean)}
+    # mutare:ignore[if_condition] equivalent — a `nil` signature is one no definition has
     if relocated, do: put_in(acc.relocated[relocated], range), else: acc
   end
 
   # The signature and range of a private definition no mutant gates: what a lifted group's
-  # relocated clean clause is, among other things. A head that is no call (`defp unquote(h)`)
-  # and a definition Sourceror cannot range are skipped.
+  # relocated clean clause is, among other things. `relocated_spans/1` keeps those a region
+  # names, and a relocated clause is generated with an argument list, so a head without one
+  # (`defp config`) is not noted. A definition Sourceror cannot range is skipped.
   defp ungated_defp(acc, :defp, head, node) do
-    with {name, _meta, args} when is_atom(name) <- unguarded(head),
+    with {name, _meta, args} when is_list(args) <- unguarded(head),
          %{lo: lo, hi: hi} <- range_region([], node) do
-      arity = if is_list(args), do: length(args), else: 0
-      %{acc | defps: [{{name, arity}, lo, hi} | acc.defps]}
+      %{acc | defps: [{{name, length(args)}, lo, hi} | acc.defps]}
     else
       _ -> acc
     end

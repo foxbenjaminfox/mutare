@@ -282,6 +282,31 @@ defmodule Mutare.ManifestTest do
                %{ids: [], clean: [lifted]}
     end
 
+    test "clean spans are listed in source order, a relocated clause before a later branch" do
+      source = """
+      defmodule Demo do
+        def lifted(n) when n > 0 do
+          m = n + 5
+          marked(m * 7)
+        end
+
+        def lifted(n), do: n
+
+        def in_place(x) do
+          y = x + 2
+          noted(y * 3)
+        end
+      end
+      """
+
+      %{metamutant: meta, dispatch_var: var} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: [:arithmetic, :relational])
+
+      spans = Manifest.from_source(meta, var).clean
+      assert Enum.map(spans, & &1.part) == [:branch, :definition, :definition, :branch]
+      assert Enum.map(spans, & &1.lo) == Enum.sort(Enum.map(spans, & &1.lo))
+    end
+
     test "the instrumented branch still maps to its mutants, and they to no region" do
       {meta, manifest, _in_place, _lifted} = clean_fixture()
       line = line_of(meta, "x - 2")
