@@ -308,7 +308,11 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   *Marks* (`argument_marks:`, `argument_marks/1`) label a
   position and let each mutator decide (the timeout table's value-aware reaction). They share
   neither a namespace nor a grammar on purpose; NOTES "Call routing: `:skip`, `:raw`, `:interior`,
-  keyed refinements".
+  keyed refinements". A configured `:skip` withholds mutation, not what the declaration it
+  displaced says the arguments *mean*: the registry keeps that on `Entry.displaced`, `RouteStamp`
+  stamps it beside the `:skip`, and both binding readers read every call through
+  `Resolve.effective_routing/2` — NOTES "A configured skip displaces a route, not what the
+  arguments mean".
 - **Compile-safety is layered.** Built-in mutators are compile-safe by construction (swaps reuse
   operands); dangerous/inert positions are excluded *positively* by the context classifier, not a
   blacklist; the poison pre-filter is the backstop for the unknown (custom mutators, DSLs). A single

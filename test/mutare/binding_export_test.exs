@@ -91,6 +91,36 @@ defmodule Mutare.BindingExportTest do
       do: Mutare.CallRouting.ArgumentRoutes.new(call, [:binding_pattern, :expression])
   end
 
+  # Two static declarations of `unpack/2` — one true, one that disagrees with it — for a
+  # configured skip to displace: one alone is read by; two that disagree read as unknown.
+  defmodule DeclaredUnpack do
+    @behaviour Mutare.Mutator
+    @behaviour Mutare.CallRouting
+
+    @impl Mutare.Mutator
+    def name, do: :declared_unpack
+
+    @impl Mutare.Mutator
+    def mutate(_node), do: :skip
+
+    @impl Mutare.CallRouting
+    def call_routes, do: [{Mutare.Test.QueryDSL, :unpack, 2, [:binding_pattern, :expression]}]
+  end
+
+  defmodule DisagreeingUnpack do
+    @behaviour Mutare.Mutator
+    @behaviour Mutare.CallRouting
+
+    @impl Mutare.Mutator
+    def name, do: :disagreeing_unpack
+
+    @impl Mutare.Mutator
+    def mutate(_node), do: :skip
+
+    @impl Mutare.CallRouting
+    def call_routes, do: [{Mutare.Test.QueryDSL, :unpack, 2, [:pattern, :expression]}]
+  end
+
   # A macro that runs its argument, routed `:lazy_expression` — the least convenient valid
   # reading of the word: core may not assume the argument runs, and here it does.
   defmodule Eager do
@@ -1029,6 +1059,118 @@ defmodule Mutare.BindingExportTest do
         sites = assert_patches(source, mutators, [run: []], opts)
         assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
       end
+    end
+  end
+
+  describe "a configured skip keeps what the call's arguments mean" do
+    # A configured `:skip` on the declared call *itself* — not on a wrapper around it —
+    # replaces the registry entry that said what its arguments mean. Skip withholds mutation,
+    # not meaning: the readers read the call by the declaration it displaced
+    # (`Entry.displaced`, stamped by `RouteStamp`, read through `Resolve.effective_routing/2`),
+    # so `destructure/2`'s pattern still binds and `match?/2`'s still binds nothing.
+    @skip_destructure [call_routes: [{Kernel, :destructure, 2, :skip}], clean_functions: false]
+    @skip_unpack [
+      call_routes: [{Mutare.Test.QueryDSL, :unpack, 2, :skip}],
+      clean_functions: false
+    ]
+
+    for {label, prelude, expression} <- [
+          {"rebinding", "n = :before", "div(hd(destructure([n], [8])), 2)"},
+          {"fresh binding", "", "div(hd(destructure([n], [8])), 2)"},
+          {"rebinding under a piped call", "n = :before", "hd(destructure([n], [8])) |> div(2)"}
+        ] do
+      test "a #{label} the skipped declaration binds escapes an ordinary selector" do
+        source = """
+        defmodule Fixture do
+          def run do
+            #{unquote(prelude)}
+            result = #{unquote(expression)}
+            {result, n}
+          end
+        end
+        """
+
+        # Original `{4, 8}`; `div` → `rem` `{0, 8}` — never `{4, :before}`, never unbound.
+        sites = assert_patches(source, [:arithmetic], [run: []], @skip_destructure)
+        assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+      end
+    end
+
+    for {label, prelude} <- [{"rebinding", "left = :before\n    right = :before"}, {"fresh", ""}] do
+      test "a #{label} the skipped declaration binds escapes a structural selector" do
+        source = skipped_match_fixture(unquote(prelude))
+        sites = assert_patches(source, [:pattern_swap], [run: []], @skip_destructure)
+        assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
+      end
+    end
+
+    test "a pattern the skipped declaration reads as syntax binds nothing: no invented escape" do
+      source = """
+      defmodule Fixture do
+        def run do
+          p = :incoming
+          values = [
+            p = 8,
+            abs(Enum.count([match?({p = 1, _}, {1, 2})]))
+          ]
+          {values, p}
+        end
+      end
+      """
+
+      # `match?/2`'s `p = 1` is a pattern, not a write: `{[8, 1], 8}` at the baseline. Read as
+      # an expression under the skip, it was a guaranteed binding of `p`, and the export named
+      # `:incoming` over the first element's `8`. The skip changes nothing the readers say:
+      # the same mutants are delivered (today none — the sibling conflict on `p` withholds
+      # the removal either way).
+      unskipped = assert_patches(source, [:call_removal], [run: []], clean_functions: false)
+
+      skipped =
+        assert_patches(source, [:call_removal], [run: []],
+          call_routes: [{Kernel, :match?, 2, :skip}],
+          clean_functions: false
+        )
+
+      assert Enum.map(skipped, & &1.mutator) == Enum.map(unskipped, & &1.mutator)
+    end
+
+    test "a classifier the skip itself displaced reads as unknown: the selector is withheld" do
+      source = skipped_unpack_fixture("left = :before\n    right = :before")
+
+      assert [] =
+               assert_patches(source, [:pattern_swap, ClassifiedUnpack], [run: []], @skip_unpack)
+    end
+
+    test "one displaced declaration is read by; two that disagree read as unknown" do
+      source = skipped_unpack_fixture("left = :before\n    right = :before")
+
+      sites = assert_patches(source, [:pattern_swap, DeclaredUnpack], [run: []], @skip_unpack)
+      assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
+
+      # Unskipped, the two providers are a contract error; the configured skip settles the
+      # conflict for routing, and leaves the arguments' meaning unknown.
+      mutators = [:pattern_swap, DeclaredUnpack, DisagreeingUnpack]
+      assert [] = assert_patches(source, mutators, [run: []], @skip_unpack)
+    end
+
+    test "control: an ordinary skipped call's explicit argument writes still escape" do
+      source = """
+      defmodule Fixture do
+        def run do
+          n = :before
+          result = div(hd(List.wrap(n = 8)), 2)
+          {result, n}
+        end
+      end
+      """
+
+      sites =
+        assert_patches(source, [:arithmetic], [run: []],
+          call_routes: [{List, :wrap, 1, :skip}],
+          clean_functions: false
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
     end
   end
 

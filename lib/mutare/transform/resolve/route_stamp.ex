@@ -101,19 +101,45 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   # leaves the node raw without offering it, `Mutare.Transform.Tag` does the same in a guard, and
   # `Mutare.Transform.Calls.routed_treatments/1` reports `:skip`. A piped value is argument 0 of
   # the call, and is covered with the rest.
+  #
+  # A configured skip that displaced a declaration keeps what the declaration said the arguments
+  # *mean*, beside the skip: the binding readers (`Mutare.Transform.Resolve.effective_routing/2`)
+  # read `destructure/2`'s pattern as binding and `match?/2`'s as binding nothing whether or not
+  # the call mutates. A classifier is not invoked for it — the skip withheld it — and reads as
+  # `:unknown`, as do displaced providers that disagreed; a declaration whose positions do not
+  # apply to this head (a wildcard's, reaching a structural form) is not read.
   defp stamp_spec(
          meta,
-         %Entry{spec: %Spec{args: :skip}},
+         %Entry{spec: %Spec{args: :skip}, displaced: displaced},
          _call_node,
-         _arity,
+         arity,
          _diag
-       ),
-       do: Meta.stamp_routing(meta, :skip)
+       ) do
+    meta = Meta.stamp_routing(meta, :skip)
+
+    case displaced do
+      [] -> meta
+      [%Spec{args: :routing}] -> Meta.stamp_displaced_routing(meta, :unknown)
+      [%Spec{} = spec] -> stamp_displaced_static(meta, spec, arity)
+      [_ | _] -> Meta.stamp_displaced_routing(meta, :unknown)
+    end
+  end
 
   defp stamp_spec(meta, %Entry{spec: spec} = entry, call_node, arity, _diag) do
     call = resolved_call!(call_node, spec)
     routes = ArgumentRoutes.new(call, Spec.routing(spec, arity))
     stamp_routes(meta, attach_hosts!(routes, entry))
+  end
+
+  # The displaced declaration's positions, as `Mutare.Transform.Resolve.preserved_routing/2`
+  # reads a static route under a skipped wrapper: no hosts attached (nothing is hosted in a
+  # skipped call), and no classifier invoked.
+  defp stamp_displaced_static(meta, spec, arity) do
+    {module_key, fun, _arity} = Meta.routed_call(meta)
+
+    if StructuralForms.applies?(module_key, fun, spec),
+      do: Meta.stamp_displaced_routing(meta, Spec.routing(spec, arity)),
+      else: meta
   end
 
   # Advisory (dynamic path only): a `:routing` classifier that returns `{:keyword, …}` for an

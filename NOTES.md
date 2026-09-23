@@ -12954,6 +12954,44 @@ names; the ordinary selector now does too. The regression is `abs(Enum.count([0 
 0)]) + 1)` under every family — the soak's shape without the arithmetic error its original
 raised — which failed the compile against the previous library.
 
+### A configured skip displaces a route, not what the arguments mean `[fixed]` (2026-09-23)
+
+Eighth review, of the fix below, found the boundary the skipped-wrapper work stopped at.
+Skipping a wrapper around `destructure/2` kept its declaration reachable (`preserved_routing/2`
+looks it up again); skipping **`destructure/2` itself** — `{Kernel, :destructure, 2, :skip}` —
+replaced the registry entry that carried the declaration, and no lookup could recover what
+the merge had discarded. The readers saw the bare `:skip` stamp and read the arguments as an
+ordinary call's: `div(hd(destructure([n], [8])), 2)` read `[n]` as a read, exported no `n`,
+and the baseline was `{4, :before}` (fresh: an unbound variable at the next read); the
+structural selector over `List.to_tuple(destructure([left, right], [1, 2]))` the same. The
+inverse failed too, which is what rules out "read every skipped argument as an expression"
+as conservative: with `match?/2` skipped, its `:pattern` position became an expression whose
+`p = 1` was a *guaranteed* binding, and `[p = 8, abs(Enum.count([match?({p = 1, _}, {1,
+2})]))]` exported `p` as `:incoming` over the sibling's `8`. Four of the reviewer's five
+cases reproduced before the fix (the piped spelling was already separated by delivery).
+
+The contract has always said `:skip` is a statement about the *call* — "not worth testing" —
+and nothing about its arguments' semantics, so the fix keeps those apart at the registry.
+`Registry.build/3` no longer discards the code entries a configured key overrides before
+merging; a configured `:skip` keeps them as `Entry.displaced` (coalesced by treatment; any
+other configured treatment keeps nothing — the user said what the positions are).
+`RouteStamp` stamps the bare `:skip` as before, and beside it `:mutare_displaced_route`: the
+displaced static declaration's positions (`Spec.routing/2`, exactly what `preserved_routing/2`
+reads under a wrapper), or `:unknown` for a displaced classifier — never invoked where the
+skip withheld it — and for displaced providers that disagreed (the override settles the
+conflict for routing, as before, but cannot say what the arguments mean).
+`Resolve.effective_routing/2` is now the one route both binding readers read a call by: its
+stamp; a `:skip`'s displaced reading, else the ordinary call a skip leaves it; an unstamped
+call's preserved route. `Calls.routed_treatments/1`, `Meta.skipped?/1` and every mutation
+walk still see one `:skip` — nothing is offered, nothing descended.
+
+Kept out: a configured `:raw` on a binding position has the same trap and is not read
+through; `:raw` is a claim about the position ("syntax, leave it as written") and a user who
+makes it of a pattern that binds has declared wrongly, where a `:skip` claims nothing about
+positions at all. `binding_export_test.exs` pins the five shapes with the displaced
+classifier, the disagreeing pair and the ordinary-skip control; `call_routing_registry_test.exs`
+the entry; `SourcePatchGenerators` gained `:declaration_skipped` beside `:declared_skipped`.
+
 ### Identity under a skipped call is the environment's; a hoisted operand's writes are its possible ones `[fixed]` (2026-09-23)
 
 Seventh review, of the two fixes below. Two findings, source-traced by the reviewer without a

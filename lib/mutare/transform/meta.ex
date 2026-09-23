@@ -184,6 +184,24 @@ defmodule Mutare.Transform.Meta do
   def stamp_routing(meta, routing), do: [{MetaKeys.route_key(), routing} | meta]
 
   @doc """
+  What a `:skip`-routed call's arguments mean, where the configured skip displaced a
+  declaration (`:mutare_displaced_route`): that declaration's per-argument positions, or
+  `:unknown` where they could not be obtained (a classifier the skip withholds, or displaced
+  providers that disagreed). `nil` where the skip displaced nothing — an ordinary call. Read
+  through `Mutare.Transform.Resolve.effective_routing/2`; never a mutation route.
+  """
+  @spec displaced_routing(keyword() | term()) :: [term()] | :unknown | nil
+  def displaced_routing(meta) when is_list(meta),
+    do: Keyword.get(meta, MetaKeys.displaced_route_key())
+
+  def displaced_routing(_meta), do: nil
+
+  @doc "Stamp the displaced declaration's reading onto a skipped call's meta (`:mutare_displaced_route`)."
+  @spec stamp_displaced_routing(keyword(), [term()] | :unknown) :: keyword()
+  def stamp_displaced_routing(meta, routing),
+    do: [{MetaKeys.displaced_route_key(), routing} | meta]
+
+  @doc """
   Make a call the call-level `:skip`'s inert leaf, whatever route its own head took — for the
   call a skipped `Kernel.|>/2` becomes (`Mutare.Transform.Resolve`).
   """

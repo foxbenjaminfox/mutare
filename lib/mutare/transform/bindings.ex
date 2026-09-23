@@ -186,15 +186,13 @@ defmodule Mutare.Transform.Bindings do
 
   defp matched(_leaf, _context), do: []
 
+  # The route is what the arguments mean (`Resolve.effective_routing/2`): a stamp, a
+  # configured skip's displaced declaration, or the static route a call inside a skipped
+  # argument resolves to — `:unknown` where it is a classifier this reader cannot invoke.
   defp matched_call({form, _meta, args} = node, context) do
-    declared_names(args, routing(node, context)) ++
+    declared_names(args, Resolve.effective_routing(node, context)) ++
       matched(form, context) ++ matched(args, context)
   end
-
-  # A stamped call's route, or the static route a call inside a skipped argument resolves to
-  # (`:unknown` where that route is a classifier this reader cannot invoke).
-  defp routing({_form, meta, _args} = node, context),
-    do: Meta.routing(meta) || Resolve.preserved_routing(node, context)
 
   # The names a call's route declares its positions bind.
   defp declared_names(args, routes) when is_list(routes) do

@@ -66,8 +66,12 @@ defmodule Mutare.TransformSourcePatchPropertyTest do
         |> Enum.reject(&(&1.mutator in [:relational, :host_filter, :unwrap]))
         |> Enum.map(& &1.mutator)
 
+      # `:declaration_skipped` skips `destructure/2` itself, the `:destructured` delivery's
+      # own head included: that pattern is then never offered, and the recipe checks only
+      # that the skipped declaration still binds through the baseline and the operand's mutants.
       expected =
         case {recipe.callee, recipe.delivery} do
+          {_callee, :destructured} when recipe.operand == :declaration_skipped -> []
           {_callee, structural} when structural in [:matched, :destructured] -> [:pattern_swap]
           {:static, :retained} -> [:arithmetic]
           {:static, :moved} -> [:operand_swap]

@@ -42,6 +42,7 @@ defmodule Mutare.Test.SourcePatchGenerators do
       :declared,
       :declared_lazy,
       :declared_skipped,
+      :declaration_skipped,
       :block,
       :skipped,
       :raw,
@@ -236,6 +237,13 @@ defmodule Mutare.Test.SourcePatchGenerators do
       {"F.identity(hd(destructure([left], [F.tick(n, :left)])))", ["left"],
        [call_routes: [{SourcePatchFixtures, :identity, 1, :skip}]]}
 
+  # And the declaration itself skipped: the configured skip displaced the registry entry that
+  # says the pattern binds, and the readers read the call by the declaration it displaced.
+  defp operand(:declaration_skipped),
+    do:
+      {"hd(destructure([left], [F.tick(n, :left)]))", ["left"],
+       [call_routes: [{Kernel, :destructure, 2, :skip}]]}
+
   # A statement sequence, whose parentheses are the negation's: the mutant that removes the
   # negation (`SourcePatchUnwrapMutator`) has to restore them in its replacement text.
   defp operand(:block),
@@ -320,7 +328,13 @@ defmodule Mutare.Test.SourcePatchGenerators do
        [call_routes: [{SourcePatchFixtures, :lazy, 2, [:lazy_expression, :expression]}]]}
 
   defp prelude(operand)
-       when operand in [:rebinding, :declared, :declared_lazy, :declared_skipped],
+       when operand in [
+              :rebinding,
+              :declared,
+              :declared_lazy,
+              :declared_skipped,
+              :declaration_skipped
+            ],
        do: "left = :before"
 
   defp prelude(_operand), do: ""

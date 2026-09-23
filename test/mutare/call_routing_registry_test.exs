@@ -150,6 +150,42 @@ defmodule Mutare.CallRouting.RegistryTest do
       assert %Entry{spec: %Spec{args: [:expression]}, sources: [:config]} =
                Macros.lookup(registry, [:Mutare, :Test, :QueryDSL], :query, 1)
     end
+
+    # A configured `:skip` withholds mutation, not what the arguments mean: the declaration it
+    # displaced stays on the entry for the binding readers (`Mutare.Transform.Resolve.RouteStamp`).
+    test "a configured :skip keeps the declaration it displaced" do
+      registry = Macros.build([{Kernel, :destructure, 2, :skip}], [])
+
+      assert %Entry{
+               spec: %Spec{args: :skip},
+               displaced: [%Spec{args: [:binding_pattern, :expression]}]
+             } =
+               Macros.lookup(registry, [:Kernel], :destructure, 2)
+    end
+
+    test "a skip that displaced nothing, and a configured treatment, keep nothing" do
+      registry = Macros.build([{Mixpanel, :track, 3, :skip}, {Kernel, :match?, 2, :raw}], [])
+      assert %Entry{displaced: []} = Macros.lookup(registry, [:Mixpanel], :track, 3)
+
+      assert %Entry{spec: %Spec{args: :raw}, displaced: []} =
+               Macros.lookup(registry, [:Kernel], :match?, 2)
+    end
+
+    test "a configured :skip over disagreeing providers keeps each declaration" do
+      specs = Mutator.Spec.for_module(Mutare.Test.QueryMutator)
+
+      registry =
+        Macros.build(
+          [{Mutare.Test.QueryDSL, :query, 1, :skip}],
+          [specs],
+          [Mutare.Test.ConflictingQueryRoutingExtension]
+        )
+
+      assert %Entry{spec: %Spec{args: :skip}, displaced: displaced} =
+               Macros.lookup(registry, [:Mutare, :Test, :QueryDSL], :query, 1)
+
+      assert MapSet.new(displaced, & &1.args) == MapSet.new([:raw, :expression])
+    end
   end
 
   describe "the :hosted treatment and :routing classifier" do

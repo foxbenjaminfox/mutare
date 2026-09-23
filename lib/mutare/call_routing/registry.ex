@@ -79,11 +79,13 @@ defmodule Mutare.CallRouting.Registry do
     code_routes =
       builtin() ++ from_mutators(mutator_specs) ++ from_extensions(extensions)
 
+    {displaced, code_routes} =
+      Enum.split_with(code_routes, &MapSet.member?(config_keys, Entry.key(&1)))
+
     routes =
       code_routes
-      |> reject_config_overridden(config_keys)
       |> merge_code_routes()
-      |> apply_config_routes(config_entries)
+      |> apply_config_routes(config_entries, displaced)
 
     validate_hosts!(routes, hosts)
     %__MODULE__{routes: routes, hosts: hosts}
@@ -274,10 +276,6 @@ defmodule Mutare.CallRouting.Registry do
     end)
   end
 
-  defp reject_config_overridden(entries, config_keys) do
-    Enum.reject(entries, &MapSet.member?(config_keys, Entry.key(&1)))
-  end
-
   defp merge_code_entry!(left, right) do
     cond do
       left.spec.args != right.spec.args ->
@@ -330,8 +328,28 @@ defmodule Mutare.CallRouting.Registry do
     end)
   end
 
-  defp apply_config_routes(routes, config_entries) do
-    Enum.reduce(config_entries, routes, fn entry, acc -> Map.put(acc, Entry.key(entry), entry) end)
+  # A configured entry is the final word at its key; the code entries it displaced are never
+  # merged (a conflict among them is the user's to settle, and the override settles it). A
+  # configured `:skip` keeps the declarations it displaced (`Entry.displaced`): skip withholds
+  # mutation, not what the arguments mean, and the binding readers still read the call by them.
+  # Any other configured treatment *replaces* the meaning too — the user said what the positions
+  # are — and keeps nothing.
+  defp apply_config_routes(routes, config_entries, displaced) do
+    Enum.reduce(config_entries, routes, fn entry, acc ->
+      key = Entry.key(entry)
+      Map.put(acc, key, %{entry | displaced: displaced_declarations(entry, displaced, key)})
+    end)
+  end
+
+  defp displaced_declarations(%Entry{spec: spec}, displaced, key) do
+    if Spec.skip?(spec) do
+      displaced
+      |> Enum.filter(&(Entry.key(&1) == key))
+      |> Enum.map(& &1.spec)
+      |> Enum.uniq_by(& &1.args)
+    else
+      []
+    end
   end
 
   defp reject_duplicate_config!(entries) do

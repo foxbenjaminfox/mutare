@@ -191,6 +191,25 @@ defmodule Mutare.Transform.Resolve do
 
   def preserved_routing(_node, _context), do: nil
 
+  # The route the binding readers read a call's arguments by — what the arguments *mean*, as
+  # distinct from whether they mutate. A stamped call answers from its stamp; a stamped `:skip`
+  # from the declaration the configured skip displaced (`Meta.displaced_routing/1`: positions,
+  # or `:unknown`), else as the ordinary call a skip leaves it; an unstamped call — inside a
+  # skipped call's argument — from `preserved_routing/2`. "Do not mutate this call" never
+  # means "forget what its arguments mean": `destructure/2` binds its pattern skipped or not,
+  # and `match?/2`'s pattern binds nothing either way.
+  @doc false
+  @spec effective_routing(Macro.t(), map()) :: :skip | :unknown | [Spec.position()] | nil
+  def effective_routing({_form, meta, _args} = node, context) when is_list(meta) do
+    case Meta.routing(meta) do
+      nil -> preserved_routing(node, context)
+      :skip -> Meta.displaced_routing(meta) || :skip
+      routing -> routing
+    end
+  end
+
+  def effective_routing(_node, _context), do: nil
+
   # A call's identity through the retained environment: a stamp where the call has one (a
   # walked call under a routed position — `kernel_form/2` asks for those too), the written
   # name resolved in that environment where it has none.

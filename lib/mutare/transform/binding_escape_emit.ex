@@ -45,9 +45,9 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
   # A withheld stage still receives argument zero when Kernel expands it. Inspect
   # that complete call so a conditional's branches never become its condition.
-  defp collect_bindings({:|>, meta, args} = pipe, context) do
+  defp collect_bindings({:|>, _meta, args} = pipe, context) do
     case Resolve.preserved_pipe_call(pipe, context) do
-      nil -> argument_bindings(args, Meta.routing(meta), context)
+      nil -> argument_bindings(args, Resolve.effective_routing(pipe, context), context)
       call -> bound_names(call, context)
     end
   end
@@ -86,7 +86,8 @@ defmodule Mutare.Transform.BindingEscapeEmit do
         bound_names(first, context)
 
       _call ->
-        bound_names(form, context) ++ argument_bindings(args, routing(node, context), context)
+        bound_names(form, context) ++
+          argument_bindings(args, Resolve.effective_routing(node, context), context)
     end
   end
 
@@ -98,19 +99,15 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
   defp collect_bindings(_, _context), do: []
 
-  # A stamped call's route, or — for a call Resolve did not walk, inside a skipped call's
-  # argument — the static route its identity resolves to through the retained environment.
-  defp routing({_form, meta, _args} = node, context),
-    do: Meta.routing(meta) || Resolve.preserved_routing(node, context)
-
   defp argument_bindings(args, routing, context) do
     case routing do
       nil ->
         Enum.flat_map(args, &bound_names(&1, context))
 
       :skip ->
-        # Skip withholds mutation and nested routing, not ordinary evaluation. Unresolved
-        # calls still export their arguments' bindings unless a visible route says otherwise.
+        # Skip withholds mutation and nested routing, not ordinary evaluation. A skipped call
+        # that displaced no declaration still exports its arguments' bindings; one that did
+        # reads by that declaration (`Resolve.effective_routing/2`) and never reaches here.
         Enum.flat_map(args, &bound_names(&1, context))
 
       treatments when is_list(treatments) ->
@@ -123,9 +120,6 @@ defmodule Mutare.Transform.BindingEscapeEmit do
       # guaranteed. `Bindings.unknown_routing?/1` reports the call to the gate, and
       # `Bindings.matched_names/1` counts every name its arguments mention as a possible write.
       :unknown ->
-        []
-
-      _ ->
         []
     end
   end
