@@ -57,7 +57,9 @@ defmodule Mutare.Transform.Bindings do
   # `Mutare.Transform.BindingEscapeEmit.expression_bindings/1` says escapes it, so an unrouted
   # call is a function here too — a parenthesized block anywhere is the same sequence; the
   # clauses of `case`/`cond`/`fn`/`receive`/`try`/`with`/`for`, each seeing its own patterns;
-  # and a `Kernel` `if`/`unless` condition. Every other name a statement may write
+  # and a `Kernel` `if`/`unless` condition — the form by its resolved identity, so a
+  # qualified `Kernel.if` scopes its branches as the bare one does. Every other name a
+  # statement may write
   # (`matched_names/1`) goes to `uncertain` instead, and a statement's write clears a
   # conflict, or the uncertainty, on the name.
   # The siblings of an expression — a call's callee and arguments, a tuple's or list's
@@ -307,8 +309,11 @@ defmodule Mutare.Transform.Bindings do
       form in @definitions and Calls.kernel_call?(node) ->
         definition(node, later)
 
-      form == :fn or (form in @structural and Calls.kernel_call?(node)) ->
-        structural(node, scope, later)
+      form == :fn ->
+        structural(:fn, node, scope, later)
+
+      Calls.kernel_form(node) in @structural ->
+        structural(Calls.kernel_form(node), node, scope, later)
 
       true ->
         call(node, scope, later)
@@ -412,14 +417,15 @@ defmodule Mutare.Transform.Bindings do
 
   # --- structural forms: their clauses scope, and their heads sequence ---------------------
 
-  defp structural({:fn, meta, clauses}, scope, later) do
+  # Dispatched on the form's resolved name; the head is kept as written.
+  defp structural(:fn, {:fn, meta, clauses}, scope, later) do
     {clauses, referenced, binds?} = clauses(clauses, :pattern, scope, later)
     {{:fn, meta, clauses}, referenced, binds?}
   end
 
   # The subject (or condition) is evaluated first, and what it binds the clauses see.
-  defp structural({form, meta, [subject, blocks]}, scope, later)
-       when form in [:case, :if, :unless] and is_list(blocks) do
+  defp structural(name, {form, meta, [subject, blocks]}, scope, later)
+       when name in [:case, :if, :unless] and is_list(blocks) do
     {blocks, referenced, binds?} = blocks(form, blocks, advance(scope, subject))
 
     {subject, subject_referenced, subject_binds?} =
@@ -431,15 +437,15 @@ defmodule Mutare.Transform.Bindings do
      union(subject_referenced, referenced), binds?}
   end
 
-  defp structural({form, meta, [blocks]}, scope, later)
-       when form in [:cond, :receive, :try] and is_list(blocks) do
+  defp structural(name, {form, meta, [blocks]}, scope, later)
+       when name in [:cond, :receive, :try] and is_list(blocks) do
     {blocks, referenced, binds?} = blocks(form, blocks, scope)
     {{form, stamp_if(meta, binds?, scope, later), [blocks]}, referenced, binds?}
   end
 
   # `with`/`for`: the clauses before the blocks bind in sequence for the blocks; a `for`'s
   # options (`into:`, `reduce:`, `uniq:`) ride in the same keyword list as its blocks.
-  defp structural({form, meta, [_ | _] = args}, scope, later) when form in [:with, :for] do
+  defp structural(name, {form, meta, [_ | _] = args}, scope, later) when name in [:with, :for] do
     case Enum.split(args, -1) do
       {clauses, [blocks]} when is_list(blocks) ->
         {clauses, inner, clauses_referenced, clauses_binds?} =
@@ -457,7 +463,7 @@ defmodule Mutare.Transform.Bindings do
   end
 
   # A structural form in a shape this pass does not read is walked as a call.
-  defp structural(node, scope, later), do: call(node, scope, later)
+  defp structural(_name, node, scope, later), do: call(node, scope, later)
 
   # `pattern <- value` binds the pattern for what follows; any other clause is an expression
   # whose escaping bindings follow it, like a statement. Nothing outside the form reads either.

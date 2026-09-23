@@ -127,21 +127,28 @@ defmodule Mutare.Transform.Resolve do
 
   def kernel_pipe?(pipe, _context), do: Mutare.Transform.Calls.kernel_call?(pipe)
 
-  # Whether a call is `Kernel`'s, read as `Calls.kernel_call?/1` reads a stamped one and, for
-  # a call this pass did not walk — inside a skipped call's argument — through the boundary's
-  # retained environment: a displaced `if/2` there carries no stamp, and would otherwise read
-  # as Kernel's conditional.
+  # The `Kernel` form a call is, read as `Calls.kernel_form/1` reads a stamped one — by
+  # identity, so `Kernel.if` and `K.if` are `:if` — and, for a call this pass did not walk
+  # (inside a skipped call's argument) through the boundary's retained environment: a
+  # displaced `if/2` there carries no stamp, and would otherwise read as Kernel's
+  # conditional. `nil` for any other call.
   @doc false
-  @spec kernel_call?(Macro.t(), map()) :: boolean()
-  def kernel_call?({form, meta, args} = node, %{resolution: env})
+  @spec kernel_form(Macro.t(), map()) :: atom() | nil
+  def kernel_form({form, meta, args} = node, %{resolution: env})
       when is_list(meta) and is_list(args) do
     case Mutare.Transform.Calls.resolved_call(node) do
-      nil -> match?({[:Kernel], _fun}, preserved_identity(form, meta, args, env))
-      _stamped -> Mutare.Transform.Calls.kernel_call?(node)
+      nil ->
+        case preserved_identity(form, meta, args, env) do
+          {[:Kernel], fun} -> fun
+          _other -> nil
+        end
+
+      _stamped ->
+        Mutare.Transform.Calls.kernel_form(node)
     end
   end
 
-  def kernel_call?(node, _context), do: Mutare.Transform.Calls.kernel_call?(node)
+  def kernel_form(node, _context), do: Mutare.Transform.Calls.kernel_form(node)
 
   # A read-only effective call for binding analysis. The preserved source is not
   # rewritten or routed. Grouped RHS nodes are stages, just as in Kernel's expansion.

@@ -23,6 +23,8 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   alias Mutare.Transform.{KeywordRouting, QuoteStructure}
   alias Mutare.Transform.{CoverageEmit, Ctx, Meta, PatternStructure, Resolve, SelectorEmit}
 
+  @conditionals [:if, :unless, :and, :or, :&&, :||]
+
   @doc "Bindings guaranteed to escape an expression, each once, in the order they are bound (a match's right-hand side before its pattern)."
   @spec expression_bindings(Macro.t()) :: [atom()]
   def expression_bindings(node), do: node |> bound_names(%{}) |> Enum.uniq()
@@ -57,16 +59,6 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
   defp collect_bindings({:case, _, [first | _]}, context), do: bound_names(first, context)
 
-  # Kernel's, as its stamp says or — unstamped, inside a skipped call's argument — as the
-  # retained environment resolves the name: a displaced `if/2` there is the call its route
-  # describes, not a conditional.
-  defp collect_bindings({form, _meta, [first | _] = args} = node, context)
-       when form in [:if, :unless, :and, :or, :&&, :||] do
-    if Resolve.kernel_call?(node, context),
-      do: bound_names(first, context),
-      else: argument_bindings(args, routing(node, context), context)
-  end
-
   defp collect_bindings({form, _, _}, _context)
        when form in [:fn, :for, :with, :try, :cond, :receive, :->, :&],
        do: []
@@ -83,8 +75,19 @@ defmodule Mutare.Transform.BindingEscapeEmit do
     end)
   end
 
+  # A Kernel conditional or short-circuit operator binds only through its condition (its
+  # first operand); its branches are scopes of their own. Which calls those are is the
+  # *identity*, whatever the spelling — `if`, `Kernel.if`, `K.if` — read from the stamp or,
+  # unstamped inside a skipped call's argument, through the retained environment (a displaced
+  # `if/2` there is the call its route describes, not a conditional).
   defp collect_bindings({form, _meta, args} = node, context) when is_list(args) do
-    bound_names(form, context) ++ argument_bindings(args, routing(node, context), context)
+    case {Resolve.kernel_form(node, context), args} do
+      {name, [first | _]} when name in @conditionals ->
+        bound_names(first, context)
+
+      _call ->
+        bound_names(form, context) ++ argument_bindings(args, routing(node, context), context)
+    end
   end
 
   defp collect_bindings({left, right}, context),

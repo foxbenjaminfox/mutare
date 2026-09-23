@@ -12931,6 +12931,42 @@ call's evaluation order and still tuple-export shared bindings. SourcePatch regr
 the retained-argument case and compare both baseline and mutant behavior for an effectful dynamic
 receiver.
 
+### A Kernel conditional is read by its identity; a qualified one is still mutated as a call `[fixed; scoped]` (2026-09-23)
+
+Sixth review, on an older path. `BindingEscapeEmit.collect_bindings/2` gave Kernel's
+conditionals and short-circuit operators their own clause — bindings escape through the
+condition only, the branches being scopes — and matched it on the *bare atom* head. `Kernel.if`
+has a remote head, so it fell to the generic call clause, which read the `do:`/`else:` bodies
+as arguments: `[p = 8, abs(Kernel.if(flag, do: (p = -6), else: 2))]` under `:call_removal`
+reported the branch-local `p` as a **guaranteed escaping binding**. That is a wrong positive
+claim — the one direction the readers may never err in — and nothing downstream can undo
+it: the `abs` removal kept `p` (its replacement contains the same conditional), so the gate
+admitted it, and the export named `p` at the baseline, overwriting the first element's `8`
+with `:incoming`. Same for `Elixir.Kernel.if`, an aliased `K.if`, and `Kernel.unless`; with a
+fresh branch local the export referenced an unbound name and the metamutant failed to
+compile. `Bindings.walk/3` had the same bare-atom test for its structural forms, so a
+qualified `if`'s branches were walked as siblings rather than scopes.
+
+**What was fixed.** The two binding readers now ask the *identity*: `Calls.kernel_form/1`
+returns the Kernel name a call resolves to whatever its spelling (`kernel_call?/1` is now
+`kernel_form/1 != nil`), and `Resolve.kernel_form/2` extends it to an unstamped call inside a
+skipped argument through the retained environment, replacing `kernel_call?/2`.
+`collect_bindings/2`'s generic call clause consults it ahead of the argument reading;
+`Bindings.walk/3` dispatches `structural/4` on the resolved name and keeps the head as
+written. A function named `if/2` in another module keeps its argument reading — the control
+in `binding_export_test.exs` says so.
+
+**What was deliberately not fixed.** Every other walk — `Analyze`, `Conditions`, `QuoteEscape`,
+`Returns`, `Tag` — still dispatches Kernel's conditionals on the bare atom, so a qualified
+conditional is *mutated* as an ordinary call: its condition and branches are offered as
+argument expressions (sound: a branch runs at most once, like any argument), and it gets none
+of the conditional family's structural mutants. That is a missing feature on a spelling
+nobody writes unless `if` is shadowed, and the fix would be identity-based dispatch across the
+most subtle walks in the project plus head-preserving rebuilds after mutation — not worth it.
+The line: a qualified Kernel conditional is never *read* as a call, and is not (yet) offered
+as a conditional. The regression invariant the reviewer named holds for the readers: changing
+a Kernel conditional from bare to qualified or aliased does not change its binding summary.
+
 ### A routed macro's positions are uncertain to one another; a conflict withholds whether bound or not `[fixed]` (2026-09-23)
 
 Fifth review, of the `uncertain` fix two entries down. `positions/3` gave each position of a

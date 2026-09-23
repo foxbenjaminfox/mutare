@@ -137,15 +137,30 @@ defmodule Mutare.Transform.Calls do
   `defmodule` (`Mutare.Transform.ModulePlan.scope_boundary?/1`).
   """
   @spec kernel_call?(Macro.t()) :: boolean()
-  def kernel_call?({_form, meta, _args} = node) when is_list(meta) do
+  def kernel_call?({_form, meta, _args} = node) when is_list(meta),
+    do: kernel_form(node) != nil
+
+  def kernel_call?(_node), do: false
+
+  @doc """
+  The name of the `Kernel` macro or function `node` calls, whatever its spelling — bare
+  (`if(…)`, as `kernel_call?/1` reads it) or qualified through a literal or aliased module
+  (`Kernel.if(…)`, `K.if(…)`) — or `nil` for any other call, or a node that is not one.
+
+  For a reader that gives a `Kernel` construct its own treatment (a conditional's branches
+  are not its arguments): the construct is the identity, not the atom at the head, and a
+  spelling that resolves to `Kernel` gets the treatment the bare one does.
+  """
+  @spec kernel_form(Macro.t()) :: atom() | nil
+  def kernel_form({form, meta, _args} = node) when is_list(meta) do
     case resolved_call(node) do
-      nil -> not Imports.kernel_displaced?(meta)
-      {@kernel_key, _fun, _args, _rebuild} -> true
-      _other_module -> false
+      nil when is_atom(form) -> if Imports.kernel_displaced?(meta), do: nil, else: form
+      {@kernel_key, fun, _args, _rebuild} when is_atom(fun) -> fun
+      _other -> nil
     end
   end
 
-  def kernel_call?(_node), do: false
+  def kernel_form(_node), do: nil
 
   @doc "Whether this bare module-defining form really opens a Kernel module scope."
   @spec kernel_module?(Macro.t()) :: boolean()

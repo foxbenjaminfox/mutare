@@ -129,6 +129,13 @@ defmodule Mutare.BindingExportTest do
     end
   end
 
+  # An ordinary function named `if/2`: its `do:` is an argument, evaluated like any other.
+  defmodule OrdinaryIf do
+    import Kernel, except: [if: 2]
+
+    def if(_flag, options), do: Keyword.fetch!(options, :do)
+  end
+
   # A binding macro spelled `if/2`, imported over Kernel's: a displaced Kernel name whose
   # unstamped occurrence under a skipped wrapper must still read as this call, not a conditional.
   defmodule DisplacedIf do
@@ -1238,6 +1245,92 @@ defmodule Mutare.BindingExportTest do
         clean_functions: false,
         call_routes: routes
       )
+    end
+  end
+
+  describe "a Kernel conditional is read by its identity, not its spelling" do
+    # `Kernel.if` has a remote head, so a reader dispatching on the bare atom takes it for an
+    # ordinary call and reads its branches as arguments: a branch-local `p = -6` then counts
+    # as a guaranteed escaping binding — a wrong positive claim, which no conservative rule
+    # downstream can undo.
+    for {label, prelude, callee} <- [
+          {"qualified", "", "Kernel.if"},
+          {"absolute", "", "Elixir.Kernel.if"},
+          {"aliased", "alias Kernel, as: K", "K.if"},
+          {"unless", "", "Kernel.unless"}
+        ] do
+      test "#{label}: a branch-local write is not an escaping binding" do
+        # `{[8, 6], 8}` / `{[8, 2], 8}`; the `abs` removal changes the 6, never the outgoing
+        # `p`. Read as escaping, `p` was exported over the first element's `8` at the baseline.
+        assert_patches(
+          conditional_fixture(unquote(prelude), unquote(callee)),
+          [:call_removal],
+          [run: [true], run: [false]],
+          clean_functions: false
+        )
+      end
+    end
+
+    test "a fresh branch local of a qualified if is not exported where it is unbound" do
+      source = """
+      defmodule Fixture do
+        def run(flag) do
+          abs(Kernel.if(flag, do: (local = -6), else: 2))
+        end
+      end
+      """
+
+      sites =
+        assert_patches(source, [:call_removal], [run: [true], run: [false]],
+          clean_functions: false
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :call_removal))
+    end
+
+    test "control: the bare spelling, the same" do
+      source = """
+      defmodule Fixture do
+        def run(flag) do
+          abs(if(flag, do: (local = -6), else: 2))
+        end
+      end
+      """
+
+      sites =
+        assert_patches(source, [:call_removal], [run: [true], run: [false]],
+          clean_functions: false
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :call_removal))
+    end
+
+    test "control: another module's function named if binds through its arguments" do
+      # `OrdinaryIf.if/2` evaluates its `do:` value as an argument, so `p` really is `-6`
+      # after it; the identity, not the name, says which reading applies.
+      sites =
+        assert_patches(
+          conditional_fixture("", "Mutare.BindingExportTest.OrdinaryIf.if"),
+          [:call_removal],
+          [run: [true]],
+          clean_functions: false
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :call_removal))
+    end
+
+    defp conditional_fixture(prelude, callee) do
+      """
+      defmodule Fixture do
+        #{prelude}
+
+        def run(flag) do
+          p = :incoming
+          values = [p = 8, abs(#{callee}(flag, do: (p = -6), else: 2))]
+          {values, p}
+        end
+      end
+      """
     end
   end
 
