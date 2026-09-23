@@ -70,6 +70,53 @@ defmodule Mutare.BindingExportTest do
     def mutate(_node), do: :skip
   end
 
+  # `Mutare.Test.QueryDSL.unpack/2` routed through a **classifier** — the same positions
+  # `UnpackMutator` declares statically, obtained per call. Under a skipped wrapper the
+  # classifier is never invoked, so the call's binding effect is unknown there.
+  defmodule ClassifiedUnpack do
+    @behaviour Mutare.Mutator
+    @behaviour Mutare.CallRouting
+
+    @impl Mutare.Mutator
+    def name, do: :classified_unpack
+
+    @impl Mutare.Mutator
+    def mutate(_node), do: :skip
+
+    @impl Mutare.CallRouting
+    def call_routes, do: [{Mutare.Test.QueryDSL, :unpack, 2, :routing}]
+
+    @impl Mutare.CallRouting
+    def route_arguments(call),
+      do: Mutare.CallRouting.ArgumentRoutes.new(call, [:binding_pattern, :expression])
+  end
+
+  # A binding macro spelled `if/2`, imported over Kernel's: a displaced Kernel name whose
+  # unstamped occurrence under a skipped wrapper must still read as this call, not a conditional.
+  defmodule DisplacedIf do
+    import Kernel, except: [if: 2]
+
+    # credo:disable-for-next-line Credo.Check.Readability.ParenthesesInCondition
+    defmacro if(pattern, value) do
+      quote do: unquote(pattern) = unquote(value)
+    end
+  end
+
+  defmodule RouteDisplacedIf do
+    @behaviour Mutare.Mutator
+    @behaviour Mutare.CallRouting
+
+    @impl Mutare.Mutator
+    def name, do: :route_displaced_if
+
+    @impl Mutare.Mutator
+    def mutate(_node), do: :skip
+
+    @impl Mutare.CallRouting
+    def call_routes,
+      do: [{Mutare.BindingExportTest.DisplacedIf, :if, 2, [:binding_pattern, :expression]}]
+  end
+
   @lazy_div [{Kernel, :div, 2, [:lazy_expression, :expression]}]
 
   @count_calls [
@@ -866,7 +913,107 @@ defmodule Mutare.BindingExportTest do
       sites = assert_patches(source, [:pattern_swap], [run: []], @skip_to_tuple)
       assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
     end
+
+    # A classifier is never invoked in a region skip withheld it from. Its call is not
+    # unrouted for that — the declaration is in the registry — so its effect is unknown, and
+    # the selector that would trap what it binds is withheld rather than built on a guess.
+    test "a classifier the skip withheld reads as unknown: the structural selector is withheld" do
+      source = skipped_unpack_fixture("left = :before\n    right = :before")
+      mutators = [:pattern_swap, ClassifiedUnpack]
+
+      assert [] = assert_patches(source, mutators, [run: []], @skip_to_tuple)
+
+      # The same classifier, invoked where nothing withholds it, routes as declared.
+      sites = assert_patches(source, mutators, [run: []], clean_functions: false)
+      assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
+    end
+
+    test "a displaced Kernel name under a skipped wrapper is read by its route" do
+      source = """
+      defmodule Fixture do
+        import Kernel, except: [if: 2]
+        import Mutare.BindingExportTest.DisplacedIf, only: [if: 2]
+
+        def run do
+          {low, high} = List.to_tuple(if([left, right], [1, 2]))
+          {low, high, left, right}
+        end
+      end
+      """
+
+      mutators = [:pattern_swap, RouteDisplacedIf]
+
+      for opts <- [@skip_to_tuple, [clean_functions: false]] do
+        sites = assert_patches(source, mutators, [run: []], opts)
+        assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
+      end
+    end
   end
+
+  describe "the gate reads the source node, not its emitted children" do
+    # Emission is bottom-up: by the time a parent's candidates are delivered, its children are
+    # selectors. The inner `div` selector exports `x` through a tuple that also binds its
+    # result temporary — a name no source replacement of `abs(...)` could keep. The gate reads
+    # the node before its children are emitted, so the temporary is not a binding it demands.
+    @default_source ~S"""
+    defmodule Fixture do
+      def run(value \\ abs(div(x = 8, 3))), do: value
+      def other, do: div(9, 4)
+    end
+    """
+
+    @parent_and_child [:arithmetic, :call_removal]
+
+    test "a child selector's export temporary is not a binding the parent must keep" do
+      sites =
+        assert_patches(@default_source, @parent_and_child, [run: [], other: []],
+          clean_functions: false
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :call_removal))
+    end
+
+    # A withheld artifact must not change which candidates exist: the ids poison recovery
+    # skips and `--line` focuses on are claimed from the source alone.
+    for withhold <- [:skip_ids, :emit_ids] do
+      test "#{withhold} withholding the child leaves every id where the full build put it" do
+        %{sites: all} = transform(@default_source, @parent_and_child)
+        [inner | _] = Enum.filter(all, &(&1.mutator == :arithmetic))
+        later = all |> Enum.filter(&(&1.mutator == :arithmetic)) |> List.last()
+
+        withheld =
+          case unquote(withhold) do
+            :skip_ids -> [skip_ids: MapSet.new([inner.id])]
+            :emit_ids -> [emit_ids: MapSet.new([later.id])]
+          end
+
+        %{sites: sites} = transform(@default_source, @parent_and_child, withheld)
+        assert signatures(sites) == signatures(all)
+      end
+    end
+
+    test "an ignored child leaves the count and render passes agreeing" do
+      source =
+        String.replace(@default_source, "  def run", "  # mutare:ignore[arithmetic]\n  def run")
+
+      opts = [clean_functions: false, file: "lib/fixture.ex", mutators: @parent_and_child]
+
+      %{sites: sites, next_id: next_id} =
+        Mutare.Transform.transform_string_with_sites(source, opts)
+
+      assert Mutare.Transform.count_string(source, opts) == length(sites)
+      assert next_id == length(sites) + 1
+    end
+  end
+
+  defp transform(source, mutators, extra \\ []) do
+    Mutare.Transform.transform_string_with_sites(
+      source,
+      [clean_functions: false, file: "lib/fixture.ex", mutators: mutators] ++ extra
+    )
+  end
+
+  defp signatures(sites), do: Enum.map(sites, &Map.take(&1, [:id, :mutator, :range]))
 
   defp skipped_match_fixture(prelude) do
     """
@@ -874,6 +1021,20 @@ defmodule Mutare.BindingExportTest do
       def run do
         #{prelude}
         {low, high} = List.to_tuple(destructure([left, right], [1, 2]))
+        {low, high, left, right}
+      end
+    end
+    """
+  end
+
+  defp skipped_unpack_fixture(prelude) do
+    """
+    defmodule Fixture do
+      import Mutare.Test.QueryDSL
+
+      def run do
+        #{prelude}
+        {low, high} = List.to_tuple(unpack([left, right], [1, 2]))
         {low, high, left, right}
       end
     end

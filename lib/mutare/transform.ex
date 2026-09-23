@@ -1242,10 +1242,24 @@ defmodule Mutare.Transform do
     Macro.traverse(node, ctx, &emit_descend/2, &emit_node/2)
   end
 
-  # The pre step: entering a nested module scope increments `module_depth` (so
-  # `SelectorEmit.subject/1` falls back to the inline read inside it); leaving is handled in the
-  # post step. Every other node passes through untouched.
+  # The pre step, on the node as the source has it — its children not yet emitted. Two jobs:
+  #
+  #   * gate the node's candidates (`gate_candidates/2`), here rather than in the post step
+  #     because the gate reads what the node binds and matches, and after the children are
+  #     emitted those facts are a generated selector's (its export tuple binds a result
+  #     temporary no source replacement keeps). Which candidates exist must follow from the
+  #     source alone, so the ids they claim are the same whichever other mutants are
+  #     ignored, poison-skipped or left out by `emit_ids`, and the count pass agrees with
+  #     the render pass;
+  #   * entering a nested module scope increments `module_depth` (so `SelectorEmit.subject/1`
+  #     falls back to the inline read inside it); leaving is handled in the post step.
   defp emit_descend(node, ctx) do
+    node =
+      case candidates_of(node) do
+        [] -> node
+        candidates -> Meta.put_candidates(node, :in_place, gate_candidates(candidates, node))
+      end
+
     if module_scope?(node),
       do: {node, Ctx.update_scope(ctx, &%{&1 | module_depth: &1.module_depth + 1})},
       else: {node, ctx}
@@ -1275,13 +1289,7 @@ defmodule Mutare.Transform do
         emit_one_unhosted(current, ctx)
 
       hosted ->
-        HostedEmit.emit(
-          current,
-          hosted,
-          gate_candidates(candidates_of(current), current),
-          ctx,
-          &emit_hosted_inplace/3
-        )
+        HostedEmit.emit(current, hosted, candidates_of(current), ctx, &emit_hosted_inplace/3)
     end
   end
 
@@ -1328,21 +1336,20 @@ defmodule Mutare.Transform do
     end
   end
 
-  # A `case`'s per-clause candidates dominate and are never gated; otherwise ordinary
-  # candidates are gated before classification. A fn/receive keeps its clause and whole-node
-  # candidates together so later return/condition appends retain their original id order.
+  # A `case`'s per-clause candidates dominate and are never gated; otherwise the ordinary
+  # candidates — already gated on the way down (`emit_descend/2`) — are classified. A
+  # fn/receive keeps its clause and whole-node candidates together so later return/condition
+  # appends retain their original id order.
   defp node_delivery_route(node) do
     case case_candidates_of(node) do
-      [] ->
-        node |> candidates_of() |> gate_candidates(node) |> Delivery.classify_node_candidates()
-
-      clause_candidates ->
-        Delivery.classify_node_candidates(clause_candidates)
+      [] -> node |> candidates_of() |> Delivery.classify_node_candidates()
+      clause_candidates -> Delivery.classify_node_candidates(clause_candidates)
     end
   end
 
-  # Apply mutator opt-outs and suppress duplicate return constants *before* id assignment,
-  # shared with the collect walk via `Candidate.Delivery.gate/1` (see there for the policy).
+  # Apply mutator opt-outs, suppress duplicate return constants and withhold binding-dropping
+  # mutants *before* id assignment, on the source node — shared with the collect walk via
+  # `Candidate.Delivery.gate/2` (see there for the policy).
   defp gate_candidates(candidates, node), do: Delivery.gate(candidates, node)
 
   defp emit_site({:try, _, [blocks]} = node, candidates, ctx) when is_list(blocks) do

@@ -127,6 +127,22 @@ defmodule Mutare.Transform.Resolve do
 
   def kernel_pipe?(pipe, _context), do: Mutare.Transform.Calls.kernel_call?(pipe)
 
+  # Whether a call is `Kernel`'s, read as `Calls.kernel_call?/1` reads a stamped one and, for
+  # a call this pass did not walk — inside a skipped call's argument — through the boundary's
+  # retained environment: a displaced `if/2` there carries no stamp, and would otherwise read
+  # as Kernel's conditional.
+  @doc false
+  @spec kernel_call?(Macro.t(), map()) :: boolean()
+  def kernel_call?({form, meta, args} = node, %{resolution: env})
+      when is_list(meta) and is_list(args) do
+    case Mutare.Transform.Calls.resolved_call(node) do
+      nil -> match?({[:Kernel], _fun}, preserved_identity(form, meta, args, env))
+      _stamped -> Mutare.Transform.Calls.kernel_call?(node)
+    end
+  end
+
+  def kernel_call?(node, _context), do: Mutare.Transform.Calls.kernel_call?(node)
+
   # A read-only effective call for binding analysis. The preserved source is not
   # rewritten or routed. Grouped RHS nodes are stages, just as in Kernel's expansion.
   @doc false
@@ -149,11 +165,14 @@ defmodule Mutare.Transform.Resolve do
   # nested routing, not evaluation, and `destructure/2` binds under a skipped wrapper as it
   # does anywhere. The call's identity is resolved through the boundary's retained
   # environment, advanced by local directives, and looked up in the registry as `RouteStamp`
-  # would; only a **static** route answers — a `:routing` classifier is never invoked in a
-  # region it was withheld from, and reads as unrouted. Nothing is stamped or rewritten. A
-  # stamped call answers from its stamp (`Meta.routing/1`) and never reaches here.
+  # would; only a **static** route answers. A `:routing` classifier is never invoked in a
+  # region it was withheld from, and its call reads as `:unknown` — not as unrouted: a
+  # declared route whose positions were not obtained may bind names the readers cannot see,
+  # so an enclosing binding-sensitive delivery withholds rather than assumes
+  # (`Bindings.unknown_routing?/1`, `Candidate.Delivery.gate/2`). Nothing is stamped or
+  # rewritten. A stamped call answers from its stamp (`Meta.routing/1`) and never reaches here.
   @doc false
-  @spec preserved_routing(Macro.t(), map()) :: :skip | [Spec.position()] | nil
+  @spec preserved_routing(Macro.t(), map()) :: :skip | :unknown | [Spec.position()] | nil
   def preserved_routing({form, meta, args}, %{resolution: env})
       when is_list(meta) and is_list(args) do
     case preserved_identity(form, meta, args, env) do
@@ -185,7 +204,7 @@ defmodule Mutare.Transform.Resolve do
   defp static_routing(module_key, fun, arity, env) do
     case Routes.lookup(env.call_routes, module_key, fun, arity) do
       %Entry{spec: %Spec{args: :routing}} ->
-        nil
+        :unknown
 
       %Entry{spec: spec} ->
         if StructuralForms.applies?(module_key, fun, spec), do: Spec.routing(spec, arity)

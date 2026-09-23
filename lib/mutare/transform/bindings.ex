@@ -102,10 +102,26 @@ defmodule Mutare.Transform.Bindings do
   Inside a skipped call's arguments, which Resolve did not walk, a call's route is read
   through the environment the skipped call retains (`Resolve.preserved_routing/2`), as
   `BindingEscapeEmit.expression_bindings/1` reads it: skip withholds mutation, not evaluation.
+  A route there that is a classifier cannot be read, and the names it declares are missing
+  from this list; `unknown_routing?/1` says so.
   """
   @spec matched_names(Macro.t()) :: [atom()]
-  def matched_names(node), do: node |> matched(%{}) |> Enum.uniq()
+  def matched_names(node) do
+    for {:bound, name} <- matched(node, %{}), uniq: true, do: name
+  end
 
+  @doc """
+  Whether `node` contains a call whose binding effect cannot be read: one inside a skipped
+  call's argument whose route is a `:routing` classifier, which is never invoked in a region
+  it was withheld from (`Resolve.preserved_routing/2`). Such a call may bind names neither
+  reader reports, so a delivery that must export what `node` binds withholds instead
+  (`Candidate.Delivery.gate/2`); a call is read as ordinary only where no route is declared.
+  """
+  @spec unknown_routing?(Macro.t()) :: boolean()
+  def unknown_routing?(node), do: :unknown in matched(node, %{})
+
+  # The walk collects binding facts: `{:bound, name}` for a possible write, `:unknown` for a
+  # call whose declared positions could not be obtained.
   defp matched({:__block__, _meta, statements}, context) when is_list(statements) do
     {names, _context} =
       Enum.map_reduce(statements, context, fn statement, context ->
@@ -116,7 +132,7 @@ defmodule Mutare.Transform.Bindings do
   end
 
   defp matched({match, _meta, [pattern, value]}, context) when match in [:=, :<-] do
-    PatternStructure.bound_var_names(pattern) ++
+    bound(PatternStructure.bound_var_names(pattern)) ++
       matched(pattern, context) ++ matched(value, context)
   end
 
@@ -146,7 +162,8 @@ defmodule Mutare.Transform.Bindings do
       matched(form, context) ++ matched(args, context)
   end
 
-  # A stamped call's route, or the static route a call inside a skipped argument resolves to.
+  # A stamped call's route, or the static route a call inside a skipped argument resolves to
+  # (`:unknown` where that route is a classifier this reader cannot invoke).
   defp routing({_form, meta, _args} = node, context),
     do: Meta.routing(meta) || Resolve.preserved_routing(node, context)
 
@@ -157,9 +174,13 @@ defmodule Mutare.Transform.Bindings do
     |> Enum.flat_map(fn {arg, treatment} -> declared_position_names(arg, treatment) end)
   end
 
+  defp declared_names(_args, :unknown), do: [:unknown]
   defp declared_names(_args, _routing), do: []
 
-  defp declared_position_names(arg, :binding_pattern), do: PatternStructure.bound_var_names(arg)
+  defp bound(names), do: Enum.map(names, &{:bound, &1})
+
+  defp declared_position_names(arg, :binding_pattern),
+    do: bound(PatternStructure.bound_var_names(arg))
 
   defp declared_position_names(arg, {:keyword, _} = treatment),
     do: declared_keyword_names(arg, treatment)

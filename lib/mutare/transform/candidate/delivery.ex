@@ -99,7 +99,18 @@ defmodule Mutare.Transform.Candidate.Delivery do
   A name the node matches somewhere its route does not read as a value (`lazy(p = 8)`) is a
   write core cannot vouch for: exported, it may name the stale incoming value; unexported, it
   may be the write the source lets out. Where that name is bound on entry, in conflict and
-  read after, no delivery is faithful, so every candidate on the node is withheld.
+  read after, no delivery is faithful, so every candidate on the node is withheld. So is
+  every candidate on a node whose binding effect is **unknown**: a call inside a skipped
+  argument whose route is a classifier core did not invoke there
+  (`Bindings.unknown_routing?/1`) may bind names no reader reports, and a selector around it
+  would trap them.
+
+  Run on the **source** node, before its children are emitted: `Mutare.Transform` gates on
+  the way down its emit walk, so the facts read here — what the node binds, what it matches —
+  are the program's, never a generated child selector's (whose export tuple binds a result
+  temporary no source replacement could keep). Which candidates exist, and so which ids they
+  claim, then depends on the source alone, not on which other mutants are ignored,
+  poison-skipped or focused away by `emit_ids` — the count and render passes agree.
   """
   @spec gate([node_candidate()], Macro.t()) :: [node_candidate()]
   def gate([], _node), do: []
@@ -130,7 +141,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
 
     needed = Enum.filter(escaping, &(read?.(&1) and not exportable?.(&1)))
 
-    if unvouched != [],
+    if unvouched != [] or Bindings.unknown_routing?(node),
       do: [],
       else: Enum.reject(candidates, &drops_binding?(&1, needed, exportable?))
   end

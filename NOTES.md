@@ -12931,6 +12931,53 @@ call's evaluation order and still tuple-export shared bindings. SourcePatch regr
 the retained-argument case and compare both baseline and mutant behavior for an effectful dynamic
 receiver.
 
+### The gate reads the source; a withheld classifier reads as unknown `[fixed]` (2026-09-23)
+
+Third review of the binding-boundary work found two more holes, both reproduced by its cases
+before the fix.
+
+**A skipped region's classifier route is unknown, not absent.** `Resolve.preserved_routing/2`
+answered `nil` for a `:routing` entry — the right decision not to invoke a classifier where
+skip withheld it, but the readers took `nil` as "an ordinary call": `List.to_tuple(unpack([left,
+right], [1, 2]))` under `{List, :to_tuple, 1, :skip}` with `unpack/2` routed by a classifier
+read `[left, right]` as reads, exported nothing, and left the baseline at `:before`. The
+declaration was configured; discarding the difference between "no route" and "a route whose
+positions were not obtained" was the bug. The lookup now answers `:unknown`, `Bindings.matched/2`
+collects it as a fact beside the possible writes (`{:bound, name}` | `:unknown`;
+`matched_names/1` projects the names, `unknown_routing?/1` the flag), and `Delivery.gate/2`
+withholds every candidate on a node containing one: a selector around a call that may bind
+names nobody can read would trap them, and a guess in either direction corrupts the baseline.
+Conservative and rare — a `:skip` wrapper around a classifier-routed binding macro — and no
+classifier runs where it was withheld. The same review found the specialized conditional
+clause of `expression_bindings/1` deciding "Kernel's `if`" by `Calls.kernel_call?/1`, which
+reads a displacement stamp an unwalked call never got: `import Kernel, except: [if: 2]` plus a
+binding macro named `if/2` under the skipped wrapper read as a conditional and inspected its
+"condition". `Resolve.kernel_call?/2` now answers for a stamped call from its stamp and for an
+unstamped one through the retained environment, as `kernel_pipe?/2` already did for `|>`, and
+the clause's routed branch consults the preserved route rather than the absent stamp.
+
+**The gate read the emitted node.** Emission is bottom-up, and `node_delivery_route/1` gated a
+parent after its children had become selectors, while the candidates' branches were still
+source. For `run(value \\ abs(div(x = 8, 3)))` under `:arithmetic` + `:call_removal`, the
+inner `div` selector's `{tmp, x} = case …` made `tmp` an escaping name of the `abs` node; the
+default's `later = :all` made it required; `div(x = 8, 3)` does not bind it; the `abs` removal
+was withheld for failing to keep a name the source never had. Worse than a lost mutant:
+withholding the child (`skip_ids`, `emit_ids`, an ignore directive) removed the temporary,
+admitted the parent, and shifted every later id — the stable-id contract poison recovery and
+`--line` rest on, and a count/render disagreement (the count sink emits every child; the
+render sink honours the withholding). The gate now runs in the emit walk's **pre** step
+(`emit_descend/2`), on the node as the source has it, and the post step only classifies what
+survived. Nothing else moved: `PipeEmit` already planned from the candidates' `original`, and
+the collect walk gated its stripped source tree. The reviewer's separation — source analysis
+decides which logical candidates exist and what ids they claim; live branches decide delivery —
+was already the design; one call site had drifted across it. Not done: recognising and
+excluding generated temporaries by name, which would have kept generated structure as an input
+to source-level eligibility.
+
+`binding_export_test.exs` pins the classifier-under-skip withholding (with its unskipped
+control), the displaced `if/2`, the default-argument parent mutation, id stability under
+`skip_ids`/`emit_ids`, and count/render agreement under an ignore.
+
 ### A skipped call's arguments keep their binding facts `[fixed]` (2026-09-22)
 
 Review of the structural-export fix below found the boundary it stopped at. Resolve does

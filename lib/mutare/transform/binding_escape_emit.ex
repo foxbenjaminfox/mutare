@@ -21,7 +21,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Delivery
   alias Mutare.Transform.{KeywordRouting, QuoteStructure}
-  alias Mutare.Transform.{Calls, CoverageEmit, Ctx, Meta, PatternStructure, Resolve, SelectorEmit}
+  alias Mutare.Transform.{CoverageEmit, Ctx, Meta, PatternStructure, Resolve, SelectorEmit}
 
   @doc "Bindings guaranteed to escape an expression, each once, in the order they are bound (a match's right-hand side before its pattern)."
   @spec expression_bindings(Macro.t()) :: [atom()]
@@ -57,11 +57,14 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
   defp collect_bindings({:case, _, [first | _]}, context), do: bound_names(first, context)
 
-  defp collect_bindings({form, meta, [first | _] = args} = node, context)
+  # Kernel's, as its stamp says or — unstamped, inside a skipped call's argument — as the
+  # retained environment resolves the name: a displaced `if/2` there is the call its route
+  # describes, not a conditional.
+  defp collect_bindings({form, _meta, [first | _] = args} = node, context)
        when form in [:if, :unless, :and, :or, :&&, :||] do
-    if Calls.kernel_call?(node),
+    if Resolve.kernel_call?(node, context),
       do: bound_names(first, context),
-      else: argument_bindings(args, Meta.routing(meta), context)
+      else: argument_bindings(args, routing(node, context), context)
   end
 
   defp collect_bindings({form, _, _}, _context)
@@ -112,6 +115,11 @@ defmodule Mutare.Transform.BindingEscapeEmit do
         |> Enum.flat_map(fn {arg, treatment} ->
           argument_bindings_for(arg, treatment, context)
         end)
+
+      # A classifier not invoked in a skipped region: its positions may bind, and nothing is
+      # guaranteed. `Bindings.unknown_routing?/1` reports the call to the gate.
+      :unknown ->
+        []
 
       _ ->
         []
