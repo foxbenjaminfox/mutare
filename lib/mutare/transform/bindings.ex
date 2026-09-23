@@ -16,7 +16,8 @@ defmodule Mutare.Transform.Bindings do
   #     map (`foo(x = 1, x)` does not compile) and lets their writes out only after the whole
   #     expression, the last one winning; so the "incoming" value read at the second sibling
   #     is the one from before the expression, and exporting it would override the first
-  #     sibling's write. Such a name is a **conflict**: bound, but not exportable as incoming.
+  #     sibling's write. Such a name is a **conflict**: not exportable as incoming, and bound
+  #     after the expression by the sibling whether or not it was bound on entry.
   #   * a name the expression binds **fresh** can be exported only by the branches that bind
   #     it, and a conflict only by the branches that write it. A mutant that drops such a
   #     binding is source-valid only where nothing **reads the name after** it: the binding
@@ -24,15 +25,18 @@ defmodule Mutare.Transform.Bindings do
   #     does read it, the mutant's own source patch would not compile (fresh) or its delivery
   #     would override the sibling's write (conflict), so the mutant is withheld
   #     (`Mutare.Transform.Candidate.Delivery.gate/2`).
-  #   * a name an earlier statement **may** have bound, without core being able to say — a
-  #     match in a position its route reads as no value (`lazy(p = 8)`), a call whose route
-  #     was withheld (`unknown_routing?/1`) — is **uncertain**: not bound (an export naming it
+  #   * a name an earlier statement — or another position of an enclosing routed macro, whose
+  #     positions the macro may run as statements in any order — **may** have bound, without
+  #     core being able to say — a match in a position its route reads as no value
+  #     (`lazy(p = 8)`), a call whose route was withheld (`unknown_routing?/1`) — is
+  #     **uncertain**: not bound (an export naming it
   #     as incoming may name nothing), and not fresh either (a branch that traps its rebinding
   #     may hide the write the source lets out). The fresh rule is kept where the two agree —
   #     an escaping name every branch binds is exported either way, and a mutant dropping one
   #     that is read after is withheld either way — and where they disagree, a name the
   #     expression matches where its route reads no value and something reads after, no
-  #     delivery is faithful and every candidate on the node is withheld (the gate again).
+  #     delivery is faithful and every candidate on the node is withheld (the gate again, as
+  #     for a conflict).
   #
   # So this pass stamps every binding-bearing node with `{bound, conflicts, uncertain, later}`:
   # the names bound on entry, those of them an earlier sibling writes, those an earlier
@@ -63,8 +67,10 @@ defmodule Mutare.Transform.Bindings do
   # position's `p = 8` is not a guaranteed binding, but it is a possible write, and the
   # sibling after it may not export the stale `p`), and every name a call with a withheld
   # route mentions in its arguments. A routed macro's positions take every
-  # other position's possible writes as conflicts, their order being the macro's, and see
-  # every other position's references as `later` for the same reason.
+  # other position's possible writes as conflicts **and as uncertain** — the macro may
+  # splice them as statements, in any order, so another position's write may have
+  # happened before this one runs — and see every other position's references as `later`
+  # for the same reason.
   # A module body binds nothing for the definitions inside it. Nothing under a `quote`, a
   # routed foreign region, or a skipped call is stamped: nothing there is offered.
   #
@@ -613,8 +619,10 @@ defmodule Mutare.Transform.Bindings do
   end
 
   # `{node, treatment}` positions in a macro's hands: each is walked as its treatment says,
-  # with every other position's possible writes as conflicts and every other position's
-  # references as later — the macro, not the written order, says which runs first.
+  # with every other position's possible writes as conflicts and as uncertain (a sibling
+  # cannot read them; a statement the macro spliced ahead may have made them), and every
+  # other position's references as later — the macro, not the written order, says which
+  # runs first.
   defp positions(positions, scope, later) do
     writes =
       Enum.map(positions, fn {node, treatment} ->
@@ -631,7 +639,12 @@ defmodule Mutare.Transform.Bindings do
       others = writes |> List.delete_at(i) |> List.flatten()
 
       {node, node_referenced, node_binds?} =
-        position(node, treatment, conflict(scope, others), union(later, all_referenced))
+        position(
+          node,
+          treatment,
+          scope |> conflict(others) |> unsure(others),
+          union(later, all_referenced)
+        )
 
       {[node | acc], union(referenced, node_referenced), binds? or node_binds?}
     end)

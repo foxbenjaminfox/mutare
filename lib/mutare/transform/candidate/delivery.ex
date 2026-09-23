@@ -98,12 +98,14 @@ defmodule Mutare.Transform.Candidate.Delivery do
 
   A name the node matches somewhere its route does not read as a value (`lazy(p = 8)`) is a
   write core cannot vouch for: exported, it may name the stale incoming value; unexported, it
-  may be the write the source lets out. Where that name is bound on entry, in conflict and
-  read after, no delivery is faithful, so every candidate on the node is withheld. So it is
-  where the name is **uncertain** — an earlier statement may have bound it, and core could
-  not read that statement's effect in full (a match in a position its route reads as no
-  value, a call whose route was withheld): exported as incoming it may name nothing, trapped
-  it may hide the write the source lets out. And so is every candidate on a node whose own
+  may be the write the source lets out. Where that name is in **conflict** — an earlier
+  sibling writes it, so after the expression it is bound by that sibling, whether or not it
+  was bound on entry — and read after, no delivery is faithful, so every candidate on the
+  node is withheld. So it is where the name is **uncertain** — an earlier statement, or
+  another position of the enclosing routed macro, may have bound it, and core could not
+  read that effect in full (a match in a position its route reads as no value, a call whose
+  route was withheld): exported as incoming it may name nothing, trapped it may hide the
+  write the source lets out. And so is every candidate on a node whose own
   binding effect is **unknown**: a call inside a skipped argument whose route is a classifier
   core did not invoke there (`Bindings.unknown_routing?/1`) may bind names no reader reports,
   and a selector around it would trap them.
@@ -137,8 +139,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
     # Exported as incoming, the name may be stale (a conflict) or unbound (uncertain);
     # trapped, it may be the write the source lets out.
     unvouchable? = fn name ->
-      MapSet.member?(uncertain, name) or
-        (MapSet.member?(bound, name) and MapSet.member?(conflicts, name))
+      MapSet.member?(conflicts, name) or MapSet.member?(uncertain, name)
     end
 
     unvouched =

@@ -97,6 +97,38 @@ defmodule Mutare.BindingExportTest do
     defmacro run(value), do: quote(do: unquote(value))
   end
 
+  # Macros that splice their positions as statements: forward, reversed, from a keyword, and
+  # one whose first position is a declared binding pattern.
+  defmodule Sequencing do
+    defmacro forward(setup, body) do
+      quote do
+        unquote(setup)
+        unquote(body)
+      end
+    end
+
+    defmacro reverse(body, setup) do
+      quote do
+        unquote(setup)
+        unquote(body)
+      end
+    end
+
+    defmacro keyed(opts) do
+      quote do
+        unquote(Keyword.fetch!(opts, :setup))
+        unquote(Keyword.fetch!(opts, :body))
+      end
+    end
+
+    defmacro bind(pattern, body) do
+      quote do
+        unquote(pattern) = 8
+        unquote(body)
+      end
+    end
+  end
+
   # A binding macro spelled `if/2`, imported over Kernel's: a displaced Kernel name whose
   # unstamped occurrence under a skipped wrapper must still read as this call, not a conditional.
   defmodule DisplacedIf do
@@ -1124,6 +1156,88 @@ defmodule Mutare.BindingExportTest do
                  clean_functions: false,
                  call_routes: [{Eager, :run, 1, [:lazy_expression]}] ++ @lazy_div
                )
+    end
+  end
+
+  describe "a routed macro's positions may run as statements" do
+    # A macro is free to splice one position ahead of another; a route says nothing about
+    # order. Another position's write is then not only a conflict (this position cannot read
+    # it as a sibling) but a possible binding on entry (a spliced statement may have made it).
+    @lazy_div {Kernel, :div, 2, [:lazy_expression, :expression]}
+    @forward {Sequencing, :forward, 2, [:lazy_expression, :lazy_expression]}
+    @reverse {Sequencing, :reverse, 2, [:lazy_expression, :lazy_expression]}
+    @keyed {Sequencing, :keyed, 1, [[:raw, setup: :lazy_expression, body: :lazy_expression]]}
+    @bind {Sequencing, :bind, 2, [:binding_pattern, :lazy_expression]}
+    @body "(result = div(p = 6, 2); {result, p})"
+
+    # Each expands to `p = 8; result = div(p = 6, 2); {result, p}`: `{3, 6}`, the `rem` patch
+    # `{0, 6}`. `p` is bound before `div` runs, by a position the analysis cannot place; a
+    # branch-local selector trapping the rebinding would leave `8`.
+    for {label, expression, routes} <- [
+          {"direct", "M.forward(p = 8, #{@body})", [@forward, @lazy_div]},
+          {"piped", "M.forward(p = 8, (result = (p = 6) |> div(2); {result, p}))",
+           [@forward, @lazy_div]},
+          {"reversed", "M.reverse(#{@body}, p = 8)", [@reverse, @lazy_div]},
+          {"keyed", "M.keyed(setup: p = 8, body: #{@body})", [@keyed, @lazy_div]},
+          {"declared", "M.bind(p, #{@body})", [@bind, @lazy_div]}
+        ] do
+      test "#{label}: another position's write is uncertain on entry to this one" do
+        assert [] = sequenced(unquote(expression), unquote(Macro.escape(routes)))
+      end
+    end
+
+    test "control: the eager rebinding is delivered, exported as fresh" do
+      sites = sequenced("M.forward(p = 8, #{@body})", [@forward])
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+    end
+
+    test "control: a definite binding inside the position clears the uncertainty" do
+      sites =
+        sequenced("M.forward(p = 8, (p = 5; result = div(p = 6, 2); {result, p}))", [
+          @forward,
+          @lazy_div
+        ])
+
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+    end
+
+    # Not a macro: ordinary siblings. A conflict on a name *not* bound on entry is still a
+    # write the source lets out after the expression — `pair`'s `8`, then `div`'s `6`, last
+    # wins — so a trapped rewrite of it is hidden all the same: `{{8, 3}, 6}`, not `{{8, 3}, 8}`.
+    test "a conflict on a fresh name withholds a lazy rewrite of it, as on a bound one" do
+      source = """
+      defmodule Fixture do
+        defp pair(a, b), do: {a, b}
+
+        def run do
+          result = pair(p = 8, div(p = 6, 2))
+          {result, p}
+        end
+      end
+      """
+
+      assert [] =
+               assert_patches(source, [:arithmetic], [run: []],
+                 clean_functions: false,
+                 call_routes: [@lazy_div]
+               )
+    end
+
+    defp sequenced(expression, routes) do
+      source = """
+      defmodule Fixture do
+        require Mutare.BindingExportTest.Sequencing, as: M
+
+        def run do
+          #{expression}
+        end
+      end
+      """
+
+      assert_patches(source, [:arithmetic], [run: []],
+        clean_functions: false,
+        call_routes: routes
+      )
     end
   end
 

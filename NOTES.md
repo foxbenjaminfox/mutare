@@ -12931,6 +12931,39 @@ call's evaluation order and still tuple-export shared bindings. SourcePatch regr
 the retained-argument case and compare both baseline and mutant behavior for an effectful dynamic
 receiver.
 
+### A routed macro's positions are uncertain to one another; a conflict withholds whether bound or not `[fixed]` (2026-09-23)
+
+Fifth review, of the `uncertain` fix two entries down. `positions/3` gave each position of a
+routed macro every other position's possible writes as conflicts, and nothing else. That is
+the sibling reading, and a macro is not bound by it: it may splice its positions as
+statements, in any order, so another position's write may have *happened* before this one
+runs. `M.forward(p = 8, (result = div(p = 6, 2); {result, p}))` under
+`[:lazy_expression, :lazy_expression]` expands to `p = 8; result = div(p = 6, 2); {result,
+p}` — `{3, 6}` — and at `div` the analysis had `p` in `conflicts` only: not bound, not
+uncertain, not escaping (the lazy position), so the gate admitted the arithmetic candidate,
+the export named nothing, and the baseline read `{3, 8}`. The same with the positions
+reversed, from a keyword, and with the first position a declared `:binding_pattern`.
+
+The repair is the one the reviewer named: a position's entry is now `scope |> conflict(others)
+|> unsure(others)` — a sibling cannot read the others' writes, and a spliced statement may have
+made them. `unsure/2` already leaves a bound name bound, and a definite binding inside the
+position clears the uncertainty as it clears a conflict, so both controls (an eager inner
+call; `p = 5` ahead of the lazy one) deliver.
+
+**And a conflict on a fresh name is unvouchable too (found while checking the adjacent
+case).** The gate withheld a lazy-position write for a name *bound on entry* and in conflict;
+for one in conflict but not bound — `result = pair(p = 8, div(p = 6, 2)); {result, p}`, no
+macro involved — it fell through to the fresh rule, and the baseline read `{{8, 3}, 8}` for
+the source's `{{8, 3}, 6}`. Bound on entry or not, a sibling's write leaves the name bound
+*after* the expression, and a trapped rewrite of it hides the last write the source lets
+out; so the clause is now `conflicts ∪ uncertain`, and "bound" drops out of it. The
+moduledoc's description of a conflict says so: not exportable as incoming, and bound after
+the expression by the sibling whether or not it was bound on entry.
+
+`binding_export_test.exs` pins the five macro shapes (direct, piped, reversed, keyed,
+declared), the two controls, and the fresh-sibling conflict; six of the eight diverged at
+the baseline against the previous library.
+
 ### The binding model reads syntax and declarations; a macro is bound by neither `[known limit]` (2026-09-23)
 
 Asked after the fix below: what about `var!/1`? The honest answer is that the scope pass
