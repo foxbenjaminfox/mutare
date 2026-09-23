@@ -169,9 +169,10 @@ defmodule Mutare.Transform.Resolve do
   # this pass did not walk — so the binding readers (`Mutare.Transform.BindingEscapeEmit`,
   # `Mutare.Transform.Bindings`) can read its declared positions: skip withholds mutation and
   # nested routing, not evaluation, and `destructure/2` binds under a skipped wrapper as it
-  # does anywhere. The call's identity is resolved through the boundary's retained
-  # environment, advanced by local directives, and looked up in the registry as `RouteStamp`
-  # would; only a **static** route answers. A `:routing` classifier is never invoked in a
+  # does anywhere — skipped itself or not. The call's identity is resolved through the
+  # boundary's retained environment, advanced by local directives, and its meaning read from
+  # the registry exactly as `RouteStamp` reads a stamped skip's; only a **static** route
+  # answers. A `:routing` classifier is never invoked in a
   # region it was withheld from, and its call reads as `:unknown` — not as unrouted: a
   # declared route whose positions were not obtained may bind names the readers cannot see,
   # so an enclosing binding-sensitive delivery withholds rather than assumes
@@ -236,18 +237,11 @@ defmodule Mutare.Transform.Resolve do
 
   defp preserved_identity(_form, _meta, _args, _env), do: nil
 
-  defp static_routing(module_key, fun, arity, env) do
-    case Routes.lookup(env.call_routes, module_key, fun, arity) do
-      %Entry{spec: %Spec{args: :routing}} ->
-        :unknown
-
-      %Entry{spec: spec} ->
-        if StructuralForms.applies?(module_key, fun, spec), do: Spec.routing(spec, arity)
-
-      nil ->
-        nil
-    end
-  end
+  # The one reading a stamped skip is stamped with (`RouteStamp.declared_routing/4`): a call
+  # preserved beneath a skipped call, and the skipped call itself, read the same declaration —
+  # `hd(destructure([n], [8]))` with both skipped binds `n` as it does with either.
+  defp static_routing(module_key, fun, arity, env),
+    do: RouteStamp.declared_routing(env.call_routes, module_key, fun, arity)
 
   @doc false
   @spec forget(Macro.t()) :: Macro.t()

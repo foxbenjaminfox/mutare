@@ -12954,6 +12954,56 @@ names; the ordinary selector now does too. The regression is `abs(Enum.count([0 
 0)]) + 1)` under every family — the soak's shape without the arithmetic error its original
 raised — which failed the compile against the previous library.
 
+### A skip's meaning is one registry lookup, wherever the call is read from `[fixed]` (2026-09-24)
+
+Ninth review, of the fix below, found the two paths that still read a skipped call's
+arguments as an ordinary call's. Both are the same omission: the fix stored *what the skip
+displaced* on the skip's own `Entry`, and read it only where that entry was stamped.
+
+**Nested skips.** `div(hd(destructure([n], [8])), 2)` with `hd/1` *and* `destructure/2`
+skipped: the outer skip means Resolve never walks `destructure`, so nothing stamps it; the
+preserved lookup (`static_routing/4`) found the registry entry at its key — the configured
+skip — and returned `Spec.routing/2` of it, `:skip`. `Entry.displaced` sat unread beside it.
+Baseline `{4, :before}` again (fresh: unbound), the structural selector over
+`List.to_tuple(destructure(...))` the same, `match?/2`'s pattern a guaranteed write again, a
+displaced classifier ordinary instead of `:unknown`.
+
+**Shadowing by precedence.** `{M, :unpack, 2, :skip}` over an extension's
+`{M, :unpack, :any, [:binding_pattern, :expression]}` (or a module-wide or name-only
+declaration): the exact skip wins `lookup_route/4`'s cascade without replacing the entry
+that carries the declaration, so nothing was displaced *at the skip's key* and
+`Entry.displaced` was empty — even on the stamped path. "Displaced at the same key" was the
+wrong provenance: what the readers need is *the declaration that would govern this concrete
+call were no skip configured*, which is a question about the cascade, not about one entry.
+
+So the registry now answers that question itself. `Registry.build/3` keeps a second cascade,
+`declarations`: the merged code routes, the code declarations a configured entry overrode
+(kept at their key, coalesced by treatment — two that disagree stay two), and over both every
+configured entry that is *not* a `:skip` (the user said what the positions are, and that
+replaces the meaning, as before). No configured skip appears in it. `Registry.meaning/4`
+walks `routes` first; where the winner is a configured skip it walks `declarations` with the
+same specificity cascade — the skip itself where nothing matches (the ordinary call it
+leaves), the one declaration where one does, `:unknown` where providers disagreed at a
+settled key. `Entry.displaced` is gone. `RouteStamp.declared_routing/4` turns that into the
+readers' vocabulary (positions where they apply to the head, `:unknown` for any classifier —
+never invoked here — `:skip`, `nil`), and is the one function both paths call: the stamp on
+a visited skip (`:mutare_displaced_route`, as before) and `Resolve.static_routing/4` for a
+call preserved beneath one. The two invariants the reviewer named hold by construction: a
+declared call reads the same stamped or preserved, because the same function reads it; and
+adding a skip never turns a known pattern into a value argument, because a skip is absent
+from the cascade that says what arguments mean.
+
+Kept as is: a configured skip at a *broader* key than an exact code declaration does not
+shadow it — the exact route wins the cascade for routing and meaning alike, which is the
+precedence the registry has always had. Pinned in `binding_export_test.exs` (nested skips
+across the ordinary and structural selectors, the `match?/2` inverse, the reader-level
+agreement, the displaced classifier beneath a wrapper; an exact skip over any-arity,
+module-wide and name-only declarations, over a shadowed classifier, and the unskipped
+controls), `call_routing_registry_test.exs` (`meaning/4` directly, the configured positional
+route shadowed by a skip, the broader-skip non-case), and the source-patch generators'
+`:declarations_skipped` and `:declaration_shadowed` operands (the latter on the fixture's own
+`unpack/2`, declared at any arity by `SourcePatchUnpackRoutes`).
+
 ### A configured skip displaces a route, not what the arguments mean `[fixed]` (2026-09-23)
 
 Eighth review, of the fix below, found the boundary the skipped-wrapper work stopped at.

@@ -11,6 +11,9 @@ defmodule Mutare.BindingExportTest do
   import Mutare.Test, only: [compile_metamutant: 3, with_active_mutant: 2]
   import Mutare.Test.SourcePatch, only: [assert_patches: 4]
 
+  alias Mutare.CallRouting.Registry
+  alias Mutare.Transform.{BindingEscapeEmit, Bindings, Resolve}
+
   # `Enum.count(xs, p)` → `Enum.any?(xs, p)`: a second family on the same call, one that keeps
   # the binding argument the collection-arity mutant drops.
   defmodule KeepPredicate do
@@ -1164,13 +1167,172 @@ defmodule Mutare.BindingExportTest do
       end
       """
 
+      for routes <- [
+            [{List, :wrap, 1, :skip}],
+            [{Kernel, :hd, 1, :skip}, {List, :wrap, 1, :skip}]
+          ] do
+        sites =
+          assert_patches(source, [:arithmetic], [run: []],
+            call_routes: routes,
+            clean_functions: false
+          )
+
+        assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+      end
+    end
+  end
+
+  describe "the skipped declaration is read the same beneath a skipped wrapper" do
+    # Ninth review: skip a wrapper *and* the declared call inside it. The inner call is never
+    # walked, so no stamp carries its meaning; the preserved lookup read the registry entry —
+    # now the skip — and forgot the declaration again. Both readers now read one meaning
+    # (`Registry.meaning/4`, through `RouteStamp.declared_routing/4`): stamped or preserved.
+    @both_skipped [{Kernel, :hd, 1, :skip}, {Kernel, :destructure, 2, :skip}]
+
+    for {label, prelude} <- [{"rebinding", "n = :before"}, {"fresh binding", ""}] do
+      test "a #{label} the skipped declaration binds escapes an ordinary selector" do
+        source = """
+        defmodule Fixture do
+          def run do
+            #{unquote(prelude)}
+            result = div(hd(destructure([n], [8])), 2)
+            {result, n}
+          end
+        end
+        """
+
+        # Original `{4, 8}`; `div` → `rem` `{0, 8}` — never `{4, :before}`, never unbound.
+        sites =
+          assert_patches(source, [:arithmetic], [run: []],
+            call_routes: @both_skipped,
+            clean_functions: false
+          )
+
+        assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+      end
+    end
+
+    test "a rebinding the skipped declaration binds escapes a structural selector" do
+      source = skipped_match_fixture("left = :before\n    right = :before")
+
       sites =
-        assert_patches(source, [:arithmetic], [run: []],
-          call_routes: [{List, :wrap, 1, :skip}],
+        assert_patches(source, [:pattern_swap], [run: []],
+          call_routes: [{List, :to_tuple, 1, :skip}, {Kernel, :destructure, 2, :skip}],
           clean_functions: false
         )
 
-      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+      assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
+    end
+
+    test "a pattern the skipped declaration reads as syntax binds nothing beneath a wrapper" do
+      source = """
+      defmodule Fixture do
+        def run do
+          p = :incoming
+          values = [
+            p = 8,
+            abs(Enum.count([match?({p = 1, _}, {1, 2})]))
+          ]
+          {values, p}
+        end
+      end
+      """
+
+      unskipped = assert_patches(source, [:call_removal], [run: []], clean_functions: false)
+
+      skipped =
+        assert_patches(source, [:call_removal], [run: []],
+          call_routes: [{Enum, :count, 1, :skip}, {Kernel, :match?, 2, :skip}],
+          clean_functions: false
+        )
+
+      assert Enum.map(skipped, & &1.mutator) == Enum.map(unskipped, & &1.mutator)
+    end
+
+    test "the readers agree for a stamped skip and the same call preserved beneath one" do
+      direct = resolved("destructure([n], [8])", @both_skipped)
+      preserved = resolved("hd(destructure([n], [8]))", @both_skipped)
+
+      assert BindingEscapeEmit.expression_bindings(direct) == [:n]
+      assert BindingEscapeEmit.expression_bindings(preserved) == [:n]
+    end
+
+    test "a classifier the skip displaced reads as unknown beneath a wrapper too" do
+      routes = [{Kernel, :hd, 1, :skip}, {Mutare.Test.QueryDSL, :unpack, 2, :skip}]
+      call = "Mutare.Test.QueryDSL.unpack([n], [8])"
+
+      assert Bindings.unknown_routing?(resolved(call, routes, [ClassifiedUnpack]))
+      assert Bindings.unknown_routing?(resolved("hd(#{call})", routes, [ClassifiedUnpack]))
+    end
+  end
+
+  describe "an exact skip keeps the meaning of the broader declaration it shadows" do
+    # Ninth review: a configured `{M, :unpack, 2, :skip}` wins the cascade over an any-arity,
+    # module-wide or name-only declaration without replacing the entry that carries it, so
+    # nothing was "displaced" at the skip's key. The meaning is the declaration the skip
+    # shadows — the route that would govern were no skip configured (`Registry.meaning/4`).
+    @exact_skip [call_routes: [{Mutare.Test.QueryDSL, :unpack, 2, :skip}], clean_functions: false]
+
+    for {label, provider} <- [
+          {"any-arity", Mutare.Test.AnyArityUnpackRoutes},
+          {"module-wide", Mutare.Test.ModuleWideUnpackRoutes},
+          {"name-only", Mutare.Test.NameOnlyUnpackRoutes}
+        ] do
+      test "a rebinding a shadowed #{label} declaration binds escapes the selector" do
+        source = """
+        defmodule Fixture do
+          import Mutare.Test.QueryDSL
+
+          def run do
+            n = :before
+            result = div(hd(unpack([n], [8])), 2)
+            {result, n}
+          end
+        end
+        """
+
+        # Original `{4, 8}`; `div` → `rem` `{0, 8}` — never `{4, :before}`.
+        sites =
+          assert_patches(
+            source,
+            [:arithmetic],
+            [run: []],
+            [extensions: [unquote(provider)]] ++ @exact_skip
+          )
+
+        assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+      end
+    end
+
+    test "a shadowed classifier reads as unknown: the dependent selector is withheld" do
+      source = skipped_unpack_fixture("left = :before\n    right = :before")
+
+      assert [] =
+               assert_patches(
+                 source,
+                 [:pattern_swap],
+                 [run: []],
+                 [extensions: [Mutare.Test.AnyArityUnpackClassifier]] ++ @exact_skip
+               )
+
+      tree =
+        resolved("Mutare.Test.QueryDSL.unpack([n], [8])", @exact_skip[:call_routes], [
+          Mutare.Test.AnyArityUnpackClassifier
+        ])
+
+      assert Bindings.unknown_routing?(tree)
+    end
+
+    test "control: the broad declaration unskipped, and an exact one skipped, both deliver" do
+      source = skipped_unpack_fixture("left = :before\n    right = :before")
+
+      for {mutators, extensions, opts} <- [
+            {[:pattern_swap], [Mutare.Test.AnyArityUnpackRoutes], [clean_functions: false]},
+            {[:pattern_swap, DeclaredUnpack], [], @exact_skip}
+          ] do
+        sites = assert_patches(source, mutators, [run: []], [extensions: extensions] ++ opts)
+        assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
+      end
     end
   end
 
@@ -1587,6 +1749,12 @@ defmodule Mutare.BindingExportTest do
   end
 
   defp signatures(sites), do: Enum.map(sites, &Map.take(&1, [:id, :mutator, :range]))
+
+  # A resolved tree for the readers alone: the registry built as the transform builds it.
+  defp resolved(expression, routes, providers \\ []) do
+    registry = Registry.build(routes, [], providers)
+    expression |> Sourceror.parse_string!() |> Resolve.annotate(registry)
+  end
 
   defp skipped_match_fixture(prelude) do
     """

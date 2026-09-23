@@ -15,13 +15,22 @@ defmodule Mutare.CallRouting.Registry do
 
   @type selector :: {Spec.module_key(), atom(), non_neg_integer() | :any}
   @type host_subscription :: %{selector: selector(), module: module()}
+
+  # `routes` is what a call is *routed* by — every mutation walk reads it, through `lookup/4`.
+  # `declarations` is what a call's arguments *mean*: the same keys with every configured
+  # `:skip` left out, so a lookup in it finds the declaration that would govern the call were
+  # no skip configured — the code declaration at the skip's own key, or a broader one the
+  # skip shadowed through the specificity cascade. A key holds more than one declaration only
+  # where code providers disagreed and a configured entry settled the conflict for routing;
+  # what the arguments mean is then unknown (`meaning/4`). Read by `meaning/4` alone.
   @type registry :: %__MODULE__{
           routes: %{optional(selector()) => Entry.t()},
+          declarations: %{optional(selector()) => [Spec.t(), ...]},
           hosts: [host_subscription()]
         }
 
   @enforce_keys [:routes, :hosts]
-  defstruct [:routes, :hosts]
+  defstruct [:routes, :hosts, declarations: %{}]
 
   @spec builtin() :: [Entry.t()]
   def builtin,
@@ -79,16 +88,54 @@ defmodule Mutare.CallRouting.Registry do
     code_routes =
       builtin() ++ from_mutators(mutator_specs) ++ from_extensions(extensions)
 
-    {displaced, code_routes} =
+    # A configured entry is the final word at its key; the code entries it overrides are never
+    # merged (a conflict among them is the user's to settle, and the override settles it).
+    {overridden, code_routes} =
       Enum.split_with(code_routes, &MapSet.member?(config_keys, Entry.key(&1)))
 
-    routes =
-      code_routes
-      |> merge_code_routes()
-      |> apply_config_routes(config_entries, displaced)
+    merged = merge_code_routes(code_routes)
+    routes = apply_config_routes(merged, config_entries)
 
     validate_hosts!(routes, hosts)
-    %__MODULE__{routes: routes, hosts: hosts}
+
+    %__MODULE__{
+      routes: routes,
+      declarations: declarations(merged, overridden, config_entries),
+      hosts: hosts
+    }
+  end
+
+  # What a call's arguments mean, where a configured `:skip` says only that the call is not
+  # worth mutating: the declaration that would govern the call were no skip configured, found
+  # by the same specificity cascade `lookup/4` walks, in `declarations` — code declarations at
+  # every key, configured positional routes at theirs (the user said what the positions are),
+  # and no configured skip at any. A skip that shadows nothing means the ordinary call it
+  # leaves (its own spec); code providers that disagreed at the settled key mean `:unknown`.
+  # Any other winning route means what it routes by. `nil` where nothing matches the call.
+  #
+  # This is a read-only question: nothing it returns is stamped as a route, offered, hosted,
+  # or classified — a `:routing` declaration is returned as declared, and the reader that
+  # cannot invoke it reads `:unknown` (`Mutare.Transform.Resolve.RouteStamp.declared_routing/4`).
+  @spec meaning(registry(), Spec.module_key() | nil, atom(), non_neg_integer()) ::
+          Spec.t() | :unknown | nil
+  def meaning(%__MODULE__{routes: routes, declarations: declarations}, module_key, name, arity) do
+    case lookup_route(routes, module_key, name, arity) do
+      %Entry{spec: spec} = entry ->
+        if config_skip?(entry),
+          do: shadowed_declaration(declarations, module_key, name, arity, spec),
+          else: spec
+
+      nil ->
+        nil
+    end
+  end
+
+  defp shadowed_declaration(declarations, module_key, name, arity, skip) do
+    case lookup_route(declarations, module_key, name, arity) do
+      nil -> skip
+      [%Spec{} = declaration] -> declaration
+      [_ | _] -> :unknown
+    end
   end
 
   @spec lookup(registry(), Spec.module_key() | nil, atom(), non_neg_integer()) :: Entry.t() | nil
@@ -328,28 +375,29 @@ defmodule Mutare.CallRouting.Registry do
     end)
   end
 
-  # A configured entry is the final word at its key; the code entries it displaced are never
-  # merged (a conflict among them is the user's to settle, and the override settles it). A
-  # configured `:skip` keeps the declarations it displaced (`Entry.displaced`): skip withholds
-  # mutation, not what the arguments mean, and the binding readers still read the call by them.
-  # Any other configured treatment *replaces* the meaning too — the user said what the positions
-  # are — and keeps nothing.
-  defp apply_config_routes(routes, config_entries, displaced) do
-    Enum.reduce(config_entries, routes, fn entry, acc ->
-      key = Entry.key(entry)
-      Map.put(acc, key, %{entry | displaced: displaced_declarations(entry, displaced, key)})
-    end)
+  defp apply_config_routes(routes, config_entries) do
+    Enum.reduce(config_entries, routes, fn entry, acc -> Map.put(acc, Entry.key(entry), entry) end)
   end
 
-  defp displaced_declarations(%Entry{spec: spec}, displaced, key) do
-    if Spec.skip?(spec) do
-      displaced
-      |> Enum.filter(&(Entry.key(&1) == key))
-      |> Enum.map(& &1.spec)
-      |> Enum.uniq_by(& &1.args)
-    else
-      []
-    end
+  # The `declarations` cascade (`meaning/4`): the merged code routes, the code declarations a
+  # configured entry overrode (kept at their key, coalesced by treatment — two that disagree
+  # stay two), and over both every configured entry that is not a `:skip`. A configured skip
+  # withholds mutation, not what the arguments mean, so it appears nowhere here; any other
+  # configured treatment *replaces* the meaning too — the user said what the positions are.
+  defp declarations(merged, overridden, config_entries) do
+    code = Map.new(merged, fn {key, %Entry{spec: spec}} -> {key, [spec]} end)
+
+    settled =
+      overridden
+      |> Enum.group_by(&Entry.key/1, & &1.spec)
+      |> Map.new(fn {key, specs} -> {key, Enum.uniq_by(specs, & &1.args)} end)
+
+    configured =
+      config_entries
+      |> Enum.reject(&Spec.skip?(&1.spec))
+      |> Map.new(fn %Entry{spec: spec} = entry -> {Entry.key(entry), [spec]} end)
+
+    code |> Map.merge(settled) |> Map.merge(configured)
   end
 
   defp reject_duplicate_config!(entries) do

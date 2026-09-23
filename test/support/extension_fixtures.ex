@@ -203,6 +203,45 @@ defmodule Mutare.Test.LongKeywordRoutingExtension do
     ]
 end
 
+# Broader declarations of `Mutare.Test.QueryDSL.unpack/2` — any-arity, module-wide, name-only —
+# for a configured exact `:skip` to shadow through the specificity cascade without replacing
+# the entry that carries them (`Mutare.CallRouting.Registry.meaning/4`).
+defmodule Mutare.Test.AnyArityUnpackRoutes do
+  @moduledoc false
+  @behaviour Mutare.CallRouting
+
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.QueryDSL, :unpack, :any, [:binding_pattern, :expression]}]
+end
+
+defmodule Mutare.Test.ModuleWideUnpackRoutes do
+  @moduledoc false
+  @behaviour Mutare.CallRouting
+
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.QueryDSL, :*, :any, [:binding_pattern, :expression]}]
+end
+
+defmodule Mutare.Test.NameOnlyUnpackRoutes do
+  @moduledoc false
+  @behaviour Mutare.CallRouting
+
+  @impl Mutare.CallRouting
+  def call_routes, do: [{:*, :unpack, 2, [:binding_pattern, :expression]}]
+end
+
+# The same shadowed by an exact skip, as a classifier: never invoked under the skip.
+defmodule Mutare.Test.AnyArityUnpackClassifier do
+  @moduledoc false
+  @behaviour Mutare.CallRouting
+
+  @impl Mutare.CallRouting
+  def call_routes, do: [{Mutare.Test.QueryDSL, :unpack, :any, :routing}]
+
+  @impl Mutare.CallRouting
+  def route_arguments(_call), do: raise("a classifier a skip shadows must not be invoked")
+end
+
 defmodule Mutare.Test.ConflictingQueryRoutingExtension do
   @moduledoc "A conflicting code-provided route used to verify deterministic conflict errors."
   @behaviour Mutare.CallRouting

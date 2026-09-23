@@ -184,10 +184,10 @@ defmodule Mutare.Transform.Meta do
   def stamp_routing(meta, routing), do: [{MetaKeys.route_key(), routing} | meta]
 
   @doc """
-  What a `:skip`-routed call's arguments mean, where the configured skip displaced a
-  declaration (`:mutare_displaced_route`): that declaration's per-argument positions, or
-  `:unknown` where they could not be obtained (a classifier the skip withholds, or displaced
-  providers that disagreed). `nil` where the skip displaced nothing — an ordinary call. Read
+  What a `:skip`-routed call's arguments mean, where the configured skip displaced or
+  shadowed a declaration (`:mutare_displaced_route`): that declaration's per-argument
+  positions, or `:unknown` where they could not be obtained (a classifier the skip withholds,
+  or providers that disagreed). `nil` where the skip displaced nothing — an ordinary call. Read
   through `Mutare.Transform.Resolve.effective_routing/2`; never a mutation route.
   """
   @spec displaced_routing(keyword() | term()) :: [term()] | :unknown | nil

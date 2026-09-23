@@ -66,19 +66,36 @@ defmodule Mutare.TransformSourcePatchPropertyTest do
         |> Enum.reject(&(&1.mutator in [:relational, :host_filter, :unwrap]))
         |> Enum.map(& &1.mutator)
 
-      # `:declaration_skipped` skips `destructure/2` itself, the `:destructured` delivery's
-      # own head included: that pattern is then never offered, and the recipe checks only
-      # that the skipped declaration still binds through the baseline and the operand's mutants.
+      # `:declaration_skipped` and `:declarations_skipped` skip `destructure/2` itself, the
+      # `:destructured` delivery's own head included: that pattern is then never offered, and
+      # the recipe checks only that the skipped declaration still binds through the baseline
+      # and the operand's mutants.
       expected =
         case {recipe.callee, recipe.delivery} do
-          {_callee, :destructured} when recipe.operand == :declaration_skipped -> []
-          {_callee, structural} when structural in [:matched, :destructured] -> [:pattern_swap]
-          {:static, :retained} -> [:arithmetic]
-          {:static, :moved} -> [:operand_swap]
-          {:static, :split} -> [:arithmetic, :operand_swap]
-          {:static, :dropped} -> [:drop_argument]
-          {_dynamic, :split} -> [:dynamic_arithmetic, :dynamic_arithmetic]
-          {_dynamic, _} -> [:dynamic_arithmetic]
+          {_callee, :destructured}
+          when recipe.operand in [:declaration_skipped, :declarations_skipped] ->
+            []
+
+          {_callee, structural} when structural in [:matched, :destructured] ->
+            [:pattern_swap]
+
+          {:static, :retained} ->
+            [:arithmetic]
+
+          {:static, :moved} ->
+            [:operand_swap]
+
+          {:static, :split} ->
+            [:arithmetic, :operand_swap]
+
+          {:static, :dropped} ->
+            [:drop_argument]
+
+          {_dynamic, :split} ->
+            [:dynamic_arithmetic, :dynamic_arithmetic]
+
+          {_dynamic, _} ->
+            [:dynamic_arithmetic]
         end
 
       # Two operands write arithmetic of their own (`:block`'s negation, the `n - n` in

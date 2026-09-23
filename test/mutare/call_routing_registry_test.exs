@@ -151,27 +151,39 @@ defmodule Mutare.CallRouting.RegistryTest do
                Macros.lookup(registry, [:Mutare, :Test, :QueryDSL], :query, 1)
     end
 
-    # A configured `:skip` withholds mutation, not what the arguments mean: the declaration it
-    # displaced stays on the entry for the binding readers (`Mutare.Transform.Resolve.RouteStamp`).
-    test "a configured :skip keeps the declaration it displaced" do
+    # A configured `:skip` withholds mutation, not what the arguments mean: `meaning/4` answers
+    # with the declaration the skip displaced at its own key, or shadowed through the
+    # specificity cascade — the route that would govern the call were no skip configured
+    # (read by `Mutare.Transform.Resolve.RouteStamp.declared_routing/4`).
+    test "a configured :skip means the declaration it displaced" do
       registry = Macros.build([{Kernel, :destructure, 2, :skip}], [])
 
-      assert %Entry{
-               spec: %Spec{args: :skip},
-               displaced: [%Spec{args: [:binding_pattern, :expression]}]
-             } =
+      assert %Entry{spec: %Spec{args: :skip}} =
                Macros.lookup(registry, [:Kernel], :destructure, 2)
+
+      assert %Spec{args: [:binding_pattern, :expression]} =
+               Macros.meaning(registry, [:Kernel], :destructure, 2)
     end
 
-    test "a skip that displaced nothing, and a configured treatment, keep nothing" do
+    test "a skip that displaced nothing means itself; a configured treatment means itself" do
       registry = Macros.build([{Mixpanel, :track, 3, :skip}, {Kernel, :match?, 2, :raw}], [])
-      assert %Entry{displaced: []} = Macros.lookup(registry, [:Mixpanel], :track, 3)
 
-      assert %Entry{spec: %Spec{args: :raw}, displaced: []} =
-               Macros.lookup(registry, [:Kernel], :match?, 2)
+      assert %Spec{args: :skip} = Macros.meaning(registry, [:Mixpanel], :track, 3)
+      assert %Spec{args: :raw} = Macros.meaning(registry, [:Kernel], :match?, 2)
+      assert Macros.meaning(registry, [:Mixpanel], :track, 4) == nil
     end
 
-    test "a configured :skip over disagreeing providers keeps each declaration" do
+    test "an unskipped call means its route, a classifier included" do
+      registry = Macros.build([], [], [Mutare.Test.AnyArityUnpackClassifier])
+
+      assert %Spec{args: [:binding_pattern, :expression]} =
+               Macros.meaning(registry, [:Kernel], :destructure, 2)
+
+      assert %Spec{args: :routing} =
+               Macros.meaning(registry, [:Mutare, :Test, :QueryDSL], :unpack, 2)
+    end
+
+    test "a configured :skip over disagreeing providers means unknown" do
       specs = Mutator.Spec.for_module(Mutare.Test.QueryMutator)
 
       registry =
@@ -181,10 +193,64 @@ defmodule Mutare.CallRouting.RegistryTest do
           [Mutare.Test.ConflictingQueryRoutingExtension]
         )
 
-      assert %Entry{spec: %Spec{args: :skip}, displaced: displaced} =
+      assert %Entry{spec: %Spec{args: :skip}} =
                Macros.lookup(registry, [:Mutare, :Test, :QueryDSL], :query, 1)
 
-      assert MapSet.new(displaced, & &1.args) == MapSet.new([:raw, :expression])
+      assert Macros.meaning(registry, [:Mutare, :Test, :QueryDSL], :query, 1) == :unknown
+    end
+
+    # An exact skip wins the cascade without replacing the broader entry that carries the
+    # declaration; the meaning is that declaration, found by the same cascade with the skip
+    # left out.
+    for {label, provider} <- [
+          {"any-arity", Mutare.Test.AnyArityUnpackRoutes},
+          {"module-wide", Mutare.Test.ModuleWideUnpackRoutes},
+          {"name-only", Mutare.Test.NameOnlyUnpackRoutes}
+        ] do
+      test "an exact :skip means the #{label} declaration it shadows" do
+        registry =
+          Macros.build([{Mutare.Test.QueryDSL, :unpack, 2, :skip}], [], [unquote(provider)])
+
+        key = [:Mutare, :Test, :QueryDSL]
+
+        assert %Entry{spec: %Spec{args: :skip}} = Macros.lookup(registry, key, :unpack, 2)
+
+        assert %Spec{args: [:binding_pattern, :expression]} =
+                 Macros.meaning(registry, key, :unpack, 2)
+      end
+    end
+
+    test "an exact :skip over a shadowed classifier means that classifier" do
+      registry =
+        Macros.build([{Mutare.Test.QueryDSL, :unpack, 2, :skip}], [], [
+          Mutare.Test.AnyArityUnpackClassifier
+        ])
+
+      assert %Spec{args: :routing} =
+               Macros.meaning(registry, [:Mutare, :Test, :QueryDSL], :unpack, 2)
+    end
+
+    test "a configured positional route shadowed by an exact :skip is the meaning: the user said" do
+      registry =
+        Macros.build(
+          [
+            {Mutare.Test.QueryDSL, :unpack, 2, :skip},
+            {Mutare.Test.QueryDSL, :unpack, :any, :raw}
+          ],
+          [],
+          [Mutare.Test.AnyArityUnpackRoutes]
+        )
+
+      assert %Spec{args: :raw} = Macros.meaning(registry, [:Mutare, :Test, :QueryDSL], :unpack, 2)
+    end
+
+    test "a configured :skip at a broader key does not shadow an exact code declaration" do
+      registry = Macros.build([{Kernel, :destructure, :any, :skip}], [])
+
+      assert %Entry{spec: %Spec{args: [:binding_pattern, :expression]}} =
+               Macros.lookup(registry, [:Kernel], :destructure, 2)
+
+      assert %Spec{args: :skip} = Macros.meaning(registry, [:Kernel], :destructure, 3)
     end
   end
 

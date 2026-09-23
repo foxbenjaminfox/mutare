@@ -40,7 +40,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
 
       %Entry{spec: spec} = entry ->
         if StructuralForms.applies?(module_key, fun, spec) do
-          stamp_matched(meta, entry, module_key, fun, call_node, arity, diag)
+          stamp_matched(meta, entry, module_key, fun, call_node, arity, registry, diag)
         else
           # A wildcard route (`{Kernel, :*, :raw}`, `{:*, :if, …}`) whose cascade reached a head
           # its key never named and that cannot carry it: a positional route on a structural form
@@ -63,9 +63,40 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   # already sees it. `module_key` is `nil` only for a name-only (`{:*, name, …}`) match whose
   # module the resolver couldn't see; the reader then returns `{nil, name, arity}`, which a
   # module-matching classifier clause simply skips (its purpose — match by name instead).
-  defp stamp_matched(meta, %Entry{} = entry, module_key, fun, call_node, arity, diag) do
+  defp stamp_matched(meta, %Entry{} = entry, module_key, fun, call_node, arity, registry, diag) do
     meta = stamp_identity(Imports.drop_witness(meta), module_key, fun, arity)
-    stamp_spec(meta, entry, put_meta(call_node, meta), arity, diag)
+    stamp_spec(meta, entry, put_meta(call_node, meta), arity, registry, diag)
+  end
+
+  @doc """
+  The route the binding readers read a call's arguments by — what they *mean* — for the call
+  `{module_key, fun, arity}` resolves to: `Mutare.CallRouting.Registry.meaning/4`, read as
+  positions. A static declaration's positions (`Mutare.CallRouting.Spec.routing/2`), where they
+  apply to this head; `:skip` for a skip that shadows no declaration (the ordinary call it
+  leaves); `:unknown` for a classifier — never invoked here, whether the skip withheld it or
+  the call sits inside a skipped argument this pass did not walk — and for providers a
+  configured skip settled between; `nil` where no route matches, or the declaration's
+  positions do not apply to this head (a wildcard's, reaching a structural form).
+
+  The one reading, for a stamped skip (`stamp/6` stamps it beside the `:skip`) and for a call
+  preserved beneath one (`Mutare.Transform.Resolve.preserved_routing/2`), so both agree.
+  """
+  @spec declared_routing(Routes.registry(), Spec.module_key() | nil, atom(), non_neg_integer()) ::
+          :skip | :unknown | [Spec.position()] | nil
+  def declared_routing(registry, module_key, fun, arity) do
+    case Routes.meaning(registry, module_key, fun, arity) do
+      nil ->
+        nil
+
+      :unknown ->
+        :unknown
+
+      %Spec{args: :routing} ->
+        :unknown
+
+      %Spec{} = spec ->
+        if StructuralForms.applies?(module_key, fun, spec), do: Spec.routing(spec, arity)
+    end
   end
 
   # Record the resolved macro identity on the call meta, read back by
@@ -87,6 +118,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
          %Entry{spec: %Spec{args: :routing} = spec, router: router} = entry,
          call_node,
          _arity,
+         _registry,
          diag
        ) do
     call = resolved_call!(call_node, spec)
@@ -102,44 +134,26 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   # `Mutare.Transform.Calls.routed_treatments/1` reports `:skip`. A piped value is argument 0 of
   # the call, and is covered with the rest.
   #
-  # A configured skip that displaced a declaration keeps what the declaration said the arguments
-  # *mean*, beside the skip: the binding readers (`Mutare.Transform.Resolve.effective_routing/2`)
-  # read `destructure/2`'s pattern as binding and `match?/2`'s as binding nothing whether or not
-  # the call mutates. A classifier is not invoked for it — the skip withheld it — and reads as
-  # `:unknown`, as do displaced providers that disagreed; a declaration whose positions do not
-  # apply to this head (a wildcard's, reaching a structural form) is not read.
-  defp stamp_spec(
-         meta,
-         %Entry{spec: %Spec{args: :skip}, displaced: displaced},
-         _call_node,
-         arity,
-         _diag
-       ) do
+  # A configured skip that displaced or shadowed a declaration keeps what the declaration said
+  # the arguments *mean*, beside the skip (`declared_routing/4`): the binding readers
+  # (`Mutare.Transform.Resolve.effective_routing/2`) read `destructure/2`'s pattern as binding
+  # and `match?/2`'s as binding nothing whether or not the call mutates. No hosts are attached
+  # (nothing is hosted in a skipped call) and no classifier invoked. A skip that shadows
+  # nothing, or a declaration whose positions do not apply to this head, stamps the `:skip` alone.
+  defp stamp_spec(meta, %Entry{spec: %Spec{args: :skip}}, _call_node, arity, registry, _diag) do
     meta = Meta.stamp_routing(meta, :skip)
+    {module_key, fun, _arity} = Meta.routed_call(meta)
 
-    case displaced do
-      [] -> meta
-      [%Spec{args: :routing}] -> Meta.stamp_displaced_routing(meta, :unknown)
-      [%Spec{} = spec] -> stamp_displaced_static(meta, spec, arity)
-      [_ | _] -> Meta.stamp_displaced_routing(meta, :unknown)
+    case declared_routing(registry, module_key, fun, arity) do
+      routing when routing in [:skip, nil] -> meta
+      routing -> Meta.stamp_displaced_routing(meta, routing)
     end
   end
 
-  defp stamp_spec(meta, %Entry{spec: spec} = entry, call_node, arity, _diag) do
+  defp stamp_spec(meta, %Entry{spec: spec} = entry, call_node, arity, _registry, _diag) do
     call = resolved_call!(call_node, spec)
     routes = ArgumentRoutes.new(call, Spec.routing(spec, arity))
     stamp_routes(meta, attach_hosts!(routes, entry))
-  end
-
-  # The displaced declaration's positions, as `Mutare.Transform.Resolve.preserved_routing/2`
-  # reads a static route under a skipped wrapper: no hosts attached (nothing is hosted in a
-  # skipped call), and no classifier invoked.
-  defp stamp_displaced_static(meta, spec, arity) do
-    {module_key, fun, _arity} = Meta.routed_call(meta)
-
-    if StructuralForms.applies?(module_key, fun, spec),
-      do: Meta.stamp_displaced_routing(meta, Spec.routing(spec, arity)),
-      else: meta
   end
 
   # Advisory (dynamic path only): a `:routing` classifier that returns `{:keyword, …}` for an

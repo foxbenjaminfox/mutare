@@ -45,6 +45,14 @@ defmodule Mutare.Test.SourcePatchFixtures do
   def identity(value), do: value
   defmacro raw(_syntax), do: 7
 
+  # A binding macro (`destructure/2`'s shape) with no built-in declaration: the
+  # `:declaration_shadowed` operand declares it at any arity and skips the exact one.
+  defmacro unpack(pattern, value) do
+    quote do
+      unquote(pattern) = unquote(value)
+    end
+  end
+
   defmacro lazy(value, enabled) do
     quote do
       if unquote(enabled), do: unquote(value), else: 0
@@ -139,6 +147,15 @@ defmodule Mutare.Test.SourcePatchUnwrapMutator do
   @impl true
   def mutate({:-, _meta, [{:__block__, _, [_, _ | _]} = sequence]}), do: [sequence]
   def mutate(_node), do: :skip
+end
+
+defmodule Mutare.Test.SourcePatchUnpackRoutes do
+  @moduledoc false
+  @behaviour Mutare.CallRouting
+
+  @impl true
+  def call_routes,
+    do: [{Mutare.Test.SourcePatchFixtures, :unpack, :any, [:binding_pattern, :expression]}]
 end
 
 defmodule Mutare.Test.SourcePatchKeywordRoutes do

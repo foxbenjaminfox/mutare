@@ -9,7 +9,9 @@ defmodule Mutare.Test.SourcePatchGenerators do
 
   Two names are bound before the expression: `left`, which the `:rebinding` operand rebinds
   (and the `:declared` operands rebind through `destructure/2`'s declared `:binding_pattern`
-  position, in the open, beneath a `:lazy_expression` one and beneath a skipped call), and `right`, which every stage
+  position, in the open, beneath a `:lazy_expression` one, beneath a skipped call, with the
+  declaration itself skipped, with both skipped, and with an exact skip shadowing a broader
+  declaration of the fixture's own `unpack/2`), and `right`, which every stage
   rebinds and the `:dropped` delivery leaves at its incoming value. The deliveries cross two
   emitters: the ordinary selector around the arithmetic (`:retained`, `:moved`, `:split`,
   `:dropped`) and the structural pattern selector, in which the whole expression is the RHS
@@ -33,6 +35,7 @@ defmodule Mutare.Test.SourcePatchGenerators do
 
   alias Mutare.Test.{HostMutator, SourcePatchDropMutator, SourcePatchDynamicMutator}
   alias Mutare.Test.{SourcePatchFixtures, SourcePatchKeywordRoutes, SourcePatchUnwrapMutator}
+  alias Mutare.Test.SourcePatchUnpackRoutes
 
   def operands,
     do: [
@@ -43,6 +46,8 @@ defmodule Mutare.Test.SourcePatchGenerators do
       :declared_lazy,
       :declared_skipped,
       :declaration_skipped,
+      :declarations_skipped,
+      :declaration_shadowed,
       :block,
       :skipped,
       :raw,
@@ -244,6 +249,28 @@ defmodule Mutare.Test.SourcePatchGenerators do
       {"hd(destructure([left], [F.tick(n, :left)]))", ["left"],
        [call_routes: [{Kernel, :destructure, 2, :skip}]]}
 
+  # Both at once: the declaration is skipped *and* never walked, so its meaning is read from
+  # the registry beneath the wrapper as the stamp would have carried it.
+  defp operand(:declarations_skipped),
+    do:
+      {"F.identity(hd(destructure([left], [F.tick(n, :left)])))", ["left"],
+       [
+         call_routes: [
+           {SourcePatchFixtures, :identity, 1, :skip},
+           {Kernel, :destructure, 2, :skip}
+         ]
+       ]}
+
+  # And a declaration the skip shadows rather than displaces: declared at any arity by an
+  # extension, skipped at the exact one — the skip wins the cascade at another key.
+  defp operand(:declaration_shadowed),
+    do:
+      {"hd(F.unpack([left], [F.tick(n, :left)]))", ["left"],
+       [
+         call_routes: [{SourcePatchFixtures, :unpack, 2, :skip}],
+         extensions: [SourcePatchUnpackRoutes]
+       ]}
+
   # A statement sequence, whose parentheses are the negation's: the mutant that removes the
   # negation (`SourcePatchUnwrapMutator`) has to restore them in its replacement text.
   defp operand(:block),
@@ -333,7 +360,9 @@ defmodule Mutare.Test.SourcePatchGenerators do
               :declared,
               :declared_lazy,
               :declared_skipped,
-              :declaration_skipped
+              :declaration_skipped,
+              :declarations_skipped,
+              :declaration_shadowed
             ],
        do: "left = :before"
 

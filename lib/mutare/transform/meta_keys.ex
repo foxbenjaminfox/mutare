@@ -54,7 +54,7 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_import_witness`   — dead-code import-witness payload                (Imports, spliced by ImportWitness)
   #   * `:mutare_kernel_displaced` — a Kernel fn displaced by `import …, except:`    (Imports)
   #   * `:mutare_route`            — a routed call's per-argument positions, or `:skip` (Resolve.RouteStamp, from the route registry)
-  #   * `:mutare_displaced_route`  — on a configured `:skip`: the positions of the declaration it displaced, or `:unknown` (Resolve.RouteStamp, read by Resolve.effective_routing/2)
+  #   * `:mutare_displaced_route`  — on a configured `:skip`: the positions of the declaration it displaced or shadowed, or `:unknown` (Resolve.RouteStamp, read by Resolve.effective_routing/2)
   #   * `:mutare_route_call`       — resolved `{module_key, name, arity}` routed-call identity (Resolve.RouteStamp, read through Meta.routed_call/1)
   #   * `:mutare_resolution`       — lexical environment for a host's Elixir islands (Resolve; removed before retention/render)
   #   * `:mutare_use_directives`   — import/alias/require a `use` injects            (Uses)
