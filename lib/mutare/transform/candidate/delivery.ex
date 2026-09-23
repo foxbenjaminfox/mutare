@@ -99,11 +99,14 @@ defmodule Mutare.Transform.Candidate.Delivery do
   A name the node matches somewhere its route does not read as a value (`lazy(p = 8)`) is a
   write core cannot vouch for: exported, it may name the stale incoming value; unexported, it
   may be the write the source lets out. Where that name is bound on entry, in conflict and
-  read after, no delivery is faithful, so every candidate on the node is withheld. So is
-  every candidate on a node whose binding effect is **unknown**: a call inside a skipped
-  argument whose route is a classifier core did not invoke there
-  (`Bindings.unknown_routing?/1`) may bind names no reader reports, and a selector around it
-  would trap them.
+  read after, no delivery is faithful, so every candidate on the node is withheld. So it is
+  where the name is **uncertain** — an earlier statement may have bound it, and core could
+  not read that statement's effect in full (a match in a position its route reads as no
+  value, a call whose route was withheld): exported as incoming it may name nothing, trapped
+  it may hide the write the source lets out. And so is every candidate on a node whose own
+  binding effect is **unknown**: a call inside a skipped argument whose route is a classifier
+  core did not invoke there (`Bindings.unknown_routing?/1`) may bind names no reader reports,
+  and a selector around it would trap them.
 
   Run on the **source** node, before its children are emitted: `Mutare.Transform` gates on
   the way down its emit walk, so the facts read here — what the node binds, what it matches —
@@ -123,7 +126,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
   end
 
   defp drop_binding_drops(candidates, node) do
-    {bound, conflicts, later} = Meta.bindings(node)
+    {bound, conflicts, uncertain, later} = Meta.bindings(node)
     escaping = BindingEscapeEmit.expression_bindings(node)
     read? = fn name -> later == :all or MapSet.member?(later, name) end
 
@@ -131,13 +134,18 @@ defmodule Mutare.Transform.Candidate.Delivery do
       MapSet.member?(bound, name) and not MapSet.member?(conflicts, name)
     end
 
+    # Exported as incoming, the name may be stale (a conflict) or unbound (uncertain);
+    # trapped, it may be the write the source lets out.
+    unvouchable? = fn name ->
+      MapSet.member?(uncertain, name) or
+        (MapSet.member?(bound, name) and MapSet.member?(conflicts, name))
+    end
+
     unvouched =
       node
       |> Bindings.matched_names()
       |> Enum.reject(&(&1 in escaping))
-      |> Enum.filter(
-        &(MapSet.member?(bound, &1) and MapSet.member?(conflicts, &1) and read?.(&1))
-      )
+      |> Enum.filter(&(unvouchable?.(&1) and read?.(&1)))
 
     needed = Enum.filter(escaping, &(read?.(&1) and not exportable?.(&1)))
 

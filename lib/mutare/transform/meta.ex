@@ -358,17 +358,21 @@ defmodule Mutare.Transform.Meta do
 
   def put_unit_tail(node), do: node
 
+  # Nothing bound, nothing in conflict, nothing uncertain, everything read.
+  @unstamped_bindings {MapSet.new(), MapSet.new(), MapSet.new(), :all}
+
   @doc """
-  The names bound on entry to `node`, those of them an earlier sibling writes, and the names
-  referenced after it, as `Mutare.Transform.Bindings` stamped them — or, for a node it did
-  not stamp (one binding nothing, or a host's island), the one-sided default: nothing bound,
+  The names bound on entry to `node`, those of them an earlier sibling writes, those an
+  earlier statement may have bound, and the names referenced after it, as
+  `Mutare.Transform.Bindings` stamped them — or, for a node it did not stamp (one binding
+  nothing, or a host's island), the one-sided default: nothing bound, nothing uncertain,
   everything read.
   """
   @spec bindings(Macro.t()) :: Mutare.Transform.Bindings.stamp()
   def bindings({_form, meta, _args}) when is_list(meta),
-    do: Keyword.get(meta, MetaKeys.bindings_key(), {MapSet.new(), MapSet.new(), :all})
+    do: Keyword.get(meta, MetaKeys.bindings_key(), @unstamped_bindings)
 
-  def bindings(_node), do: {MapSet.new(), MapSet.new(), :all}
+  def bindings(_node), do: @unstamped_bindings
 
   @doc "Stamp `meta` with its `bindings/1` pair."
   @spec put_bindings(keyword(), Mutare.Transform.Bindings.stamp()) :: keyword()

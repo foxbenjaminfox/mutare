@@ -24,29 +24,45 @@ defmodule Mutare.Transform.Bindings do
   #     does read it, the mutant's own source patch would not compile (fresh) or its delivery
   #     would override the sibling's write (conflict), so the mutant is withheld
   #     (`Mutare.Transform.Candidate.Delivery.gate/2`).
+  #   * a name an earlier statement **may** have bound, without core being able to say — a
+  #     match in a position its route reads as no value (`lazy(p = 8)`), a call whose route
+  #     was withheld (`unknown_routing?/1`) — is **uncertain**: not bound (an export naming it
+  #     as incoming may name nothing), and not fresh either (a branch that traps its rebinding
+  #     may hide the write the source lets out). The fresh rule is kept where the two agree —
+  #     an escaping name every branch binds is exported either way, and a mutant dropping one
+  #     that is read after is withheld either way — and where they disagree, a name the
+  #     expression matches where its route reads no value and something reads after, no
+  #     delivery is faithful and every candidate on the node is withheld (the gate again).
   #
-  # So this pass stamps every binding-bearing node with `{bound, conflicts, later}`: the names
-  # bound on entry, those of them an earlier sibling writes, and the names referenced after
-  # the node. Each errs to one side only. `bound` may miss a bound name (the node then takes
-  # the fresh rule, which is what every node took before this pass), never claim an unbound
-  # one (an export naming it would not compile). `conflicts` may over-count (an export
-  # withheld for nothing), never miss. `later` may name a read that never happens (a mutant
-  # withheld for nothing), never miss one. The default `Meta.bindings/1` answers for an
-  # unstamped node — a host's island, whose enclosing scope core never sees — errs the same
-  # way: nothing bound, everything read.
+  # So this pass stamps every binding-bearing node with `{bound, conflicts, uncertain, later}`:
+  # the names bound on entry, those of them an earlier sibling writes, those an earlier
+  # statement may have bound, and the names referenced after the node. Each errs to one side
+  # only. `bound` may miss a bound name (the node then takes the fresh rule, which is what
+  # every node took before this pass), never claim an unbound one (an export naming it would
+  # not compile). `conflicts` may over-count (an export withheld for nothing), never miss.
+  # `uncertain` may over-count too (a mutant withheld for nothing), never miss: a name bound
+  # on entry by a statement this pass read is in `bound` or in `uncertain`. `later` may name
+  # a read that never happens (a mutant withheld for nothing), never miss one. The default
+  # `Meta.bindings/1` answers for an unstamped node — a host's island, whose enclosing scope
+  # core never sees — errs the same way for what it can: nothing bound, everything read. It
+  # counts nothing as uncertain either, which is the fresh rule an island has always taken;
+  # a stamped scope's uncertainty is one statement's, an island's would be the world's.
   #
   # `bound` follows Elixir's scoping where it is plain and stays silent where it is not: a
   # definition's head patterns; a block's statements in order, each adding what
   # `Mutare.Transform.BindingEscapeEmit.expression_bindings/1` says escapes it, so an unrouted
   # call is a function here too — a parenthesized block anywhere is the same sequence; the
   # clauses of `case`/`cond`/`fn`/`receive`/`try`/`with`/`for`, each seeing its own patterns;
-  # and a `Kernel` `if`/`unless` condition. A statement's write clears a conflict on the name.
+  # and a `Kernel` `if`/`unless` condition. Every other name a statement may write
+  # (`matched_names/1`) goes to `uncertain` instead, and a statement's write clears a
+  # conflict, or the uncertainty, on the name.
   # The siblings of an expression — a call's callee and arguments, a tuple's or list's
   # elements, an operator's operands, a keyword pair's key and value — each get the entry set
   # with what the siblings before them **may** write added to `conflicts`: a match anywhere
   # in the sibling, whether or not its execution or escape is certain (a `:lazy_expression`
   # position's `p = 8` is not a guaranteed binding, but it is a possible write, and the
-  # sibling after it may not export the stale `p`). A routed macro's positions take every
+  # sibling after it may not export the stale `p`), and every name a call with a withheld
+  # route mentions in its arguments. A routed macro's positions take every
   # other position's possible writes as conflicts, their order being the macro's, and see
   # every other position's references as `later` for the same reason.
   # A module body binds nothing for the definitions inside it. Nothing under a `quote`, a
@@ -67,11 +83,15 @@ defmodule Mutare.Transform.Bindings do
   alias Mutare.Transform.{BindingEscapeEmit, Calls, KeywordRouting, Meta, PatternStructure}
   alias Mutare.Transform.Resolve
 
-  @typedoc "Names bound on entry, those an earlier sibling writes, and names referenced after (`:all` when unknown)."
-  @type stamp :: {MapSet.t(atom()), MapSet.t(atom()), MapSet.t(atom()) | :all}
+  @typedoc """
+  Names bound on entry, those an earlier sibling writes, those an earlier statement may have
+  bound, and names referenced after (`:all` when unknown).
+  """
+  @type stamp ::
+          {MapSet.t(atom()), MapSet.t(atom()), MapSet.t(atom()), MapSet.t(atom()) | :all}
 
-  # The entry scope threaded down the walk: `{bound, conflicts}`.
-  @typep scope :: {MapSet.t(atom()), MapSet.t(atom())}
+  # The entry scope threaded down the walk: `{bound, conflicts, uncertain}`.
+  @typep scope :: {MapSet.t(atom()), MapSet.t(atom()), MapSet.t(atom())}
 
   @definitions [:def, :defp, :defmacro, :defmacrop]
   @modules [:defmodule, :defimpl, :defprotocol]
@@ -102,8 +122,9 @@ defmodule Mutare.Transform.Bindings do
   Inside a skipped call's arguments, which Resolve did not walk, a call's route is read
   through the environment the skipped call retains (`Resolve.preserved_routing/2`), as
   `BindingEscapeEmit.expression_bindings/1` reads it: skip withholds mutation, not evaluation.
-  A route there that is a classifier cannot be read, and the names it declares are missing
-  from this list; `unknown_routing?/1` says so.
+  A route there that is a classifier cannot be read; every name the call's arguments mention
+  is then in this list, since a declared position binds nothing its syntax does not name, and
+  `unknown_routing?/1` says the list bounds what the call binds rather than reading it.
   """
   @spec matched_names(Macro.t()) :: [atom()]
   def matched_names(node) do
@@ -174,7 +195,11 @@ defmodule Mutare.Transform.Bindings do
     |> Enum.flat_map(fn {arg, treatment} -> declared_position_names(arg, treatment) end)
   end
 
-  defp declared_names(_args, :unknown), do: [:unknown]
+  # A route this reader cannot obtain may declare any position binding: every name the
+  # arguments mention is a possible write.
+  defp declared_names(args, :unknown),
+    do: [:unknown | bound(MapSet.to_list(referenced_names(args)))]
+
   defp declared_names(_args, _routing), do: []
 
   defp bound(names), do: Enum.map(names, &{:bound, &1})
@@ -220,18 +245,32 @@ defmodule Mutare.Transform.Bindings do
   # --- the scope ----------------------------------------------------------------------------
 
   @spec scope_new() :: scope()
-  defp scope_new, do: {MapSet.new(), MapSet.new()}
+  defp scope_new, do: {MapSet.new(), MapSet.new(), MapSet.new()}
 
-  # A statement, pattern or head binds `names`: readable from here on, and no longer in
-  # conflict with anything written before.
-  defp bind({bound, conflicts}, names) do
+  # A statement, pattern or head binds `names`: readable from here on, no longer in conflict
+  # with anything written before, and no longer uncertain.
+  defp bind({bound, conflicts, uncertain}, names) do
     names = MapSet.new(names)
-    {MapSet.union(bound, names), MapSet.difference(conflicts, names)}
+
+    {MapSet.union(bound, names), MapSet.difference(conflicts, names),
+     MapSet.difference(uncertain, names)}
   end
 
   # An earlier sibling writes `names`: still bound (if they were), not exportable as incoming.
-  defp conflict({bound, conflicts}, names),
-    do: {bound, MapSet.union(conflicts, MapSet.new(names))}
+  defp conflict({bound, conflicts, uncertain}, names),
+    do: {bound, MapSet.union(conflicts, MapSet.new(names)), uncertain}
+
+  # An earlier statement may have bound `names`: uncertain, unless already bound (a possible
+  # rebinding of a bound name leaves it bound, whichever value it has).
+  defp unsure({bound, conflicts, uncertain}, names) do
+    names = names |> MapSet.new() |> MapSet.difference(bound)
+    {bound, conflicts, MapSet.union(uncertain, names)}
+  end
+
+  # What a statement leaves for the statements after it: bound what it is guaranteed to
+  # bind, uncertain whatever else it may write.
+  defp advance(scope, statement),
+    do: scope |> bind(escaping(statement)) |> unsure(matched_names(statement))
 
   # --- the walk: `{node, names referenced inside, whether anything inside binds}` ------------
 
@@ -375,7 +414,7 @@ defmodule Mutare.Transform.Bindings do
   # The subject (or condition) is evaluated first, and what it binds the clauses see.
   defp structural({form, meta, [subject, blocks]}, scope, later)
        when form in [:case, :if, :unless] and is_list(blocks) do
-    {blocks, referenced, binds?} = blocks(form, blocks, bind(scope, escaping(subject)))
+    {blocks, referenced, binds?} = blocks(form, blocks, advance(scope, subject))
 
     {subject, subject_referenced, subject_binds?} =
       walk(subject, scope, union(later, referenced))
@@ -427,20 +466,20 @@ defmodule Mutare.Transform.Bindings do
         {clause, clause_referenced, clause_binds?} =
           walk(clause, scope, referenced_names([rest, blocks]))
 
-        {[clause | acc], bind(scope, generator_names(clause)),
-         union(referenced, clause_referenced), binds? or clause_binds?}
+        {[clause | acc], generator_scope(scope, clause), union(referenced, clause_referenced),
+         binds? or clause_binds?}
       end)
 
     {Enum.reverse(clauses), inner, referenced, binds?}
   end
 
-  defp generator_names({:<-, _meta, [{:when, _when_meta, [pattern | _guards]}, _value]}),
-    do: PatternStructure.bound_var_names(pattern)
+  defp generator_scope(scope, {:<-, _meta, [{:when, _when_meta, [pattern | _guards]}, _value]}),
+    do: bind(scope, PatternStructure.bound_var_names(pattern))
 
-  defp generator_names({:<-, _meta, [pattern, _value]}),
-    do: PatternStructure.bound_var_names(pattern)
+  defp generator_scope(scope, {:<-, _meta, [pattern, _value]}),
+    do: bind(scope, PatternStructure.bound_var_names(pattern))
 
-  defp generator_names(clause), do: escaping(clause)
+  defp generator_scope(scope, clause), do: advance(scope, clause)
 
   # The keyword blocks of a structural form (or of a definition, read as a `try`'s). A `->`
   # clause list is scoped per clause; a plain block is a statement sequence. An `else:` sees
@@ -489,8 +528,7 @@ defmodule Mutare.Transform.Bindings do
   defp clause({:->, meta, [heads, body]}, kind, scope, later) do
     body_later = if kind == :bare, do: later, else: MapSet.new()
 
-    {body, referenced, binds?} =
-      scoped(body, bind(scope, clause_names(heads, kind)), body_later)
+    {body, referenced, binds?} = scoped(body, clause_scope(heads, kind, scope), body_later)
 
     {heads, heads_referenced, heads_binds?} =
       clause_heads(heads, kind, scope, union(later, referenced))
@@ -500,8 +538,8 @@ defmodule Mutare.Transform.Bindings do
 
   defp clause(other, _kind, scope, later), do: walk(other, scope, later)
 
-  defp clause_names([head], :expression), do: escaping(head)
-  defp clause_names(heads, _kind), do: Enum.flat_map(heads, &pattern_names/1)
+  defp clause_scope([head], :expression, scope), do: advance(scope, head)
+  defp clause_scope(heads, _kind, scope), do: bind(scope, Enum.flat_map(heads, &pattern_names/1))
 
   defp clause_heads([head], :expression, scope, later) do
     {head, referenced, binds?} = walk(head, scope, later)
@@ -610,13 +648,13 @@ defmodule Mutare.Transform.Bindings do
   defp scoped(body, scope, later), do: walk(body, scope, later)
 
   # Items evaluated in order, each followed by what the ones after it reference. What the
-  # ones before an item write is bound for it (`:statements`), a conflict for it
+  # ones before an item write is bound or uncertain for it (`:statements`), a conflict for it
   # (`:siblings`), or nothing to it (`:unsequenced`, a module body).
   defp sequence(items, scope, later, kind) do
     entries =
       Enum.scan(items, scope, fn item, entry ->
         case kind do
-          :statements -> bind(entry, escaping(item))
+          :statements -> advance(entry, item)
           :siblings -> conflict(entry, possible_writes(item))
           :unsequenced -> entry
         end
@@ -644,6 +682,6 @@ defmodule Mutare.Transform.Bindings do
   defp stamp_if(meta, true, scope, later), do: stamp(meta, scope, later)
   defp stamp_if(meta, false, _scope, _later), do: meta
 
-  defp stamp(meta, {bound, conflicts}, later),
-    do: Meta.put_bindings(meta, {bound, conflicts, later})
+  defp stamp(meta, {bound, conflicts, uncertain}, later),
+    do: Meta.put_bindings(meta, {bound, conflicts, uncertain, later})
 end

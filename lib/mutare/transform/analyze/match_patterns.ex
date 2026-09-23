@@ -394,7 +394,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # exports is skipped — `export_with_rhs_chain/2` carries those with their occurrence
   # multiplicity, which this reading does not know.
   defp export_with_scope(export, expression, node) do
-    {bound, conflicts, later} = Meta.bindings(node)
+    {bound, conflicts, _uncertain, later} = Meta.bindings(node)
     existing = export |> export_vars() |> MapSet.new(fn {name, _meta, _ctx} -> name end)
     escaping = BindingEscapeEmit.expression_bindings(expression)
 

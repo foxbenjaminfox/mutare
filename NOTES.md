@@ -12931,6 +12931,56 @@ call's evaluation order and still tuple-export shared bindings. SourcePatch regr
 the retained-argument case and compare both baseline and mutant behavior for an effectful dynamic
 receiver.
 
+### An unread effect is uncertain beside and after its statement, not absent `[fixed]` (2026-09-23)
+
+Fourth review of the binding-boundary work, of the fix below. The `:unknown` fact was
+recorded and then projected away: `matched_names/1` kept only the `{:bound, name}` facts, so
+an unknown call contributed nothing to the possible writes its siblings take as conflicts, and
+a statement sequence advanced `bound` from the guaranteed `expression_bindings/1` alone. The
+gate's `unknown_routing?/1` check saw only a node *containing* the call. Two consequences,
+both source-traced by the reviewer and reproduced before the fix:
+
+* `[hd(unpack([p], [8])), Enum.count([1], p = fn _ -> true end)]` with `hd/1` skipped and
+  `unpack/2` classifier-routed: the first element's write to `p` was no conflict for the
+  second, whose dropping mutant exported the incoming `:incoming` over the `8` — a false
+  survivor, the very shape the sibling rule exists for, reached through an unknown sibling.
+* `hd(unpack([p], [8])); result = div(p = 6, 2); {result, p}` with `div`'s first position
+  `:lazy_expression`: `p` was not in `bound`, so it took the fresh rule at `div`; not escaping
+  there, it went unexported, and the *baseline* read `{3, 8}` for the source's `{3, 6}`.
+
+The reviewer's framing is the one kept: "not known to be bound" and "known to be fresh" are
+different facts, and an empty guaranteed set must not stand in for an empty possible set.
+Two changes:
+
+**An unknown call's possible writes are the names its arguments mention.** A route this
+reader cannot obtain may declare any position binding, and a declared position binds nothing
+its syntax does not name, so `referenced_names/1` of the arguments bounds what the call can
+bind. `matched/2` collects them as `{:bound, name}` beside the `:unknown` flag, and the
+sibling conflicts (`possible_writes/1`, `positions/3`) see them with no change of their own.
+Over-counting is a conflict's permitted error.
+
+**The stamp gains `uncertain`.** After a statement, what `expression_bindings/1` guarantees is
+bound; every other name `matched_names/1` reports for it — a match in a lazy position, an
+unknown call's argument names — is uncertain unless already bound (`advance/2`, applied to a
+block's statements, a `case`/`if` subject, a `with`'s expression clauses and a `cond` head; a
+later binding clears it, as it clears a conflict). Every reader keeps the fresh rule for an
+uncertain name, which is safe where the two rules agree: an escaping name every branch binds
+is exported either way, and a mutant dropping one that is read after is withheld either way.
+Where they disagree — a name the node matches in a position its route reads as no value, and
+something reads after — `Delivery.gate/2` withholds every candidate on the node, as it
+already did for a bound name in conflict: exported as incoming it may name nothing, trapped
+it may hide the write the source lets out. This is not the classifier's rule alone: a
+lazy-position write before the node (`Eager.run(p = 8)` under a `:lazy_expression` route,
+where the macro does run it) had the same baseline hole, and is pinned too.
+
+Not done: an island's default still counts nothing as uncertain (its enclosing scope is
+unread on every side, and "everything uncertain" would withhold every lazy-position match in
+every hosted fragment); and the gate's own `unknown_routing?/1` withholding stays, although
+with the names now counted as possible writes the ordinary rules would deliver the
+bound-on-entry case — a relaxation to earn with its own tests. `binding_export_test.exs` pins
+the five sibling shapes (list, tuple, call, routed call, keyed), the sequential case with its
+eager and statically-declared controls, and the lazy-statement case.
+
 ### The gate reads the source; a withheld classifier reads as unknown `[fixed]` (2026-09-23)
 
 Third review of the binding-boundary work found two more holes, both reproduced by its cases

@@ -100,7 +100,7 @@ defmodule Mutare.Transform.PipeEmit do
   """
   @spec delivery(Macro.t(), [Candidate.t()]) :: t()
   def delivery({_head, meta, [_zero | _rest]} = node, [_ | _] = candidates) do
-    {bound, conflicts, _later} = Meta.bindings(node)
+    {bound, conflicts, _uncertain, _later} = Meta.bindings(node)
     scope = {bound, conflicts}
 
     with pipe_meta when is_list(pipe_meta) <- Meta.written_pipe_meta(node),

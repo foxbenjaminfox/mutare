@@ -169,7 +169,9 @@ defmodule Mutare.Transform.Resolve do
   # region it was withheld from, and its call reads as `:unknown` — not as unrouted: a
   # declared route whose positions were not obtained may bind names the readers cannot see,
   # so an enclosing binding-sensitive delivery withholds rather than assumes
-  # (`Bindings.unknown_routing?/1`, `Candidate.Delivery.gate/2`). Nothing is stamped or
+  # (`Bindings.unknown_routing?/1`, `Candidate.Delivery.gate/2`), and the scope beside and
+  # after the call counts every name its arguments mention as a possible write
+  # (`Bindings.matched_names/1`). Nothing is stamped or
   # rewritten. A stamped call answers from its stamp (`Meta.routing/1`) and never reaches here.
   @doc false
   @spec preserved_routing(Macro.t(), map()) :: :skip | :unknown | [Spec.position()] | nil

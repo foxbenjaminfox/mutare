@@ -117,7 +117,8 @@ defmodule Mutare.Transform.BindingEscapeEmit do
         end)
 
       # A classifier not invoked in a skipped region: its positions may bind, and nothing is
-      # guaranteed. `Bindings.unknown_routing?/1` reports the call to the gate.
+      # guaranteed. `Bindings.unknown_routing?/1` reports the call to the gate, and
+      # `Bindings.matched_names/1` counts every name its arguments mention as a possible write.
       :unknown ->
         []
 

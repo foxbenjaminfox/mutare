@@ -91,6 +91,12 @@ defmodule Mutare.BindingExportTest do
       do: Mutare.CallRouting.ArgumentRoutes.new(call, [:binding_pattern, :expression])
   end
 
+  # A macro that runs its argument, routed `:lazy_expression` — the least convenient valid
+  # reading of the word: core may not assume the argument runs, and here it does.
+  defmodule Eager do
+    defmacro run(value), do: quote(do: unquote(value))
+  end
+
   # A binding macro spelled `if/2`, imported over Kernel's: a displaced Kernel name whose
   # unstamped occurrence under a skipped wrapper must still read as this call, not a conditional.
   defmodule DisplacedIf do
@@ -1003,6 +1009,121 @@ defmodule Mutare.BindingExportTest do
 
       assert Mutare.Transform.count_string(source, opts) == length(sites)
       assert next_id == length(sites) + 1
+    end
+  end
+
+  describe "an effect core cannot read, outside the node" do
+    # `hd/1` skipped, `unpack/2` routed by the classifier the skip withholds: the first
+    # sibling's binding effect is unknown. The node under test does not contain it — its
+    # scope does — so the gate's own unknown check does not reach it.
+    @unknown_write "hd(unpack([p], [8]))"
+    @dropping_call "Enum.count([1], p = fn _ -> true end)"
+    @skip_hd [{Kernel, :hd, 1, :skip}]
+
+    @unknown_sibling_shapes [
+      {:list, "[#{@unknown_write}, #{@dropping_call}]", "", []},
+      {:tuple, "{#{@unknown_write}, #{@dropping_call}}", "", []},
+      {:call, "pair(#{@unknown_write}, #{@dropping_call})", "defp pair(a, b), do: {a, b}", []},
+      {:routed_call, "pair(#{@unknown_write}, #{@dropping_call})", "defp pair(a, b), do: {a, b}",
+       [{:*, :pair, 2, [:expression, :expression]}]},
+      {:keyed, "box(first: #{@unknown_write}, second: #{@dropping_call})",
+       "defp box(opts), do: opts",
+       [{:*, :box, 1, [[:raw, first: :expression, second: :expression]]}]}
+    ]
+
+    for {shape, expression, helper, routes} <- @unknown_sibling_shapes do
+      test "#{shape}: an unknown earlier sibling's possible writes are this position's conflicts" do
+        # Original `{_, false}`: the second sibling's write wins. Dropping the predicate
+        # leaves the first sibling's `8`: `{_, true}`. An export of the incoming `:incoming`
+        # over that write would read `false` again — a false survivor — so the dropping
+        # mutant is withheld, as it is after a sibling whose write core can read.
+        source = """
+        defmodule Fixture do
+          import Mutare.Test.QueryDSL
+          #{unquote(helper)}
+
+          def run do
+            p = :incoming
+            values = #{unquote(expression)}
+            {values, p == 8}
+          end
+        end
+        """
+
+        assert [] =
+                 assert_patches(source, [:collection_arity, ClassifiedUnpack], [run: []],
+                   clean_functions: false,
+                   call_routes: @skip_hd ++ unquote(Macro.escape(routes))
+                 )
+      end
+    end
+
+    @unknown_then_lazy """
+    defmodule Fixture do
+      import Mutare.Test.QueryDSL
+
+      def run do
+        hd(unpack([p], [8]))
+        result = div(p = 6, 2)
+        {result, p}
+      end
+    end
+    """
+
+    @lazy_div [{Kernel, :div, 2, [:lazy_expression, :expression]}]
+
+    # Original `{3, 6}`, the `rem` patch `{0, 6}`: the first statement binds `p`, and nothing
+    # can read that it does. Not bound, `p` would take the fresh rule at `div`; not escaping
+    # there (the position is lazy), it would stay trapped, and the baseline would read `8`.
+    test "an unknown earlier statement leaves its names uncertain: a lazy rebinding is withheld" do
+      assert [] =
+               assert_patches(@unknown_then_lazy, [:arithmetic, ClassifiedUnpack], [run: []],
+                 clean_functions: false,
+                 call_routes: @skip_hd ++ @lazy_div
+               )
+    end
+
+    test "control: an eager rebinding after the same statement is delivered, exported as fresh" do
+      sites =
+        assert_patches(@unknown_then_lazy, [:arithmetic, ClassifiedUnpack], [run: []],
+          clean_functions: false,
+          call_routes: @skip_hd
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+    end
+
+    test "control: a static declaration binds the name, and the lazy rebinding exports it" do
+      sites =
+        assert_patches(@unknown_then_lazy, [:arithmetic, Mutare.Test.UnpackMutator], [run: []],
+          clean_functions: false,
+          call_routes: @skip_hd ++ @lazy_div
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+    end
+
+    # The same uncertainty without a classifier: a match in a lazy position is a possible
+    # write of the statement, and the macro does run it, so the source's `p` is `8` before
+    # `div` and `6` after it — `{3, 6}`, the `rem` patch `{0, 6}`.
+    test "a possible write in a lazy position before the node is uncertain there, not fresh" do
+      source = """
+      defmodule Fixture do
+        require Mutare.BindingExportTest.Eager, as: Eager
+
+        def run do
+          Eager.run(p = 8)
+          result = div(p = 6, 2)
+          {result, p}
+        end
+      end
+      """
+
+      assert [] =
+               assert_patches(source, [:arithmetic], [run: []],
+                 clean_functions: false,
+                 call_routes: [{Eager, :run, 1, [:lazy_expression]}] ++ @lazy_div
+               )
     end
   end
 
