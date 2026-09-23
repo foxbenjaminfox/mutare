@@ -12931,6 +12931,65 @@ call's evaluation order and still tuple-export shared bindings. SourcePatch regr
 the retained-argument case and compare both baseline and mutant behavior for an effectful dynamic
 receiver.
 
+### The binding model reads syntax and declarations; a macro is bound by neither `[known limit]` (2026-09-23)
+
+Asked after the fix below: what about `var!/1`? The honest answer is that the scope pass
+cannot see it, and that this is one instance of a limit worth stating in full rather than
+patching by the instance.
+
+**What the model assumes.** Every binding fact Mutare has is syntactic or declared: a name is
+bound by an `=`/`<-` pattern, a head pattern, or a position a route declares
+`:binding_pattern`; it is read where a variable-shaped node names it. Both writers'
+readers (`expression_bindings/1`, `matched_names/1`) and the reads reader
+(`referenced_names/1`) walk the *caller's* AST. Underneath is an assumption about every
+unrouted call: it behaves as a function — evaluates its arguments once, in order, in the
+caller's scope, binds what their patterns bind, reads what they reference, and nothing else.
+That is the "calls are ordinary" principle, and it is the right default; it is also an
+assumption a macro is free to violate in every clause.
+
+**What a macro can do, in theory.** Anything with an AST. It can bind a name that appears
+nowhere in the call (`var!(x) = …` in its expansion), or one computed at expansion time
+(`Macro.var(:"x_#{n}", nil)`), so no static declaration can list it and a classifier could
+name it only by re-implementing the macro. It can read such names (`~H` reads `assigns`
+through `var!`). It can evaluate an argument zero, one or several times, in any order, in a
+scope of its own or the caller's; splice the arguments into a pattern, a guard, a `quote`; or
+`import`, `alias`, `require` and define things for the rest of the enclosing body. The
+routing vocabulary names the cases that have come up (`:raw`, `:lazy_expression`,
+`:binding_pattern`, `:skip`, `:hosted`, …), each a word for one way a macro departs from a
+function; it is not, and cannot be, a complete description of the departures.
+
+**Where the binding half bites.** A hygiene-escaping *write* to a name the caller already
+has bound, under or beside a mutated expression, is silent: `x = 1; result = abs(set_x());
+{result, x}` puts `set_x()` in a selector branch, the export rule (`matched ∩ bound` plus the
+fresh names every branch binds) never sees `x`, and the baseline reads the old value. The
+shapes from the fix below have the same hole with `set_x()` in place of the withheld
+classifier, since the call is not `:unknown` — it reads as ordinary. A write to a *fresh*
+name fails loudly instead: the trapped binding makes the metamutant's compile fail at a line
+carrying no mutant, poison attributes nothing, the run aborts with a hint. A `var!` *read*
+errs the way `later` is not allowed to — a missed read — but the same trapped-binding compile
+failure makes it loud; the idiomatic `assigns = assign(assigns, …)` before a `~H` never
+trips it, since the selector sits inside the RHS and the `=` outside. The evaluation half is
+the standing exposure `:lazy_expression` names: an unrouted macro that skips or repeats an
+argument core evaluated once ahead of it.
+
+**What would help, and how far.** A route-level declaration of the names a call binds
+outside its arguments — `binds: [:x]` on a static route, or a field on what
+`route_arguments/1` returns, since a classifier sees the call — would let both readers count
+them and everything downstream (export, conflicts, `uncertain`, the gate) already does the
+right thing with a name once it is known to be written. It closes the `var!(x)` case and not
+the computed-name case, and it says nothing about evaluation order, scope or the rest. There
+is no general answer short of expanding the macro, which Mutare does not do for calls (it
+expands `use`, under an override, for a different reason), and expansion would only move the
+question to what the expansion's own calls do.
+
+**Decision.** Not built. `var!` writes to caller scope are rare and discouraged, and the
+known idioms are reads. The line stays: a call is ordinary until a route says otherwise, a
+user who knows their macro says so with a route, and a macro that does something the
+vocabulary has no word for is a reason to add the word when it arrives — a heuristic that
+guesses "macro-ness" in a walk is not. What this entry adds is the acknowledgement: the
+model's guarantees hold for functions and for macros the routes describe; for any other
+macro they are assumptions, and a wrong one on a *bound* name fails silently.
+
 ### An unread effect is uncertain beside and after its statement, not absent `[fixed]` (2026-09-23)
 
 Fourth review of the binding-boundary work, of the fix below. The `:unknown` fact was
