@@ -1334,6 +1334,29 @@ defmodule Mutare.BindingExportTest do
     end
   end
 
+  describe "a fresh name nothing reads is not exported" do
+    # The `==` selector's `true`/`false` branches drop `t`; nothing reads `t` after, so the
+    # gate admits them and that selector leaves `t` unexported, trapped in its catch-all. The
+    # enclosing `+` selector reads the *source*, where every branch binds `t`, and used to
+    # export it — naming a `t` its child had trapped, so the whole metamutant failed to
+    # compile (found by the transform property soak). An unread fresh name has no reader to
+    # serve; exporting it can only reference what a child left unbound.
+    test "by a parent whose child selector dropped it" do
+      source = """
+      defmodule Fixture do
+        def run do
+          abs(Enum.count([0 == (t = 0; 0)]) + 1)
+        end
+      end
+      """
+
+      sites =
+        assert_patches(source, Mutare.Mutators.all(), [run: []], clean_functions: false)
+
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+    end
+  end
+
   defp transform(source, mutators, extra \\ []) do
     Mutare.Transform.transform_string_with_sites(
       source,

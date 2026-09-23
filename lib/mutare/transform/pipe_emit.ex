@@ -100,8 +100,7 @@ defmodule Mutare.Transform.PipeEmit do
   """
   @spec delivery(Macro.t(), [Candidate.t()]) :: t()
   def delivery({_head, meta, [_zero | _rest]} = node, [_ | _] = candidates) do
-    {bound, conflicts, _uncertain, _later} = Meta.bindings(node)
-    scope = {bound, conflicts}
+    scope = Meta.bindings(node)
 
     with pipe_meta when is_list(pipe_meta) <- Meta.written_pipe_meta(node),
          true <- value_position?(Meta.routing(meta)),
@@ -243,7 +242,11 @@ defmodule Mutare.Transform.PipeEmit do
   # on entry that `original` may rebind — by a match anywhere in it, or by a position its
   # route declares binding (`destructure/2`) — unless an earlier sibling writes it (a
   # conflict: the incoming value read here is not that sibling's), and every other name all
-  # the branches bind. `fresh` defaults to what `original` binds and cannot export as incoming.
+  # the branches bind **that something reads after**. `fresh` defaults to what `original`
+  # binds and cannot export as incoming. An unread fresh name has no reader to serve, and
+  # exporting it is not free: a selector inside `original` may have dropped it (the gate
+  # admits a dropping mutant of an unread name) and left it trapped, so the export would
+  # reference a name the source binds but the metamutant does not.
   # mutare:ignore-start[operand_swap, call_removal] equivalent — the export tuple is built and matched from this one list, in any order, and a name listed twice matches one value twice
   defp export_names(original, branches, scope, fresh \\ nil) do
     escaping = BindingEscapeEmit.expression_bindings(original)
@@ -258,7 +261,7 @@ defmodule Mutare.Transform.PipeEmit do
     fresh = fresh || Enum.reject(escaping, &incoming?(scope, &1))
 
     shared =
-      Enum.reduce(branches, fresh, fn branch, names ->
+      Enum.reduce(branches, Enum.filter(fresh, &read?(scope, &1)), fn branch, names ->
         kept = BindingEscapeEmit.expression_bindings(branch)
         Enum.filter(names, &(&1 in kept))
       end)
@@ -269,8 +272,12 @@ defmodule Mutare.Transform.PipeEmit do
   # mutare:ignore-end
 
   # Bound on entry, and no earlier sibling writes it: a branch may name its incoming value.
-  defp incoming?({bound, conflicts}, name),
+  defp incoming?({bound, conflicts, _uncertain, _later}, name),
     do: MapSet.member?(bound, name) and not MapSet.member?(conflicts, name)
+
+  # Referenced after the node, as far as the scope can tell (`:all` where it cannot).
+  defp read?({_bound, _conflicts, _uncertain, later}, name),
+    do: later == :all or MapSet.member?(later, name)
 
   # The stage with a placeholder for argument 0: what binds after the piped value enters.
   # mutare:ignore[atom, tuple] equivalent — any placeholder that binds nothing does

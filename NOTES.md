@@ -12931,6 +12931,29 @@ call's evaluation order and still tuple-export shared bindings. SourcePatch regr
 the retained-argument case and compare both baseline and mutant behavior for an effectful dynamic
 receiver.
 
+### An unread fresh name is not exported: a child selector may have dropped it `[fixed]` (2026-09-23)
+
+Found by the transform property soak while the qualified-conditional fix ran the suite, on
+a seed of its own; older than today's work (the two rules it crosses are the 09-22 ones).
+`!if 0 do 0 else 0 end + (0 == (t = 0; 0))`: the `==` selector's `true`/`false` branches
+drop `t`, nothing reads `t` after, so the gate admits them — correctly: a dropped name
+nothing reads is simply unexported — and that selector leaves `t` trapped in its catch-all.
+The enclosing `+` selector reads the *source*, where every branch of the `+` binds `t`
+through the block operand, and exported `{mutare_piped, t}`: a reference to a name its
+child had just trapped, and the whole metamutant failed to compile. In a run that is a
+poisoned `+` mutant (the error line is the parent's), not an abort; in the soak it is a
+baseline compile failure.
+
+`PipeEmit.export_names/4` now exports a fresh name only where the scope says something reads
+it after (`later`, the same fact the gate withholds on). Where it is read, the child's
+dropping mutants were withheld by the same `later`, every child branch binds it, the child
+exports it, and the parent's catch-all sees it bound — the two decisions read one stamp and
+agree. Where it is not read, no export serves anything, and the only thing one could do is
+this. `MatchPatterns.export_with_scope/3` already applied the read filter to its escaping
+names; the ordinary selector now does too. The regression is `abs(Enum.count([0 == (t = 0;
+0)]) + 1)` under every family — the soak's shape without the arithmetic error its original
+raised — which failed the compile against the previous library.
+
 ### A Kernel conditional is read by its identity; a qualified one is still mutated as a call `[fixed; scoped]` (2026-09-23)
 
 Sixth review, on an older path. `BindingEscapeEmit.collect_bindings/2` gave Kernel's
