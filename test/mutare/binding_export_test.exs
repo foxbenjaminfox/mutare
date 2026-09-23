@@ -2,7 +2,7 @@ defmodule Mutare.BindingExportTest do
   @moduledoc """
   What a selector exports is decided by the scope the expression stands in
   (`Mutare.Transform.Bindings`), by the live candidates alone, and — for a closed-over pipe
-  stage — only where argument 0's bindings are not read by the stage. Each case here is a
+  stage — only where the stage reads no name argument 0 may write. Each case here is a
   source patch that once diverged from its metamutant, or a mutant that once failed the whole
   metamutant's compile.
   """
@@ -408,6 +408,43 @@ defmodule Mutare.BindingExportTest do
       """
 
       assert [_ | _] = assert_patches(source, [:arithmetic], [run: []], clean_functions: false)
+    end
+
+    # A conservative `:lazy_expression` route on the operand makes its write to `p` no
+    # *guaranteed* binding — but the closure is still created before the operand runs, so the
+    # stage would read `p` captured at creation. Separation must ask what the operand *may*
+    # write, not what it is sure to.
+    @lazy_wrap [{List, :wrap, 1, [:lazy_expression]}]
+    for {label, expression, routes} <- [
+          {"an explicit write under a lazy route",
+           "List.wrap(p = 8) |> Enum.count(p = fn _ -> true end)", @lazy_wrap},
+          {"a declared write under a lazy route",
+           "List.wrap(hd(destructure([p], [8]))) |> Enum.count(p = fn _ -> true end)",
+           @lazy_wrap},
+          {"control: the direct spelling under the lazy route",
+           "Enum.count(List.wrap(p = 8), p = fn _ -> true end)", @lazy_wrap},
+          {"control: the piped spelling without the route",
+           "List.wrap(p = 8) |> Enum.count(p = fn _ -> true end)", []}
+        ] do
+      test "#{label}: a possible write of argument 0 keeps ordinary delivery" do
+        source = """
+        defmodule Fixture do
+          def run do
+            p = :incoming
+            count = #{unquote(expression)}
+            {count, p == 8}
+          end
+        end
+        """
+
+        # `{1, false}`; dropping the predicate leaves the operand's `p = 8`, so `{1, true}`.
+        # Hoisted, the dropping branch exported the `:incoming` the closure captured.
+        assert [_ | _] =
+                 assert_patches(source, [:collection_arity], [run: []],
+                   clean_functions: false,
+                   call_routes: unquote(Macro.escape(routes))
+                 )
+      end
     end
   end
 
@@ -1319,14 +1356,57 @@ defmodule Mutare.BindingExportTest do
       assert Enum.any?(sites, &(&1.mutator == :call_removal))
     end
 
-    defp conditional_fixture(prelude, callee) do
+    # Inside a skipped call's argument nothing is stamped, so the identity is read through
+    # the retained environment. `Calls.resolved_call/1` answers for *any* `Mod.fun` receiver —
+    # its literal path where no stamp says otherwise — so its answer is not evidence of a
+    # stamp: an unstamped `K.if` read as `[:K].if`, and `Elixir.Kernel.if` as
+    # `[:Elixir, :Kernel].if`, both ordinary calls whose `do:` binds.
+    for {label, prelude, callee} <- [
+          {"aliased", "alias Kernel, as: K", "K.if"},
+          {"absolute", "", "Elixir.Kernel.if"},
+          {"aliased unless", "alias Kernel, as: K", "K.unless"}
+        ] do
+      test "#{label}, under a skipped call: the retained environment says it is Kernel's" do
+        # As in the walked spelling, the `abs` removal is withheld — the branch-local write
+        # is a possible write of `p` in conflict with the first element's — so, like its
+        # walked twin, the case pins the baseline: `{[8, 6], 8}`, never `:incoming`.
+        assert_patches(
+          conditional_fixture(unquote(prelude), unquote(callee), &"Function.identity(#{&1})"),
+          [:call_removal],
+          [run: [true], run: [false]],
+          clean_functions: false,
+          call_routes: [{Function, :identity, 1, :skip}]
+        )
+      end
+    end
+
+    test "the name Kernel aliased away, under a skipped call, is not Kernel's conditional" do
+      # `OrdinaryIf.if/2` evaluates its `do:` as an argument: `p` really is `-6` after it.
+      # Unstamped, the literal path `[:Kernel]` would have said otherwise.
+      sites =
+        assert_patches(
+          conditional_fixture(
+            "alias Mutare.BindingExportTest.OrdinaryIf, as: Kernel",
+            "Kernel.if",
+            &"Function.identity(#{&1})"
+          ),
+          [:call_removal],
+          [run: [true]],
+          clean_functions: false,
+          call_routes: [{Function, :identity, 1, :skip}]
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :call_removal))
+    end
+
+    defp conditional_fixture(prelude, callee, wrap \\ & &1) do
       """
       defmodule Fixture do
         #{prelude}
 
         def run(flag) do
           p = :incoming
-          values = [p = 8, abs(#{callee}(flag, do: (p = -6), else: 2))]
+          values = [p = 8, abs(#{wrap.("#{callee}(flag, do: (p = -6), else: 2)")})]
           {values, p}
         end
       end

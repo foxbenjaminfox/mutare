@@ -12954,6 +12954,46 @@ names; the ordinary selector now does too. The regression is `abs(Enum.count([0 
 0)]) + 1)` under every family — the soak's shape without the arithmetic error its original
 raised — which failed the compile against the previous library.
 
+### Identity under a skipped call is the environment's; a hoisted operand's writes are its possible ones `[fixed]` (2026-09-23)
+
+Seventh review, of the two fixes below. Two findings, source-traced by the reviewer without a
+runtime, both reproduced here before the fix.
+
+**`Resolve.kernel_form/2` took a literal path for a stamp.** It asked `Calls.resolved_call/1`
+whether the call was stamped and consulted the retained environment only on `nil`. But that
+reader answers for *any* `Mod.fun` receiver — `Aliases.resolved_module/2` falls back to the
+written path — so inside a skipped call's argument, where nothing is stamped, `K.if` read as
+`[:K].if` and `Elixir.Kernel.if` as `[:Elixir, :Kernel].if`: ordinary calls whose `do:`
+binds. `[p = 8, abs(Function.identity(K.if(flag, do: (p = -6), else: 2)))]` with
+`Function.identity/1` skipped exported the branch-local `p`, and the baseline read
+`{[8, 6], :incoming}` — the fix below, reached through qualification plus suppression. The
+inverse, `alias Other, as: Kernel; Kernel.if(…)` under the skip, read as Kernel's conditional
+and hid the function's argument write (withheld rather than diverged: the hidden write left
+`p` a conflict nothing cleared). `kernel_form/2` now reads every call through
+`preserved_identity/4`, whose `__aliases__` clause takes a stamp where there is one (a walked
+call under a routed position asks too) and resolves the written path in the retained
+environment, absolute-prefix normalisation included, where there is none. The three spellings
+under a skip now read as their walked twins do: the same baseline, and the same withholding of
+the `abs` removal by the sibling conflict on `p`. `Bindings.walk/3` needed nothing — it treats
+a skipped call as opaque and never meets an unstamped one.
+
+**`PipeEmit.separable?/3` asked what argument 0 was sure to bind.** It read
+`expression_bindings/1` — guaranteed bindings — where the question is what the operand *may*
+write: the closure is created before the operand runs, so any write the stage then reads is
+read stale. A conservative `:lazy_expression` route on `List.wrap/1` made
+`List.wrap(p = 8) |> Enum.count(p = fn _ -> true end)` separable (under that route the write
+is no guaranteed binding), and the `Enum.count/2 → /1` mutant's branch exported the
+`:incoming` the closure captured over the operand's `8`: `{1, false}` for the source patch's
+`{1, true}`, a survivor the source could not produce. The same through a declared
+`destructure/2` position. The check now reads `Bindings.matched_names/1`, the possible-write
+summary every conflict reads — a match at any depth, a declared position, a route that could
+not be read — and such a stage keeps branch-local delivery; the direct spelling under the lazy
+route and the piped spelling without it deliver as before.
+
+`binding_export_test.exs` pins the three spellings and the inverse alias under a skip, and the
+explicit and declared writes under the lazy route with their two controls; six of the eight
+failed against the previous library.
+
 ### A Kernel conditional is read by its identity; a qualified one is still mutated as a call `[fixed; scoped]` (2026-09-23)
 
 Sixth review, on an older path. `BindingEscapeEmit.collect_bindings/2` gave Kernel's

@@ -129,22 +129,21 @@ defmodule Mutare.Transform.Resolve do
 
   # The `Kernel` form a call is, read as `Calls.kernel_form/1` reads a stamped one — by
   # identity, so `Kernel.if` and `K.if` are `:if` — and, for a call this pass did not walk
-  # (inside a skipped call's argument) through the boundary's retained environment: a
-  # displaced `if/2` there carries no stamp, and would otherwise read as Kernel's
-  # conditional. `nil` for any other call.
+  # (inside a skipped call's argument), through the boundary's retained environment. Such a
+  # call carries no stamp, and its spelling says nothing: a displaced `if/2` would read as
+  # Kernel's conditional, an aliased `K.if` or absolute `Elixir.Kernel.if` as another
+  # module's function, a `Kernel.if` under `alias Other, as: Kernel` as Kernel's. That
+  # `Calls.resolved_call/1` answers is no evidence of a stamp either — it reads any
+  # `Mod.fun` receiver's literal path where no stamp says otherwise — so the identity is
+  # `preserved_identity/4`'s, which takes a stamp where there is one and resolves the
+  # written name where there is none. `nil` for any other call.
   @doc false
   @spec kernel_form(Macro.t(), map()) :: atom() | nil
-  def kernel_form({form, meta, args} = node, %{resolution: env})
+  def kernel_form({form, meta, args}, %{resolution: env})
       when is_list(meta) and is_list(args) do
-    case Mutare.Transform.Calls.resolved_call(node) do
-      nil ->
-        case preserved_identity(form, meta, args, env) do
-          {[:Kernel], fun} -> fun
-          _other -> nil
-        end
-
-      _stamped ->
-        Mutare.Transform.Calls.kernel_form(node)
+    case preserved_identity(form, meta, args, env) do
+      {[:Kernel], fun} -> fun
+      _other -> nil
     end
   end
 
@@ -192,9 +191,17 @@ defmodule Mutare.Transform.Resolve do
 
   def preserved_routing(_node, _context), do: nil
 
-  defp preserved_identity({:., _dot_meta, [{:__aliases__, _am, path}, fun]}, _meta, _args, env)
+  # A call's identity through the retained environment: a stamp where the call has one (a
+  # walked call under a routed position — `kernel_form/2` asks for those too), the written
+  # name resolved in that environment where it has none.
+  defp preserved_identity(
+         {:., _dot_meta, [{:__aliases__, alias_meta, path}, fun]},
+         _meta,
+         _args,
+         env
+       )
        when is_atom(fun),
-       do: {Aliases.resolve_path(path, env.aliases), fun}
+       do: {Aliases.resolved_module(alias_meta, Aliases.resolve_path(path, env.aliases)), fun}
 
   defp preserved_identity({:., _dot_meta, [mod, fun]}, _meta, _args, _env) when is_atom(fun) do
     case Aliases.resolve_node(mod, %{}) do

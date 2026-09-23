@@ -62,7 +62,7 @@ defmodule Mutare.Transform.PipeEmit do
   #
   # Bindings made by argument 0 already escape from the closure invocation's argument
   # expression and must not be captured inside the closure. They are made *after* the closure
-  # is created, too: a stage that reads (or rebinds) a name argument 0 binds would see the
+  # is created, too: a stage that reads (or rebinds) a name argument 0 may bind would see the
   # value captured at creation, so such a site keeps ordinary branch-local delivery.
   #
   # The calls this leaves in the tree are direct calls still; `Mutare.Transform.Render` spells
@@ -193,8 +193,12 @@ defmodule Mutare.Transform.PipeEmit do
 
   # Argument 0's bindings are made after the closure is created and outside it: a stage that
   # reads or rebinds one would see the captured value instead. Such a site is not closed over.
+  # What counts is every name argument 0 *may* write (`Bindings.matched_names/1`: a match at
+  # any depth, a declared position, a route that could not be read), not what it is
+  # guaranteed to bind — a write under a `:lazy_expression` position is no guaranteed
+  # binding, and still happens after the closure captured the name.
   defp separable?(written, {_head, _meta, [_zero | rest]}, candidates) do
-    case BindingEscapeEmit.expression_bindings(written) do
+    case Bindings.matched_names(written) do
       [] ->
         true
 
