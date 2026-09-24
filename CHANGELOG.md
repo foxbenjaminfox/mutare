@@ -137,12 +137,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{:run_all, degrade}` in place of `:run_all`.
 
 - **A test module using `Mutare.Test`'s live-mutant helpers may be `async: true`.** The
-  helpers select on a `:persistent_term` key private to the ExUnit test module
-  (`Mutare.Test.isolate_selector/0`, taken before a metamutant is transformed or a mutant
-  selected), so two modules selecting at once no longer run each other's mutant as a
-  baseline. A test that transforms through `Mutare.Transform` itself calls
-  `isolate_selector/0` first; outside an ExUnit test process the key falls back to the
-  VM-wide one, as before.
+  helpers select on a `:persistent_term` key private to one execution of the ExUnit test
+  module — two `:parameterize` instances are apart too — taken before a metamutant is
+  transformed or a mutant selected (`Mutare.Test.isolate_selector/0`), so two modules
+  selecting at once no longer run each other's mutant as a baseline. A test that
+  transforms through `Mutare.Transform` itself calls `isolate_selector/0` first. While
+  ExUnit is running, a process no test runs above must be given the key
+  (`isolate_selector/1`), or the helper raises rather than share the VM-wide key; outside
+  ExUnit the VM-wide key stays in force, as before.
 
 ### Fixed
 

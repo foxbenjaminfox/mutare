@@ -13107,13 +13107,19 @@ direction the reader may err (the `Bindings` moduledoc):
   the node replaced by `(name; node)` compiles. A sibling's fresh binding read as a
   statement's, a `match?` pattern name read in its value, a branch's binding read after it
   are each an undefined variable here.
-* **read after** — a name outside `later`, bound at the node instead, is reported unused.
+* **read after** — a name outside `later`, bound at the node instead, is reported unused —
+  once per copy of the node, where a macro copies it.
 
 Mechanics worth knowing. `binding()` and warnings come only from a compiled module —
 `Code.eval_quoted` of a `fn` answers `binding()` with `[]` and emits no unused warning — so
 the twins and the `later` probes batch into one throwaway module per case; readability is
 an undefined-variable *error*, which aborts a module, so each is one `Code.eval_string` of a
-`fn`. A node is found again by `Resolve.nid/1` in the resolved tree, and that tree is
+`fn`. The compiler names an unused binding by its line, and warns once per *version* of it:
+`twice/1` makes two bindings of a probe's one written line, the first unused whether or not
+the second is read, so a probe binds a never-read name beside the checked one and the check
+compares the two counts — as many warnings about the name as about the control (the second
+review's duplicated-expansion case; its negative control sits beside the shadowed-binding
+one). A node is found again by `Resolve.nid/1` in the resolved tree, and that tree is
 rendered: Sourceror positions collide for a clause body and the keyword that opens it
 (`NodeIds` says why). Validated by breaking routes: `maybe/2` declared `[:expression,
 :expression]` fails as an over-claim, `id/1` declared `:raw` as a missed binding

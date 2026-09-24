@@ -18,7 +18,8 @@ defmodule Mutare.BindingsOraclePropertyTest do
       statement's, a `match?/2` pattern read inside its value, a branch's binding read after
       the branch: each is an undefined variable here.
     * **Read after a node** (`later`): a name the stamp says nothing reads after the node,
-      bound at the node instead, is one Elixir reports unused.
+      bound at the node instead, is one Elixir reports unused — every copy of it, where a
+      macro copies the node.
 
   Elixir expands the fixture macros, so their routes are checked against what they do, not
   what they declare. Each case compiles one throwaway module (the twins and the `later`
@@ -211,23 +212,32 @@ defmodule Mutare.BindingsOraclePropertyTest do
   end
 
   @placeholder {:__mutare_probe__, [], nil}
+  @unread :mutare_probe_unread
 
   # The probe's binding is the one the warning must be about, and the compiler names a
   # binding by its line — so the variable gets a line no other binding of the name shares.
   # The program's other bindings of it (a parameter, an earlier match, the node's own) are
   # elsewhere, and a warning about one of them is not evidence. The node is rendered in
-  # place of a placeholder and spliced back parenthesized, on lines of its own:
+  # place of a placeholder and spliced back parenthesized, on lines of its own, under a
+  # second binding of a name nothing reads:
   #
   #     …(a = 1,
   #     a =
   #     (
+  #     mutare_probe_unread =
+  #     (
   #     <node>
-  #     ))…
+  #     )))…
   #
-  # The line break ahead of the variable is legal after a bracket, a comma or an operator,
-  # and it is only after those that a binding can precede on the line; a bare call head
-  # (`if`, `Kernel.if`, `case` — rendered without parentheses) takes no break and binds
-  # nothing. `nil` where the node is not found exactly once.
+  # One written line is not one binding: a macro that copies its argument (`twice/1`) makes
+  # a binding per copy, all named by the line, and the compiler warns about each version
+  # separately — the first copy's `a` is unused whether or not the last is read. The
+  # never-read name counts the copies, so the check can ask that every one of `a` is
+  # unused (`later_checks/3`). The line break ahead of the variable is legal after a
+  # bracket, a comma or an operator, and it is only after those that a binding can precede
+  # on the line; a bare call head (`if`, `Kernel.if`, `case` — rendered without
+  # parentheses) takes no break and binds nothing. `nil` where the node is not found
+  # exactly once.
   defp later_probe(statements, node, x, name) do
     case substitute(statements, identity(node), fn _ -> @placeholder end) do
       {with_placeholder, 1} ->
@@ -235,9 +245,14 @@ defmodule Mutare.BindingsOraclePropertyTest do
           String.split(Gen.render_body(with_placeholder), Macro.to_string(@placeholder), parts: 2)
 
         break = if before =~ ~r/[\w?!]\s*$/, do: "", else: "\n"
-        body = before <> break <> "#{x} =\n(\n" <> Macro.to_string(node) <> "\n)" <> rest
+
+        body =
+          before <>
+            break <>
+            "#{x} =\n(\n#{@unread} =\n(\n" <> Macro.to_string(node) <> "\n))" <> rest
+
         # The body's first line is offset 0; the binding is on the last line of `before`, or
-        # the one after it.
+        # the one after it, and the never-read binding two lines below.
         offset = newlines(before) + newlines(break)
         %{name: name, node: node, x: x, body: body, binding_offset: offset}
 
@@ -248,15 +263,19 @@ defmodule Mutare.BindingsOraclePropertyTest do
 
   defp newlines(text), do: text |> String.graphemes() |> Enum.count(&(&1 == "\n"))
 
+  # The claim holds when every copy of the probe's binding is unused: as many warnings
+  # about it as about the never-read name bound beside it.
   defp later_checks(probes, lines, diagnostics) do
     for probe <- probes,
         %{body: body_line} = Map.fetch!(lines, probe.name),
-        not unused_warning?(diagnostics, probe.x, body_line + probe.binding_offset),
+        line = body_line + probe.binding_offset,
+        unused_warnings(diagnostics, probe.x, line) <
+          unused_warnings(diagnostics, @unread, line + 2),
         do: {:read_after, probe.x, Macro.to_string(probe.node)}
   end
 
-  defp unused_warning?(diagnostics, x, line) do
-    Enum.any?(diagnostics, fn diagnostic ->
+  defp unused_warnings(diagnostics, x, line) do
+    Enum.count(diagnostics, fn diagnostic ->
       diagnostic.severity == :warning and diagnostic_line(diagnostic) == line and
         diagnostic.message =~ ~s(variable "#{x}" is unused)
     end)
@@ -302,6 +321,47 @@ defmodule Mutare.BindingsOraclePropertyTest do
 
     assert length(unused_a) == 2, "the control keeps two other unused bindings of `a`"
     assert later_checks([probe], lines, diagnostics) == [{:read_after, :a, "a = 1"}]
+  end
+
+  # The same wrong claim where a macro copies the node: `O.twice(p = 1)` binds `p` twice,
+  # and the first copy's probe binding is unused — shadowed by the second's — while the
+  # second's is read by `q = p`. Both copies are named by the probe's one line, so a check
+  # satisfied by any unused warning there would stay silent; `p` is bound ahead of the
+  # call, so the read does not rest on a fresh binding escaping a lazy position.
+  test "a wrong `later` claim is reported where a macro copies the node" do
+    statements = [quote(do: p = 0), quote(do: O.twice(p = 1)), quote(do: q = p)]
+
+    model_source =
+      module_source("Mutare.Test.BindingOracleCopiedControlModel", [def_run(statements)])
+
+    resolved =
+      model_source
+      |> Sourceror.parse_string!()
+      |> Resolve.annotate(registry(), warnings: false)
+      |> Bindings.annotate()
+      |> body_statements()
+
+    node = resolved |> Enum.flat_map(&stamped/1) |> Enum.find(&(Macro.to_string(&1) == "p = 1"))
+    assert node != nil
+    {_bound, _conflicts, _uncertain, later} = Meta.bindings(node)
+    assert MapSet.member?(later, :p), "the stamp itself reads `p` after the node"
+
+    probe = later_probe(resolved, node, :p, "later_0_p")
+    assert probe != nil
+    module = :"Elixir.Mutare.Test.BindingOracleCopiedControl#{System.unique_integer([:positive])}"
+
+    {source, lines} =
+      module_source_with_lines(inspect(module), [{probe.name, ["a", "b"], probe.body}])
+
+    assert {{:ok, _}, diagnostics} = Compile.string_result(source, "oracle_copied_control.ex")
+    :code.delete(module)
+    :code.purge(module)
+
+    %{body: body_line} = Map.fetch!(lines, probe.name)
+    line = body_line + probe.binding_offset
+    assert unused_warnings(diagnostics, :p, line) == 1, "the first copy's binding is unused"
+    assert unused_warnings(diagnostics, @unread, line + 2) == 2, "the node is bound twice"
+    assert later_checks([probe], lines, diagnostics) == [{:read_after, :p, "p = 1"}]
   end
 
   # --- module rendering ----------------------------------------------------------------------
