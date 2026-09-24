@@ -13003,6 +13003,11 @@ controls), `call_routing_registry_test.exs` (`meaning/4` directly, the configure
 route shadowed by a skip, the broader-skip non-case), and the source-patch generators'
 `:declarations_skipped` and `:declaration_shadowed` operands (the latter on the fixture's own
 `unpack/2`, declared at any arity by `SourcePatchUnpackRoutes`).
+`call_routing_meaning_property_test.exs` states the equivalence itself, over generated code
+and configured routes (`Mutare.Test.GeneratedRoutes` serves the former through two providers):
+where a configured skip wins, its meaning is the route the same registry built with every
+configured skip left out selects — the skip where that is nothing — and adding a skip changes
+a call's meaning only to itself, and only where the call meant nothing or a skip.
 
 ### A configured skip displaces a route, not what the arguments mean `[fixed]` (2026-09-23)
 
