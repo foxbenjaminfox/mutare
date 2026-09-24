@@ -56,6 +56,9 @@ metamutant does under that mutant — the way to test a delivery shape or a rang
 equality on `mutated_code` cannot see a wrong span; `SourcePatchGenerators` /
 `CleanSourcePatchGenerators` are its generated vocabularies, where a new construct or routing
 word is added as an operand so the pairwise recipes cross it with everything),
+`Mutare.Test.BindingOracleGenerators` + `BindingOracle` (programs and callees for checking the
+binding readers against the compiler itself — `bindings_oracle_property_test`, NOTES "The
+binding readers are checked against the compiler"),
 and the shipped `Mutare.Test` for diff-level checks; each says when it is safe under `async: true`.
 
 ## Architecture

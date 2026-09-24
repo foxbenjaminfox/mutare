@@ -12954,6 +12954,52 @@ names; the ordinary selector now does too. The regression is `abs(Enum.count([0 
 0)]) + 1)` under every family — the soak's shape without the arithmetic error its original
 raised — which failed the compile against the previous library.
 
+### The binding readers are checked against the compiler (2026-09-24)
+
+The nine reviews of 2026-09-22 to 24 (the entries below) found one shape nine times: a
+reader of a binding fact — guaranteed writes, possible writes, reads, identity, route —
+treating one boundary (a skipped call, a lazy position, a routed macro's positions, a
+qualified spelling, a `match?` pattern, an emitted node) unlike the others. Each was found by
+reading source, none by a test: the suites had cases, not an oracle.
+`bindings_oracle_property_test.exs` is the oracle, and it is Elixir itself, which knows its
+own scoping and expands the fixture macros — so a route's declaration is checked against
+what the macro does, not what it says.
+
+The programs (`Mutare.Test.BindingOracleGenerators`): two to four statements over `a`, `b`
+and `p`, `q`, `r`, built under Elixir's scoping so that every one compiles, from matches and
+pins, siblings of every shape, blocks in argument position, `if` bare, qualified and
+aliased, `case` with a binding clause, `destructure/2`, `match?/2`, and
+`Mutare.Test.BindingOracle`'s callees: `id/1` under a `:skip`, `twice/1` and `reversed/2`
+(lazy positions whose expansions bind as statements), `maybe/2` (a lazy position in a
+branch), `unpack/2` (a classifier, `:unknown` beneath the wrapper). Three checks, each in the
+direction the reader may err (the `Bindings` moduledoc):
+
+* **guaranteed bindings**, per statement and name — a twin of the statement with the name's
+  reads renamed away and the name unbound on entry, then `binding()`. Exact where the
+  statement holds no lazy-binding macro and no withheld classifier; elsewhere the model may
+  miss a binding but never claim one, and a missed binding must be among its possible writes.
+* **bound at a node** — every name in `bound \ conflicts \ uncertain` reads at that node:
+  the node replaced by `(name; node)` compiles. A sibling's fresh binding read as a
+  statement's, a `match?` pattern name read in its value, a branch's binding read after it
+  are each an undefined variable here.
+* **read after** — a name outside `later`, bound at the node instead, is reported unused.
+
+Mechanics worth knowing. `binding()` and warnings come only from a compiled module —
+`Code.eval_quoted` of a `fn` answers `binding()` with `[]` and emits no unused warning — so
+the twins and the `later` probes batch into one throwaway module per case; readability is
+an undefined-variable *error*, which aborts a module, so each is one `Code.eval_string` of a
+`fn`. A node is found again by `Resolve.nid/1` in the resolved tree, and that tree is
+rendered: Sourceror positions collide for a clause body and the keyword that opens it
+(`NodeIds` says why). Validated by breaking routes: `maybe/2` declared `[:expression,
+:expression]` fails as an over-claim, `id/1` declared `:raw` as a missed binding
+(`O.id(a = 1)`), each shrunk to a one-statement program. 400 cases pass in 30 s; the suite
+runs 40 under `:property`.
+
+Not covered, by design: a conflict on a name bound on entry is a delivery fact (which value
+the export names), not a scoping one — Elixir reads the entry value either way — so it is the
+baseline property's to check, with sibling rebinding in its vocabulary; `var!` and computed
+names stay the known limit ("The binding model reads syntax and declarations").
+
 ### A skip's meaning is one registry lookup, wherever the call is read from `[fixed]` (2026-09-24)
 
 Ninth review, of the fix below, found the two paths that still read a skipped call's
