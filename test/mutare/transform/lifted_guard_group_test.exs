@@ -9,11 +9,14 @@ defmodule Mutare.Transform.LiftedGuardGroupTest do
   source, the patched module is compiled on its own, and its outcomes are compared with the
   metamutant's under that id.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Mutare.{Manifest, Selector}
 
   setup do
+    # Some fixtures here are transformed through `Mutare.Transform` directly, so the module's
+    # private selection key must be in force before the first one (`Mutare.Test`).
+    Mutare.Test.isolate_selector()
     Selector.put(Selector.baseline())
     on_exit(fn -> Selector.put(Selector.baseline()) end)
     :ok

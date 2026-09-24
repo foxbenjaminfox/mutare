@@ -4,7 +4,7 @@ defmodule Mutare.QuoteUnquoteTest do
   `unquote(expr)` or `unquote_splicing(expr)` evaluates while the quote is built
   and is therefore a real runtime mutation position.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Mutare.{Selector, Site}
 
@@ -19,6 +19,9 @@ defmodule Mutare.QuoteUnquoteTest do
   )
 
   setup do
+    # Some fixtures here are transformed through `Mutare.Transform` directly, so the module's
+    # private selection key must be in force before the first one (`Mutare.Test`).
+    Mutare.Test.isolate_selector()
     Selector.put(Selector.baseline())
     on_exit(fn -> Selector.put(Selector.baseline()) end)
     :ok

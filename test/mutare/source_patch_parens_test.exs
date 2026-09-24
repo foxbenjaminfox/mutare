@@ -2,7 +2,7 @@ defmodule Mutare.SourcePatchParensTest do
   # A site's range covers the node, not the parentheses written around it: the text a Site
   # renders never includes them, so a patch over the wider span shows a different program from
   # the mutant that ran (`Mutare.Transform.NodeRange`). Checked against real patches.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import Mutare.Test.SourcePatch
 

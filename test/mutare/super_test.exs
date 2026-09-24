@@ -9,8 +9,8 @@ defmodule Mutare.SuperTest do
   Proven end to end — one compile, runtime mutant switching — against a real
   `defoverridable` base, plus the structural and edge-case guarantees.
   """
-  # persistent_term is global; switch the active mutant serially.
-  use ExUnit.Case, async: false
+  # Selection is on the module's private key (`Mutare.Test.isolate_selector/0`).
+  use ExUnit.Case, async: true
   import Mutare.Test.Metamutant
 
   alias Mutare.{Selector, Transform.Super}
@@ -39,6 +39,9 @@ defmodule Mutare.SuperTest do
   end
 
   setup do
+    # The fixtures below are transformed through `Mutare.Transform` directly, so the module's
+    # private selection key must be in force before the first one (`Mutare.Test`).
+    Mutare.Test.isolate_selector()
     Selector.put(Selector.baseline())
     on_exit(fn -> Selector.put(Selector.baseline()) end)
     :ok

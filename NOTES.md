@@ -12954,6 +12954,44 @@ names; the ordinary selector now does too. The regression is `abs(Enum.count([0 
 0)]) + 1)` under every family — the soak's shape without the arithmetic error its original
 raised — which failed the compile against the previous library.
 
+### Selection is private to the test module; the sync half of the fast loop was the selector (2026-09-24)
+
+The fast loop (`mix test --exclude runner --exclude property`) took 2:20, and 122 s of it
+was *sync*: 85 of the 199 test modules ran `async: false`, most for one reason — they
+select a mutant, and the selector is one VM-wide `:persistent_term` slot every compiled
+metamutant reads, so two modules selecting concurrently would run each other's mutants at
+baseline. "Test suite: async-safe compile helpers and the sync split" solved the *compile*
+half of that (unique wrapper names, a lock); this is the selection half.
+
+`Mutare.Selector.key/0` now reads a private key from the calling process's dictionary
+(`process_key/0`) ahead of the environment override. A metamutant transformed in a process
+holding one bakes it into its sites; `put/1` and `active/0` there use it; so processes with
+different keys select independently. `Mutare.Test.isolate_selector/0` derives one per
+ExUnit test module and installs it, and every `Mutare.Test` helper that transforms or
+selects calls it first. Finding the module was the only subtle part: ExUnit records the
+running test under `ExUnit.Runner` in the *module runner's* dictionary, not in the test
+process or the `setup_all` process it spawns (`Process.get(ExUnit.Runner)` is `nil` in
+both — a first cut relied on it, was a silent no-op, and the fourteen flipped modules
+"passed" while still sharing the key). The runner is one `Process.info(_, :parent)` hop up
+from either, two from a task inside a test; the walk is bounded and cached in the process,
+and it falls back to the key in force where no ExUnit test is found. It reads a private
+ExUnit detail, which the fallback makes a loss of isolation rather than a failure.
+
+Where the private key is taken matters: *before the first transform*, since the key is baked
+then. A module that transforms only through `Mutare.Test` gets that for free; one that calls
+`Mutare.Transform` itself and selects must call `isolate_selector/0` in a `setup` (seven do).
+Getting it wrong is loud in one direction — a fixture baked on the shared key never activates
+under `with_active_mutant/2` — and `selector_isolation_test.exs` enforces the rule over the
+suite's source, as it used to enforce "no async module selects". The coverage recorder's
+track flag (`Recorder.track_key/0`) is still VM-wide, and the three emit tests that set it
+stay serial; the guard keeps it that way.
+
+Fourteen modules flipped (the slowest sync ones: `binding_export_test` alone was 24 s), three
+of them back to serial for the track flag: the fast loop is 1:27, with 23 s sync where there
+were 122. Not flipped: the `setup_all` fixtures that drive `Selector.put/1` directly
+(`lift_test`, `macro_pattern_test`, …), each under a second; the stderr-capturing and
+env-touching modules, which are serial for their own reasons.
+
 ### The baseline soak meets the scope shapes (2026-09-24)
 
 Six of the eight cases the fifth review reproduced diverged *at the baseline* — the

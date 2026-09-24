@@ -2,7 +2,7 @@ defmodule Mutare.PipeSourcePatchTest do
   # Every site a pipe produces, checked against the patch it promises (`Mutare.Test.SourcePatch`):
   # routed stages rewritten into direct calls and reported at the stage or over the whole pipe,
   # unrouted stages under the closure, displaced pipes, and the spellings `direct/1` special-cases.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import Mutare.Test.SourcePatch
 

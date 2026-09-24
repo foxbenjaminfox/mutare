@@ -1,5 +1,5 @@
 defmodule Mutare.RoutedPipeRegressionTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import Mutare.Test
   import Mutare.Test.SourcePatch

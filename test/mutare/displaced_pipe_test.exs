@@ -1,8 +1,8 @@
 defmodule Mutare.DisplacedPipeTest do
   # A `|>` displaced out of `Kernel` is a call to somebody else's operator: no pipe position, no
   # hoisting closure, no `Kernel` desugaring.
-  # `with_active_mutant/2` sets the VM-wide selector, so these cannot run beside other tests.
-  use ExUnit.Case, async: false
+  # `with_active_mutant/2` selects on the module's private key, so these run beside other tests.
+  use ExUnit.Case, async: true
   import Mutare.Test
 
   alias Mutare.Test.{BindPipe, PairPipe}

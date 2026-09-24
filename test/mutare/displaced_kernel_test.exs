@@ -1,5 +1,5 @@
 defmodule Mutare.DisplacedKernelTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   import Mutare.Test
 
   alias Mutare.Test.{CustomKernel, CustomNegationMutator, SourcePatch}

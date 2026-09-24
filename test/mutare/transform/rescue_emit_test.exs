@@ -1,4 +1,6 @@
 defmodule Mutare.Transform.RescueEmitTest do
+  # Serial: the tests set the coverage recorder's track flag, VM-wide state every compiled
+  # metamutant reads (selection itself is on the module's private key).
   use ExUnit.Case, async: false
   import Mutare.Test.Metamutant
 
@@ -27,6 +29,9 @@ defmodule Mutare.Transform.RescueEmitTest do
   end
 
   setup do
+    # The fixtures below are transformed through `Mutare.Transform` directly, so the module's
+    # private selection key must be in force before the first one (`Mutare.Test`).
+    Mutare.Test.isolate_selector()
     track = :persistent_term.get(Recorder.track_key(), false)
     Selector.put(0)
     :persistent_term.put(Recorder.track_key(), false)

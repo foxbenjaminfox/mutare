@@ -12,10 +12,13 @@ defmodule Mutare.Test do
 
   One default differs: the source-driven helpers pass `verify_invariants: true` unless `opts` says otherwise, so every transform a test makes also checks that the mutators left the metamutant sound — each recorded mutant selectable and listed in a coverage record, none rendering unchanged, the render deterministic — and raises `Mutare.InvariantError` if not. A mutator that breaks one of these fails its own tests instead of silently distorting a real run's report. Pass `verify_invariants: false` to skip the checks, which cost a second emit pass and a parse per transform.
 
-  > #### Selection is process-global {: .warning}
+  > #### Selection is private to the test module {: .info}
   >
-  > Tests that call `with_active_mutant/2` must use `async: false`, because the
-  > active mutant is shared across the VM.
+  > The live-mutant helpers select on a `:persistent_term` key derived from the ExUnit test
+  > module they run in (`isolate_selector/0`), set before a metamutant is transformed or a
+  > mutant selected, so a test module using them may be `async: true`. Outside an ExUnit
+  > test process the key falls back to the VM-wide one, and such callers must not run
+  > concurrently with one another.
 
   `import Mutare.Test` in an `ExUnit.Case` to use them:
 
@@ -33,7 +36,7 @@ defmodule Mutare.Test do
   The semantic check — *does the mutant actually run?* — compiles a metamutant once, then flips the selection switch per id:
 
       defmodule MyQueryTest do
-        use ExUnit.Case, async: false
+        use ExUnit.Case, async: true
         import Mutare.Test
 
         test "the mutant changes the result, not just the source" do
@@ -225,7 +228,60 @@ defmodule Mutare.Test do
 
   # The source helpers' one transform call: `mutators` overrides `opts`, and the invariant checks
   # are on unless `opts` turns them off.
+  @doc """
+  Selects, for this process, on a key private to the current ExUnit test module, and
+  returns it.
+
+  ExUnit records the test it is running in the process that runs the module — the parent of
+  each test process and of the `setup_all` process — so the key is found by walking up from
+  the caller, and is the same in a `setup_all`, in each test, and in a task a test starts: a
+  metamutant compiled once in `setup_all` and selected in a test read one slot, and no other
+  module's selection is touched. Every helper here that transforms or selects calls it
+  first; a test that transforms through `Mutare.Transform` itself calls it before doing so.
+  Where no ExUnit test is found the process keeps the key in force
+  (`Mutare.Selector.key/0`), which is VM-wide.
+  """
+  @spec isolate_selector() :: atom()
+  def isolate_selector do
+    case Process.get(Selector.process_key()) do
+      nil ->
+        case current_test_module(self(), 8) do
+          nil -> Selector.key()
+          module -> private_key(module)
+        end
+
+      key ->
+        key
+    end
+  end
+
+  # The ExUnit module whose runner is an ancestor of `pid`, read from the runner's own
+  # dictionary (`ExUnit.Runner` holds the current `%ExUnit.Test{}` or `%ExUnit.TestModule{}`).
+  defp current_test_module(_pid, 0), do: nil
+
+  defp current_test_module(pid, hops) do
+    with {:dictionary, dictionary} <- Process.info(pid, :dictionary),
+         nil <- test_module(List.keyfind(dictionary, ExUnit.Runner, 0)),
+         {:parent, parent} when is_pid(parent) <- Process.info(pid, :parent) do
+      current_test_module(parent, hops - 1)
+    else
+      module when is_atom(module) and module != nil -> module
+      _ -> nil
+    end
+  end
+
+  defp test_module({ExUnit.Runner, %{__struct__: ExUnit.Test, module: module}}), do: module
+  defp test_module({ExUnit.Runner, %{__struct__: ExUnit.TestModule, name: module}}), do: module
+  defp test_module(_), do: nil
+
+  defp private_key(module) do
+    key = :"#{Selector.default_key()}__#{inspect(module)}"
+    Process.put(Selector.process_key(), key)
+    key
+  end
+
   defp transform(source, mutators, opts) do
+    isolate_selector()
     opts = opts |> Keyword.put(:mutators, mutators) |> Keyword.put_new(:verify_invariants, true)
     Mutare.transform_string(source, opts)
   end
@@ -286,12 +342,13 @@ defmodule Mutare.Test do
   Runs zero-arity `fun` with mutant `id` selected, then restores the previous
   selection.
 
-  The selector uses VM-wide `:persistent_term` state. Tests that call this helper
-  must therefore run with `async: false`; restoration prevents leakage between
-  sequential calls but does not isolate concurrent processes.
+  Selects on the test module's private key (`isolate_selector/0`), the one a metamutant
+  compiled by `compile_metamutant/3` in this module reads; restoration keeps sequential
+  calls from leaking into one another.
   """
   @spec with_active_mutant(non_neg_integer(), (-> result)) :: result when result: var
   def with_active_mutant(id, fun) when is_integer(id) and id >= 0 and is_function(fun, 0) do
+    isolate_selector()
     previous = Selector.active()
     Selector.put(id)
 
@@ -308,7 +365,7 @@ defmodule Mutare.Test do
 
   `sites` and `pattern` are as in `site_id/2`. The baseline runs first, and with the
   baseline selection pinned explicitly — so a wrong first element means the *fixture*
-  is broken, not the mutant. Requires `async: false`, like `with_active_mutant/2`.
+  is broken, not the mutant.
 
       {baseline, mutated} =
         observe_mutant(sites, {"u.age > 18", "u.age >= 18"}, fn -> Repo.all(adults()) end)

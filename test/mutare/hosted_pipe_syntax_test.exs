@@ -1,5 +1,5 @@
 defmodule Mutare.HostedPipeSyntaxTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Mutare.Test.{ForeignPipeHost, SubcontractHostMutator}
   alias Mutare.Transform

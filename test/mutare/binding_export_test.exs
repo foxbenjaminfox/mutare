@@ -6,7 +6,14 @@ defmodule Mutare.BindingExportTest do
   source patch that once diverged from its metamutant, or a mutant that once failed the whole
   metamutant's compile.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  setup do
+    # Some fixtures here are transformed through `Mutare.Transform` directly, so the module's
+    # private selection key must be in force before the first one (`Mutare.Test`).
+    Mutare.Test.isolate_selector()
+    :ok
+  end
 
   import Mutare.Test, only: [compile_metamutant: 3, with_active_mutant: 2]
   import Mutare.Test.SourcePatch, only: [assert_patches: 4]

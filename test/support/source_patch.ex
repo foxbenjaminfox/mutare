@@ -8,7 +8,9 @@ defmodule Mutare.Test.SourcePatch do
   delivered: a test that only compares `original_code`/`mutated_code` strings cannot notice a
   range that covers the wrong span, or a rendering that does not mean what was compiled.
 
-  Selects mutants through `Mutare.Test.with_active_mutant/2`, so callers run `async: false`.
+  Selects mutants through `Mutare.Test.with_active_mutant/2`, on the test module's private
+  key (`Mutare.Test.isolate_selector/0`, taken before the transform), so callers may run
+  `async: true`.
   """
   import ExUnit.Assertions
 
@@ -25,6 +27,7 @@ defmodule Mutare.Test.SourcePatch do
           Mutare.Site.t()
         ]
   def assert_patches(source, mutators, calls, opts \\ []) do
+    Mutare.Test.isolate_selector()
     {[module], sites} = Mutare.Test.compile_metamutant(source, mutators, opts)
 
     for site <- [nil | sites] do

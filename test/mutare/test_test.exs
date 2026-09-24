@@ -1,7 +1,7 @@
 defmodule Mutare.TestTest do
-  # Not async: the live-mutant helpers drive selection through `:persistent_term`, a VM-global
-  # slot every compiled metamutant reads (see `Mutare.Test`'s module warning and `selector_test`).
-  use ExUnit.Case, async: false
+  # Async: the live-mutant helpers select on this module's private key
+  # (`Mutare.Test.isolate_selector/0`; see `selector_test` for the VM-wide key).
+  use ExUnit.Case, async: true
 
   import Mutare.Test
 

@@ -52,6 +52,14 @@ defmodule Mutare.Selector do
   transform time, in the harness process where the override is unset — keeps
   reading `:mutare_active`. The two never collide. On a normal target there is no
   `Mutare.Selector` compiled in, so the env is inert.
+
+  ## A private key per process
+
+  Ahead of both, a process may hold a private key in its dictionary (`process_key/0`).
+  `key/0` returns it there, so a metamutant transformed in that process bakes it into its
+  selector sites and `put/1`/`active/0` read and write it: two processes holding different
+  private keys select independently. `Mutare.Test.isolate_selector/0` gives each ExUnit test
+  module one, which is what lets tests that drive selection run `async: true`.
   """
 
   @key :mutare_active
@@ -65,16 +73,28 @@ defmodule Mutare.Selector do
   # in the harness process, so harness-side site/bootstrap baking keeps `@key`.
   @override_env "MUTARE_SELECTOR_KEY"
   @suite_key "mutare_active__suite"
+  # The process-dictionary key under which a process holds a private selection key (see the
+  # moduledoc); read ahead of the environment override.
+  @process_key :mutare_selector_key
 
   @doc """
   The `:persistent_term` key the metamutant reads at runtime.
 
-  `default_key/0` (`:mutare_active`) unless `override_env/0` names another — the
-  one knob self-hosting needs so the suite-under-test does not clobber the
-  harness's active-mutant slot (see the moduledoc).
+  The calling process's private key (`process_key/0`) where it holds one; else the key
+  `override_env/0` names — the knob self-hosting needs so the suite-under-test does not
+  clobber the harness's active-mutant slot (see the moduledoc); else `default_key/0`
+  (`:mutare_active`).
   """
   @spec key() :: atom()
-  def key, do: Mutare.Env.atom(@override_env, @key)
+  def key, do: Process.get(@process_key) || Mutare.Env.atom(@override_env, @key)
+
+  @doc """
+  The process-dictionary key under which a process holds a private selection key, read by
+  `key/0` ahead of the environment. Set it before transforming a metamutant the process will
+  select in, and in every process that selects (`Mutare.Test.isolate_selector/0`).
+  """
+  @spec process_key() :: atom()
+  def process_key, do: @process_key
 
   @doc "The harness selection key (`:mutare_active`) — the default `key/0`, env-independent."
   @spec default_key() :: atom()
