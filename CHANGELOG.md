@@ -7,197 +7,240 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **`:lazy_expression`, a position treatment for a callee that may not evaluate an argument
-  eagerly.** Mutare treats every call as ordinary in every respect its route does not address,
-  including when its arguments run: to deliver a whole-call mutant on a pipe stage it evaluates
-  the piped value once, ahead of the stage. A macro that evaluates that operand late,
-  conditionally, or never (`value |> lazy(enabled?)`) routes the position `:lazy_expression`.
-  The argument is mutated exactly like an `:expression`, and is handed to the callee unevaluated
-  in every branch. Accepted in `call_routes:` and from `call_routes/0` alike.
-
-- **Whole-suite runs are announced, in every mode but `--quiet`.** A mutant whose line the
-  probe saw only from a process no test owns (a spawned process, a `setup`'s `on_exit`) runs
-  the whole suite, and so does every covered mutant when the probe itself fails or overruns
-  its cap. Both used to be silent — the first even under `--verbose` — and a run that stalls
-  on one such mutant read as a hang. The live display now leaves a line after the probe (`↺ 14
-  of 140 covered mutants run the whole suite …`, or `⚠ coverage probe exited 1 …` naming the
-  cause), marks each such mutant on its in-flight line (`· whole suite`) and, under
-  `--verbose`, on its own line (`(whole suite)`); the verbose breakdown counts the shapes apart
-  (`120 narrowed to tests · 6 per-file · 14 whole-suite`). `Mutare.Result` records what ran as
-  `selection` (`:suite`/`:app`/`:files`/`:tests`), and the JSON report carries it as
-  `testSelection`. For hook authors: `{:coverage_done, summary}` now carries `tests`/`files`/
-  `suite` counts (not `covered`), the run-all `degrade` reason, `mode`, `app_scoped?` and
-  `broad_ids`; `Mutare.Runner.CoverageProbe.run/4` returns `{:run_all, degrade}` in place of
-  `:run_all`.
-
 ### Changed
-
-- **The concurrent mutant runs share the machine instead of each taking all of it.** Every
-  worker is a whole `mix test` BEAM, and a BEAM starts a scheduler thread per core, so
-  `--workers 4` used to ask a 16-core machine for 64 busy threads — slower runs, and
-  slow-but-finite mutants pushed past their timeout. Each worker is now trimmed with `+S` to
-  the new **`:schedulers`** option (`--schedulers N`), and the two divide the machine: give
-  `--workers` and each gets your schedulers divided by it; give `--schedulers` and workers are
-  your schedulers divided by it, capped at 4 as the default is (pass both to run more BEAMs);
-  give neither and you get the old worker default (half your schedulers, capped at 4) with the
-  schedulers split among them — 4 × 4 on 16 cores, 4 × 2 on 8. `schedulers: :all` (`--schedulers all`) restores untrimmed
-  workers. What to expect: a trimmed run sees fewer `System.schedulers_online/0`, so ExUnit's
-  default `max_cases` shrinks with it; the baseline runs under the same trim (it validates the
-  suite at that concurrency, and an async-heavy suite's baseline is slower for it), while the one compile and the
-  coverage probe keep every core. If you were passing `ELIXIR_ERL_OPTIONS="+S …"` to get this
-  effect, drop it — it also throttled Mutare's own scan and compile.
-- **The derived per-mutant timeout is `baseline × :timeout_multiplier`**, no longer scaled by
-  half the worker count: the baseline is now timed under the mutants' scheduler trim, so it
-  already measures what a mutant run takes. The scaling remains only for a configuration that
-  oversubscribes the CPU (`schedulers: :all`, or explicit counts whose product exceeds the
-  machine).
 
 - **A pipe stage is the call it is sugar for, everywhere Mutare reads code.**
   `left |> stage(args)` is resolved, routed, marked, offered to mutators and delivered as
-  `stage(left, args)` — `Kernel.|>/2`'s own desugaring — whether or not the call has a route.
-  A mutator is never shown a call one argument short, so a custom `mutate/1` that matches
-  `Enum.map(enum, fun)` now matches the piped spelling too, and no family needs to know about
-  pipes. Reports keep the spelling the user wrote: a mutant that leaves the piped value alone is
-  located at, and diffed as, the stage; one that moves or drops it is diffed over the whole
-  pipe, and still located at the stage's line, so a `# mutare:ignore` over the stage and a
-  `--line` naming it keep working in a multi-line chain. What changes in a report:
+  `stage(left, args)` — `Kernel.|>/2`'s own desugaring — whether or not the call has a
+  route. No mutator is shown a call one argument short, so a custom `mutate/1` that matches
+  `Enum.map(enum, fun)` matches the piped spelling too, and no family needs to know about
+  pipes. Piped and direct spellings now yield the same mutants: a piped bare `a |> div(b)`
+  is transposed like `div(a, b)`, a pipe of identical operands is no longer transposed, a
+  piped `bnot` is stripped, the explicit `Kernel.++(a, b)` call form is transposed when
+  written directly as well, a route's position 0 governs the piped operand in a guard as it
+  does in a body, and a function tail written `… |> case do … end` gets the return-value
+  mutants of its clauses, as the same `case` written directly always has, in place of
+  `nil`/`:mutare` over the whole pipe. Reports keep the spelling the user wrote: a mutant
+  that leaves the piped value alone is located at, and diffed as, the stage; one that
+  moves or drops it is diffed over the whole pipe, and still located at the stage's line,
+  so a `# mutare:ignore` over the stage and a `--line` naming it keep working in a
+  multi-line chain. Two diffs read differently:
   - A removed stage reads `xs |> Enum.sort()` → `xs` (was `Enum.sort()` →
     `Elixir.Function.identity()`).
   - A transposed stage reads `foo |> Kernel.++(bar)` → `bar |> Kernel.++(foo)` (was
     `(&Kernel.++(bar, &1)).()`), and evaluates its operands in that order.
-  - Piped and direct spellings now yield the same mutants. A piped bare `a |> div(b)` is
-    transposed like `div(a, b)`, a pipe of identical operands is no longer transposed, a piped
-    `bnot` is stripped, and the explicit `Kernel.++(a, b)` call form is transposed when written
-    directly as well.
 
-  The same holds beneath the node a mutator is offered: its operands are resolved code too, so
-  `Mutare.Calls.resolved_call/1` answers `Enum.count/1` for `xs |> Enum.count()` found as an
-  operand, where it answered `nil` for the pipe. **A routing classifier does not** (breaking
-  for adapters): the call handed to `route_arguments/1` is resolved — its identity, and its
-  complete argument list with the piped operand at position 0 — but its arguments are still
-  the written syntax, and Mutare interprets only the regions the classifier's routes say are
-  Elixir. So a `|>` *inside* an argument is still a `|>` there, and an aliased call inside an
-  argument still carries the alias. A classifier that matches argument shapes is unaffected;
-  one that read a piped call one argument short must count the piped operand. After routing,
-  a whole-call `mutate/2` or `host/2` sees the Elixir regions resolved and the `:raw`/`:hosted`
-  regions as written; an island a host hands back through
-  `Mutare.Analyze.expression_mutations/3` is resolved in the enclosing lexical environment the
-  host's context carries. A function tail written `… |> case do … end` gets the return-value
-  mutants of its clauses, as the same `case` written directly always has, in place of
-  `nil`/`:mutare` over the whole pipe.
+  A stage whose first position is a value — unrouted, or routed `:expression` or
+  `:interior` — has its piped value evaluated once, ahead of the stage, as before; one
+  routed `:lazy_expression` (below), or as syntax, never does. A pipe in code Mutare leaves
+  as written — a `:raw` argument, the inside of a `:skip`ped call — is left exactly as
+  written; through 0.3.1 a pinned operand there (`^x |> f()`) was rewritten, and a macro
+  reading that syntax saw a different program at the baseline.
 
-  A routed call gains what 0.3.1 withheld from a piped one: a classifier routes the piped
-  operand by shape, `call.rebuild` can rewrite it, and it may be routed `:hosted` (previously a
-  `ContractError`). `c:Mutare.Mutator.variant/2` is shown the direct call too, for a mutant
-  reported at the stage as for any other. A pipe in code
-  Mutare leaves as written (a `:raw` argument, the inside of a `:skip`ped call) is left a pipe. A stage whose first
-  position is a value — unrouted, or routed `:expression` or `:interior` — has its piped value
-  evaluated once, ahead of the stage, as before; one routed `:lazy_expression`, or as syntax,
-  never does. **Breaking:**
-  - The `mutate/2` context loses `:pipe_mode`, and `Mutare.Mutator` loses the `pipe_mode` type,
-    `effective_arity/2` and `visible_index/2`. A clause matching `%{pipe_mode: mode}` no longer
-    matches anything; read `length(args)` and index the arguments directly.
-  - `Mutare.Test.node_mutations/2` replaces the three-argument form, which took a pipe mode.
-    Test a pipe stage by writing the direct call.
-  - `Mutare.CallRouting.Call` loses `pipe_left`, `pipe_mode` and `effective_arity`, and its
+  **Breaking for mutator and extension authors.** The call handed to `route_arguments/1`,
+  `host/2`, `mutate/2` and `variant/2` is the direct call: its identity, and its complete
+  argument list with the piped operand at position 0. A classifier routes that operand by
+  shape, `call.rebuild` can rewrite it, and it may be routed `:hosted` (previously a
+  `ContractError`). A classifier's arguments are still the written syntax, since Mutare
+  interprets only the regions the classifier's routes say are Elixir: a `|>` *inside* an
+  argument is still a `|>` there, and an aliased call inside one still carries the alias.
+  A classifier that matches argument shapes is unaffected; one that read a piped call one
+  argument short must count the piped operand. After routing, a whole-call `mutate/2` or
+  `host/2` sees the Elixir regions resolved and the `:raw`/`:hosted` regions as written;
+  an island a host hands back through `Mutare.Analyze.expression_mutations/3` is resolved
+  in the enclosing lexical environment the host's context carries. The operands of the
+  node a mutator is offered are resolved code too: `Mutare.Calls.resolved_call/1` answers
+  `Enum.count/1` for `xs |> Enum.count()` found as an operand, where it answered `nil` for
+  the pipe. Removed, with no deprecation period:
+  - The `mutate/2` context's `:pipe_mode`, and `Mutare.Mutator`'s `pipe_mode` type,
+    `effective_arity/2` and `visible_index/2`. A clause matching `%{pipe_mode: mode}` no
+    longer matches anything; read `length(args)` and index the arguments directly.
+  - `Mutare.Test.node_mutations/2` replaces the three-argument form, which took a pipe
+    mode. Test a pipe stage by writing the direct call.
+  - `Mutare.CallRouting.Call`'s `pipe_left`, `pipe_mode` and `effective_arity`; its
     five-argument `new` becomes `new/4` (`node, module, name, rebuild`).
-  - `Mutare.CallRouting.ArgumentRoutes`' `from_effective` and `from_visible` constructors are
-    replaced by `new/2` (one treatment per argument), and its `visible`/`piped` readers by
+  - `Mutare.CallRouting.ArgumentRoutes`' `from_effective` and `from_visible`, replaced by
+    `new/2` (one treatment per argument), and its `visible`/`piped` readers, replaced by
     `treatments/1`.
   - `c:Mutare.CallRouting.route_arguments/1` replaces `route_arguments/2`: its context
     argument carried only `:pipe_mode`.
 
-- **The call-level `:skip` covers a value piped into the call.** A piped value is the call's
-  first argument, so `a |> f(b)` under `:skip` is now the inert leaf `f(a, b)` always was;
-  through 0.3.1 the piped value kept its mutants, in that spelling alone. A skipped stage in the
-  middle of a chain therefore takes everything upstream of it along. To leave a call alone and
-  still mutate what flows into it, route it by position, which reads both spellings alike:
-  `{Mixpanel, :track, 3, [:expression, :raw, :raw]}`.
+- **The call-level `:skip` covers a value piped into the call.** A piped value is the
+  call's first argument, so `a |> f(b)` under `:skip` is now the inert leaf `f(a, b)`
+  always was; through 0.3.1 the piped value kept its mutants, in that spelling alone. A
+  skipped stage in the middle of a chain therefore takes everything upstream of it along.
+  To leave a call alone and still mutate what flows into it, route it by position, which
+  reads both spellings alike: `{Mixpanel, :track, 3, [:expression, :raw, :raw]}`.
+
+- **The concurrent mutant runs share the machine instead of each taking all of it.**
+  Every worker is a whole `mix test` BEAM, and a BEAM starts a scheduler thread per core,
+  so `--workers 4` used to ask a 16-core machine for 64 busy threads — slower runs, and
+  slow-but-finite mutants pushed past their timeout. Each worker is now trimmed with `+S`
+  to the new **`:schedulers`** option (`--schedulers N`), and the two divide the machine:
+  give `--workers` and each gets your schedulers divided by it; give `--schedulers` and
+  workers are your schedulers divided by it, capped at 4 as the default is (pass both to
+  run more BEAMs); give neither and you get the old worker default (half your schedulers,
+  capped at 4) with the schedulers split among them — 4 × 4 on 16 cores, 4 × 2 on 8.
+  `schedulers: :all` (`--schedulers all`) restores untrimmed workers. What to expect: a
+  trimmed run sees fewer `System.schedulers_online/0`, so ExUnit's default `max_cases`
+  shrinks with it; the baseline and the coverage probe run under the same trim (the
+  baseline validates the suite at that concurrency, and an async-heavy suite's baseline is
+  slower for it; the probe records what a mutant run will execute, which a branch on the
+  scheduler count can change), while the one compile keeps every core. If you were
+  passing `ELIXIR_ERL_OPTIONS="+S …"` to get this effect, drop it — it also throttled
+  Mutare's own scan and compile.
+- **The derived per-mutant timeout is `baseline × :timeout_multiplier`**, no longer
+  scaled by half the worker count: the baseline is now timed under the mutants' scheduler
+  trim, so it already measures what a mutant run takes. The scaling remains only for a
+  configuration that oversubscribes the CPU (`schedulers: :all`, or explicit counts whose
+  product exceeds the machine).
+
+- **Every function with two or more mutation sites keeps its uninstrumented source
+  beside the instrumented code, whatever it calls.** A mutant elsewhere runs that copy at
+  the original speed. 0.2.1 introduced the copies but admitted only code a classifier
+  could vouch for, refusing a function that used a local or `use`-injected macro, a
+  `defguard`, `super`, `quote`, a nested module, `__ENV__`/`__STACKTRACE__`, or a name it
+  could not prove bound; those functions now get copies too, and a copy's recursion —
+  effectful bodies included — stays inside the copy. A copy that fails to compile is
+  attributed to its function by poison recovery and dropped in a rebuild, costing no
+  mutant and no id; the live display reports it as `kept N functions fully instrumented`.
+  A macro that counts or registers its own expansions, or code that reflects on its own
+  function name, meets copies it was previously shielded from — the metamutant is
+  invisible to callers, not to reflection, and the remedy is `skip_lifting` or
+  `# mutare:ignore`, as before.
+
+### Added
+
+- **`:lazy_expression`, a position treatment for a callee that may not evaluate an
+  argument eagerly.** Mutare treats every call as ordinary in every respect its route does
+  not address, including when its arguments run: to deliver a whole-call mutant on a pipe
+  stage it evaluates the piped value once, ahead of the stage. A macro that evaluates
+  that operand late, conditionally, or never (`value |> lazy(enabled?)`) routes the
+  position `:lazy_expression`. The argument is mutated exactly like an `:expression`, and
+  is handed to the callee unevaluated in every branch. Accepted in `call_routes:` and
+  from `call_routes/0` alike.
+
+- **Whole-suite runs are announced, in every mode but `--quiet`.** A mutant whose line
+  the probe saw only from a process no test owns (a spawned process, a `setup`'s
+  `on_exit`) runs the whole suite, and so does every covered mutant when the probe itself
+  fails or overruns its cap. Both used to be silent — the first even under `--verbose` —
+  and a run that stalls on one such mutant read as a hang. The live display now leaves a
+  line after the probe (`↺ 14 of 140 covered mutants run the whole suite …`, or
+  `⚠ coverage probe exited 1 …` naming the cause), marks each such mutant on its
+  in-flight line (`· whole suite`) and, under `--verbose`, on its own line
+  (`(whole suite)`); the verbose breakdown counts the shapes apart (`120 narrowed to
+  tests · 6 per-file · 14 whole-suite`). `Mutare.Result` records what ran as `selection`
+  (`:suite`/`:app`/`:files`/`:tests`), and the JSON report carries it as
+  `testSelection`. For hook authors: `{:coverage_done, summary}` now carries
+  `tests`/`files`/`suite` counts (not `covered`), the run-all `degrade` reason, `mode`,
+  `app_scoped?` and `broad_ids`; `Mutare.Runner.CoverageProbe.run/4` returns
+  `{:run_all, degrade}` in place of `:run_all`.
+
+- **A test module using `Mutare.Test`'s live-mutant helpers may be `async: true`.** The
+  helpers select on a `:persistent_term` key private to the ExUnit test module
+  (`Mutare.Test.isolate_selector/0`, taken before a metamutant is transformed or a mutant
+  selected), so two modules selecting at once no longer run each other's mutant as a
+  baseline. A test that transforms through `Mutare.Transform` itself calls
+  `isolate_selector/0` first; outside an ExUnit test process the key falls back to the
+  VM-wide one, as before.
 
 ### Fixed
 
-- **A selector exports what its scope allows, not what its branches happen to share.** An
-  in-place selector is a `case`, whose branches trap what they bind; the bindings a mutated
-  expression makes are returned through a tuple and rebound outside. Which names could be
-  exported was decided from the branches alone: the names every branch bound. So a mutant that
-  dropped a *rebinding* (`p = :before; Enum.count(xs, p = f)` → `Enum.count(xs)`) kept the
-  original's binding out of the export too, and the metamutant's **baseline** left `p ==
-  :before` where the source leaves the function — a divergence in every run, observed or not.
-  A new pre-pass (`Mutare.Transform.Bindings`) stamps each binding-bearing node with the names
-  bound on entry and the names read after it. A name bound on entry is now exported by every
-  branch — one that does not rebind it names the incoming value, as the source does — whether
-  the position is routed `:expression`, `:lazy_expression`, or not at all. A name bound fresh
-  is exported when every live branch binds it; a mutant that drops a fresh binding something
-  reads later — a source patch that could not compile, which previously failed the **whole
-  metamutant's** compile at the read, attributable to no mutant — is withheld
-  (`Candidate.Delivery.gate/2`), and one that drops a fresh binding nothing reads is delivered
-  with the binding unexported. A name an earlier sibling of the same expression writes — the
-  callee or another argument of a call, another element of a tuple or list, the other operand
-  — is not exported as incoming either: Elixir lets sibling writes out only after the whole
-  expression, the last one winning, and such an export would override the sibling's.
+- **A binding made inside a mutated expression reaches the code after it.** An in-place
+  selector is a `case`, whose branches trap what they bind, and through 0.3.1 the
+  bindings a mutated call's arguments made stayed trapped: `result = div(y = 10, 2);
+  {result, y}` under the arithmetic family failed the metamutant compile at the read of
+  `y`, on a line no mutant owns, so poison recovery could not attribute it and the run
+  aborted (`{:error, :compile_failed, …}`). A `|>` closure trapped the same way
+  (`10 |> div(y = 2)`). Such bindings are now returned through a tuple and rebound
+  outside the selector, whether they are made by an argument, a callee, a live
+  `unquote`, a `quote`'s options, a keyword value under a keyed route, or an interpolated
+  keyword key. What a selector exports is decided from the scope, not from the branches:
+  a name bound on entry is exported by every branch — one that does not rebind it names
+  the incoming value, as the source does — so a mutant dropping a rebinding
+  (`p = :before; Enum.count(xs, p = f)` → `Enum.count(xs)`) leaves `p` as the source
+  leaves it; a name bound fresh is exported when every live branch binds it, a mutant
+  that drops a fresh binding something reads later — a source patch that could not
+  compile — is withheld, and one that drops a fresh binding nothing reads is delivered
+  with the binding unexported. A name an earlier sibling of the same expression writes —
+  the callee or another argument of a call, another element of a tuple or list, the
+  other operand — is not exported as incoming either: Elixir lets sibling writes out only
+  after the whole expression, the last one winning. The readers respect a routed
+  position's declaration: a `:binding_pattern` binds what it names, a `:lazy_expression`
+  vouches for nothing, and a configured `:skip` withholds mutation without changing what
+  the arguments of the skipped call mean.
 - **A withheld candidate no longer shapes the program.** Delivery was planned from every
-  candidate before ignore directives, poison `skip_ids` and `emit_ids` withheld some, so an
-  ignored or poisoned binding-dropping mutant still trapped a live mutant's binding. Delivery
-  is now planned from the candidates that get a branch.
-- **A pipe-stage replacement that introduces a dynamic receiver is no longer closed over.**
-  The shared closure evaluates the piped operand ahead of the stage; a replacement that keeps
-  the operand but calls through a receiver expression of its own (`receiver().count(xs)` for
-  `xs |> Enum.count()`) ran that receiver after the operand, where the source runs it before.
-  Such a candidate is delivered branch-locally.
-- **A pipe stage that reads what its piped operand rebinds is no longer closed over.** The
-  one-shot closure a written pipe's stages share is created before its argument runs, so a
-  stage reading (or rebinding) a name the operand rebinds (`m = 10; (m = 1) |> div(m)`) saw the
-  value captured at creation; the metamutant failed to compile. Such a stage keeps ordinary
-  branch-local delivery.
+  candidate before ignore directives, poison `skip_ids` and `emit_ids` withheld some, so
+  an ignored or poisoned binding-dropping mutant still trapped a live mutant's binding.
+  Delivery is now planned from the candidates that get a branch.
+- **Two pipe stages the shared closure would have misordered get their own delivery.**
+  The closure a written pipe's stages share is created before its piped operand runs and
+  evaluates that operand ahead of the stage. A stage reading, or rebinding, a name the
+  operand rebinds (`m = 10; (m = 1) |> div(m)`) saw the value captured at creation, and
+  the metamutant failed to compile; a replacement that keeps the operand but calls
+  through a receiver expression of its own (`receiver().count(xs)` for `xs |> Enum.count()`,
+  from a custom mutator) ran that receiver after the operand, where the source runs it
+  before. Both are delivered branch-locally now.
+- **A name displaced out of `Kernel` is treated as what it resolves to.** In a module
+  that writes `import Kernel, except: […]` beside its own definition — or whose `use`
+  does — Mutare still read the name as `Kernel`'s:
+  - A displaced `|>` was the pipe. A mutated stage was lifted into a closure that applied
+    the custom operator twice, which could change the *unmutated* program (an
+    `{:ok, value}`-binding pipe skipped the stage), and the stage was resolved and offered
+    to mutators at the piped arity. A displaced `|>` is now an ordinary call to that
+    operator: both operands are values, and a `call_routes:` entry on the operator —
+    the name-only `{:*, :|>, 2, …}` included, which was ignored on it — takes any
+    positional treatments. A pipe-shaped *macro*, which reads its right side as syntax,
+    wants `{MyPipe, :|>, 2, [:expression, :interior]}` — the stage's own node withheld,
+    its arguments mutated.
+  - A displaced `if`/`unless` got the conditional family's mutants inside its arguments,
+    and a local `if(value, opts)` gained spurious `true`/`false` mutants; with a
+    `:pattern` route, or a `:raw` `do:` body, the metamutant failed to compile.
+  - A displaced `defmodule`/`def`/`defp`, operator, `and`/`or`/`in`, `abs`/`div`/`min`
+    or sigil got `Kernel`'s instrumentation, lifting, rename or literal mutants: the
+    metamutant failed to compile, or a custom `+` was mutated to `-`. A displaced
+    `defimpl` got no mutants at all, and `argument_marks:` on a displaced `defmodule`
+    were ignored; both hold now.
+- **A `super` written as a bare pipe stage compiles.** `n |> super` in an overriding
+  function whose clause is lifted failed the metamutant compile (`super must be called
+  with the same number of arguments`).
 - **A call taking options led by `do:` renders again.** The metamutant is rendered by the
   stdlib formatter, which spells any call whose final keyword list starts with `do:` as a
   do-block; with an ordinary key beside it (`value(do: n, other: 0)`, a function taking
-  options) that key was stranded inside the block, and the metamutant did not compile. Such
-  a list is now rendered bracketed; a list of block keys alone is the do-block it always was.
-- **The coverage probe runs under the mutants' `:schedulers` trim.** It kept every scheduler,
-  on the assumption that what a suite executes does not depend on the count — but a branch on
-  `System.schedulers_online/0` does, and so does the interleaving ExUnit's `max_cases` allows.
-  A mutant every mutant run would execute could be filed `:no_coverage`. Only the one compile
-  keeps the whole machine now.
-
+  options) that key was stranded inside the block, and the metamutant did not compile.
+  Such a list is now rendered bracketed; a list of block keys alone is the do-block it
+  always was.
 - **A call nested under the same function keeps its mutants.** Removing the outer call of
-  `String.upcase(String.upcase(s))` leaves the program that replacing the inner call with `s`
-  would, and overlap resolution took that for a rewrite that made the inner call's mutants
-  redundant: its own removal, and its `upcase` → `downcase` rename, which duplicates nothing.
-  Only a literal or a module alias is now treated as covered by a call rewrite. The piped
-  spelling was never affected.
-
-- **A survivor's diff no longer swallows the parentheses around the mutated node.** A site's
-  range covered the parentheses written around its node while its rendered text did not, so
-  `(a + b) * c` with `a + b` → `a - b` was reported — in the human diff and in the JSON/SARIF
-  range — as `a - b * c`, a different program from the mutant that ran, and a mutant inside
-  `&(&1 > 2)` as the unparseable `&&1 >= 2`. The range now stops inside the parentheses.
-- **A survivor's replacement is parenthesized where its position needs it.** A Site renders
-  its replacement alone, and patched into the source that text could be a different program
-  from the mutant that ran: `!(a == 0) |> f()` with the negation removed was reported as
-  `a == 0 |> f()` (that is, `a == (0 |> f())`), the `0.75` of `-0.75` → `-0.25` as the
-  unparseable `--0.25`, and `case 0 + (if … end) do` with `+` → `-` as `case 0 - if … end do`.
-  `mutated_code` now carries parentheses in exactly those places — `(a == 0)`, `(-0.25)` —
+  `String.upcase(String.upcase(s))` leaves the program that replacing the inner call with
+  `s` would, and overlap resolution took that for a rewrite that made the inner call's
+  mutants redundant: its own removal, and its `upcase` → `downcase` rename, which
+  duplicates nothing. Only a literal or a module alias is now treated as covered by a
+  call rewrite. The piped spelling was never affected.
+- **A mutant covered from a deep `setup_all` is narrowed to that module's file.** The
+  coverage probe attributes a hit to its test by the `__ex_unit__/2` frame on the stack,
+  and the VM reports only the innermost 20 frames; a `setup_all` running deep code (a
+  recursive walker over fixtures) had the frame cut off, so every id it covered ran the
+  whole suite, silently. Dogfooding found one file whose run took hours for it. When the
+  reported frames name no owner and fill the cap, the probe now reads the process's full
+  backtrace instead.
+- **A survivor's diff and JSON/SARIF range cover exactly the node's text.** A site's
+  range was read from Sourceror, which extends some parenthesized nodes over their
+  parentheses and not others, so `(a + b) * c` with `a + b` → `a - b` was reported as
+  `a - b * c`, a different program from the mutant that ran, and a mutant inside
+  `&(&1 > 2)` as the unparseable `&&1 >= 2`; a node ending in a parenthesized operand
+  (`0 == (if … end)`) was ranged to inside the `)`, one beginning with a parenthesized
+  callee (`(fn x -> … end).(1) |> f()`, `(a).b`) from inside the `(`, so a
+  whole-expression replacement read `(nil`; and a `<<…>>` ending a clause body was ranged
+  one column too far, over the line break. Each range now stops at the node's own text.
+- **A survivor's replacement is parenthesized where its position needs it.** A site
+  renders its replacement alone, and patched into the source that text could be a
+  different program from the mutant that ran: `!(a == 0) |> f()` with the negation
+  removed was reported as `a == 0 |> f()` (that is, `a == (0 |> f())`), the `0.75` of
+  `-0.75` → `-0.25` as the unparseable `--0.25`, `identity(!(t = b; b))` with the
+  negation removed as the unparseable two-line `identity(t = b\n  b)`, and
+  `case 0 + (if … end) do` with `+` → `-` as `case 0 - if … end do`. `mutated_code` now
+  carries parentheses in exactly those places — `(a == 0)`, `(-0.25)`, `(t = b; b)` —
   and nowhere else: a statement, a call argument and `x == -1` read as before.
-- **A survivor's range no longer stops short of a trailing `)` or runs past a bitstring.** A
-  node ending in a parenthesized operand (`0 == (if … end)`) was ranged to inside the `)`, and a
-  `<<…>>` that ends a clause body one column too far, over the line break.
-- **A survivor's diff no longer loses the `(` of a leading parenthesized callee.** Every site
-  whose text begins with a call on a parenthesized callee — `(fn x -> … end).(1) |> f()`,
-  `(a).b` — was ranged from inside those parentheses, so a whole-expression replacement was
-  reported as the unparseable `(nil`, in the diff and in the JSON/SARIF range alike.
-- **A `|>` displaced out of `Kernel` is no longer treated as the pipe.** In a module that
-  writes `import Kernel, except: [|>: 2]` beside its own operator, Mutare read every `|>` as
-  `Kernel.|>/2`: a mutated stage was lifted into a closure that applied the custom operator
-  twice, which could change the *unmutated* program (an `{:ok, value}`-binding pipe skipped
-  the stage), and the stage was resolved and offered to mutators at the piped arity. A
-  displaced `|>` is now an ordinary call to that operator: both operands are values, and a
-  `call_routes:` entry on the operator takes any positional treatments. A pipe-shaped
-  *macro*, which reads its right side as syntax, wants
-  `{MyPipe, :|>, 2, [:expression, :interior]}` — the stage's own node withheld, its arguments
-  mutated.
 
 ## [0.3.1] - 2026-09-19
 
