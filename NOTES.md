@@ -12970,15 +12970,19 @@ pipes into it too, so the routed-pipe property meets a pipe into a skipped stage
 at HEAD; the entry exists so the next binding-model change is soaked against these shapes
 rather than reviewed for them.
 
-What the first cut cost, worth knowing before adding to this generator again: proper
-builds a `oneof`'s alternatives eagerly, so nine alternatives each holding one or two
-recursive `expr_sized` sub-generators roughly doubled the number of sub-trees constructed
-per level, and to the fourth power that put every soak sharing the generator past its
-ten-minute timeout — in *generation*, before a module was rendered. `lazy/1` on each
-alternative (and on the entry in `expr_sized/2`) defers construction to the chosen one;
-generation is then no slower than before (size 16: 3.9 s a module against 5.2 s at HEAD,
-inside the noise). The existing alternatives are still eager, which is why a sample near
-`max_size` 42 takes the ~18 s the moduledoc names.
+What the first cut cost, and what it turned out to have been costing all along. Proper
+builds a `oneof`'s or `frequency`'s alternatives eagerly, so an alternative holding a
+recursive `expr_sized` sub-generator constructs that whole sub-tree — to the depth cap,
+every alternative of every level — for every module generated, whether or not the
+alternative is chosen. Nine new alternatives put every soak sharing the generator past its
+ten-minute timeout in generation alone, before a module was rendered. `lazy/1` on each
+defers construction to the chosen one. Applied to the pre-existing alternatives too
+(`with`, `fn`, `block`, `if_binding`, and the shared `smaller`), a module now generates in
+10–25 ms at sizes 8–24, against 2–8 s before: the seven generator soaks together run in
+73 s where they took ten minutes, and the baseline property in 5.5 s where it took 238 s.
+The "~18 s a sample near `max_size` 42" the moduledoc used to warn about was this, not
+Sourceror's render. The budgets (`numtests` 35–50, `max_size` 16) were sized to that cost
+and could now be raised several-fold for the same wall-clock; they were left as they are.
 
 ### The binding readers are checked against the compiler (2026-09-24)
 

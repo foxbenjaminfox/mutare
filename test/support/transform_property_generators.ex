@@ -269,14 +269,18 @@ defmodule Mutare.TransformPropertyGenerators do
   # formatter is super-linear in nesting depth, so a deeper tree mostly buys rendering
   # time, not coverage of the syntactic corners the mutators care about. Note the cap is on
   # *depth* only — proper's outer `size` still scales leaf magnitudes and the module's function
-  # count, so generation cost keeps climbing with size (single samples reach ~18s near `max_size`
-  # 42); the property tests cap `max_size` to keep that tail off the timeout.
+  # count, so generation cost keeps climbing with size; the property tests cap `max_size` to
+  # keep that tail off the timeout.
   def expr_gen(vars), do: sized(size, expr_sized(min(size, 4), vars))
 
   defp expr_sized(0, vars), do: leaf_gen(vars)
 
+  # Every recursive alternative is `lazy`: proper builds a `frequency`'s alternatives eagerly,
+  # so an eager sub-generator per alternative multiplies the trees constructed per level —
+  # the whole possible tree, to the depth cap, for every module generated. Deferred, only the
+  # chosen path is built; `sized`/`let` bodies are already deferred by construction.
   defp expr_sized(size, vars) do
-    smaller = expr_sized(div(size, 2), vars)
+    smaller = lazy(expr_sized(div(size, 2), vars))
 
     frequency([
       {4, leaf_gen(vars)},
@@ -294,11 +298,11 @@ defmodule Mutare.TransformPropertyGenerators do
       {1, interp_string_gen(vars)},
       {1, bitstring_gen()},
       {1, utf_bitstring_gen()},
-      {1, with_gen(size, vars)},
-      {1, fn_gen(size, vars)},
+      {1, lazy(with_gen(size, vars))},
+      {1, lazy(fn_gen(size, vars))},
       {1, try_gen(smaller)},
-      {1, block_gen(size, vars)},
-      {1, if_binding_gen(size, vars)},
+      {1, lazy(block_gen(size, vars))},
+      {1, lazy(if_binding_gen(size, vars))},
       {2, lazy(scope_gen(size, vars))}
     ])
   end
@@ -520,9 +524,8 @@ defmodule Mutare.TransformPropertyGenerators do
   # then reads (a wrong export diverges at the baseline). Bodies recurse; every other part is
   # a leaf. The names `s`, `m`, `n`, `r` are this generator's own, disjoint from the params
   # and from the other binders' (`t`, `p`, `q`, `v`, `w`, `f`, `x`, `y`, `z`). Every
-  # alternative is `lazy`: proper builds a `oneof`'s alternatives eagerly, and nine of them
-  # each holding a recursive sub-generator multiplied the construction cost per level past
-  # the soaks' timeouts; deferred, only the chosen alternative is built.
+  # alternative is `lazy`, as in `expr_sized/2`: nine eager ones each holding a recursive
+  # sub-generator was what first put the soaks past their timeouts, in generation alone.
   #
   #   * `(s = l1; r = {s = l2, body}; {r, s})` — a sibling rebinds a name bound on entry ahead
   #     of the mutated body, which reads the entry value; the mirror puts the body first. A
