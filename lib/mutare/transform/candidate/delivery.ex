@@ -108,7 +108,9 @@ defmodule Mutare.Transform.Candidate.Delivery do
   write the source lets out. And so is every candidate on a node whose own
   binding effect is **unknown**: a call inside a skipped argument whose route is a classifier
   core did not invoke there (`Bindings.unknown_routing?/1`) may bind names no reader reports,
-  and a selector around it would trap them.
+  and a selector around it would trap them. The same classifier inside a `:raw` or `:hosted`
+  position is not unknown: that region is syntax by its route's declaration, nothing in it
+  is vouched for anyway, and its names are possible writes like any match written there.
 
   Run on the **source** node, before its children are emitted: `Mutare.Transform` gates on
   the way down its emit walk, so the facts read here — what the node binds, what it matches —

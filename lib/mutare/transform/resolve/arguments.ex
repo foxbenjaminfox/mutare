@@ -25,8 +25,12 @@ defmodule Mutare.Transform.Resolve.Arguments do
 
   defp position(arg, _treatment, resolve), do: resolve.(arg)
 
+  # The one reading of a keyword route against the written call it was stamped on: a
+  # positional list that does not fit the pairs is the route's error, raised here. Every
+  # later reader decodes leniently, since a mutator's rebuild may present a stamp that no
+  # longer fits (`KeywordRouting.decode/2`).
   defp keyword_position(arg, treatment, resolve) do
-    case KeywordRouting.decode(arg, treatment) do
+    case KeywordRouting.decode!(arg, treatment) do
       {:pairs, pairs, rewrap} ->
         pairs
         |> Enum.map(fn {{key, key_treatment}, {value, value_treatment}} ->

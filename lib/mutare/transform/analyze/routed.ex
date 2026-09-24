@@ -218,8 +218,9 @@ defmodule Mutare.Transform.Analyze.Routed do
   # not the column name `category`, and skip the `deleted_at: nil` pair (`IS NULL`, not `= nil`)
   # by routing its value `:raw`. A value treatment may itself be `{:keyword, …}`, so a *nested*
   # shorthand — a keyword list whose values are keyword lists, e.g. `from(S, where: [x: v])` —
-  # routes too. The treatment list is strict: exactly one treatment per pair, or routing raises
-  # (`validate_keyword_treatments!/2`) — no silent padding or truncation. A non-keyword argument
+  # routes too. The treatment list is strict: exactly one treatment per pair, or the resolve
+  # pass raised when it stamped the call (`Resolve.Arguments`, `KeywordRouting.decode!/2`) —
+  # no silent padding or truncation, so a source node here always fits. A non-keyword argument
   # falls back to raw, so a mis-shaped classification can never splice into a non-pair; when a
   # `:routing` classifier caused that fallback, `Mutare.Transform.Resolve.RouteStamp` already
   # printed an advisory warning at stamp time (a static route stays silent — its non-keyword

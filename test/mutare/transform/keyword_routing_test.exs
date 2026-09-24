@@ -93,12 +93,21 @@ defmodule Mutare.Transform.KeywordRoutingTest do
     end
   end
 
-  test "positional keyword routing rejects both missing and surplus treatments" do
+  # The written call the route was stamped on must fit it (`decode!/2`, what Resolve
+  # applies); a rebuilt call whose pairs no longer fit the stamp it inherited is read as no
+  # route (`decode/2`, what every later reader applies).
+  test "positional keyword routing rejects both missing and surplus treatments where stamped" do
     for arg <- shapes("[a: 1, b: 2]"),
         values <- [[], [:raw], [:raw, :raw, :raw]] do
       assert_raise ArgumentError, ~r/exactly one treatment per pair/, fn ->
-        KeywordRouting.decode(arg, {:keyword, values})
+        KeywordRouting.decode!(arg, {:keyword, values})
       end
+
+      assert KeywordRouting.decode(arg, {:keyword, values}) == {:whole, :raw}
+    end
+
+    for arg <- shapes("[a: 1, b: 2]") do
+      assert {:pairs, _pairs, _rewrap} = KeywordRouting.decode!(arg, {:keyword, [:raw, :raw]})
     end
   end
 

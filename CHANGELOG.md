@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Mutare.Analyze.resolve/2`: a host resolves a region of its call that Mutare left as
+  written.** A `:raw` or `:hosted` argument reaches `host/2` and `mutate/2` as syntax — no
+  call inside it identified, no registered macro routed, no pipe desugared. A DSL that
+  embeds calls the host must recognise (a nested query, a macro the user registered) hands
+  the region here with the callback context, and `Mutare.Calls`' readers then answer for
+  it, exactly as they do for an island `expression_mutations/3` resolves. Nothing is
+  mutated. Adapters that reached for `Mutare.Transform.Resolve.expression/2` should call
+  this instead.
+
+### Fixed
+
+- **A registered macro nested in a `:raw` or `:hosted` region no longer withholds every
+  mutant around it.** Since 0.4.0 the analysis that decides what an enclosing mutant must
+  preserve read such a macro as a call whose bindings it could not vouch for — the answer
+  meant for a classifier inside a `:skip`ped call's argument, where the argument is
+  ordinary Elixir that runs — and withheld every whole-call mutant on the node around it:
+  a `from` whose `having:` carried `subquery(from(…))` lost its comparison and aggregate
+  mutants. The region is the enclosing route's syntax; the macro is read as that syntax,
+  its names counted as possible writes and nothing more.
+- **A whole-call mutant that changes the pairs of a `{:keyword, …}`-routed argument no
+  longer aborts the transform.** `rebuild` keeps the offered call's routing stamp, and a
+  mutant that dropped a pair presented a stamp with one treatment too many to the binding
+  readers, which raised the classifier's contract error at transform time. The stamp is now
+  read where it still fits the rebuilt arguments and ignored where it does not; the
+  contract error is raised only for the written call the route was stamped on. A mutator
+  need not strip or restamp what it rebuilds.
+
 ## [0.4.0] - 2026-09-24
 
 ### Changed

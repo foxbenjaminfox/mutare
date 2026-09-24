@@ -16,7 +16,15 @@ defmodule Mutare.Calls do
   re-classifying the call. It also reads nested calls in resolved Elixir arguments. Foreign
   `:raw`/`:hosted` fragments have not been resolved or routed: their syntax, including pipes,
   belongs to the DSL. To sub-contract an Elixir island, pass it and the callback context to
-  `Mutare.Analyze.expression_mutations/3`.
+  `Mutare.Analyze.expression_mutations/3`; to read the calls a DSL fragment embeds (a nested
+  query, a registered macro), resolve the fragment first with `Mutare.Analyze.resolve/2` —
+  these readers then answer for it.
+
+  `rebuild` reuses the offered call's meta, its routing stamp included. A rebuilt call whose
+  arguments the stamp still fits is read by it; where they no longer fit — a pair dropped
+  from a `{:keyword, …}`-routed list, the call at another arity — Mutare reads nothing from
+  the stamp rather than misreading it, so such a mutant is withheld only where its bindings
+  could not be vouched for either way. A mutator need not strip or restamp what it rebuilds.
 
   ## Example
 

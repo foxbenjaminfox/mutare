@@ -72,4 +72,39 @@ defmodule Mutare.Analyze do
   @spec expression_mutations(Macro.t(), [Spec.t() | module()], map()) ::
           [{Spec.t(), Macro.t(), String.t() | nil, Mutation.variant()}]
   defdelegate expression_mutations(subtree, mutators, context \\ %{}), to: Collect
+
+  @doc """
+  Resolves a region of the host's call that core left as written, in the lexical environment
+  the callback `context` carries — the first step of `expression_mutations/3`, on its own.
+
+  Core does not interpret a `:raw` or `:hosted` argument (or a keyword value under either):
+  no call inside it is stamped, no `Kernel` pipe desugared, no registered macro routed. A
+  DSL may still embed calls the host must identify — a nested query, a macro the user
+  registered a route for. Handing such a region here reads it as Elixir: every call is
+  stamped with what it resolves to through the aliases and imports in force at the enclosing
+  call, a registered macro is routed (its `:routing` classifier invoked), and a `Kernel`
+  pipe becomes the direct call it is sugar for, still spelled as the pipe in reports. On
+  the result, `Mutare.Calls.resolved_call/1`, `Mutare.Calls.resolved_routed_call/1` and
+  `Mutare.Calls.routed_treatments/1` answer as they do for any resolved node. Nothing is
+  mutated, and no id is assigned.
+
+  This is the host's claim about its own syntax, so the host makes it: for the regions its
+  routes declared, at its `c:Mutare.Mutator.MacroHost.host/2` or `c:Mutare.Mutator.mutate/2`
+  boundary, once. Resolution stops at the `:raw`/`:hosted` positions of the calls it routes
+  inside the region, as it does at the top; a host whose DSL nests that way reads those
+  through the same call. A configured `:skip` inside the region is honoured: the skipped
+  call is stamped, and its arguments are left as written. During a scan, the route and
+  argument-mark matches inside the region are reported like an island's.
+
+  Pass the callback's `context` unchanged. A context that carries no environment (a producer
+  driven directly, in a test) returns `subtree` as it is.
+
+      def host(%Mutare.CallRouting.Call{node: node}, context) do
+        node = Mutare.Analyze.resolve(node, context)
+        # nested `from(…)` calls are now `Mutare.Calls.resolved_routed_call/1` matches
+        …
+      end
+  """
+  @spec resolve(Macro.t(), map()) :: Macro.t()
+  defdelegate resolve(subtree, context), to: Mutare.Transform.Resolve, as: :expression
 end

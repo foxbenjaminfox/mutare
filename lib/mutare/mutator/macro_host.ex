@@ -79,7 +79,9 @@ defmodule Mutare.Mutator.MacroHost do
   positions (including values nested under `{:keyword, …}`) can be read back instead of
   rediscovered. Core preserves hosted fragments as syntax: it neither desugars their pipes nor
   resolves or routes calls inside them. The DSL owns their meaning. Other arguments follow their own
-  treatments, so an expression argument reaches the host with its Elixir calls resolved.
+  treatments, so an expression argument reaches the host with its Elixir calls resolved. A host
+  whose fragments embed calls it must identify (a nested query macro, one the user registered a
+  route for) resolves them itself with `Mutare.Analyze.resolve/2`, passing the callback context.
 
   ## Sub-contracting ordinary Elixir inside a fragment
 

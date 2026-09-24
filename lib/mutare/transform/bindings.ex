@@ -133,6 +133,14 @@ defmodule Mutare.Transform.Bindings do
   A route there that is a classifier cannot be read; every name the call's arguments mention
   is then in this list, since a declared position binds nothing its syntax does not name, and
   `unknown_routing?/1` says the list bounds what the call binds rather than reading it.
+
+  Inside a position a route reads as **syntax** (`:raw`, `:hosted`, a keyword value under
+  either), which Resolve did not walk either, a nested call is that syntax too: a static
+  route it resolves to still names its binding positions, and one that cannot be read
+  contributes every name its arguments mention — but no call there is *unknown*. The
+  enclosing route declared the region syntax, and the guaranteed reader
+  (`BindingEscapeEmit`) vouches for nothing in it; a classifier nested there opens no hole a
+  blanket would close.
   """
   @spec matched_names(Macro.t()) :: [atom()]
   def matched_names(node) do
@@ -145,6 +153,8 @@ defmodule Mutare.Transform.Bindings do
   it was withheld from (`Resolve.preserved_routing/2`). Such a call may bind names neither
   reader reports, so a delivery that must export what `node` binds withholds instead
   (`Candidate.Delivery.gate/2`); a call is read as ordinary only where no route is declared.
+  A classifier nested in a syntax region is not unknown (`matched_names/1`): the region's
+  route already says nothing in it is guaranteed to bind.
   """
   @spec unknown_routing?(Macro.t()) :: boolean()
   def unknown_routing?(node), do: :unknown in matched(node, %{})
@@ -189,24 +199,79 @@ defmodule Mutare.Transform.Bindings do
   # The route is what the arguments mean (`Resolve.effective_routing/2`): a stamp, a
   # configured skip's displaced declaration, or the static route a call inside a skipped
   # argument resolves to — `:unknown` where it is a classifier this reader cannot invoke.
+  # The arguments are then descended as the route reads them: a position it declares
+  # syntax is descended as syntax.
   defp matched_call({form, _meta, args} = node, context) do
-    declared_names(args, Resolve.effective_routing(node, context)) ++
-      matched(form, context) ++ matched(args, context)
+    routing = Resolve.effective_routing(node, context)
+
+    declared_names(args, routing, context) ++
+      matched(form, context) ++ matched_arguments(args, routing, context)
   end
 
   # The names a call's route declares its positions bind.
-  defp declared_names(args, routes) when is_list(routes) do
+  defp declared_names(args, routes, _context) when is_list(routes) do
     args
     |> Enum.zip(routes)
     |> Enum.flat_map(fn {arg, treatment} -> declared_position_names(arg, treatment) end)
   end
 
   # A route this reader cannot obtain may declare any position binding: every name the
-  # arguments mention is a possible write.
-  defp declared_names(args, :unknown),
-    do: [:unknown | bound(MapSet.to_list(referenced_names(args)))]
+  # arguments mention is a possible write. In an evaluated region the call's effect is
+  # unknown besides; in a syntax region it is the region's, which vouches for nothing.
+  defp declared_names(args, :unknown, context) do
+    names = bound(MapSet.to_list(referenced_names(args)))
+    if syntax?(context), do: names, else: [:unknown | names]
+  end
 
-  defp declared_names(_args, _routing), do: []
+  defp declared_names(_args, _routing, _context), do: []
+
+  # A stamped or declared route fits its call by construction (`Resolve.Arguments` checks
+  # a keyword route where it is stamped). The readers only ever meet a source node here.
+  defp matched_arguments(args, routes, context)
+       when is_list(routes) and length(routes) == length(args) do
+    args
+    |> Enum.zip(routes)
+    |> Enum.flat_map(fn {arg, treatment} -> matched_position(arg, treatment, context) end)
+  end
+
+  defp matched_arguments(args, _routing, context), do: matched(args, context)
+
+  defp matched_position(arg, treatment, context) do
+    cond do
+      syntax_treatment?(treatment) -> matched(arg, syntax(context))
+      keyword_treatment?(treatment) -> matched_keyword(arg, treatment, context)
+      true -> matched(arg, context)
+    end
+  end
+
+  defp matched_keyword(arg, treatment, context) do
+    case KeywordRouting.decode(arg, treatment) do
+      {:pairs, pairs, _rewrap} ->
+        Enum.flat_map(pairs, fn {{key, key_treatment}, {value, value_treatment}} ->
+          matched_position(key, key_treatment, context) ++
+            matched_position(value, value_treatment, context)
+        end)
+
+      {:whole, fallback} ->
+        matched_position(arg, fallback, context)
+    end
+  end
+
+  # The treatments Resolve does not walk into (`Resolve.Arguments`): the region is the
+  # macro's syntax, in the stamped form (`{:hosted, hosts}`) or the declared one.
+  defp syntax_treatment?(:raw), do: true
+  defp syntax_treatment?(:hosted), do: true
+  defp syntax_treatment?({:hosted, _hosts}), do: true
+  defp syntax_treatment?(_treatment), do: false
+
+  defp keyword_treatment?({:keyword, _treatments}), do: true
+  defp keyword_treatment?({:keyed, _leading, _refinements}), do: true
+  defp keyword_treatment?(_treatment), do: false
+
+  # The reading context inside a syntax region: what is nested there is syntax all the way
+  # down — a nested call's own value positions were never resolved either.
+  defp syntax(context), do: Map.put(context, :syntax?, true)
+  defp syntax?(context), do: Map.get(context, :syntax?, false)
 
   defp bound(names), do: Enum.map(names, &{:bound, &1})
 

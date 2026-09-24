@@ -74,6 +74,67 @@ defmodule Mutare.AnalyzeTest do
     def host(_call, _context), do: []
   end
 
+  # A host that reads the calls inside its fragment: it resolves the region it hosts
+  # (`Mutare.Analyze.resolve/2`) and reports what the `Mutare.Calls` readers answer for the
+  # call nested in the comparison's left operand, as written and after resolution.
+  defmodule ResolvingHost do
+    @behaviour Mutare.Mutator
+    @behaviour Mutare.CallRouting
+    @behaviour Mutare.Mutator.MacroHost
+
+    alias Mutare.CallRouting.Call
+
+    @impl Mutare.Mutator
+    def name, do: :resolving_host
+
+    @impl Mutare.CallRouting
+    def call_routes, do: [{Mutare.Test.HostDSL, :filter, 2, [:expression, :hosted]}]
+
+    @impl Mutare.Mutator.MacroHost
+    def hosted_macros, do: [{Mutare.Test.HostDSL, :filter, 2}]
+
+    @impl Mutare.Mutator.MacroHost
+    def host(%Call{node: {_form, _meta, [_query, condition]}}, context) do
+      send(
+        self(),
+        {:resolving_host, reading(condition), reading(Analyze.resolve(condition, context))}
+      )
+
+      []
+    end
+
+    defp reading({_op, _meta, [{head, call_meta, [pattern, value]} = nested, _right]}) do
+      %{
+        identity: call_to?(nested, Mutare.Test.QueryDSL, :unpack),
+        treatments: Mutare.Calls.routed_treatments(nested),
+        value: call_to?(value, Enum, :reverse),
+        spelling: Macro.to_string({head, call_meta, [pattern, value]})
+      }
+    end
+
+    defp call_to?(node, module, fun),
+      do: match?({:ok, ^fun, _args, _rebuild}, Mutare.Calls.resolved_call_to(node, module, fun))
+  end
+
+  # `unpack/2` routed through a classifier, so resolving the region invokes it.
+  defmodule ClassifiedUnpack do
+    @behaviour Mutare.Mutator
+    @behaviour Mutare.CallRouting
+
+    @impl Mutare.Mutator
+    def name, do: :classified_unpack
+
+    @impl Mutare.Mutator
+    def mutate(_node), do: :skip
+
+    @impl Mutare.CallRouting
+    def call_routes, do: [{Mutare.Test.QueryDSL, :unpack, 2, :routing}]
+
+    @impl Mutare.CallRouting
+    def route_arguments(call),
+      do: Mutare.CallRouting.ArgumentRoutes.new(call, [:binding_pattern, :expression])
+  end
+
   # Node-level families only: structural families (return_value, if_condition, the pattern
   # families) are contractually ignored by collect, and the call-matching families need the
   # resolver's stamps, which a bare `Sourceror.parse_string!` subtree doesn't carry.
@@ -83,6 +144,52 @@ defmodule Mutare.AnalyzeTest do
 
   defp collect(source, mutators \\ specs()),
     do: Analyze.expression_mutations(Sourceror.parse_string!(source), mutators)
+
+  describe "resolving a region the host owns" do
+    @resolving_source """
+    defmodule Fixture do
+      import Mutare.Test.HostDSL
+      alias Mutare.Test.QueryDSL, as: Q
+
+      def run(xs), do: filter(xs, Q.unpack([n], xs |> Enum.reverse()) > 0)
+    end
+    """
+
+    # Core hands the hosted condition over as written: the aliased `Q.unpack` carries no
+    # identity, no route, and its pipe is still a pipe. Resolved in the environment the
+    # context retains, the alias resolves, the classifier is invoked, and the pipe is the
+    # direct call (which the report spells as the pipe again).
+    test "the calls inside a hosted fragment are identified, routed and desugared on request" do
+      report =
+        Mutare.Transform.count_report(@resolving_source,
+          mutators: [ResolvingHost, ClassifiedUnpack]
+        )
+
+      assert_received {:resolving_host, as_written, resolved}
+
+      assert %{
+               identity: false,
+               treatments: nil,
+               value: false,
+               spelling: "Q.unpack([n], xs |> Enum.reverse())"
+             } =
+               as_written
+
+      assert %{
+               identity: true,
+               treatments: [:binding_pattern, :expression],
+               value: true,
+               spelling: "Q.unpack([n], Enum.reverse(xs))"
+             } = resolved
+
+      assert {[:Mutare, :Test, :QueryDSL], :unpack, 2} in report.matches.routes
+    end
+
+    test "without a callback context the region is returned as it is" do
+      condition = Sourceror.parse_string!("Q.unpack([n], xs |> Enum.reverse()) > 0")
+      assert Analyze.resolve(condition, %{}) == condition
+    end
+  end
 
   describe "parity with the full transform" do
     # Each expression is collected standalone *and* transformed as a `def` body; the multiset of

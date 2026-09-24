@@ -13131,6 +13131,63 @@ the export names), not a scoping one — Elixir reads the entry value either way
 baseline property's to check, with sibling rebinding in its vocabulary; `var!` and computed
 names stay the known limit ("The binding model reads syntax and declarations").
 
+### A syntax region's routed macro is syntax; a rebuilt call's stamp is read where it fits; resolution is a host's to ask for `[fixed; done]` (2026-09-24)
+
+Porting `mutare_ecto` to 0.4.0 turned up three things at the host boundary, two of them
+core defects. The plugin's commit 65a8fe2 carried 14 failing tests and two reaches into
+`@doc false` internals; this entry is what they were about.
+
+**A classifier nested in a `:raw`/`:hosted` region read as `:unknown`.** 0.4.0 stopped
+resolving inside those regions ("Routing precedes interpretation of arguments"), and in the
+same release `preserved_routing/2` began answering `:unknown` for a classifier the readers
+could not invoke — written for a *skipped* call's arguments, where the arguments are ordinary
+Elixir that runs and the guaranteed reader (`BindingEscapeEmit`) must read every nested call,
+so a classifier it cannot invoke leaves a hole a blanket has to close (`unknown_routing?/1`,
+`Delivery.gate/2` withholding every candidate on the node). `Bindings.matched/2` descended
+every argument alike, so the same answer came back for a `from` nested in a `having:` value
+routed `:hosted`, and the `div`-like node around the outer query lost every whole-call
+mutant. The blanket protects nothing there: a `:raw`/`:hosted` position is the enclosing
+route's claim that the region is the macro's syntax, `BindingEscapeEmit` never enters it,
+and a plain `n = 5` written inside gets no blanket either ("a configured `:raw` on a binding
+position … is not read through"). So `matched_call/2` now descends a routed call's arguments
+by their treatments, and inside a syntax treatment (`:raw`, `:hosted`, a keyword value under
+either — the treatments `Resolve.Arguments` does not walk) an unreadable route contributes
+its arguments' names as possible writes and no `:unknown`. A static route nested there is
+still read for its `:binding_pattern` names (over-counting a possible write is free), and
+the syntax flag rides the context all the way down: a nested call's own `:expression`
+positions were never resolved either. The skipped-argument answer is unchanged, and
+`routed_call_reading_test.exs` holds the contrast beside the three region shapes.
+
+**A rebuilt call's stale stamp raised in the readers.** `rebuild` reuses the offered call's
+meta, routing stamp included, and a whole-call mutant that drops a pair from a
+`{:keyword, …}`-routed list (the plugin's clause drop, `from(s, where: …, limit: …)` →
+`from(s, where: …)`) carried two treatments over one pair. `PipeEmit.export_names/4` reads
+`expression_bindings/1` of every live branch — even with nothing to filter — and
+`KeywordRouting.decode/2` raised the classifier-contract error at that mismatch, on a mutant
+branch, at transform time. The plugin stripped the stamp to get past it (`QueryCall.unrouted/1`).
+The contract check belongs where the route meets the written call it was stamped on, and
+only there: `decode!/2` (raising) is what `Resolve.Arguments.keyword_position/3` applies;
+`decode/2` reads a mismatch as `{:whole, :raw}`, and `BindingEscapeEmit.argument_bindings/3`
+reads a positional stamp at another arity as nothing (`[]`, the `:unknown` reading). Only a
+mutant branch can present either, and under-reading a branch errs toward withholding: the
+gate's `needed` comes from the source, `shared` exports only what every branch is *seen* to
+bind. Over-reading (the zip-truncation a front insertion would give) is the direction that
+makes a branch reference a name it does not bind — a poisoned mutant, recoverable but wrong.
+`Mutare.Calls` now states the contract: a mutator need not strip or restamp what it rebuilds.
+
+**Resolution on its own.** The plugin's SQL catalogs identify nested query macros, `subquery`,
+`fragment` and user macros registered `:skip` by their stamps, and those regions are now
+handed over as written; it resolved them itself through `Resolve.expression/2`. That is the
+right shape — the host owns its syntax and says which regions embed Elixir-identified calls —
+so the entry point is public: `Mutare.Analyze.resolve/2`, the first step of
+`expression_mutations/3` with the analysis left off. Kept shallow on purpose: it stops at the
+`:raw`/`:hosted` positions of the calls it routes inside the region, as resolution does at
+the top, and a host whose DSL nests that way asks again. The rejected alternative, stamping
+identities inside syntax regions in the pre-pass, would invoke another adapter's classifier
+in syntax that is not its own, which "Routing precedes interpretation" rules out; a host
+making the claim for its own regions is what that entry allows. `analyze_test.exs` pins the
+three things the call does (alias, classifier, pipe) and the scan's route match.
+
 ### A skip's meaning is one registry lookup, wherever the call is read from `[fixed]` (2026-09-24)
 
 Ninth review, of the fix below, found the two paths that still read a skipped call's

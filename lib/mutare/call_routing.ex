@@ -42,7 +42,14 @@ defmodule Mutare.CallRouting do
   including keyword values with those treatments, keep their pipes and are not traversed.
   A `:skip`ped call's arguments likewise remain untouched. A host that identifies an Elixir
   island can hand it to `Mutare.Analyze.expression_mutations/3` with its callback context;
-  core resolves that island in the enclosing call's lexical environment.
+  core resolves that island in the enclosing call's lexical environment. A host whose DSL
+  embeds calls it must identify — a nested query macro, a macro the user registered —
+  resolves the region with `Mutare.Analyze.resolve/2`, the same resolution without the
+  analysis. A registered macro nested in a `:raw` or `:hosted` region is that region's
+  syntax to the analysis that decides what an enclosing mutant must preserve: it withholds
+  nothing on the macro's account, where the same macro inside a `:skip`ped call's argument —
+  ordinary Elixir that runs — leaves what it binds unreadable and the dependent mutants
+  withheld.
 
       defmodule MyApp.EctoRouting do
         @behaviour Mutare.CallRouting

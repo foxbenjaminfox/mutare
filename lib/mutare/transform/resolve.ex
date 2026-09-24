@@ -93,6 +93,9 @@ defmodule Mutare.Transform.Resolve do
     end
   end
 
+  # Resolve a region in the environment a routed call retained: what `Mutare.Analyze` runs
+  # ahead of an island's analysis (`expression_mutations/3`), and offers a host on its own
+  # as `Mutare.Analyze.resolve/2` for the calls its DSL embeds.
   @doc false
   @spec expression(Macro.t(), map()) :: Macro.t()
   def expression(subtree, %{resolution: env}) do
@@ -178,8 +181,11 @@ defmodule Mutare.Transform.Resolve do
   # so an enclosing binding-sensitive delivery withholds rather than assumes
   # (`Bindings.unknown_routing?/1`, `Candidate.Delivery.gate/2`), and the scope beside and
   # after the call counts every name its arguments mention as a possible write
-  # (`Bindings.matched_names/1`). Nothing is stamped or
-  # rewritten. A stamped call answers from its stamp (`Meta.routing/1`) and never reaches here.
+  # (`Bindings.matched_names/1`). The same answer serves a call inside a `:raw`/`:hosted`
+  # position, which this pass did not walk either; there the enclosing route declared the
+  # region syntax, and `Bindings` reads `:unknown` as possible writes alone. Nothing is
+  # stamped or rewritten. A stamped call answers from its stamp (`Meta.routing/1`) and never
+  # reaches here.
   @doc false
   @spec preserved_routing(Macro.t(), map()) :: :skip | :unknown | [Spec.position()] | nil
   def preserved_routing({form, meta, args}, %{resolution: env})

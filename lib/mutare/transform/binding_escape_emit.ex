@@ -110,11 +110,18 @@ defmodule Mutare.Transform.BindingEscapeEmit do
         # reads by that declaration (`Resolve.effective_routing/2`) and never reaches here.
         Enum.flat_map(args, &bound_names(&1, context))
 
-      treatments when is_list(treatments) ->
+      treatments when is_list(treatments) and length(treatments) == length(args) ->
         Enum.zip(args, treatments)
         |> Enum.flat_map(fn {arg, treatment} ->
           argument_bindings_for(arg, treatment, context)
         end)
+
+      # A stamp that does not fit the arguments: a mutator rebuilt the call at another arity
+      # through the offered call's `rebuild`, which reuses its meta. The stamp was the route's
+      # answer for the call it was stamped on and says nothing about this one; only a mutant
+      # branch reads this way, and reading nothing there errs toward withholding the mutant.
+      treatments when is_list(treatments) ->
+        []
 
       # A classifier not invoked in a skipped region: its positions may bind, and nothing is
       # guaranteed. `Bindings.unknown_routing?/1` reports the call to the gate, and
