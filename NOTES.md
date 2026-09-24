@@ -12954,6 +12954,32 @@ names; the ordinary selector now does too. The regression is `abs(Enum.count([0 
 0)]) + 1)` under every family — the soak's shape without the arithmetic error its original
 raised — which failed the compile against the previous library.
 
+### The baseline soak meets the scope shapes (2026-09-24)
+
+Six of the eight cases the fifth review reproduced diverged *at the baseline* — the
+metamutant with no mutant active returning a value the original does not — and
+`transform_baseline_property_test.exs` compares exactly that, for every exported function
+of a generated module, with no patch and no knowledge of any fix. It never met the shapes,
+because `TransformPropertyGenerators` had no sibling that rebinds a name, no skipped
+wrapper, no declared binding position, no qualified conditional, no lazy-position write, no
+block in argument position. `scope_gen/2` adds them, each a shallow block that binds and
+then *reads* — the read is what makes a trapped value or a stale export observable — and
+`RoutedSoak` gained `same/1` under a `:skip` route as the wrapper (the soaks' `respell/2`
+pipes into it too, so the routed-pipe property meets a pipe into a skipped stage). Sampling
+120 modules across sizes, each shape appears in about one module in five. Nothing diverged
+at HEAD; the entry exists so the next binding-model change is soaked against these shapes
+rather than reviewed for them.
+
+What the first cut cost, worth knowing before adding to this generator again: proper
+builds a `oneof`'s alternatives eagerly, so nine alternatives each holding one or two
+recursive `expr_sized` sub-generators roughly doubled the number of sub-trees constructed
+per level, and to the fourth power that put every soak sharing the generator past its
+ten-minute timeout — in *generation*, before a module was rendered. `lazy/1` on each
+alternative (and on the entry in `expr_sized/2`) defers construction to the chosen one;
+generation is then no slower than before (size 16: 3.9 s a module against 5.2 s at HEAD,
+inside the noise). The existing alternatives are still eager, which is why a sample near
+`max_size` 42 takes the ~18 s the moduledoc names.
+
 ### The binding readers are checked against the compiler (2026-09-24)
 
 The nine reviews of 2026-09-22 to 24 (the entries below) found one shape nine times: a

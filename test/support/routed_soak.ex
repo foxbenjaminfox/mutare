@@ -13,6 +13,9 @@ defmodule Mutare.Test.RoutedSoak do
     * `pick/2` — a **macro** that evaluates its first argument only when the second holds,
       routed `[:lazy_expression, :expression]`: never evaluated ahead of the call, so a piped
       stage takes plain direct delivery.
+    * `same/1` — a **function** under a configured `:skip`: withheld from mutation and nested
+      routing, evaluated as written, so a binding inside it is the caller's — the wrapper the
+      binding readers read through (`Mutare.Transform.Resolve.preserved_routing/2`).
   """
 
   @doc "The `call_routes:` entries for this module's callees."
@@ -20,13 +23,18 @@ defmodule Mutare.Test.RoutedSoak do
   def call_routes do
     [
       {__MODULE__, :keep, 3, [:expression, :raw, :expression]},
-      {__MODULE__, :pick, 2, [:lazy_expression, :expression]}
+      {__MODULE__, :pick, 2, [:lazy_expression, :expression]},
+      {__MODULE__, :same, 1, :skip}
     ]
   end
 
   @doc "Each callee's arity as a directly written call."
   @spec arities() :: %{atom() => pos_integer()}
-  def arities, do: %{keep: 3, pick: 2}
+  def arities, do: %{keep: 3, pick: 2, same: 1}
+
+  @doc "`value`, as written: a skipped call around whatever it binds."
+  @spec same(term()) :: term()
+  def same(value), do: value
 
   @doc "Pairs `value` with `extra`; `_raw` is evaluated and dropped."
   @spec keep(term(), term(), term()) :: {term(), term()}

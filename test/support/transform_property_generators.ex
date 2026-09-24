@@ -53,6 +53,16 @@ defmodule Mutare.TransformPropertyGenerators do
   under `transform_opts/1`. `respell/2` rewrites a module's routed calls into one spelling, for
   the property that the two spellings are the same program to Mutare
   (`transform_routed_pipe_property_test.exs`).
+
+  And it emits the **scope shapes** the binding model's reviews were about (`scope_gen/2`;
+  NOTES "What a selector exports is the scope's to say" and the entries after it): a sibling
+  rebinding a name bound on entry, before and after the mutated expression; a fresh name bound
+  in a sibling and read after; a binding beneath the skipped `RoutedSoak.same/1`; `destructure/2`'s
+  declared positions; a `Kernel.if`/`K.if` whose condition binds; a write in `pick/2`'s lazy
+  position; a block in argument position; a `match?/2` pattern. Each is a shallow block that
+  binds and then reads, so a wrong export — a value trapped in a selector, a stale incoming
+  value exported over a sibling's write — diverges at the baseline, where
+  `transform_baseline_property_test.exs` compares against the original.
   """
   use PropCheck
 
@@ -75,11 +85,16 @@ defmodule Mutare.TransformPropertyGenerators do
         |> Enum.with_index()
         |> Enum.flat_map(fn {clauses, i} -> rename_group(clauses, i) end)
 
-      # `RoutedSoak.pick/2` is a macro, called qualified.
+      # `RoutedSoak.pick/2` is a macro, called qualified; `K.if` is `scope_gen/2`'s aliased
+      # spelling of the conditional.
       require_soak = {:require, [], [aliases(@routed_soak)]}
+      alias_kernel = {:alias, [], [aliases([:Kernel]), [as: aliases([:K])]]}
 
       {:defmodule, [],
-       [{:__aliases__, [], [:Prop]}, [do: block([require_soak | use_part] ++ functions)]]}
+       [
+         {:__aliases__, [], [:Prop]},
+         [do: block([require_soak, alias_kernel | use_part] ++ functions)]
+       ]}
     end
   end
 
@@ -283,7 +298,8 @@ defmodule Mutare.TransformPropertyGenerators do
       {1, fn_gen(size, vars)},
       {1, try_gen(smaller)},
       {1, block_gen(size, vars)},
-      {1, if_binding_gen(size, vars)}
+      {1, if_binding_gen(size, vars)},
+      {2, lazy(scope_gen(size, vars))}
     ])
   end
 
@@ -497,6 +513,97 @@ defmodule Mutare.TransformPropertyGenerators do
       {:if, [], [cond_e, [do: body, else: alt]]}
     end
   end
+
+  # === scope ================================================================
+
+  # The shapes the binding model's reviews were about, each a shallow block that binds and
+  # then reads (a wrong export diverges at the baseline). Bodies recurse; every other part is
+  # a leaf. The names `s`, `m`, `n`, `r` are this generator's own, disjoint from the params
+  # and from the other binders' (`t`, `p`, `q`, `v`, `w`, `f`, `x`, `y`, `z`). Every
+  # alternative is `lazy`: proper builds a `oneof`'s alternatives eagerly, and nine of them
+  # each holding a recursive sub-generator multiplied the construction cost per level past
+  # the soaks' timeouts; deferred, only the chosen alternative is built.
+  #
+  #   * `(s = l1; r = {s = l2, body}; {r, s})` — a sibling rebinds a name bound on entry ahead
+  #     of the mutated body, which reads the entry value; the mirror puts the body first. A
+  #     mutant of the body must neither trap the sibling's write nor export a stale `s`.
+  #   * `(r = {m = l, body}; {r, m})` — a fresh name bound in a sibling and read after.
+  #   * `(RoutedSoak.same(m = l); body)` — a binding beneath a skipped wrapper, read after.
+  #   * `(destructure([m, n], [l1, l2]); body)` — declared binding positions, read after.
+  #   * `Kernel.if((v = l) != nil, do: body, else: alt)`, and as `K.if` — the condition binds
+  #     under a qualified spelling, read by its identity.
+  #   * `(s = l1; RoutedSoak.pick(s = l2, on?); body)` — a write in a lazy position, which the
+  #     macro may or may not run, on a name read after.
+  #   * `(r = max((m = l1; body), l2); {r, m})` — a block in argument position, its binding
+  #     read after the call.
+  #   * `match?({m, _}, {l, body})` — a pattern position beside the mutated body.
+  defp scope_gen(size, vars) do
+    half = div(size, 2)
+
+    oneof([
+      lazy(
+        let {l1, l2, body} <- {leaf_gen(vars), leaf_gen(vars), expr_sized(half, [:s | vars])} do
+          block([
+            bind(:s, l1),
+            bind(:r, pair_of([bind(:s, l2), body])),
+            pair_of([var(:r), var(:s)])
+          ])
+        end
+      ),
+      lazy(
+        let {l1, l2, body} <- {leaf_gen(vars), leaf_gen(vars), expr_sized(half, [:s | vars])} do
+          block([
+            bind(:s, l1),
+            bind(:r, pair_of([body, bind(:s, l2)])),
+            pair_of([var(:r), var(:s)])
+          ])
+        end
+      ),
+      lazy(
+        let {l, body} <- {leaf_gen(vars), expr_sized(half, vars)} do
+          block([bind(:r, pair_of([bind(:m, l), body])), pair_of([var(:r), var(:m)])])
+        end
+      ),
+      lazy(
+        let {l, body} <- {leaf_gen(vars), expr_sized(half, [:m | vars])} do
+          block([aliased_call(@routed_soak, :same, [bind(:m, l)]), body])
+        end
+      ),
+      lazy(
+        let {l1, l2, body} <- {leaf_gen(vars), leaf_gen(vars), expr_sized(half, [:m, :n | vars])} do
+          block([{:destructure, [], [[var(:m), var(:n)], [l1, l2]]}, body])
+        end
+      ),
+      lazy(
+        let {path, rhs, body, alt} <-
+              {oneof([[:Kernel], [:K]]), leaf_gen(vars), expr_sized(half, [:v | vars]),
+               leaf_gen(vars)} do
+          cond_e = {:!=, [], [bind(:v, rhs), nil]}
+          aliased_call(path, :if, [cond_e, [do: body, else: alt]])
+        end
+      ),
+      lazy(
+        let {l1, l2, on?, body} <-
+              {leaf_gen(vars), leaf_gen(vars), leaf_gen(vars), expr_sized(half, [:s | vars])} do
+          block([bind(:s, l1), aliased_call(@routed_soak, :pick, [bind(:s, l2), on?]), body])
+        end
+      ),
+      lazy(
+        let {l1, l2, body} <- {leaf_gen(vars), leaf_gen(vars), expr_sized(half, [:m | vars])} do
+          argument = {:__block__, [], [bind(:m, l1), body]}
+          block([bind(:r, {:max, [], [argument, l2]}), pair_of([var(:r), var(:m)])])
+        end
+      ),
+      lazy(
+        let {l, body} <- {leaf_gen(vars), expr_sized(half, vars)} do
+          {:match?, [], [pair_of([var(:m), var(:_)]), pair_of([l, body])]}
+        end
+      )
+    ])
+  end
+
+  defp bind(name, value), do: {:=, [], [var(name), value]}
+  defp pair_of(elements), do: {:{}, [], elements}
 
   # === guards ===============================================================
 
