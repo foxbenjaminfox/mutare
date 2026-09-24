@@ -58,8 +58,8 @@ defmodule Mutare.Selector do
   Ahead of both, a process may hold a private key in its dictionary (`process_key/0`).
   `key/0` returns it there, so a metamutant transformed in that process bakes it into its
   selector sites and `put/1`/`active/0` read and write it: two processes holding different
-  private keys select independently. `Mutare.Test.isolate_selector/0` gives each ExUnit test
-  module one, which is what lets tests that drive selection run `async: true`.
+  private keys select independently. `Mutare.Test.isolate_selector/0` gives each execution of
+  an ExUnit test module one, which is what lets tests that drive selection run `async: true`.
   """
 
   @key :mutare_active

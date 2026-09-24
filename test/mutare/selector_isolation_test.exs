@@ -7,12 +7,17 @@ defmodule Mutare.SelectorIsolationTest do
   # them is safe `async: true`. One that transforms through `Mutare.Transform` itself bakes
   # whatever key is in force at that moment, so it must call `isolate_selector/0` first — in a
   # `setup`, ahead of the first transform. This enforces that over the suite's own source, and
-  # keeps the coverage recorder's track flag, which stays VM-wide, to serial modules.
+  # keeps the coverage recorder's track flag, which stays VM-wide, to serial modules. That
+  # the key is private to a module *execution* — two `:parameterize` instances apart — is
+  # `selector_isolation_execution_test.exs`.
   use ExUnit.Case, async: true
+  import Mutare.Test
+
+  alias Mutare.Selector
 
   @selecting ~r/\b(with_active_mutant|observe_mutant|Selector\.put)\b/
   @transforming ~r/\bTransform\.transform_string(_with_sites)?\(/
-  @isolating ~r/\bisolate_selector\(\)/
+  @isolating ~r/\bisolate_selector\b/
   @tracking ~r/persistent_term\.put\(\s*(Recorder\.)?track_key\(\)/
 
   test "an async module that transforms itself and selects takes its private key first" do
@@ -32,6 +37,31 @@ defmodule Mutare.SelectorIsolationTest do
 
     assert offenders == []
   end
+
+  # The walk for the module runner is bounded, so a process far enough below the test is
+  # one it cannot reach — as a process started under a supervisor is. Under ExUnit that is
+  # not a fallback to the shared key but a failure, and the remedy is the key itself.
+  test "a process the walk cannot reach is refused the shared key, and takes the given one" do
+    key = isolate_selector()
+
+    assert {:error, %RuntimeError{message: message}} = deep(7, &isolate_selector/0)
+    assert message =~ "no ExUnit test runs above this process"
+
+    assert {:ok, ^key} =
+             deep(7, fn ->
+               Process.put(Selector.process_key(), key)
+               isolate_selector()
+             end)
+  end
+
+  # `fun` in a process `depth` spawns below this one, its result or exception.
+  defp deep(0, fun) do
+    {:ok, fun.()}
+  rescue
+    error -> {:error, error}
+  end
+
+  defp deep(depth, fun), do: Task.async(fn -> deep(depth - 1, fun) end) |> Task.await()
 
   defp async_modules do
     for file <- Path.wildcard(Path.join(__DIR__, "**/*_test.exs")),

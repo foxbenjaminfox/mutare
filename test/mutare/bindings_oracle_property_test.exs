@@ -77,7 +77,7 @@ defmodule Mutare.BindingsOraclePropertyTest do
       defs =
         [def_run(statements)] ++
           twin_defs(statements) ++
-          Enum.map(later_probes, fn {name, _node, _x, body} -> {name, ["a", "b"], body} end)
+          Enum.map(later_probes, fn probe -> {probe.name, ["a", "b"], probe.body} end)
 
       {source, lines} = module_source_with_lines(inspect(module), defs)
 
@@ -89,8 +89,8 @@ defmodule Mutare.BindingsOraclePropertyTest do
               readable_checks(nodes, resolved_statements) ++
               later_checks(later_probes, lines, diagnostics)
           after
-            :code.purge(module)
             :code.delete(module)
+            :code.purge(module)
           end
 
         {{:error, _}, diagnostics} ->
@@ -205,30 +205,103 @@ defmodule Mutare.BindingsOraclePropertyTest do
         later != :all,
         x <- Gen.names(),
         not MapSet.member?(later, x),
-        {substituted, 1} <- [
-          substitute(statements, identity(node), &{:=, [], [{x, [], nil}, &1]})
-        ],
-        do: {"later_#{i}_#{x}", node, x, Gen.render_body(substituted)}
+        probe <- [later_probe(statements, node, x, "later_#{i}_#{x}")],
+        probe != nil,
+        do: probe
   end
+
+  @placeholder {:__mutare_probe__, [], nil}
+
+  # The probe's binding is the one the warning must be about, and the compiler names a
+  # binding by its line — so the variable gets a line no other binding of the name shares.
+  # The program's other bindings of it (a parameter, an earlier match, the node's own) are
+  # elsewhere, and a warning about one of them is not evidence. The node is rendered in
+  # place of a placeholder and spliced back parenthesized, on lines of its own:
+  #
+  #     …(a = 1,
+  #     a =
+  #     (
+  #     <node>
+  #     ))…
+  #
+  # The line break ahead of the variable is legal after a bracket, a comma or an operator,
+  # and it is only after those that a binding can precede on the line; a bare call head
+  # (`if`, `Kernel.if`, `case` — rendered without parentheses) takes no break and binds
+  # nothing. `nil` where the node is not found exactly once.
+  defp later_probe(statements, node, x, name) do
+    case substitute(statements, identity(node), fn _ -> @placeholder end) do
+      {with_placeholder, 1} ->
+        [before, rest] =
+          String.split(Gen.render_body(with_placeholder), Macro.to_string(@placeholder), parts: 2)
+
+        break = if before =~ ~r/[\w?!]\s*$/, do: "", else: "\n"
+        body = before <> break <> "#{x} =\n(\n" <> Macro.to_string(node) <> "\n)" <> rest
+        # The body's first line is offset 0; the binding is on the last line of `before`, or
+        # the one after it.
+        offset = newlines(before) + newlines(break)
+        %{name: name, node: node, x: x, body: body, binding_offset: offset}
+
+      _ ->
+        nil
+    end
+  end
+
+  defp newlines(text), do: text |> String.graphemes() |> Enum.count(&(&1 == "\n"))
 
   defp later_checks(probes, lines, diagnostics) do
-    for {name, node, x, _} <- probes,
-        {first, last} = Map.fetch!(lines, name),
-        not unused_warning?(diagnostics, x, first, last),
-        do: {:read_after, x, Macro.to_string(node)}
+    for probe <- probes,
+        %{body: body_line} = Map.fetch!(lines, probe.name),
+        not unused_warning?(diagnostics, probe.x, body_line + probe.binding_offset),
+        do: {:read_after, probe.x, Macro.to_string(probe.node)}
   end
 
-  defp unused_warning?(diagnostics, x, first, last) do
+  defp unused_warning?(diagnostics, x, line) do
     Enum.any?(diagnostics, fn diagnostic ->
-      line =
-        case diagnostic.position do
-          {line, _column} -> line
-          line when is_integer(line) -> line
-        end
-
-      diagnostic.severity == :warning and line in first..last and
+      diagnostic.severity == :warning and diagnostic_line(diagnostic) == line and
         diagnostic.message =~ ~s(variable "#{x}" is unused)
     end)
+  end
+
+  defp diagnostic_line(%{position: {line, _column}}), do: line
+  defp diagnostic_line(%{position: line}) when is_integer(line), do: line
+
+  # --- the oracle's own false-negative path -----------------------------------------------
+
+  # A claim that nothing reads `a` after `a = 1` is wrong: `q = a` reads it. The probe
+  # `a = (a = 1)` leaves two *other* bindings of `a` unused — the parameter, and the node's
+  # own, shadowed at once — and the compiler warns about both. Neither is the probe's
+  # binding, whose read the check must miss to report the claim; a check that took any
+  # warning about `a` in the function would be satisfied and stay silent.
+  test "a wrong `later` claim is reported even where the name has other unused bindings" do
+    statements = [quote(do: a = 1), quote(do: q = a)]
+    model_source = module_source("Mutare.Test.BindingOracleControlModel", [def_run(statements)])
+
+    [node | _] =
+      resolved =
+      model_source
+      |> Sourceror.parse_string!()
+      |> Resolve.annotate(registry(), warnings: false)
+      |> Bindings.annotate()
+      |> body_statements()
+
+    {_bound, _conflicts, _uncertain, later} = Meta.bindings(node)
+    assert MapSet.member?(later, :a), "the stamp itself reads `a` after the node"
+
+    probe = later_probe(resolved, node, :a, "later_0_a")
+    module = :"Elixir.Mutare.Test.BindingOracleControl#{System.unique_integer([:positive])}"
+
+    {source, lines} =
+      module_source_with_lines(inspect(module), [{probe.name, ["a", "b"], probe.body}])
+
+    assert {{:ok, _}, diagnostics} = Compile.string_result(source, "oracle_control.ex")
+    :code.delete(module)
+    :code.purge(module)
+
+    unused_a =
+      for d <- diagnostics, d.message =~ ~s(variable "a" is unused), do: diagnostic_line(d)
+
+    assert length(unused_a) == 2, "the control keeps two other unused bindings of `a`"
+    assert later_checks([probe], lines, diagnostics) == [{:read_after, :a, "a = 1"}]
   end
 
   # --- module rendering ----------------------------------------------------------------------
@@ -240,14 +313,14 @@ defmodule Mutare.BindingsOraclePropertyTest do
   defp module_source_with_lines(name, defs) do
     head = ["defmodule #{name} do"] ++ String.split(String.trim_trailing(Gen.preamble()), "\n")
 
+    # `index` gives each def the line its body starts on.
     {lines, index, _} =
       Enum.reduce(defs, {head, %{}, length(head)}, fn {def_name, params, body},
                                                       {acc, index, count} ->
         body_lines = String.split(body, "\n")
         def_lines = ["def #{def_name}(#{Enum.join(params, ", ")}) do"] ++ body_lines ++ ["end"]
-        first = count + 1
         last = count + length(def_lines)
-        {acc ++ def_lines, Map.put(index, def_name, {first, last}), last}
+        {acc ++ def_lines, Map.put(index, def_name, %{body: count + 2}), last}
       end)
 
     {Enum.join(lines ++ ["end"], "\n") <> "\n", index}

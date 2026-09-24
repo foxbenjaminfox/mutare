@@ -12954,6 +12954,61 @@ names; the ordinary selector now does too. The regression is `abs(Enum.count([0 
 0)]) + 1)` under every family — the soak's shape without the arithmetic error its original
 raised — which failed the compile against the previous library.
 
+### Selection is private to the module *execution*, and its absence under ExUnit is a failure (2026-09-24)
+
+Review of the entry below found two things wrong with the private key. First, it was
+derived from the module name, and ExUnit runs a module more than once: `:parameterize` on
+an async module queues one entry per parameter set, and the runner spawns each into its own
+process, concurrently — the same name, two executions, one slot. `with_active_mutant/2`'s
+save-and-restore of that slot is not mutual exclusion: one execution selects, the other
+selects, the first reads its fixture and sees the second's mutant. The key now names the
+runner process as well (`mutare_active__Elixir.Mod__<0.123.0>`). The runner is what the walk
+finds anyway; it runs one execution of a module at a time; and it is the ancestor of that
+execution's `setup_all` process and of every test process, so a fixture compiled once in
+`setup_all` and selected in the tests still reads one key.
+`selector_isolation_execution_test.exs` is the regression: two parameterized executions
+held inside one selected interval by message — each announces itself only after selecting,
+and observes only on the other's announcement — then both fixtures read there. A sleep
+would have turned the definite collision into a probabilistic one. Under a module-only key
+it fails on both instances.
+
+Second, the fallback. Where the walk found no test, the helper silently took the VM-wide
+key, and the entry below records the argument against that: the first cut isolated nothing
+and every flipped module still passed. Once a helper promises `async: true` safety, sharing
+the key is a correctness failure, not a degraded mode. So where ExUnit is running
+(`ExUnit.Server` is registered) and the walk finds nothing, `isolate_selector/0` raises,
+naming the remedy: `setup_all :isolate_selector` — `isolate_selector/1`, the setup-callback
+form — puts the key in the context as `:mutare_selector_key`, and
+`Process.put(Mutare.Selector.process_key(), key)` installs it in a process the walk cannot
+reach (one started under a supervisor, say), ahead of the walk. A worker that only
+*executes* a fixture needs nothing: the compiled selector already names its slot; the key
+is for one that transforms or selects. Outside ExUnit — `mix run`, the bench scripts — the
+fallback stands, there being nothing to share the key with. The source-scan guard stays as
+housekeeping (it checks that the words occur, not that setup, transform and selection
+agree), and the behavioural tests beside it carry the property.
+
+### The `later` oracle matched the name, not the binding (2026-09-24)
+
+Same review, of the oracle entry below. The read-after check bound the probed name at the
+node and looked for an unused-variable warning about that name *anywhere in the probe
+function*. The programs bind a name several times on purpose — `a` and `b` are parameters
+and members of the rebinding pool — so a warning about another binding satisfied it: the
+node's own binding, shadowed at once by the probe's; an earlier match; and, for every probe
+of `b`, the parameter `b` itself, unused in any program that does not read it. A model
+that missed a read of `b` after a node would have passed. The probe now renders the node in
+place of a placeholder and splices it back with the binding's variable on a line no other
+binding of the name shares (a line break ahead of it where a bracket, comma or operator
+precedes; none after a bare `if`/`case` head, which binds nothing), and the check wants the
+warning on that line. A negative control in the same module gives a node a wrong `later`
+claim while two other bindings of the name stay unused, and asserts the oracle reports it;
+a function-wide match reports nothing there. The oracle's module cleanup was also
+`purge`-then-`delete`, which leaves the just-compiled code resident as old; it and the
+property probe's now `delete` then `purge`, as `Mutare.Test` does and documents.
+`Mutare.Test.Metamutant.compile_purging/3` had the same order for a different reason: its
+fixture name is redefined *within* a test (a control under the same name), so an old
+version may already exist when the test exits and `delete` refuses — it purges, deletes,
+and purges again.
+
 ### Selection is private to the test module; the sync half of the fast loop was the selector (2026-09-24)
 
 The fast loop (`mix test --exclude runner --exclude property`) took 2:20, and 122 s of it
@@ -12975,7 +13030,9 @@ both — a first cut relied on it, was a silent no-op, and the fourteen flipped 
 "passed" while still sharing the key). The runner is one `Process.info(_, :parent)` hop up
 from either, two from a task inside a test; the walk is bounded and cached in the process,
 and it falls back to the key in force where no ExUnit test is found. It reads a private
-ExUnit detail, which the fallback makes a loss of isolation rather than a failure.
+ExUnit detail, which the fallback makes a loss of isolation rather than a failure. [Both
+halves of that last sentence were revised the same day: the key names the execution, and
+the fallback is refused under ExUnit — "Selection is private to the module *execution*".]
 
 Where the private key is taken matters: *before the first transform*, since the key is baked
 then. A module that transforms only through `Mutare.Test` gets that for free; one that calls

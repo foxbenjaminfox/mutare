@@ -143,7 +143,7 @@ defmodule Mutare.PropertyProbe do
   end
 
   defp purge(module) do
-    :code.purge(module)
     :code.delete(module)
+    :code.purge(module)
   end
 end

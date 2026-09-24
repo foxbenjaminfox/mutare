@@ -14,11 +14,13 @@ defmodule Mutare.Test do
 
   > #### Selection is private to the test module {: .info}
   >
-  > The live-mutant helpers select on a `:persistent_term` key derived from the ExUnit test
-  > module they run in (`isolate_selector/0`), set before a metamutant is transformed or a
-  > mutant selected, so a test module using them may be `async: true`. Outside an ExUnit
-  > test process the key falls back to the VM-wide one, and such callers must not run
-  > concurrently with one another.
+  > The live-mutant helpers select on a `:persistent_term` key private to the running ExUnit
+  > test module (`isolate_selector/0` — one key per *execution* of the module, so two
+  > `:parameterize` instances are apart too), set before a metamutant is transformed or a
+  > mutant selected, so a test module using them may be `async: true`. A process no ExUnit
+  > test runs above must be given the key (`isolate_selector/1`), or the helper raises;
+  > outside ExUnit the key is the VM-wide one, and such callers must not run concurrently
+  > with one another.
 
   `import Mutare.Test` in an `ExUnit.Case` to use them:
 
@@ -228,26 +230,41 @@ defmodule Mutare.Test do
 
   # The source helpers' one transform call: `mutators` overrides `opts`, and the invariant checks
   # are on unless `opts` turns them off.
+  # How far up the parent chain the walk for the module runner goes: a test process or
+  # `setup_all` process is one hop from it, a task a test starts is two.
+  @walk 8
+
   @doc """
-  Selects, for this process, on a key private to the current ExUnit test module, and
+  Selects, for this process, on a key private to the running ExUnit test module, and
   returns it.
 
-  ExUnit records the test it is running in the process that runs the module — the parent of
-  each test process and of the `setup_all` process — so the key is found by walking up from
-  the caller, and is the same in a `setup_all`, in each test, and in a task a test starts: a
-  metamutant compiled once in `setup_all` and selected in a test read one slot, and no other
-  module's selection is touched. Every helper here that transforms or selects calls it
-  first; a test that transforms through `Mutare.Transform` itself calls it before doing so.
-  Where no ExUnit test is found the process keeps the key in force
-  (`Mutare.Selector.key/0`), which is VM-wide.
+  The key names one *execution* of the module. ExUnit's runner records the running test in
+  the process that runs the module — the parent of each test process and of the
+  `setup_all` process — so the key is found by walking up from the caller, and
+  is the same in a `setup_all`, in each test, and in a task a test starts: a metamutant
+  compiled once in `setup_all` and selected in a test read one slot. Two executions of one
+  module (`:parameterize` runs an async module once per parameter set, concurrently) have
+  different runners and so different keys. Every helper here that transforms or selects
+  calls it first; a test that transforms through `Mutare.Transform` itself calls it before
+  doing so.
+
+  Under ExUnit, isolation is not optional: where the walk finds no test while ExUnit is
+  running this raises, rather than fall back to the VM-wide key and share it. A process the
+  walk cannot reach — one started under a supervisor, say — is given the key instead:
+  `isolate_selector/1` puts it in the setup context, and
+  `Process.put(Mutare.Selector.process_key(), key)` in that process installs it, ahead of
+  the walk. Outside ExUnit the process keeps the key in force (`Mutare.Selector.key/0`).
   """
   @spec isolate_selector() :: atom()
   def isolate_selector do
     case Process.get(Selector.process_key()) do
       nil ->
-        case current_test_module(self(), 8) do
-          nil -> Selector.key()
-          module -> private_key(module)
+        case test_execution(self(), @walk) do
+          {module, runner} ->
+            private_key(module, runner)
+
+          nil ->
+            if ex_unit_running?(), do: raise(no_test_message()), else: Selector.key()
         end
 
       key ->
@@ -255,17 +272,28 @@ defmodule Mutare.Test do
     end
   end
 
-  # The ExUnit module whose runner is an ancestor of `pid`, read from the runner's own
-  # dictionary (`ExUnit.Runner` holds the current `%ExUnit.Test{}` or `%ExUnit.TestModule{}`).
-  defp current_test_module(_pid, 0), do: nil
+  @doc """
+  `isolate_selector/0` as a setup callback — `setup_all :isolate_selector`, or `setup` —
+  taking the key ahead of the module's first transform and putting it in the context as
+  `:mutare_selector_key`, for a process the walk cannot reach to install.
+  """
+  @spec isolate_selector(map()) :: %{mutare_selector_key: atom()}
+  def isolate_selector(context) when is_map(context),
+    do: %{mutare_selector_key: isolate_selector()}
 
-  defp current_test_module(pid, hops) do
+  # The ExUnit module execution `pid` runs under, as `{module, runner}`: the runner is the
+  # process running the module (`ExUnit.Runner` keeps the current `%ExUnit.Test{}` or
+  # `%ExUnit.TestModule{}` in its dictionary), an ancestor of the test and `setup_all`
+  # processes, and runs one execution of a module at a time.
+  defp test_execution(_pid, 0), do: nil
+
+  defp test_execution(pid, hops) do
     with {:dictionary, dictionary} <- Process.info(pid, :dictionary),
          nil <- test_module(List.keyfind(dictionary, ExUnit.Runner, 0)),
          {:parent, parent} when is_pid(parent) <- Process.info(pid, :parent) do
-      current_test_module(parent, hops - 1)
+      test_execution(parent, hops - 1)
     else
-      module when is_atom(module) and module != nil -> module
+      module when is_atom(module) and module != nil -> {module, pid}
       _ -> nil
     end
   end
@@ -274,10 +302,20 @@ defmodule Mutare.Test do
   defp test_module({ExUnit.Runner, %{__struct__: ExUnit.TestModule, name: module}}), do: module
   defp test_module(_), do: nil
 
-  defp private_key(module) do
-    key = :"#{Selector.default_key()}__#{inspect(module)}"
+  defp private_key(module, runner) do
+    key = :"#{Selector.default_key()}__#{inspect(module)}__#{:erlang.pid_to_list(runner)}"
     Process.put(Selector.process_key(), key)
     key
+  end
+
+  defp ex_unit_running?, do: Process.whereis(ExUnit.Server) != nil
+
+  defp no_test_message do
+    "no ExUnit test runs above this process, so there is no test-module key to select " <>
+      "on. Call Mutare.Test's helpers from the test process (or a task it starts), or " <>
+      "install the key the module took — `setup_all :isolate_selector`, then " <>
+      "`Process.put(Mutare.Selector.process_key(), context.mutare_selector_key)` in this " <>
+      "process."
   end
 
   defp transform(source, mutators, opts) do

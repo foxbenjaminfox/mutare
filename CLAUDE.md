@@ -60,11 +60,14 @@ word is added as an operand so the pairwise recipes cross it with everything),
 binding readers against the compiler itself — `bindings_oracle_property_test`, NOTES "The
 binding readers are checked against the compiler"),
 and the shipped `Mutare.Test` for diff-level checks; each says when it is safe under `async: true`.
-A test that selects a mutant does so on its module's **private selector key**
-(`Mutare.Test.isolate_selector/0`, taken by every helper before it transforms), so it may be
+A test that selects a mutant does so on a **selector key private to its module's execution**
+(`Mutare.Test.isolate_selector/0`, taken by every helper before it transforms; under ExUnit a
+process the key cannot be found for raises rather than share the VM-wide one), so it may be
 async — but a module that transforms through `Mutare.Transform` itself must take the key in a
 `setup` first, and one that sets the coverage track flag stays serial; `selector_isolation_test`
-enforces both — NOTES "Selection is private to the test module".
+enforces both, and `selector_isolation_execution_test` holds two `:parameterize` executions in
+one selected interval — NOTES "Selection is private to the test module", "Selection is private
+to the module *execution*".
 
 ## Architecture
 

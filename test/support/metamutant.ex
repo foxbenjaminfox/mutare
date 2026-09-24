@@ -111,6 +111,11 @@ defmodule Mutare.Test.Metamutant do
   @doc """
   Compiles `meta` (asserting it does) and purges `module` when the calling test exits, so a
   fixture name can be redefined by the next test without a redefinition warning.
+
+  The test may itself have redefined `module` since (a control compiled under the same
+  name), leaving an old version beside the current one, and `:code.delete/1` refuses while
+  one exists — so any old version is purged first, then the current one is made old and
+  purged in turn.
   """
   def compile_purging(module, meta, file \\ "nofile") do
     modules = assert_compiles(meta, file)
@@ -118,6 +123,7 @@ defmodule Mutare.Test.Metamutant do
     ExUnit.Callbacks.on_exit(fn ->
       :code.purge(module)
       :code.delete(module)
+      :code.purge(module)
     end)
 
     modules
