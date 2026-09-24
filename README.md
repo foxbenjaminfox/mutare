@@ -47,7 +47,7 @@ Or add mutare by hand — though if you're using any macro-heavy libraries, like
 
 ```elixir
 # mix.exs
-{:mutare, "~> 0.3", only: [:dev, :test], runtime: false}
+{:mutare, "~> 0.4", only: [:dev, :test], runtime: false}
 # Optionally, also:
 # {:mutare_ecto, "~> 0.1", only: [:dev, :test], runtime: false}
 # {:mutare_decimal, "~> 0.1", only: [:dev, :test], runtime: false}

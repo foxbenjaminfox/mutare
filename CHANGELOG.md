@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-24
+
 ### Changed
 
 - **A pipe stage is the call it is sugar for, everywhere Mutare reads code.**
@@ -569,7 +571,8 @@ Initial release.
   any label a mutator declares) to your own functions, with the mutators'
   value-aware reaction: `{MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout}`.
 
-[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/foxbenjaminfox/mutare/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/foxbenjaminfox/mutare/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/foxbenjaminfox/mutare/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/foxbenjaminfox/mutare/compare/v0.2.0...v0.2.1
