@@ -218,6 +218,20 @@ defmodule Mutare.Transform.Meta do
     do: [{MetaKeys.route_call_key(), identity} | meta]
 
   @doc """
+  Drop every route stamp from a call's meta — the positions or `:skip` (`routing/1`), the
+  displaced declaration (`displaced_routing/1`) and the identity (`routed_call/1`) — leaving
+  the retained environment, so the call can be routed again as the call it now is
+  (`Mutare.Transform.Resolve.reroute/1`).
+  """
+  @spec drop_routing(keyword()) :: keyword()
+  def drop_routing(meta) do
+    meta
+    |> Keyword.delete(MetaKeys.route_key())
+    |> Keyword.delete(MetaKeys.displaced_route_key())
+    |> Keyword.delete(MetaKeys.route_call_key())
+  end
+
+  @doc """
   The meta of the `|>` a call was written as, or `nil` for a call written directly.
   `Mutare.Transform.Resolve` turns a piped call into the direct call `Kernel.|>/2` would build
   (`Mutare.Transform.WrittenPipe.direct/2`), so routing, hosting, mutation and delivery read one

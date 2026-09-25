@@ -249,6 +249,62 @@ defmodule Mutare.Transform.Resolve do
   defp static_routing(module_key, fun, arity, env),
     do: RouteStamp.declared_routing(env.call_routes, module_key, fun, arity)
 
+  # A stamp is the route's answer for the call it was stamped on. A mutator's `rebuild` reuses
+  # the offered call's meta — stamp, identity and retained environment included — and may
+  # change anything a route or a classifier reads: the callee, the arity, a keyword key, a
+  # value. So every stamped call in a mutant is routed again, in the environment it retained,
+  # for the call it now is: the registry's answer for the rebuilt head and arity, a `:routing`
+  # classifier invoked on the rebuilt arguments (a mutant is source the classifier must
+  # classify as it classifies any call to its macro), and no stamp where nothing matches — the
+  # readers then read the call through the environment it still carries
+  # (`effective_routing/2`), as they read any call this pass did not route. The arguments are
+  # not walked again: a nested call keeps the stamp it was resolved with, and one the mutator
+  # rebuilt is rerouted as the walk reaches it. Warnings stay off — a misshapen mutant is not
+  # the author's call site. An unchanged call is stamped as it was.
+  #
+  # Applied where a mutant enters core (`Mutare.Transform.Analyze.Attach.build_candidates/2`),
+  # so no later reader meets a stamp computed for another call — NOTES "A rebuilt call is
+  # routed as the call it is".
+  @doc false
+  @spec reroute(Macro.t()) :: Macro.t()
+  def reroute(mutant) do
+    Macro.prewalk(mutant, fn
+      {head, meta, args} = node when is_list(meta) and is_list(args) ->
+        case {Meta.routing(meta), Keyword.fetch(meta, MetaKeys.resolution_key())} do
+          {nil, _absent_or_retained} -> node
+          {_routing, {:ok, env}} -> restamp(head, meta, args, env)
+          {_routing, :error} -> node
+        end
+
+      other ->
+        other
+    end)
+  end
+
+  # An unchanged call comes back as the identical term — its meta in the order the pre-pass
+  # left it — since a delivery compares a mutant with the written node by equality
+  # (`Mutare.Transform.PipeEmit`, `Mutare.Transform.WrittenPipe.stage_attribution/2`).
+  defp restamp(head, meta, args, env) do
+    stripped = Meta.drop_routing(meta)
+    env = %{env | diag: %{env.diag | warn?: false}}
+
+    restamped =
+      case preserved_identity(head, stripped, args, env) do
+        nil ->
+          stripped
+
+        {module_key, fun} ->
+          RouteStamp.stamp(stripped, module_key, fun, args, {head, stripped, args}, env)
+      end
+
+    if route_stamps(restamped) == route_stamps(meta),
+      do: {head, meta, args},
+      else: {head, restamped, args}
+  end
+
+  defp route_stamps(meta),
+    do: {Meta.routing(meta), Meta.displaced_routing(meta), Meta.routed_call(meta)}
+
   @doc false
   @spec forget(Macro.t()) :: Macro.t()
   def forget(ast) do

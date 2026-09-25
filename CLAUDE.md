@@ -286,7 +286,11 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   value (`PipeEmit.delivery/2`) evaluates it ahead of any stage whose position 0 is a value —
   unrouted, `:expression` or `:interior`. The one way to say otherwise is the position word
   `:lazy_expression`; anything that binds a user expression ahead of a call must honour it —
-  NOTES "Evaluation is a route's to declare: `:lazy_expression`".
+  NOTES "Evaluation is a route's to declare: `:lazy_expression`". A call a mutator *rebuilt*
+  is routed again as the call it now is where the mutant enters core (`Resolve.reroute/1`,
+  from `Attach.build_candidates/2`; an unchanged call comes back as the identical term) —
+  the offered call's stamp never describes a different call, and a classifier sees rebuilt
+  calls to its macro like any other. NOTES "A rebuilt call is routed as the call it is".
 - **The metamutant is not invisible to reflection, and nothing should try to make it so.**
   Callers, captures, `@spec` and `@behaviour`/`@impl` see the module unchanged; a stacktrace,
   `__ENV__.function` or an `@on_definition` callback sees generated names. Don't add machinery

@@ -28,13 +28,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `from` whose `having:` carried `subquery(from(…))` lost its comparison and aggregate
   mutants. The region is the enclosing route's syntax; the macro is read as that syntax,
   its names counted as possible writes and nothing more.
-- **A whole-call mutant that changes the pairs of a `{:keyword, …}`-routed argument no
-  longer aborts the transform.** `rebuild` keeps the offered call's routing stamp, and a
-  mutant that dropped a pair presented a stamp with one treatment too many to the binding
-  readers, which raised the classifier's contract error at transform time. The stamp is now
-  read where it still fits the rebuilt arguments and ignored where it does not; the
-  contract error is raised only for the written call the route was stamped on. A mutator
-  need not strip or restamp what it rebuilds.
+- **A call a mutator rebuilt is routed as the call it is.** `rebuild` reuses the offered
+  call's meta, routing stamp included, and since 0.4.0 that stamp — the route's answer for
+  the *written* call — was what the analysis deciding a mutant's delivery read on the
+  rebuilt one. A mutant that dropped a pair from a `{:keyword, …}`-routed list aborted the
+  transform with the classifier's contract error; one that renamed a keyword key or the
+  callee at the same shape was read by the stale stamp, so a mutant that stopped a macro
+  from evaluating an expression was still credited with that expression's bindings and
+  delivered unfaithfully — a false survivor its own source patch would have killed. Every
+  stamped call in a mutant is now routed again where the mutant enters core, in the
+  environment the call retained: the registry's answer for the rebuilt head and arity, a
+  `:routing` classifier invoked on the rebuilt arguments, no route where nothing matches.
+  A mutator need not strip or restamp what it rebuilds; a classifier classifies a rebuilt
+  call to its macro as it classifies any call to it.
 
 ## [0.4.0] - 2026-09-24
 

@@ -9,8 +9,9 @@ defmodule Mutare.RoutedCallReadingTest do
       route's claim that the position is the macro's syntax; a registered macro nested in it
       is read as that syntax too, its names possible writes and nothing more — never as a
       call whose binding effect is *unknown*, which withholds every selector around it;
-    * a **rebuilt call** keeps the offered call's stamp; core reads it where it still fits
-      the rebuilt arguments, and nothing where it does not.
+    * a **rebuilt call** is routed again as the call it is before any reader meets it
+      (`rebuilt_call_routing_test.exs`); a stamp a reader nonetheless finds not fitting its
+      call — a static positional route over another pair count or arity — is read as nothing.
   """
   use ExUnit.Case, async: true
 
@@ -160,7 +161,7 @@ defmodule Mutare.RoutedCallReadingTest do
     end
   end
 
-  describe "a rebuilt call's stamp is read where it fits" do
+  describe "a stamp that does not fit its call is read as nothing" do
     test "a whole-call mutant that drops a pair from a {:keyword, …} argument is delivered" do
       source = """
       defmodule Fixture do

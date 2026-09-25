@@ -8,8 +8,10 @@ defmodule Mutare.Transform.KeywordRouting do
   Positional routing requires exactly one treatment per pair, and never pads or truncates:
   `decode!/2` raises on a mismatch, and is what Resolve applies to the written call the
   route was stamped on; `decode/2` reads a mismatch as the `:raw` fallback, since the only
-  argument that can present one is a mutator's rebuild that changed the pairs under the
-  offered call's stamp — a stamp that no longer fits says nothing about the argument.
+  argument that can present one is a mutator's rebuild whose pairs a *static* positional
+  route no longer fits (a rebuilt call is routed again before it is read,
+  `Mutare.Transform.Resolve.reroute/1`; a classifier answers for the rebuilt pairs, a static
+  list keeps its count) — a stamp that does not fit says nothing about the argument.
 
   Keyed refinements choose each value's final treatment before any descent. Unnamed values
   and data keys inherit the leading treatment, except that `:interior` becomes `:expression`

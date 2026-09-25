@@ -13131,6 +13131,60 @@ the export names), not a scoping one — Elixir reads the entry value either way
 baseline property's to check, with sibling rebinding in its vocabulary; `var!` and computed
 names stay the known limit ("The binding model reads syntax and declarations").
 
+### A rebuilt call is routed as the call it is `[fixed; done]` (2026-09-25)
+
+Review of the entry below found the rebuilt-call half necessary and not sufficient: the
+readers stopped trusting a stamp whose arity or pair count no longer fit the rebuilt call,
+and went on trusting one whose counts did. Cardinality is not validity. A classifier reads
+whatever it likes of the `Call` — a keyword's *name*, a value, the callee — so a rebuild can
+falsify its answer at the same shape: `value(eval: (p = 6), raw: 0)`, whose classifier
+routes the `eval:` value `:expression`, rebuilt as `value(quoted: (p = 6), raw: 0)`, which
+the macro discards (`rebuilt_call_routing_test.exs`, with the same call rebuilt as
+`ignored(…)`, a callee with its own `:raw` route). The reviewer's counterexample executed
+exactly as traced: `p` bound on entry, written by an earlier sibling (`p = 8`, so not
+exportable as incoming), read after; the source call writes it, so the gate requires the
+branch to keep the write, and the stale stamp said it did. The export named the incoming
+`:incoming`, the outer rebind wrote it over the sibling's `8`, and the metamutant gave the
+*original's* answer under the mutant — `{[8, 6], false}` against the patch's
+`{[8, 6], true}`. A false survivor the baseline cannot see, since the baseline branch is
+right. The defect predates the fit check: the same-sized stale stamp was always trusted.
+
+The reviewer offered two remedies — re-establish the classification for the replacement,
+or treat the old one as unavailable and withhold where delivery depends on it — and
+warned off a third: stripping the stamp and reading the call as ordinary, which would read
+the discarded `quoted:` value as an evaluated match and make the same wrong claim. Taken:
+re-establish. `Resolve.reroute/1` walks a mutant and, at every call carrying a routing
+stamp and the retained environment `rebuild` copied with it, drops the route stamps
+(`Meta.drop_routing/1`) and stamps the call again through `RouteStamp.stamp/6` for the
+identity `preserved_identity/4` reads off the rebuilt head — the registry's answer for the
+rebuilt head and arity, a `:routing` classifier invoked on the rebuilt arguments, nothing
+where no route matches. `Attach.build_candidates/2` applies it to every mutator-produced
+in-place mutant, the one funnel, before anything reads the node. The conservative reading
+was rejected because it under-reads every classifier-routed rebuild: a `destructure`-shaped
+rewrite that keeps its binding pattern would be withheld wherever the names are read after,
+for nothing. The classifier-on-a-mutant question is not a new contract: a mutant is source
+its patch must compile, so every rebuilt call is a call a user could write, and a
+classifier that cannot classify one is broken for that source too; its `ContractError`
+is left to raise, as it does for a written call. Warnings are off in the reroute — a
+misshapen mutant is not the author's call site. Unrouted after the reroute means the
+registry has no route for the rebuilt callee at that arity, and the call is ordinary, as
+any unrouted call is ("Every call is ordinary until a route says otherwise"); a mutator
+that rewrites to a macro is expected to route what it rewrites to, as `mutare_ecto`'s
+catalogs do. The readers' not-fitting fallbacks (`[]`, `{:whole, :raw}`) stay, now for the
+one shape that can still reach them: a *static* positional route whose fixed count a
+rebuilt call's pairs or arity do not match — the written form would not have routed.
+
+Two sharp edges. **An unchanged call must come back as the identical term.** The first
+cut dropped and re-prepended the stamps on every routed call, which reordered the meta of
+calls the mutator had not touched — and `PipeEmit.keeps_argument?/2` and
+`WrittenPipe.stage_attribution/2` compare a mutant with the written node by `==`, so every
+value-routed pipe stage lost its stage attribution and its shared-operand delivery (six
+pipe tests). `restamp/4` now compares the recomputed `{routing, displaced, identity}` with
+the old and returns the original node when they agree; a changed stamp means a changed
+call, which was never equal to the written one. **The cost is a prewalk per mutant** with
+a registry lookup, and a classifier call, per routed call in it; classifiers are pure and
+small, and the transform differential over the corpus is unchanged.
+
 ### A syntax region's routed macro is syntax; a rebuilt call's stamp is read where it fits; resolution is a host's to ask for `[fixed; done]` (2026-09-24)
 
 Porting `mutare_ecto` to 0.4.0 turned up three things at the host boundary, two of them
@@ -13174,6 +13228,8 @@ gate's `needed` comes from the source, `shared` exports only what every branch i
 bind. Over-reading (the zip-truncation a front insertion would give) is the direction that
 makes a branch reference a name it does not bind — a poisoned mutant, recoverable but wrong.
 `Mutare.Calls` now states the contract: a mutator need not strip or restamp what it rebuilds.
+*Superseded the next day*: the fit check was necessary and not sufficient — a stamp can be
+false at the same counts. See "A rebuilt call is routed as the call it is".
 
 **Resolution on its own.** The plugin's SQL catalogs identify nested query macros, `subquery`,
 `fragment` and user macros registered `:skip` by their stamps, and those regions are now

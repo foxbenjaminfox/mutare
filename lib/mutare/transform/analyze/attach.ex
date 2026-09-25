@@ -23,7 +23,7 @@ defmodule Mutare.Transform.Analyze.Attach do
 
   alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Mutation.Attribution
-  alias Mutare.Transform.{Candidate, Meta, NodeRange, WrittenPipe}
+  alias Mutare.Transform.{Candidate, Meta, NodeRange, Resolve, WrittenPipe}
 
   # Offer `raw` to the mutators; if any fire, attach their candidates — built from
   # `raw`, so the diff renders the author's node — to `subject`, the already-analyzed
@@ -61,10 +61,14 @@ defmodule Mutare.Transform.Analyze.Attach do
     range = node |> WrittenPipe.report_node() |> NodeRange.get()
 
     Enum.map(muts, fn %Dispatch.Result{} = result ->
+      # A rebuilt call carries the offered call's route stamp, computed for another call;
+      # route every stamped call in the mutant as the call it now is before anything reads it.
+      mutated = Resolve.reroute(result.node)
+
       # A mutator's own attribution wins; failing one, a rewritten pipe stage's mutant is
       # reported at the stage the user wrote (`WrittenPipe.stage_attribution/2`) — and still
       # classified as the call the mutator was offered, never as that stage.
-      stage = is_nil(result.attribution) && WrittenPipe.stage_attribution(node, result.node)
+      stage = is_nil(result.attribution) && WrittenPipe.stage_attribution(node, mutated)
 
       {attribution, attribution_range} =
         checked_attribution(result.attribution || stage || nil, node, range)
@@ -72,7 +76,7 @@ defmodule Mutare.Transform.Analyze.Attach do
       %Candidate.InPlace{
         mutator: result.spec,
         original: node,
-        mutated: result.node,
+        mutated: mutated,
         range: range,
         note: result.note,
         variant: result.variant,
@@ -80,7 +84,7 @@ defmodule Mutare.Transform.Analyze.Attach do
         attribution_range: attribution_range,
         # Core's pipe attribution may cover an enclosing group; it still belongs to this stage.
         position: if(is_nil(attribution) or stage, do: WrittenPipe.stage_position(node)),
-        classified: if(stage && attribution, do: {node, result.node})
+        classified: if(stage && attribution, do: {node, mutated})
       }
     end)
   end

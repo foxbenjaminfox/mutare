@@ -96,11 +96,13 @@ defmodule Mutare.Analyze do
   call is stamped, and its arguments are left as written. During a scan, the route and
   argument-mark matches inside the region are reported like an island's.
 
-  Pass the callback's `context` unchanged. A context that carries no environment (a producer
-  driven directly, in a test) returns `subtree` as it is.
+  Pass the callback's `context` unchanged, and the region itself — not the routed call
+  around it, which resolves again to the same boundaries and leaves the region as written.
+  A context that carries no environment (a producer driven directly, in a test) returns
+  `subtree` as it is.
 
-      def host(%Mutare.CallRouting.Call{node: node}, context) do
-        node = Mutare.Analyze.resolve(node, context)
+      def host(%Mutare.CallRouting.Call{arguments: [_query, fragment]}, context) do
+        fragment = Mutare.Analyze.resolve(fragment, context)
         # nested `from(…)` calls are now `Mutare.Calls.resolved_routed_call/1` matches
         …
       end

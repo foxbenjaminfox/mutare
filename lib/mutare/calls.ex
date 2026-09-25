@@ -20,11 +20,14 @@ defmodule Mutare.Calls do
   query, a registered macro), resolve the fragment first with `Mutare.Analyze.resolve/2` —
   these readers then answer for it.
 
-  `rebuild` reuses the offered call's meta, its routing stamp included. A rebuilt call whose
-  arguments the stamp still fits is read by it; where they no longer fit — a pair dropped
-  from a `{:keyword, …}`-routed list, the call at another arity — Mutare reads nothing from
-  the stamp rather than misreading it, so such a mutant is withheld only where its bindings
-  could not be vouched for either way. A mutator need not strip or restamp what it rebuilds.
+  `rebuild` reuses the offered call's meta, its routing stamp included, and a mutator need
+  not strip or restamp what it rebuilds: Mutare routes a rebuilt call as the call it now is
+  before anything reads it — the registry's answer for the rebuilt head and arity, a
+  `:routing` classifier invoked on the rebuilt arguments, no route where nothing matches. A
+  classifier therefore classifies a rebuilt call to its macro as it classifies any call to
+  it. What the rebuilt call binds is read by that route, so a mutant that stops a macro from
+  evaluating an expression is not credited with the expression's bindings, and is withheld
+  where a delivery would depend on them.
 
   ## Example
 

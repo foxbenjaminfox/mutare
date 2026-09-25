@@ -116,10 +116,11 @@ defmodule Mutare.Transform.BindingEscapeEmit do
           argument_bindings_for(arg, treatment, context)
         end)
 
-      # A stamp that does not fit the arguments: a mutator rebuilt the call at another arity
-      # through the offered call's `rebuild`, which reuses its meta. The stamp was the route's
-      # answer for the call it was stamped on and says nothing about this one; only a mutant
-      # branch reads this way, and reading nothing there errs toward withholding the mutant.
+      # A stamp that does not fit the arguments. A rebuilt call is routed again before a
+      # reader meets it (`Resolve.reroute/1`), so this is a static route whose fixed positions
+      # a rebuilt call at another arity does not match — the written form would not have
+      # routed. The stamp says nothing about this call; only a mutant branch reads this way,
+      # and reading nothing there errs toward withholding the mutant.
       treatments when is_list(treatments) ->
         []
 
