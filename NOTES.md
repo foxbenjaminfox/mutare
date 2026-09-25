@@ -13131,6 +13131,55 @@ the export names), not a scoping one — Elixir reads the entry value either way
 baseline property's to check, with sibling rebinding in its vocabulary; `var!` and computed
 names stay the known limit ("The binding model reads syntax and declarations").
 
+### A desugared pipe is re-resolved as the pipe `[fixed; done]` (2026-09-25)
+
+A seventh review, of the entry below, found what its fallback hands the walk. Reuse is now
+refused where the environment changed — that part held — but the refused node was handed
+over with its stamps dropped (`changed/1`) and its *shape* kept. For most calls the shape is
+the source. For one it is not: the walk makes `(p = 6) |> Function.identity()` the direct call
+`Function.identity(p = 6)`, which is what `Kernel.|>/2` means by it, and keeps the pipe's meta
+as a spelling stamp (`WrittenPipe.direct/2`) for the renderer to undo. That desugaring is an
+interpretation made under an environment: it holds while `|>` resolves to `Kernel`. A mutator
+that wraps the offered call — the identical term, stamp and all — in `(import Kernel, except:
+[|>: 2]; import DiscardPipe, only: [|>: 2]; …)` changes what the written operator means, and
+the compiler reads the patch by the new import, because `Mutare.Transform.Render` spells the
+call as the pipe again. Confirmed by test before anything changed, a false survivor at the
+familiar counts: metamutant `{[8, 6], false}`, patch `{[8, 6], true}`. The block clause
+folded the imports, `resolved_here?/3` refused the call — and `changed/1` gave the walk
+`Function.identity(p = 6)`, a direct call with no `|>` in it, which the remote-call clause
+resolved again as `Function.identity/1` and the binding reader credited with `p = 6`, a write
+`DiscardPipe.|>/2` (a macro discarding both operands, routed `[:raw, :raw]`) never makes. The
+gate was satisfied by a summary of the wrong program; the export took `p` as shared; the
+selected branch exported the incoming value over the sibling's `8`. A reparsed copy of the
+*resugared* pipe — the same source, fresh syntax — was withheld correctly, since the fresh `|>`
+took the pipe clause and found `DiscardPipe`'s route. (Reparsing the direct call would not
+have been a control: that prints different source.)
+
+Taken: what fails reuse is handed to the walk *as written* (`as_written/1`). A node carrying
+the spelling stamp is restored to the pipe it was written (`WrittenPipe.written/1` — the one
+inverse every reader of the spelling goes through), pipe and stage stripped of their stale
+stamps, and the `|>` clause resolves the operator in the environment now in force: `Kernel`'s
+desugars it again and stamps it again, so an unrelated `alias` beside a pipe reproduces the
+written walk's stamping (the retained environments alone differ, `forget/1` shows the terms
+equal — node identities aside for a grouped pipe, whose continuation's spelling copy of the
+remaining stage takes the pipe's identity, as `WrittenPipe.direct/2` gave the direct call in
+the stage's place); another's takes the bare-call walk with its own route, and the node is then a `|>`
+call routed `[:raw, :raw]`, which the binding reader reads as making no write — the gate
+withholds the candidate. A node the stamp rode onto that `|>` cannot pipe into — a mutator's
+operator or literal on the offered meta — has no written pipe (`WrittenPipe.stage?/2`) and is
+the call it is, as before. Grouped pipes go the same way: `written/1` regroups them, the pipe
+clause flattens them again, and every prefix is rebuilt from a stage without the stamp, so
+none is term-equal to an offered subtree and none is reused stale. Nothing here touches the
+site or the render: the spelling stamp is re-made where `Kernel` desugars again, and where
+another operator wins the node *is* the pipe the user wrote. Not taken: dropping the spelling
+stamp on a refused node (the patch would then report a direct call the user never wrote) and
+withholding every mutant that moves a piped call beneath an `import` (an unrelated import is
+the common case, and the operator's resolution is one lookup away).
+
+Regression tests: `rebuilt_call_reuse_test.exs`, "a desugared pipe a mutant moves beneath
+another `|>`" — the `reroute/2` unit against the resugared-and-reparsed control, the source
+patch, the withheld control, and the identity guarantee alone and beneath an unrelated alias.
+
 ### A reused call is one resolved in the environment now in force `[fixed; done]` (2026-09-25)
 
 A sixth review, of the entry below, found the shortcut beside the walk it approved: the

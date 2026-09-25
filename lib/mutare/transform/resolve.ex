@@ -277,7 +277,9 @@ defmodule Mutare.Transform.Resolve do
   # looked up whether or not the written call was routed — `value(x)`, an ordinary function,
   # rebuilt as `ignored(x)`, a routed macro; a fresh `|>` is made the direct call it is sugar
   # for before its stage is looked up, so the stage is routed at the arity the piped operand
-  # gives it; a fresh statement sequence folds its `alias`/`import` directives for the
+  # gives it, and a desugared pipe the mutant moved under another `|>` is handed back as the
+  # pipe it was written (`as_written/1`), since its operator is what the environment changed;
+  # a fresh statement sequence folds its `alias`/`import` directives for the
   # statements after them; and the route found bounds the walk beneath it as it does
   # anywhere — a call in a `:raw` position, a skipped call or quoted data of the replacement
   # is that route's syntax, and no classifier is asked about it. A classifier sees the
@@ -291,7 +293,7 @@ defmodule Mutare.Transform.Resolve do
   # so no later reader meets a stamp computed for another call — NOTES "A rebuilt call is
   # routed as the call it is", "A rebuilt call's route governs its delivery, and its classifier
   # sees written syntax", "A rebuilt call is routed whether or not the written call was", "A
-  # replacement is resolved by the walk".
+  # replacement is resolved by the walk", "A desugared pipe is re-resolved as the pipe".
   @doc false
   @spec reroute(Macro.t(), Macro.t()) :: Macro.t()
   def reroute(mutant, original) do
@@ -426,10 +428,31 @@ defmodule Mutare.Transform.Resolve do
   # not seen here, and takes the clause a written node does.
   defp walk({_form, meta, args} = node, %{unchanged: %MapSet{} = unchanged} = env)
        when is_list(meta) and is_list(args) do
-    if resolved_here?(node, unchanged, env), do: node, else: walk_node(changed(node), env)
+    if resolved_here?(node, unchanged, env), do: node, else: walk_node(as_written(node), env)
   end
 
   defp walk(node, env), do: walk_node(node, env)
+
+  # What fails reuse is handed to the walk as written. A direct call `Kernel.|>/2`'s desugaring
+  # made of a written pipe (`WrittenPipe.direct/2`) is that desugaring only while `|>` still
+  # resolves to `Kernel`: a mutant that imports another `|>` over the offered call changes what
+  # the written operator means, and the compiler reads the patch — spelled as the pipe again by
+  # `Mutare.Transform.Render` — by that import. Resolving the direct call again would find no
+  # operator to reconsider, so the pipe is restored first (`WrittenPipe.written/1`), pipe and
+  # stage stripped of their stale stamps, and the `|>` clause resolves the operator in the
+  # environment now in force: `Kernel`'s desugars it again, and stamps it again; another's takes
+  # the bare-call walk with its own route. A node `|>` cannot pipe into — a stamp a mutator's
+  # operator or literal inherited with the offered meta — has no written pipe, and is the call
+  # it is, its stamps dropped (`changed/1`).
+  defp as_written(node) do
+    case WrittenPipe.written(node) do
+      {:|>, _pipe_meta, [left, stage]} = pipe ->
+        changed(put_elem(pipe, 2, [left, changed(stage)]))
+
+      nil ->
+        changed(node)
+    end
+  end
 
   # A statement sequence: fold the env left-to-right so an `alias`/`import` extends it for the
   # *subsequent* siblings only. Each statement is walked under the env in force *before* it

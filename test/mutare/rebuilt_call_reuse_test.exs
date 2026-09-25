@@ -20,6 +20,15 @@ defmodule Mutare.RebuiltCallReuseTest do
   environment says `Eager.value/1`, an ordinary function, where the call is now the macro
   `Discard.value/1`.
 
+  A desugaring can go stale the same way. The walk makes `(p = 6) |> Function.identity()`
+  the direct call `Function.identity(p = 6)`, which is what `Kernel.|>/2` means by it. A
+  mutator that wraps the offered call — the identical term, its pipe spelling stamped on —
+  in `(import Kernel, except: [|>: 2]; import DiscardPipe, only: [|>: 2]; …)` changes what
+  the written `|>` means; the renderer spells the call as that pipe again, so the compiler
+  reads `DiscardPipe.|>/2`, a macro that discards both operands. Re-resolving the direct
+  call finds no operator to reconsider: the walk must hand the pipe back as written, and
+  resolve it there.
+
   The end-to-end tests accept either faithful delivery or a withheld mutant; the unit tests
   pin what the rerouted node reads as. Each hazard has a control that reaches the same
   source through fresh syntax (a reparsed copy of the same term), which the walk always
@@ -30,7 +39,7 @@ defmodule Mutare.RebuiltCallReuseTest do
   import Mutare.Test.SourcePatch, only: [assert_patches: 4]
 
   alias Mutare.CallRouting.Registry
-  alias Mutare.Transform.{BindingEscapeEmit, Resolve}
+  alias Mutare.Transform.{BindingEscapeEmit, Meta, Resolve, WrittenPipe}
 
   defmodule DSL do
     # Splices `value` into the caller; the second argument is syntax the macro discards.
@@ -44,6 +53,11 @@ defmodule Mutare.RebuiltCallReuseTest do
 
   defmodule Discard do
     defmacro value(_expression), do: 6
+  end
+
+  defmodule DiscardPipe do
+    import Kernel, except: [|>: 2]
+    defmacro _left |> _right, do: 6
   end
 
   # `keep(first, second)` → `second`: the raw argument, made executable. With `reparse:`
@@ -92,6 +106,51 @@ defmodule Mutare.RebuiltCallReuseTest do
     end
   end
 
+  # `left |> Function.identity()` → `(import Kernel, except: [|>: 2]; import DiscardPipe,
+  # only: [|>: 2]; left |> Function.identity())`: the offered call, the identical term with
+  # its pipe spelling stamped on, beneath imports that change what `|>` means. With
+  # `reparse:` the same pipe through fresh syntax — resugared first, since the direct call
+  # printed alone is not the source the stamp spells.
+  defmodule ShadowPipe do
+    @behaviour Mutare.Mutator
+    alias Mutare.RebuiltCallReuseTest.DiscardPipe
+
+    @impl Mutare.Mutator
+    def name, do: :shadow_pipe
+
+    @impl Mutare.Mutator
+    def mutate(node, %{opts: opts}) do
+      case Mutare.Calls.resolved_call_to(node, Function, :identity) do
+        {:ok, :identity, [_operand], _rebuild} ->
+          if Mutare.Transform.Meta.written_pipe_meta(node),
+            do: [replacement(node, Keyword.get(opts, :reparse, false))],
+            else: :skip
+
+        _other ->
+          :skip
+      end
+    end
+
+    def replacement(node, reparse?) do
+      {:__block__, _meta, directives} =
+        Code.string_to_quoted!("""
+        import Kernel, except: [|>: 2]
+        import #{inspect(DiscardPipe)}, only: [|>: 2]
+        """)
+
+      expression =
+        if reparse?,
+          do:
+            node
+            |> Mutare.Transform.WrittenPipe.resugar()
+            |> Macro.to_string()
+            |> Code.string_to_quoted!(),
+          else: node
+
+      {:__block__, [], directives ++ [expression]}
+    end
+  end
+
   # `ignored/1` through a classifier, so the test can see whether one was asked.
   defmodule ClassifiedIgnored do
     @behaviour Mutare.CallRouting
@@ -116,6 +175,9 @@ defmodule Mutare.RebuiltCallReuseTest do
 
   @alias_routes [{Discard, :value, 1, [:lazy_expression]}]
   @alias_opts [call_routes: @alias_routes, clean_functions: false]
+
+  @pipe_routes [{DiscardPipe, :|>, 2, [:raw, :raw]}]
+  @pipe_opts [call_routes: @pipe_routes, clean_functions: false]
 
   # Original `{[8, 6], false}`: `keep` splices `p = 6`. Selecting the raw argument gives
   # `{[8, 6], true}`: `ignored` discards `p = 7`, and the sibling's `p = 8` is the outgoing
@@ -147,6 +209,19 @@ defmodule Mutare.RebuiltCallReuseTest do
   end
   """
 
+  # Original `{[8, 6], false}`: `Kernel.|>/2` pipes `p = 6` into `Function.identity/1`, and
+  # the assignment runs. Under the imports `|>` is the macro that discards both operands, so
+  # the patch gives `{[8, 6], true}`.
+  @pipe_source """
+  defmodule Fixture do
+    def run do
+      p = :incoming
+      values = [p = 8, (p = 6) |> Function.identity()]
+      {values, p == 8}
+    end
+  end
+  """
+
   defp resolve(expression, routes, extensions \\ []) do
     registry = Registry.build(routes, [], extensions)
     expression |> Sourceror.parse_string!() |> Resolve.annotate(registry)
@@ -154,6 +229,22 @@ defmodule Mutare.RebuiltCallReuseTest do
 
   defp keep_call(routes \\ @syntax_routes, extensions \\ []),
     do: resolve("#{@dsl}.keep(p = 6, #{@dsl}.ignored(p = 7))", routes, extensions)
+
+  defp piped_call, do: resolve("(p = 6) |> Function.identity()", @pipe_routes)
+
+  # Every `:mutare_nid` dropped, in node metas and in the metas a meta carries alike.
+  defp without_nids(list) when is_list(list),
+    do: list |> Enum.reject(&match?({:mutare_nid, _}, &1)) |> Enum.map(&without_nids/1)
+
+  defp without_nids(tuple) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> Enum.map(&without_nids/1) |> List.to_tuple()
+
+  defp without_nids(leaf), do: leaf
+
+  # A grouped right side, which `Kernel` flattens before desugaring: the direct call is
+  # `Function.identity(Function.identity(p = 6))`, its prefix a call of the offered node's.
+  defp grouped_call,
+    do: resolve("(p = 6) |> (Function.identity() |> Function.identity())", @pipe_routes)
 
   defp aliased_call do
     {:__block__, _meta, [_directive, call]} =
@@ -235,6 +326,114 @@ defmodule Mutare.RebuiltCallReuseTest do
       # Beneath a block that changes nothing it resolves by, too.
       {:__block__, _meta, [call]} = Resolve.reroute({:__block__, [], [original]}, original)
       assert call == original
+    end
+  end
+
+  describe "a desugared pipe a mutant moves beneath another `|>`" do
+    test "is resolved again as the pipe it was written, by that operator's route" do
+      original = piped_call()
+      assert is_list(Meta.written_pipe_meta(original))
+      assert BindingEscapeEmit.expression_bindings(original) == [:p]
+
+      {:__block__, _meta, statements} =
+        rerouted = Resolve.reroute(ShadowPipe.replacement(original, false), original)
+
+      call = List.last(statements)
+
+      assert {:ok, :|>, [_left, _stage], _rebuild} =
+               Mutare.Calls.resolved_call_to(call, DiscardPipe)
+
+      assert Mutare.Calls.routed_treatments(call) == [:raw, :raw]
+      assert BindingEscapeEmit.expression_bindings(rerouted) == []
+    end
+
+    test "reads as the same pipe through fresh syntax does" do
+      original = piped_call()
+
+      {:__block__, _meta, statements} =
+        rerouted = Resolve.reroute(ShadowPipe.replacement(original, true), original)
+
+      call = List.last(statements)
+
+      assert {:ok, :|>, [_left, _stage], _rebuild} =
+               Mutare.Calls.resolved_call_to(call, DiscardPipe)
+
+      assert Mutare.Calls.routed_treatments(call) == [:raw, :raw]
+      assert BindingEscapeEmit.expression_bindings(rerouted) == []
+    end
+
+    test "behaves as its patch" do
+      assert_patches(@pipe_source, [ShadowPipe], [run: []], @pipe_opts)
+    end
+
+    test "control: the same source through fresh syntax is withheld for the dropped write" do
+      assert [] =
+               assert_patches(@pipe_source, [{ShadowPipe, reparse: true}], [run: []], @pipe_opts)
+    end
+
+    test "a grouped pipe is regrouped, and resolved again as the written pipe" do
+      original = grouped_call()
+      {_head, _meta, [prefix]} = original
+      assert is_list(Meta.written_pipe_meta(prefix))
+
+      {:__block__, _meta, statements} =
+        rerouted = Resolve.reroute(ShadowPipe.replacement(original, false), original)
+
+      call = List.last(statements)
+
+      assert {:ok, :|>, [_left, _stage], _rebuild} =
+               Mutare.Calls.resolved_call_to(call, DiscardPipe)
+
+      assert Mutare.Calls.routed_treatments(call) == [:raw, :raw]
+      assert BindingEscapeEmit.expression_bindings(rerouted) == []
+
+      # Beneath an unrelated alias it is `Kernel`'s again: flattened, desugared and stamped
+      # as the written walk had it, no prefix reused stale. Node ids aside: the continuation's
+      # spelling copy of the remaining stage takes the pipe's identity, which
+      # `WrittenPipe.direct/2` gave the direct call in the stage's place.
+      {:__block__, _meta, [_directive, again]} =
+        Resolve.reroute(
+          {:__block__, [], [Code.string_to_quoted!("alias Enum, as: Unrelated"), original]},
+          original
+        )
+
+      assert without_nids(Resolve.forget(again)) == without_nids(Resolve.forget(original))
+    end
+
+    test "a grouped pipe behaves as its patch" do
+      source =
+        String.replace(
+          @pipe_source,
+          "(p = 6) |> Function.identity()",
+          "(p = 6) |> (Function.identity() |> Function.identity())"
+        )
+
+      assert_patches(source, [ShadowPipe], [run: []], @pipe_opts)
+    end
+
+    test "control: in the environment it was resolved in, it is the identical desugaring" do
+      original = piped_call()
+      assert Resolve.reroute(original, original) == original
+
+      # Beneath a directive that changes the environment but not `|>`, reuse is refused and
+      # the pipe is resolved again: `Kernel`'s, so the same desugaring is made of it, stamped
+      # as the written walk stamped it — the retained environments alone differ.
+      {:__block__, _meta, [_directive, call]} =
+        Resolve.reroute(
+          {:__block__, [], [Code.string_to_quoted!("alias Enum, as: Unrelated"), original]},
+          original
+        )
+
+      assert is_list(Meta.written_pipe_meta(call))
+
+      assert {:ok, :identity, [_operand], _rebuild} =
+               Mutare.Calls.resolved_call_to(call, Function)
+
+      assert BindingEscapeEmit.expression_bindings(call) == [:p]
+      assert Resolve.forget(call) == Resolve.forget(original)
+
+      assert Resolve.forget(WrittenPipe.resugar(call)) ==
+               Resolve.forget(WrittenPipe.resugar(original))
     end
   end
 end

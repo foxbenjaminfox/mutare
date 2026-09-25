@@ -293,7 +293,10 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   environment that resolves it as before, keeps its stamp and is not entered, but a `:raw`
   child made executable was never resolved and a call moved beneath a fresh `alias` is
   resolved by it, NOTES "A reused call is one resolved in the environment now in force";
-  everything else takes the clause a written node takes,
+  everything else takes the clause a written node takes, *as written* — the direct call
+  `Kernel`'s pipe made of a written `|>` goes back as that pipe (`Resolve.as_written/1`),
+  since what a mutant's `import` may have changed is the operator, and the direct call
+  has none to reconsider, NOTES "A desugared pipe is re-resolved as the pipe" —
   so a changed call is routed for the call it now is whether or not the written call had a
   route, a fresh `|>` is desugared before its stage is looked up, a fresh block folds its
   directives, and a route found bounds the walk beneath it (a call in the replacement's
@@ -305,7 +308,7 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   is", "A rebuilt call's route governs its delivery, and its classifier sees written
   syntax", "A rebuilt call is routed whether or not the written call was", "A replacement's
   route bounds its rerouting, and a released environment is a meta's", "A replacement is
-  resolved by the walk".
+  resolved by the walk", "A desugared pipe is re-resolved as the pipe".
 - **The metamutant is not invisible to reflection, and nothing should try to make it so.**
   Callers, captures, `@spec` and `@behaviour`/`@impl` see the module unchanged; a stacktrace,
   `__ENV__.function` or an `@on_definition` callback sees generated names. Don't add machinery
