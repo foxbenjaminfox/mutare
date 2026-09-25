@@ -56,7 +56,7 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_route`            — a routed call's per-argument positions, or `:skip` (Resolve.RouteStamp, from the route registry)
   #   * `:mutare_displaced_route`  — on a configured `:skip`: the positions of the declaration it displaced or shadowed, or `:unknown` (Resolve.RouteStamp, read by Resolve.effective_routing/2)
   #   * `:mutare_route_call`       — resolved `{module_key, name, arity}` routed-call identity (Resolve.RouteStamp, read through Meta.routed_call/1)
-  #   * `:mutare_resolution`       — lexical environment for a host's Elixir islands (Resolve; removed before retention/render)
+  #   * `:mutare_resolution`       — the environment a call was resolved in: rerouting a rebuilt call (Resolve.reroute/2); at a routed call, a host's Elixir islands (Resolve.context/2); removed before retention/render
   #   * `:mutare_use_directives`   — import/alias/require a `use` injects            (Uses)
   #   * `:mutare_use_behaviours`   — `@behaviour`s a `use` injects (on the `use`)    (Uses)
   #   * `:mutare_use_degraded`     — `{module, reason}` a `use` failed to expand     (Uses, read by `--check`)

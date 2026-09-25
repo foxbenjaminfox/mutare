@@ -11,6 +11,12 @@ defmodule Mutare.RebuiltCallDeliveryTest do
       position when a flag changes). Such a replacement takes the outer selector, where its
       branch evaluates its own operand in its own order — or not at all, as its source patch
       does. The direct-call spellings and an eager replacement are the controls.
+    * **The written call needs no route for its replacement's to be found.** `value/1` is an
+      ordinary function and is not routed here; the route that governs the mutant is the
+      replacement's, static or classifier-backed, looked up for a replacement built with
+      the offered call's meta (`rebuild`) or without it (a mutator's own node) alike. An
+      explicit all-expression route on the written call is a control: it must change
+      nothing.
     * **A classifier is asked in its own phase.** It is contracted the arguments as written —
       a nested pipe as a pipe — and a mutant's arguments have been resolved. So a call the
       mutator left unchanged keeps the classification it got on the written call, and a
@@ -28,6 +34,7 @@ defmodule Mutare.RebuiltCallDeliveryTest do
     def value(value), do: value
     def eager_twin(value), do: value
     defmacro ignored(_value), do: 6
+    defmacro ignored_twin(_value), do: 6
     defmacro identity(value), do: value
     defmacro identity_twin(value), do: value
 
@@ -39,22 +46,28 @@ defmodule Mutare.RebuiltCallDeliveryTest do
     @behaviour Mutare.CallRouting
     alias Mutare.RebuiltCallDeliveryTest.DSL
 
+    # `value/1`, the written callee, is deliberately not here: an ordinary function needs no
+    # route, and the replacement's route must be found without one.
     @impl Mutare.CallRouting
     def call_routes do
       [
-        {DSL, :value, 1, [:expression]},
         {DSL, :eager_twin, 1, [:expression]},
         {DSL, :ignored, 1, [:lazy_expression]},
+        {DSL, :ignored_twin, 1, :routing},
         {DSL, :choose, 2, :routing}
       ]
     end
 
     # `choose(value, true)` evaluates `value`; `choose(_, false)` discards it.
     @impl Mutare.CallRouting
-    def route_arguments(%Mutare.CallRouting.Call{arguments: [_value, flag]} = call) do
+    def route_arguments(%Mutare.CallRouting.Call{name: :choose, arguments: [_value, flag]} = call) do
       position = if literal(flag) == true, do: :expression, else: :lazy_expression
       Mutare.CallRouting.ArgumentRoutes.new(call, [position, :raw])
     end
+
+    # `ignored_twin/1` discards its argument too, and says so through a classifier.
+    def route_arguments(%Mutare.CallRouting.Call{name: :ignored_twin} = call),
+      do: Mutare.CallRouting.ArgumentRoutes.new(call, [:lazy_expression])
 
     defp literal({:__block__, _, [value]}), do: value
     defp literal(value), do: value
@@ -88,6 +101,45 @@ defmodule Mutare.RebuiltCallDeliveryTest do
       case Mutare.Calls.resolved_call_to(node, DSL, :value) do
         {:ok, :value, args, rebuild} -> [rebuild.(:eager_twin, args)]
         _ -> :skip
+      end
+    end
+  end
+
+  defmodule RenameToClassifiedLazy do
+    @behaviour Mutare.Mutator
+    alias Mutare.RebuiltCallDeliveryTest.DSL
+
+    @impl Mutare.Mutator
+    def name, do: :rename_to_classified_lazy
+
+    @impl Mutare.Mutator
+    def mutate(node) do
+      case Mutare.Calls.resolved_call_to(node, DSL, :value) do
+        {:ok, :value, args, rebuild} -> [rebuild.(:ignored_twin, args)]
+        _ -> :skip
+      end
+    end
+  end
+
+  # The same replacement built without the offered call's meta — a mutator's own node, as a
+  # `quote` in the mutator would produce — so it carries no stamp and no environment of its
+  # own.
+  defmodule RenameToLazyFresh do
+    @behaviour Mutare.Mutator
+    alias Mutare.RebuiltCallDeliveryTest.DSL
+
+    @impl Mutare.Mutator
+    def name, do: :rename_to_lazy_fresh
+
+    @impl Mutare.Mutator
+    def mutate(node) do
+      case Mutare.Calls.resolved_call_to(node, DSL, :value) do
+        {:ok, :value, args, _rebuild} ->
+          path = DSL |> Module.split() |> Enum.map(&String.to_atom/1)
+          [{{:., [], [{:__aliases__, [], path}, :ignored]}, [], args}]
+
+        _ ->
+          :skip
       end
     end
   end
@@ -188,6 +240,32 @@ defmodule Mutare.RebuiltCallDeliveryTest do
     test "control: a replacement that stays eager still rides the closure" do
       source = effect_fixture("input() |> #{@dsl}.value()")
       assert [_] = assert_patches(source, [RenameToEager], [run: []], @opts)
+    end
+  end
+
+  # `value/1` carries no route (`Routes`); the cases above already run without one. These
+  # pin the other ways the replacement's route is reached, and that a route on the written
+  # call is not what reaches it.
+  describe "a written call without a route, rebuilt into a routed one" do
+    test "the replacement's classifier is asked, and its lazy answer honoured" do
+      source = effect_fixture("input() |> #{@dsl}.value()")
+      assert [_] = assert_patches(source, [RenameToClassifiedLazy], [run: []], @opts)
+    end
+
+    test "a replacement built without the offered call's meta is routed where it is patched" do
+      source = effect_fixture("input() |> #{@dsl}.value()")
+      assert [_] = assert_patches(source, [RenameToLazyFresh], [run: []], @opts)
+    end
+
+    test "control: the same fresh replacement, written as a direct call" do
+      source = effect_fixture("#{@dsl}.value(input())")
+      assert [_] = assert_patches(source, [RenameToLazyFresh], [run: []], @opts)
+    end
+
+    test "control: an explicit all-expression route on the written call changes nothing" do
+      source = effect_fixture("input() |> #{@dsl}.value()")
+      opts = Keyword.put(@opts, :call_routes, [{DSL, :value, 1, [:expression]}])
+      assert [_] = assert_patches(source, [RenameToLazy], [run: []], opts)
     end
   end
 

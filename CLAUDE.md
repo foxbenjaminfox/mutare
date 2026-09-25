@@ -289,11 +289,14 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   NOTES "Evaluation is a route's to declare: `:lazy_expression`". A call a mutator *rebuilt*
   is routed again as the call it now is where the mutant enters core (`Resolve.reroute/2`,
   from `Attach.build_candidates/2`; a call the mutator left as it was keeps its stamp, and
-  a changed one is classified over its arguments spelled as written) — the offered call's
-  stamp never describes a different call, and the replacement's own route governs its
-  delivery too: `PipeEmit` lets a mutant ride the piped-value closure only where *its* route
-  reads position 0 as a value. NOTES "A rebuilt call is routed as the call it is", "A
-  rebuilt call's route governs its delivery, and its classifier sees written syntax".
+  a changed one is classified over its arguments spelled as written, whether or not the
+  written call had a route — every resolved call retains its environment, and a call the
+  mutator built without the offered meta is resolved in the offered node's) — the offered
+  call's stamp never describes a different call, and the replacement's own route governs
+  its delivery too: `PipeEmit` lets a mutant ride the piped-value closure only where *its*
+  route reads position 0 as a value. NOTES "A rebuilt call is routed as the call it is", "A
+  rebuilt call's route governs its delivery, and its classifier sees written syntax", "A
+  rebuilt call is routed whether or not the written call was".
 - **The metamutant is not invisible to reflection, and nothing should try to make it so.**
   Callers, captures, `@spec` and `@behaviour`/`@impl` see the module unchanged; a stacktrace,
   `__ENV__.function` or an `@on_definition` callback sees generated names. Don't add machinery

@@ -150,9 +150,18 @@ defmodule Mutare.ResolveTest do
     alias Mutare.Transform.MetaKeys
 
     test "a routed call's own environment replaces the enclosing one" do
-      node = {:inner, [{MetaKeys.resolution_key(), :inner_env}], []}
+      routed = [{MetaKeys.route_key(), [:raw]}, {MetaKeys.resolution_key(), :inner_env}]
+      node = {:inner, routed, []}
       assert Resolve.context(node, %{resolution: :outer_env}).resolution == :inner_env
       assert Resolve.context({:plain, [], []}, %{resolution: :outer_env}).resolution == :outer_env
+    end
+
+    # Every resolved call retains its environment (for `Resolve.reroute/2`); only a route
+    # leaves syntax beneath a call for the readers to resolve in it.
+    test "an unrouted call's retained environment does not enter" do
+      node = {:inner, [{MetaKeys.resolution_key(), :inner_env}], []}
+      assert Resolve.context(node, %{resolution: :outer_env}).resolution == :outer_env
+      refute Map.has_key?(Resolve.context(node, %{}), :resolution)
     end
 
     test "an island re-enters the environment its call retained" do

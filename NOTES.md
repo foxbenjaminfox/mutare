@@ -13131,6 +13131,56 @@ the export names), not a scoping one — Elixir reads the entry value either way
 baseline property's to check, with sibling rebinding in its vocabulary; `var!` and computed
 names stay the known limit ("The binding model reads syntax and declarations").
 
+### A rebuilt call is routed whether or not the written call was `[fixed; done]` (2026-09-25)
+
+A third review of the reroute found the case its fixture had declared away.
+`rebuilt_call_delivery_test.exs` routed the *written* callee too — `{DSL, :value, 1,
+[:expression]}` — and `value/1` is an ordinary function that needs no route; with that
+redundant declaration removed, the lazy-callee case fails again exactly as first reported
+(`{6, true}` in the metamutant against the patch's `{6, false}`). Two guards, one cause.
+`retain_environment/2` kept a call's lexical environment only where the walk routed it
+(`:skip` or positions), since the environment existed for a host's re-entry into the syntax
+a route preserves; and `reroute/2` left alone any call carrying no route, before either the
+unchanged-call comparison or the lookup. So an unrouted call rebuilt into a routed callee
+never reached the registry, `PipeEmit` read the replacement's route as `nil` — the right
+default for a call no route matches, wrong for one core had failed to look up — and the
+mutant rode the closure. The entry below already said "a mutator that rewrites to a macro
+is expected to route what it rewrites to"; the mechanism could see that route only when the
+written call had one of its own. No route on the written call ≠ no route on its replacement.
+
+Taken: every call the walk resolves retains its environment (`retain_environment/2` is
+unconditional, and the receiver-walked and anonymous-call clauses retain too), and
+`reroute/2` routes every changed call — one not equal, term for term, to a call of the
+offered node — in the environment it retained. A mutant is source at the offered node's
+position, so a replacement built without that node's meta (a mutator's own `quote`: no
+stamp, no environment) is resolved in the *offered node's* environment, as the compiler
+resolves its source patch; `RenameToLazyFresh` covers it, and the explicit all-expression
+route on the written call is now the control that must change nothing. A restamped call
+keeps the environment it was routed in, so a routed replacement's own regions read as any
+routed call's do.
+
+Two edges. **What enters the context did not change.** `Resolve.context/2` — what the
+binding readers, `Super` and a routed call's analysis put in `context.resolution` — now
+enters the environment only at a *routed* call: only a route leaves source beneath a call
+unwalked, and that is the source `preserved_routing/2`, `kernel_form/2` and
+`advance_context/2` exist to read. Had every call's environment entered, every unrouted
+call's arguments would have taken the preserved path — a registry lookup per call per
+reader, and `:unknown` for a call whose classifier the walk had already asked. **A meta is
+carried inside other metas.** `forget/1` was a node walk — strip the key from each node's
+meta — and the `|>` clause stamps the pipe's meta through `stamp_routed/5`, so it now
+carried the environment into every place `WrittenPipe` keeps a meta *inside* a meta: the
+desugared call's written spelling, a grouped prefix's continuation, the grouping history.
+The determinism invariant caught it at once — the count and render passes resolve under
+different `on_resolve` closures, so the program hash differed — first for a plain pipe,
+then, with the spelling stripped at its store, for a grouped one. Stripping at each store
+was the wrong shape: `forget/1` is now a walk over the *term*, dropping the `{key, env}`
+pair from any list it meets, so the statement is total — the environment is released
+wherever it is carried — and the invariant guards the class rather than each carrier. The
+retained environment is one shared reference (`Keyword.put_new`), so nothing is copied
+while it is present, and the size bound `written_pipe_test.exs` keeps on a resolved chain
+is taken after `forget/1`, as the tree is retained. The transform differential over the
+corpus is identical.
+
 ### A rebuilt call's route governs its delivery, and its classifier sees written syntax `[fixed; done]` (2026-09-25)
 
 A second review of the entry below found two things the reroute left open, one on each side

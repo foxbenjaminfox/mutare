@@ -95,11 +95,12 @@ defmodule Mutare.WrittenPipeTest do
 
   # Flat size is what a copy costs — a message, ETS, `term_to_binary`. A stamp holding the
   # written pipe made that a sum of the chain's prefixes (33x at 64 stages); the meta alone
-  # keeps it linear.
+  # keeps it linear. The environment every call retains is one shared reference, released
+  # before the tree is retained or copied (`Resolve.forget/1`), so it is measured without.
   test "a resolved chain is no larger, copied, than a small multiple of the chain as written" do
     chain = Enum.map_join(1..64, "\n", fn i -> "|> Enum.map(&(&1 + #{i}))" end)
 
-    assert :erts_debug.flat_size(resolved("xs\n" <> chain)) <
+    assert :erts_debug.flat_size(Resolve.forget(resolved("xs\n" <> chain))) <
              2 * :erts_debug.flat_size(parsed("xs\n" <> chain))
   end
 
