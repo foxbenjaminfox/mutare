@@ -25,9 +25,12 @@ defmodule Mutare.Calls do
   before anything reads it — the registry's answer for the rebuilt head and arity, a
   `:routing` classifier invoked on the rebuilt arguments, no route where nothing matches. A
   classifier therefore classifies a rebuilt call to its macro as it classifies any call to
-  it. What the rebuilt call binds is read by that route, so a mutant that stops a macro from
-  evaluating an expression is not credited with the expression's bindings, and is withheld
-  where a delivery would depend on them.
+  it — over the arguments as written, a nested pipe as a pipe — and a call the mutator left
+  as it was keeps its classification. What the rebuilt call binds and how it is delivered
+  follow that route: a mutant that stops a macro from evaluating an expression is not
+  credited with the expression's bindings, is withheld where a delivery would depend on
+  them, and, as a pipe stage, is not handed the piped value ahead of a callee that would
+  not evaluate it.
 
   ## Example
 

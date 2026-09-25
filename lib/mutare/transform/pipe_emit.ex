@@ -38,14 +38,17 @@ defmodule Mutare.Transform.PipeEmit do
   #     arguments, so moving argument 0 outside the call would reverse their order; those calls
   #     keep ordinary branch-local delivery.
   #
-  # A candidate rides inside the closure when it **keeps argument 0** where it was, or returns
-  # that operand directly (call removal): both evaluate the operand once, first. One that moves
-  # or drops it (an operand swap, a return-value constant standing in for the whole call) would
-  # either ignore the binding or run the original operand beside its own, and hoisting the
-  # operand ahead of a swapped call would change the mutant's evaluation order. Those go in an
-  # **outer** selector around the closure, each branch evaluating its own as-written expression
-  # in its own order (`{:split, …}`) — the shape a tail pipe's return-value selector has always
-  # had around its stage's.
+  # A candidate rides inside the closure when it **keeps argument 0** where it was — and its
+  # own route, the rebuilt call's (`Mutare.Transform.Resolve.reroute/2`), still reads that
+  # position as a value — or returns that operand directly (call removal): both evaluate the
+  # operand once, first. One that moves or drops it (an operand swap, a return-value constant
+  # standing in for the whole call) would either ignore the binding or run the original operand
+  # beside its own, and hoisting the operand ahead of a swapped call would change the mutant's
+  # evaluation order; one whose callee reads the operand lazily or as syntax (`value(x)` rebuilt
+  # as `ignored(x)`, a macro that discards it) would run inside the closure an operand its
+  # source patch never evaluates. Those go in an **outer** selector around the closure, each
+  # branch evaluating its own as-written expression in its own order (`{:split, …}`) — the shape
+  # a tail pipe's return-value selector has always had around its stage's.
   #
   # Every selector is a scope boundary: a `case` branch traps what it binds. So what the
   # branches bind is returned beside the result through a tuple and rebound outside
@@ -299,11 +302,12 @@ defmodule Mutare.Transform.PipeEmit do
   # where the source runs it before. Such a candidate takes branch-local delivery.
   defp keeps_argument?(%Candidate.InPlace{pin?: false, mutated: written}, written), do: true
 
+  # The replacement's own route decides whether the operand may run ahead of it.
   defp keeps_argument?(
-         %Candidate.InPlace{pin?: false, mutated: {_h, _m, [zero | _]} = mutated},
+         %Candidate.InPlace{pin?: false, mutated: {_h, meta, [zero | _]} = mutated},
          written
        ),
-       do: zero == written and inert_callee?(mutated)
+       do: zero == written and inert_callee?(mutated) and value_position?(Meta.routing(meta))
 
   defp keeps_argument?(_candidate, _written), do: false
 

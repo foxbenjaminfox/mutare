@@ -279,7 +279,9 @@ defmodule Mutare.CallRouting do
   inside an argument remains a `{:|>, …}` node: the classifier may be deciding whether that
   operator even has Elixir semantics. The enclosing call's module, name and arity are
   resolved; calls nested inside its arguments are not. Nodes can carry Mutare metadata,
-  so match syntax shapes rather than comparing against hand-built ASTs for equality.
+  so match syntax shapes rather than comparing against hand-built ASTs for equality. A call
+  a mutator rebuilt to this macro is classified the same way, its arguments spelled as
+  written; the classifier's answer for it governs how the mutant is read and delivered.
 
   The motivating keyword case is `where(q, category: "Foo", deleted_at: nil)`, classified as
   `{:keyword, [:interpolated, :raw]}`: mutate `"Foo"` through a `^`-pinned selector, keep the column-name

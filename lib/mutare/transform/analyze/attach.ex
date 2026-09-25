@@ -62,8 +62,8 @@ defmodule Mutare.Transform.Analyze.Attach do
 
     Enum.map(muts, fn %Dispatch.Result{} = result ->
       # A rebuilt call carries the offered call's route stamp, computed for another call;
-      # route every stamped call in the mutant as the call it now is before anything reads it.
-      mutated = Resolve.reroute(result.node)
+      # route every call the mutant changed as the call it now is before anything reads it.
+      mutated = Resolve.reroute(result.node, node)
 
       # A mutator's own attribution wins; failing one, a rewritten pipe stage's mutant is
       # reported at the stage the user wrote (`WrittenPipe.stage_attribution/2`) — and still

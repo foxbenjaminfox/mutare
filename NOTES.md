@@ -13131,6 +13131,48 @@ the export names), not a scoping one — Elixir reads the entry value either way
 baseline property's to check, with sibling rebinding in its vocabulary; `var!` and computed
 names stay the known limit ("The binding model reads syntax and declarations").
 
+### A rebuilt call's route governs its delivery, and its classifier sees written syntax `[fixed; done]` (2026-09-25)
+
+A second review of the entry below found two things the reroute left open, one on each side
+of it.
+
+**The route reached the readers, not the emitter.** `PipeEmit.delivery/2` decides whether a
+stage's mutants ride the one-shot closure that binds the piped value ahead of the call, and
+it asked the *written* call's route (`value_position?(Meta.routing(meta))`) at the top, then
+`keeps_argument?/2` asked each candidate only whether it kept argument 0 and had an inert
+callee. So `input() |> value()` rebuilt as `ignored(input())`, with `ignored/1` routed
+`:lazy_expression` — a macro that discards its argument — qualified for the closure, and the
+closure ran `input()` before the branch discarded it; the source patch never runs it. A
+false survivor with no binding involved, and the same with the callee unchanged, where a
+classifier flips position 0 to lazy when a mutator changes a flag (`choose(v, true)` →
+`choose(v, false)`). The reroute had computed the right route for the replacement; the
+emitter's per-candidate question did not read it. `keeps_argument?/2` now also requires the
+*replacement's* route to read position 0 as a value, and a lazy or syntactic replacement
+takes the outer selector, where its branch evaluates its own operand in its own order — the
+path a moved or dropped operand always took. The call-removal case (the replacement *is* the
+operand) is unchanged: it evaluates the operand, once. `rebuilt_call_delivery_test.exs`,
+with the direct-call spellings and an eager replacement as controls.
+
+**The classifier was asked in the wrong phase.** `Mutare.CallRouting` promises a classifier
+the arguments **as written** — a nested pipe as a `{:|>, …}` node, since the classifier may
+be deciding whether that operator has Elixir semantics — and resolution runs after it. The
+reroute walked the mutant, whose expression regions the walk had already resolved, and
+invoked the classifier over that: a classifier whose answer depends on the spelling
+(`PipeShapeRoute`: eager for a written pipe, lazy otherwise — both sound for `identity/1`)
+answered differently for an *unchanged* nested call, `restamp/4`'s equality guard saw the
+stamps disagree and kept the new one, and the parent's `abs` removal — which keeps the
+`identity` call pipe and all — lost `p`'s export and was withheld. Two changes. A call equal,
+term for term, to a stamped call of the node the mutator was offered is that call and keeps
+its classification (`reroute/2` takes the original; `Attach.build_candidates/2` has it), so
+no classifier runs on what a mutator did not touch. A changed call is classified over its
+arguments spelled as written again — `WrittenPipe.resugar/1`, the inverse Render uses — for
+the classification alone; the stamp lands on the resolved node delivery uses, and the
+positional stamp fits it, since respelling changes no position and no pair. The alternative
+the reviewer warned off — asking classifiers to accept both spellings — would reopen the
+phase distinction 0.4.0 documented, and was not taken. Resolution's other normalisations are
+meta only (alias, import and mark stamps), which the contract already tells classifiers to
+see past ("match syntax shapes rather than comparing against hand-built ASTs").
+
 ### A rebuilt call is routed as the call it is `[fixed; done]` (2026-09-25)
 
 Review of the entry below found the rebuilt-call half necessary and not sufficient: the

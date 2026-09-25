@@ -40,7 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment the call retained: the registry's answer for the rebuilt head and arity, a
   `:routing` classifier invoked on the rebuilt arguments, no route where nothing matches.
   A mutator need not strip or restamp what it rebuilds; a classifier classifies a rebuilt
-  call to its macro as it classifies any call to it.
+  call to its macro as it classifies any call to it — over the arguments as written, and
+  only for a call the mutator changed.
+- **A pipe stage rebuilt into a callee that does not evaluate the piped value is no longer
+  handed that value ahead of it.** A stage written as a pipe is delivered in a closure that
+  binds the piped value once for every mutant of the stage; whether a mutant could ride it
+  was decided by the *written* call's route, so `input() |> value()` rebuilt as
+  `ignored(input())` — a macro that discards its argument, routed `:lazy_expression` — ran
+  `input()` in the metamutant where its source patch never does: a false survivor. A mutant
+  rides the closure only when its own route reads the piped position as a value; otherwise
+  it takes the selector around the closure, evaluating its operand as its patch does.
 
 ## [0.4.0] - 2026-09-24
 
