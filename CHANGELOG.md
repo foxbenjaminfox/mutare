@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-25
+
 ### Added
 
 - **`Mutare.Analyze.resolve/2`: a host resolves a region of its call that Mutare left as
@@ -46,25 +48,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a mutator built without the offered call's meta is resolved where it is patched. The
   route found bounds what is routed beneath it: a call inside a `:raw` position, a skipped
   call or quoted data of the replacement is that route's syntax, and its classifier is not
-  asked. A replacement is resolved as the source it is, in every respect: a pipe a mutator
+  asked. A module written as a bare atom (`unquote(mod).f()` in a mutator's `quote`) is
+  routed as the module it names; it found no route before. A bare imported operator a
+  mutator swaps on the offered call's meta (`&&&` → `|||`) now carries the import witness
+  for the name it emits, which the single compile checks.
+- **A replacement a mutator writes is resolved as the source it is.** A pipe a mutator
   writes (`quote do: unquote(x) |> DSL.ignored()`) is the direct call it is sugar for, so
   its stage is routed at the arity the piped operand gives it — not left standing as a
   `|>` whose stage was looked up one argument short and then handed the operand as a value
   — and a statement sequence a mutator writes folds its own `alias`/`import` directives
   for the statements after them, so `alias DSL, as: Local; Local.ignored(p = 6)` is the
-  routed call the qualified spelling is. What a mutator leaves in place is reused as it was
-  only where it *was* resolved, in an environment that still resolves it the same way: a
-  `:raw` argument a mutant makes executable (`keep(first, second)` → `second`) was that
-  route's syntax, never resolved, and is resolved there for the first time — before, it came
-  back unrouted and a macro that discards its argument was credited with the write; a call a
-  mutant moves beneath a fresh `alias` that changes its callee is resolved by that alias —
-  before, its stale callee decided its delivery; and a piped call a mutant moves beneath an
-  `import` of another `|>` is resolved again as the pipe it was written, by that operator —
-  before, the direct call `Kernel`'s pipe had made of it was resolved again, with no operator
-  left to reconsider, while the patch compiled under the new one. A module written as a bare atom (`unquote(mod).f()`
-  in a mutator's `quote`) is routed as the module it names; it found no route before. A
-  bare imported operator a mutator swaps on the offered call's meta (`&&&` → `|||`) now
-  carries the import witness for the name it emits, which the single compile checks.
+  routed call the qualified spelling is.
+- **What a mutator leaves in place is reused only where it was resolved, in an environment
+  that still resolves it the same way.** Anything else is resolved again where the mutant
+  is patched, as the compiler resolves it there. Three cases, each a false survivor its
+  own source patch would have killed: a `:raw` argument a mutant makes executable
+  (`keep(first, second)` → `second`) was that route's syntax, never resolved, and is
+  resolved there for the first time — before, it came back unrouted and a macro that
+  discards its argument was credited with the write; a call a mutant moves beneath a fresh
+  `alias` that changes its callee is resolved by that alias — before, its stale callee
+  decided its delivery; and a piped call a mutant moves beneath an `import` of another
+  `|>` is resolved again as the pipe it was written, by that operator — before, the direct
+  call `Kernel`'s pipe had made of it was resolved again, with no operator left to
+  reconsider, while the patch compiled under the new one.
 - **A pipe stage rebuilt into a callee that does not evaluate the piped value is no longer
   handed that value ahead of it.** A stage written as a pipe is delivered in a closure that
   binds the piped value once for every mutant of the stage; whether a mutant could ride it
@@ -638,7 +644,8 @@ Initial release.
   any label a mutator declares) to your own functions, with the mutators'
   value-aware reaction: `{MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout}`.
 
-[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/foxbenjaminfox/mutare/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/foxbenjaminfox/mutare/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/foxbenjaminfox/mutare/compare/v0.2.1...v0.3.0
