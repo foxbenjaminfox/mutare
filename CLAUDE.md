@@ -291,12 +291,15 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   from `Attach.build_candidates/2`; a call the mutator left as it was keeps its stamp, and
   a changed one is classified over its arguments spelled as written, whether or not the
   written call had a route — every resolved call retains its environment, and a call the
-  mutator built without the offered meta is resolved in the offered node's) — the offered
+  mutator built without the offered meta is resolved in the offered node's; the route found
+  bounds the rerouting beneath it as the walk's does, so a call in the replacement's `:raw`,
+  skipped or quoted region is syntax and no classifier is asked about it) — the offered
   call's stamp never describes a different call, and the replacement's own route governs
   its delivery too: `PipeEmit` lets a mutant ride the piped-value closure only where *its*
   route reads position 0 as a value. NOTES "A rebuilt call is routed as the call it is", "A
   rebuilt call's route governs its delivery, and its classifier sees written syntax", "A
-  rebuilt call is routed whether or not the written call was".
+  rebuilt call is routed whether or not the written call was", "A replacement's route
+  bounds its rerouting, and a released environment is a meta's".
 - **The metamutant is not invisible to reflection, and nothing should try to make it so.**
   Callers, captures, `@spec` and `@behaviour`/`@impl` see the module unchanged; a stacktrace,
   `__ENV__.function` or an `@on_definition` callback sees generated names. Don't add machinery

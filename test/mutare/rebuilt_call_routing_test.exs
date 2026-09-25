@@ -21,6 +21,13 @@ defmodule Mutare.RebuiltCallRoutingTest do
   correct outcome for such a mutant is to withhold it. The controls hold the outcome fixed
   where the shape changes (a dropped pair, a keyed route) and show the same mutant delivered
   where nothing conflicts.
+
+  The route found for a replacement bounds what is routed beneath it, as the walk's does for
+  a written call: a call inside a `:raw` position, a skipped call or quoted data of the
+  replacement is that route's syntax, and its classifier is not asked —
+  `opaque(keywords_only(123))` compiles, since `opaque/1` discards the syntax it is handed,
+  and the transform must not abort on a classifier that rightly cannot classify a call that
+  is never made.
   """
   use ExUnit.Case, async: true
 
@@ -129,6 +136,59 @@ defmodule Mutare.RebuiltCallRoutingTest do
     end
   end
 
+  # Syntax boundaries a replacement may introduce: `opaque/1` takes syntax it discards,
+  # `skipped/1` is withheld whole, and `keywords_only/1` is expanded only where it runs, so
+  # its classifier — partial exactly as the macro is — is entitled to a keyword list.
+  defmodule Syntax do
+    defmacro opaque(_syntax), do: 6
+    defmacro skipped(_syntax), do: 6
+    defmacro keywords_only(options) when is_list(options), do: Keyword.fetch!(options, :value)
+  end
+
+  defmodule SyntaxRoutes do
+    @behaviour Mutare.CallRouting
+    alias Mutare.RebuiltCallRoutingTest.Syntax
+
+    @impl Mutare.CallRouting
+    def call_routes do
+      [
+        {Syntax, :opaque, 1, [:raw]},
+        {Syntax, :skipped, 1, :skip},
+        {Syntax, :keywords_only, 1, :routing}
+      ]
+    end
+
+    @impl Mutare.CallRouting
+    def route_arguments(%Mutare.CallRouting.Call{name: :keywords_only, arguments: [pairs]} = call)
+        when is_list(pairs) do
+      send(self(), {__MODULE__, :classified})
+
+      Mutare.CallRouting.ArgumentRoutes.new(call, [
+        {:keyword, List.duplicate(:expression, length(pairs))}
+      ])
+    end
+  end
+
+  # Replaces `Function.identity(1)` with the configured source, quoted as a mutator's own
+  # `quote` would be: no stamp, no environment, keys as bare atoms.
+  defmodule ReplaceIdentity do
+    @behaviour Mutare.Mutator
+
+    @impl Mutare.Mutator
+    def name, do: :replace_identity
+
+    @impl Mutare.Mutator
+    def mutate(node, %{opts: opts}) do
+      case Mutare.Calls.resolved_call_to(node, Function, :identity) do
+        {:ok, :identity, [_argument], _rebuild} ->
+          [Code.string_to_quoted!(Keyword.fetch!(opts, :replacement))]
+
+        _ ->
+          :skip
+      end
+    end
+  end
+
   @opts [extensions: [ShapeRoute], clean_functions: false]
 
   # Original: `{[8, 6], false}`. With `eval:` renamed or the callee swapped, the macro no
@@ -183,6 +243,53 @@ defmodule Mutare.RebuiltCallRoutingTest do
 
       sites = assert_patches(source, [RenameKeyword], [run: []], @opts)
       assert [%{mutator: :rename_eval_keyword}] = sites
+    end
+  end
+
+  describe "a replacement's route bounds what is routed beneath it" do
+    @syntax "Elixir.Mutare.RebuiltCallRoutingTest.Syntax"
+    @identity """
+    defmodule Fixture do
+      require #{@syntax}
+      def run, do: Function.identity(1)
+    end
+    """
+
+    defp replaced(replacement) do
+      assert_patches(
+        @identity,
+        [{ReplaceIdentity, replacement: replacement}],
+        [run: []],
+        extensions: [SyntaxRoutes],
+        clean_functions: false
+      )
+    end
+
+    test "a call in a fresh raw argument is syntax: its classifier is not asked" do
+      assert [_site] = replaced("#{@syntax}.opaque(#{@syntax}.keywords_only(123))")
+      refute_received {SyntaxRoutes, :classified}
+    end
+
+    test "a call in a freshly skipped call is syntax: its classifier is not asked" do
+      assert [_site] = replaced("#{@syntax}.skipped(#{@syntax}.keywords_only(123))")
+      refute_received {SyntaxRoutes, :classified}
+    end
+
+    test "a call in fresh quoted data is data: its classifier is not asked" do
+      assert [_site] = replaced("is_tuple(quote do: #{@syntax}.keywords_only(123))")
+      refute_received {SyntaxRoutes, :classified}
+    end
+
+    test "control: a fresh call that runs is classified" do
+      assert [_site] = replaced("#{@syntax}.keywords_only(value: 6)")
+      assert_received {SyntaxRoutes, :classified}
+    end
+
+    test "control: a fresh escape in fresh quoted data runs, and is classified" do
+      assert [_site] =
+               replaced("is_tuple(quote do: unquote(#{@syntax}.keywords_only(value: 6)))")
+
+      assert_received {SyntaxRoutes, :classified}
     end
   end
 

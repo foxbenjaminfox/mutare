@@ -13131,6 +13131,55 @@ the export names), not a scoping one — Elixir reads the entry value either way
 baseline property's to check, with sibling rebinding in its vocabulary; `var!` and computed
 names stay the known limit ("The binding model reads syntax and declarations").
 
+### A replacement's route bounds its rerouting, and a released environment is a meta's `[fixed; done]` (2026-09-25)
+
+A fourth review, of the entry below, found that both traversals it broadened had lost a
+distinction, and both were confirmed by test before anything was changed.
+
+**A metadata-shaped pair in program data is still program data.** `forget/1` had become a
+walk over the term, dropping `{:mutare_resolution, _}` from any list it met. The comment
+justifying that leaned on a source keyword's key being a literal node, never the bare atom
+— true of what Sourceror parses, false of what a mutator returns: a mutator's own `quote`,
+or `Code.string_to_quoted!/1`, spells `[mutare_resolution: :payload]` with the bare atom,
+and dispatch keeps that node as the mutation. `plan_and_emit/2` releases after emission and
+the Site's `mutated_code` was rendered before, so the metamutant returned `[]` where the
+source patch returned the keyword: a mutant whose tested behaviour is not its reported one.
+Taken: the release is a walk over *nodes*, and only a node's meta is Mutare's. From a meta
+it continues into whatever the meta holds — that is where `WrittenPipe` keeps a meta inside
+a meta — dropping the pair from every list it meets there, until it reaches a node again (a
+continuation holds the remaining stages), whose arguments are program data. Choosing a less
+likely key would have hidden the collision, not fixed the traversal.
+
+**A call-shaped expression in a syntax region is still syntax.** `reroute/2` was a
+`Macro.prewalk`: after routing a replacement's outer call it descended through every
+argument regardless of the treatment it had just found, and every fresh inner call took the
+offered environment and its classifier. The resolution walk stops at a `:raw` position, a
+skipped call and quoted data; the reroute did not. So `Function.identity(1)` rebuilt as
+`opaque(keywords_only(123))` — valid source, `opaque/1` discards the syntax it is handed,
+the inner macro is never expanded — invoked `keywords_only/1`'s classifier on a non-keyword
+argument, and `RouteStamp.invoke_router!/3` turned its clause error into a `ContractError`
+that aborted the transform. The classifier is not wrong to be partial exactly as its macro
+is; the enclosing route says the region is somebody else's syntax. Before the entry below
+the walk only restamped calls carrying a stamp, which happened to protect syntax copied
+intact from the original and nothing freshly built. Taken: `reroute/2` is its own descent.
+A call of the offered node is that call, and so is everything beneath it, so an unchanged
+subtree is not entered at all. A changed call is routed, then its arguments are entered as
+the walk enters a written call's: by its route through `Arguments.walk/4`, a `quote`'s by
+`QuoteStructure`. The quote walk is factored over a resolver (`quote_args/2`) that both
+passes share; a live escape is resolved as any bare call is, which for the resolution walk
+is the behaviour it had (`unquote` is a structural form, so its route is `nil` or `:skip`
+and `Arguments.walk` reads either as the explicit check did). A keyword route the rebuilt
+pairs no longer fit is read leniently in the reroute (`KeywordRouting.decode/2`, passed to
+`Arguments.walk/4`; the written call keeps the strict default), since the misfit is a
+static route's count against a mutant, not the author's call site. Binding-effect recovery
+beneath a skipped region of a mutant is unchanged: the restamped call retains the
+environment it was routed in, and the readers read the preserved calls through it.
+
+The differential over the corpus is identical. Of the nine regression tests
+(`resolve_test.exs` "Resolve.forget/1", `rebuilt_call_routing_test.exs` "a replacement's
+route bounds what is routed beneath it"), six fail against the previous `lib/` and the
+three controls pass on both, as controls should.
+
 ### A rebuilt call is routed whether or not the written call was `[fixed; done]` (2026-09-25)
 
 A third review of the reroute found the case its fixture had declared away.

@@ -43,7 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call to its macro as it classifies any call to it — over the arguments as written, and
   only for a call the mutator changed. The written call needs no route of its own: an
   ordinary function rebuilt into a routed macro is routed as that macro, and a replacement
-  a mutator built without the offered call's meta is resolved where it is patched.
+  a mutator built without the offered call's meta is resolved where it is patched. The
+  route found bounds what is routed beneath it: a call inside a `:raw` position, a skipped
+  call or quoted data of the replacement is that route's syntax, and its classifier is not
+  asked.
 - **A pipe stage rebuilt into a callee that does not evaluate the piped value is no longer
   handed that value ahead of it.** A stage written as a pipe is delivered in a closure that
   binds the piped value once for every mutant of the stage; whether a mutant could ride it

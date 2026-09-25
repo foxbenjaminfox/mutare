@@ -37,7 +37,8 @@ defmodule Mutare.Transform.Resolve do
   alias Mutare.CallRouting.Registry, as: Routes
   alias Mutare.CallRouting.Registry.Entry
   alias Mutare.CallRouting.Spec
-  alias Mutare.Transform.{Aliases, Imports, Meta, MetaKeys, ModuleScope, QuoteStructure, Uses}
+  alias Mutare.Transform.{Aliases, Imports, KeywordRouting, Meta, MetaKeys, ModuleScope}
+  alias Mutare.Transform.{QuoteStructure, Uses}
   alias Mutare.Transform.WrittenPipe
   alias Mutare.Transform.Resolve.{ArgumentMarks, Arguments, NodeIds, OperandPositions, RouteStamp}
   alias Mutare.Transform.StructuralForms
@@ -284,25 +285,44 @@ defmodule Mutare.Transform.Resolve do
   # sees written syntax", "A rebuilt call is routed whether or not the written call was".
   @doc false
   @spec reroute(Macro.t(), Macro.t() | nil) :: Macro.t()
-  def reroute(mutant, original \\ nil) do
-    unchanged = calls_of(original)
-    offered_env = retained_environment(original)
+  def reroute(mutant, original \\ nil),
+    do: reroute_node(mutant, retained_environment(original), calls_of(original))
 
-    Macro.prewalk(mutant, fn
-      {head, meta, args} = node when is_list(meta) and is_list(args) ->
-        if node in unchanged do
-          node
-        else
-          case retained_environment(node) || offered_env do
-            nil -> node
-            env -> restamp(head, meta, args, env)
-          end
-        end
-
-      other ->
-        other
-    end)
+  # A call of the offered node is that call, and so is everything beneath it. A changed call
+  # is routed in its environment, and its arguments are then entered as the walk enters a
+  # written call's: by its route (`Arguments.walk/4`), a `quote`'s by which parts run. So a
+  # call inside a region the replacement's route preserves — a `:raw` position, a skipped
+  # call, quoted data — is that route's syntax, as it would be were the mutant the written
+  # source, and no classifier is asked about it; the binding readers read it through the
+  # environment the enclosing call retained, as they read any preserved call. A keyword
+  # route the rebuilt pairs no longer fit is read leniently, as every later reader reads it
+  # (`KeywordRouting.decode/2`): the misfit is a static route's count against a mutant, not
+  # the author's call site.
+  defp reroute_node({head, meta, args} = node, env, unchanged)
+       when is_list(meta) and is_list(args) do
+    if node in unchanged do
+      node
+    else
+      env = retained_environment(node) || env
+      {head, meta, args} = if env, do: restamp(head, meta, args, env), else: node
+      descend = &reroute_node(&1, env, unchanged)
+      {descend.(head), meta, reroute_arguments(head, Meta.routing(meta), args, descend)}
+    end
   end
+
+  defp reroute_node({left, right}, env, unchanged),
+    do: {reroute_node(left, env, unchanged), reroute_node(right, env, unchanged)}
+
+  defp reroute_node(list, env, unchanged) when is_list(list),
+    do: Enum.map(list, &reroute_node(&1, env, unchanged))
+
+  defp reroute_node(other, _env, _unchanged), do: other
+
+  defp reroute_arguments(_head, :skip, args, _descend), do: args
+  defp reroute_arguments(:quote, _routing, args, descend), do: quote_args(args, descend)
+
+  defp reroute_arguments(_head, routing, args, descend),
+    do: Arguments.walk(args, routing, descend, &KeywordRouting.decode/2)
 
   defp calls_of(nil), do: MapSet.new()
 
@@ -349,25 +369,37 @@ defmodule Mutare.Transform.Resolve do
   defp route_stamps(meta),
     do: {Meta.routing(meta), Meta.displaced_routing(meta), Meta.routed_call(meta)}
 
-  # Release every retained environment. A meta is carried inside other metas too — a
-  # desugared pipe's written spelling, a grouped prefix's continuation and grouping history
-  # (`Mutare.Transform.WrittenPipe`) — so this is a walk over the term, not over the nodes:
-  # any `{key, env}` pair in any list goes. The pair is Mutare's own — a source keyword's key is
-  # a literal node, never the bare atom — and the environment is dropped before it could be
-  # descended into.
+  # Release every retained environment. A call's meta carries it, and a meta is carried
+  # inside other metas — a desugared pipe's written spelling, a grouped prefix's
+  # continuation and grouping history (`Mutare.Transform.WrittenPipe`) — so from a meta the
+  # walk continues into whatever the meta holds, dropping the `{key, env}` pair from every
+  # list it meets there, until it reaches a node again (a continuation holds the remaining
+  # stages). A node's arguments are program data, where the same pair is a keyword a mutator
+  # built and the metamutant must return (a source keyword's key is a literal node, never
+  # the bare atom; a mutator's `quote` makes it the atom); only a node's meta is Mutare's.
+  # The environment is dropped before it could be descended into.
   @doc false
   @spec forget(Macro.t()) :: Macro.t()
-  def forget(list) when is_list(list) do
-    for item <- list, not retained_pair?(item), do: forget(item)
-  end
+  def forget({form, meta, args}) when is_list(meta),
+    do: {forget(form), forget_meta(meta), forget(args)}
 
-  def forget(tuple) when is_tuple(tuple),
-    do: tuple |> Tuple.to_list() |> Enum.map(&forget/1) |> List.to_tuple()
-
+  def forget({left, right}), do: {forget(left), forget(right)}
+  def forget(list) when is_list(list), do: Enum.map(list, &forget/1)
   def forget(leaf), do: leaf
+
+  defp forget_meta(meta),
+    do: for(item <- meta, not retained_pair?(item), do: forget_carried(item))
 
   defp retained_pair?({key, _env}), do: key == MetaKeys.resolution_key()
   defp retained_pair?(_item), do: false
+
+  defp forget_carried({_form, meta, _args} = node) when is_list(meta), do: forget(node)
+  defp forget_carried(list) when is_list(list), do: forget_meta(list)
+
+  defp forget_carried(tuple) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> Enum.map(&forget_carried/1) |> List.to_tuple()
+
+  defp forget_carried(leaf), do: leaf
 
   @doc """
   The stable node id stamped by the pre-pass, or `nil` for a node carrying no metadata
@@ -401,7 +433,7 @@ defmodule Mutare.Transform.Resolve do
     {meta, _module_key} = stamp_bare_call(:quote, meta, args, env)
 
     {:quote, meta,
-     if(Meta.routing(meta) == :skip, do: args, else: walk_live_quote_args(args, env))}
+     if(Meta.routing(meta) == :skip, do: args, else: quote_args(args, &walk(&1, env)))}
   end
 
   # `left |> stage(args)` is sugar for `stage(left, args)`, and from here on it *is* that call —
@@ -884,43 +916,37 @@ defmodule Mutare.Transform.Resolve do
 
   # === quote data ============================================================
 
-  # `QuoteStructure` says which parts run; this pass resolves those and leaves data as written.
-  defp walk_live_quote_args(args, env) do
+  # `QuoteStructure` says which parts run; a walk resolves those (`resolve` — the resolution
+  # walk's, or `reroute/2`'s over a mutant) and leaves data as written. A live escape is a
+  # call with a resolvable head (`Kernel.SpecialForms.unquote`), resolved as any bare call is:
+  # stamped, so a `:skip` route on it is honoured by `Analyze.QuoteEscape` and its argument
+  # stays as written; entered otherwise.
+  defp quote_args(args, resolve) do
     {parts, rebuild} = QuoteStructure.parts(args)
 
     parts
     |> Enum.map(fn
-      {value, :live} -> walk(value, env)
-      {value, :quoted} -> walk_quoted_data(value, env)
+      {value, :live} -> resolve.(value)
+      {value, :quoted} -> quoted_data(value, resolve)
       {value, :inert} -> value
     end)
     |> rebuild.()
   end
 
-  # A live unquote is a resolvable head too (`Kernel.SpecialForms.unquote`): stamp it, so a `:skip`
-  # route on it is honoured by `Analyze.QuoteEscape` and the escaping argument stays as written.
-  defp walk_quoted_data({form, meta, args} = node, env) when is_list(args) do
+  defp quoted_data({form, meta, args} = node, resolve) when is_list(args) do
     case QuoteStructure.quoted(node) do
-      {:escape, arg, _rebuild} ->
-        {meta, _module_key} = stamp_bare_call(form, meta, [arg], env)
-        {form, meta, if(Meta.routing(meta) == :skip, do: [arg], else: [walk(arg, env)])}
-
-      {:options, options, rebuild} ->
-        rebuild.(walk_quoted_data(options, env))
-
-      :inert ->
-        node
-
-      :data ->
-        {walk_quoted_data(form, env), meta, Enum.map(args, &walk_quoted_data(&1, env))}
+      {:escape, _arg, _rebuild} -> resolve.(node)
+      {:options, options, rebuild} -> rebuild.(quoted_data(options, resolve))
+      :inert -> node
+      :data -> {quoted_data(form, resolve), meta, Enum.map(args, &quoted_data(&1, resolve))}
     end
   end
 
-  defp walk_quoted_data({left, right}, env),
-    do: {walk_quoted_data(left, env), walk_quoted_data(right, env)}
+  defp quoted_data({left, right}, resolve),
+    do: {quoted_data(left, resolve), quoted_data(right, resolve)}
 
-  defp walk_quoted_data(list, env) when is_list(list),
-    do: Enum.map(list, &walk_quoted_data(&1, env))
+  defp quoted_data(list, resolve) when is_list(list),
+    do: Enum.map(list, &quoted_data(&1, resolve))
 
-  defp walk_quoted_data(other, _env), do: other
+  defp quoted_data(other, _resolve), do: other
 end

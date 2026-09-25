@@ -145,6 +145,80 @@ defmodule Mutare.ResolveTest do
     end
   end
 
+  describe "Resolve.forget/1" do
+    import Mutare.Test.SourcePatch, only: [assert_patches: 4]
+    alias Mutare.Transform.MetaKeys
+
+    # A mutator's own `quote` spells a keyword key as the bare atom, where a source keyword's is a
+    # literal node: the one shape in which program data can hold the retained pair's key.
+    defmodule ReplaceWithKeyword do
+      @behaviour Mutare.Mutator
+
+      @impl Mutare.Mutator
+      def name, do: :replace_with_keyword
+
+      @impl Mutare.Mutator
+      def mutate(node) do
+        case Mutare.Calls.resolved_call_to(node, Function, :identity) do
+          {:ok, :identity, [_argument], _rebuild} -> [quote(do: [mutare_resolution: :payload])]
+          _ -> :skip
+        end
+      end
+    end
+
+    defp retained?(term) do
+      term
+      |> Macro.prewalk([], fn
+        {_form, meta, _args} = node, acc when is_list(meta) ->
+          {node, [Keyword.has_key?(meta, MetaKeys.resolution_key()) | acc]}
+
+        node, acc ->
+          {node, acc}
+      end)
+      |> elem(1)
+      |> Enum.any?()
+    end
+
+    test "a keyword literal holding the key is program data, and stays" do
+      literal = quote(do: [mutare_resolution: :payload, other: 2])
+      assert Resolve.forget(literal) == literal
+
+      map = quote(do: %{mutare_resolution: :payload, other: 2})
+      assert Resolve.forget(map) == map
+    end
+
+    test "a released node keeps an argument holding the key" do
+      {_dot, meta, _args} = call = annotate("Function.identity(1)")
+      env = Keyword.fetch!(meta, MetaKeys.resolution_key())
+      data = [mutare_resolution: :payload]
+
+      assert Resolve.forget({:probe, [{MetaKeys.resolution_key(), env}], [data]}) ==
+               {:probe, [], [data]}
+
+      refute retained?(Resolve.forget(call))
+    end
+
+    # The `|>` clause stamps the pipe's meta, which `WrittenPipe` then keeps inside the direct
+    # call's; a right-nested group keeps two more. The release reaches them all.
+    test "an environment a meta carries inside another meta is released" do
+      released = Resolve.forget(annotate("xs |> (Enum.map(f) |> Enum.sum())"))
+
+      refute retained?(released)
+      refute inspect(released, limit: :infinity) =~ "mutare_resolution"
+    end
+
+    test "a keyword-valued mutant returns the keyword its source patch shows" do
+      source = """
+      defmodule Fixture do
+        def run, do: Function.identity(1)
+      end
+      """
+
+      assert [_site] =
+               assert_patches(source, [ReplaceWithKeyword], [run: []], clean_functions: false)
+    end
+  end
+
   describe "readers of preserved syntax" do
     alias Mutare.CallRouting.Registry
     alias Mutare.Transform.MetaKeys
