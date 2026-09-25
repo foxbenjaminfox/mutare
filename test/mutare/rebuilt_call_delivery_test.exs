@@ -22,6 +22,12 @@ defmodule Mutare.RebuiltCallDeliveryTest do
       mutator left unchanged keeps the classification it got on the written call, and a
       changed one is classified over its arguments spelled as written again; a classifier
       whose answer depends on the spelling (`PipeShapeRoute`) answers the same for both.
+    * **A replacement is source, and is resolved as source.** A mutator may return a freshly
+      written pipe (`quote do: unquote(x) |> DSL.ignored()`) rather than the direct call;
+      `Kernel.|>/2` inserts the operand into the stage, so the stage's route is the one for
+      `ignored/1`, not `ignored/0`, and the mutant is the direct call the walk makes of any
+      written pipe — routed, and delivered, as such. A fresh pipe into an eager callee, and
+      a fresh pipe replacing a call written directly, are the controls.
   """
   use ExUnit.Case, async: true
 
@@ -137,6 +143,27 @@ defmodule Mutare.RebuiltCallDeliveryTest do
         {:ok, :value, args, _rebuild} ->
           path = DSL |> Module.split() |> Enum.map(&String.to_atom/1)
           [{{:., [], [{:__aliases__, [], path}, :ignored]}, [], args}]
+
+        _ ->
+          :skip
+      end
+    end
+  end
+
+  # `value(x)` → `x |> DSL.<target>()`: a freshly written pipe, its operand reused exactly.
+  defmodule RenameToPipe do
+    @behaviour Mutare.Mutator
+    alias Mutare.RebuiltCallDeliveryTest.DSL
+
+    @impl Mutare.Mutator
+    def name, do: :rename_to_pipe
+
+    @impl Mutare.Mutator
+    def mutate(node, %{opts: opts}) do
+      case Mutare.Calls.resolved_call_to(node, DSL, :value) do
+        {:ok, :value, [argument], _rebuild} ->
+          stage = {{:., [], [DSL, Keyword.fetch!(opts, :target)]}, [], []}
+          [{:|>, [], [argument, stage]}]
 
         _ ->
           :skip
@@ -269,6 +296,46 @@ defmodule Mutare.RebuiltCallDeliveryTest do
     end
   end
 
+  describe "a replacement written as a fresh pipe" do
+    test "into a lazy callee: the stage is routed at its piped arity, and the operand not hoisted" do
+      source = effect_fixture("input() |> #{@dsl}.value()")
+      assert [_] = assert_patches(source, [{RenameToPipe, target: :ignored}], [run: []], @opts)
+    end
+
+    test "into a classified lazy callee: the classifier is asked at the piped arity" do
+      source = effect_fixture("input() |> #{@dsl}.value()")
+
+      assert [_] =
+               assert_patches(source, [{RenameToPipe, target: :ignored_twin}], [run: []], @opts)
+    end
+
+    test "control: a fresh pipe into an eager callee still runs its operand" do
+      source = effect_fixture("input() |> #{@dsl}.value()")
+
+      assert [_] =
+               assert_patches(source, [{RenameToPipe, target: :eager_twin}], [run: []], @opts)
+    end
+
+    test "control: a fresh pipe replacing a call written directly" do
+      source = effect_fixture("#{@dsl}.value(input())")
+      assert [_] = assert_patches(source, [{RenameToPipe, target: :ignored}], [run: []], @opts)
+    end
+
+    test "Resolve.reroute/2 makes the fresh pipe the direct call it is sugar for" do
+      registry = Registry.build([], [], [Routes])
+      call = "Elixir.Mutare.RebuiltCallDeliveryTest.DSL.value(input())"
+      node = call |> Sourceror.parse_string!() |> Resolve.annotate(registry)
+      [mutant] = RenameToPipe.mutate(node, %{opts: [target: :ignored]})
+
+      rerouted = Resolve.reroute(mutant, node)
+
+      assert {_module, :ignored, [operand], _rebuild} = Mutare.Calls.resolved_call(rerouted)
+      assert {_module, :value, [^operand], _rebuild} = Mutare.Calls.resolved_call(node)
+      assert Mutare.Calls.routed_treatments(rerouted) == [:lazy_expression]
+      assert is_list(Mutare.Transform.Meta.written_pipe_meta(rerouted))
+    end
+  end
+
   describe "a classifier is asked over written syntax" do
     @call "Elixir.Mutare.RebuiltCallDeliveryTest.DSL.identity((p = -6) |> Function.identity())"
 
@@ -283,7 +350,6 @@ defmodule Mutare.RebuiltCallDeliveryTest do
       assert Mutare.Calls.routed_treatments(node) == [:expression]
       assert BindingEscapeEmit.expression_bindings(node) == [:p]
 
-      assert Resolve.reroute(node) == node
       assert Resolve.reroute(node, node) == node
     end
 

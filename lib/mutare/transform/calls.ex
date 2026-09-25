@@ -60,23 +60,25 @@ defmodule Mutare.Transform.Calls do
     {Aliases.resolved_module(alias_meta, mod), fun, args, rebuild}
   end
 
-  # A direct Erlang remote call `:binary.fun(args)` — the module is a bare atom (Sourceror-
-  # wrapped or plain), which `Aliases` never stamps; the atom *is* the module key. The
-  # `__aliases__` (Elixir) shape was handled by the clause above, so `Aliases.resolve_node/2`
-  # (env-free — a direct remote carries no alias) only ever sees the bare/wrapped-atom shapes
-  # here, returning the atom (or `nil` for a non-module receiver).
+  # A direct atom-module remote call `:binary.fun(args)` — the module is a bare atom (Sourceror-
+  # wrapped or plain), which `Aliases` never stamps; the atom names the module outright, and its
+  # key is `Aliases.from_module/1`'s encoding: an Erlang atom its own, an Elixir module atom
+  # (`Elixir.Enum`, what a mutator's `quote do: unquote(mod).f()` writes) its segment path, as
+  # the `__aliases__` clause above and the registry key it. `Aliases.resolve_node/2` (env-free — a
+  # direct remote carries no alias) only ever sees the bare/wrapped-atom shapes here, returning
+  # the atom (or `nil` for a non-module receiver).
   defp read_resolved_call({{:., dot_meta, [mod, fun]}, call_meta, args})
        when is_atom(fun) and is_list(args) do
     case Aliases.resolve_node(mod, %{}) do
       nil ->
         nil
 
-      atom ->
+      module ->
         rebuild = fn new_fun, new_args ->
           {{:., dot_meta, [mod, new_fun]}, call_meta, new_args}
         end
 
-        {atom, fun, args, rebuild}
+        {Aliases.from_module(module), fun, args, rebuild}
     end
   end
 

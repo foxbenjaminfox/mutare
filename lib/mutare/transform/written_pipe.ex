@@ -76,12 +76,15 @@ defmodule Mutare.Transform.WrittenPipe do
   """
   @spec direct(keyword(), Macro.t()) :: Macro.t()
   def direct(pipe_meta, {head, meta, [_left | _visible] = args}) when is_list(pipe_meta) do
+    # A pipe a mutator wrote (`Mutare.Transform.Resolve.reroute/2`) has no node identity to
+    # answer to.
     meta =
-      meta
-      |> Keyword.put(MetaKeys.nid_key(), Keyword.fetch!(pipe_meta, MetaKeys.nid_key()))
-      |> Meta.stamp_written_pipe(pipe_meta)
+      case Keyword.fetch(pipe_meta, MetaKeys.nid_key()) do
+        {:ok, nid} -> Keyword.put(meta, MetaKeys.nid_key(), nid)
+        :error -> meta
+      end
 
-    {head, meta, args}
+    {head, Meta.stamp_written_pipe(meta, pipe_meta), args}
   end
 
   @doc """

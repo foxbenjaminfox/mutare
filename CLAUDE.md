@@ -286,20 +286,23 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   value (`PipeEmit.delivery/2`) evaluates it ahead of any stage whose position 0 is a value —
   unrouted, `:expression` or `:interior`. The one way to say otherwise is the position word
   `:lazy_expression`; anything that binds a user expression ahead of a call must honour it —
-  NOTES "Evaluation is a route's to declare: `:lazy_expression`". A call a mutator *rebuilt*
-  is routed again as the call it now is where the mutant enters core (`Resolve.reroute/2`,
-  from `Attach.build_candidates/2`; a call the mutator left as it was keeps its stamp, and
-  a changed one is classified over its arguments spelled as written, whether or not the
-  written call had a route — every resolved call retains its environment, and a call the
-  mutator built without the offered meta is resolved in the offered node's; the route found
-  bounds the rerouting beneath it as the walk's does, so a call in the replacement's `:raw`,
-  skipped or quoted region is syntax and no classifier is asked about it) — the offered
-  call's stamp never describes a different call, and the replacement's own route governs
-  its delivery too: `PipeEmit` lets a mutant ride the piped-value closure only where *its*
-  route reads position 0 as a value. NOTES "A rebuilt call is routed as the call it is", "A
-  rebuilt call's route governs its delivery, and its classifier sees written syntax", "A
-  rebuilt call is routed whether or not the written call was", "A replacement's route
-  bounds its rerouting, and a released environment is a meta's".
+  NOTES "Evaluation is a route's to declare: `:lazy_expression`". A mutant is **resolved as
+  source** where it enters core (`Resolve.reroute/2`, from `Attach.build_candidates/2`): the
+  resolution walk itself, run over the mutant in the environment the offered node retained,
+  with the offered node's calls taken as already resolved — a call the mutator left as it was
+  keeps its stamp and is not entered; everything else takes the clause a written node takes,
+  so a changed call is routed for the call it now is whether or not the written call had a
+  route, a fresh `|>` is desugared before its stage is looked up, a fresh block folds its
+  directives, and a route found bounds the walk beneath it (a call in the replacement's
+  `:raw`, skipped or quoted region is syntax; no classifier is asked about it). A classifier
+  sees arguments as written, which `RouteStamp` guarantees where it invokes one. So the
+  offered call's stamp never describes a different call, and the replacement's own route
+  governs its delivery too: `PipeEmit` lets a mutant ride the piped-value closure only where
+  *its* route reads position 0 as a value. NOTES "A rebuilt call is routed as the call it
+  is", "A rebuilt call's route governs its delivery, and its classifier sees written
+  syntax", "A rebuilt call is routed whether or not the written call was", "A replacement's
+  route bounds its rerouting, and a released environment is a meta's", "A replacement is
+  resolved by the walk".
 - **The metamutant is not invisible to reflection, and nothing should try to make it so.**
   Callers, captures, `@spec` and `@behaviour`/`@impl` see the module unchanged; a stacktrace,
   `__ENV__.function` or an `@on_definition` callback sees generated names. Don't add machinery

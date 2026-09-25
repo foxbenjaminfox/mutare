@@ -239,7 +239,7 @@ defmodule Mutare.Transform.Resolve do
   defp preserved_identity({:., _dot_meta, [mod, fun]}, _meta, _args, _env) when is_atom(fun) do
     case Aliases.resolve_node(mod, %{}) do
       nil -> nil
-      module_key -> {module_key, fun}
+      module -> {Aliases.from_module(module), fun}
     end
   end
 
@@ -259,72 +259,45 @@ defmodule Mutare.Transform.Resolve do
   # A stamp is the route's answer for the call it was stamped on. A mutator's `rebuild` reuses
   # the offered call's meta — stamp, identity and retained environment included — and may
   # change anything a route or a classifier reads: the callee, the arity, a keyword key, a
-  # value. So every call in `mutant` that is not a call of `original` (the node the mutator
-  # was offered; a call equal to one of its calls, term for term, is that call and keeps its
-  # classification) is routed again for the call it now is: the registry's answer for the
-  # rebuilt head and arity, a `:routing` classifier invoked on the rebuilt arguments, and no
-  # stamp where nothing matches — the readers then read the call through the environment it
-  # still carries (`effective_routing/2`), as they read any call this pass did not route. That
-  # the written call had no route says nothing about its replacement — `value(x)`, an
-  # ordinary function, rebuilt as `ignored(x)`, a routed macro — so a changed call is looked
-  # up whether or not it was routed, in the environment it retained. A mutant is source at the
-  # offered node's position, so a call built without that node's meta (a mutator's own
-  # `quote`) is resolved in the offered node's environment, as the compiler resolves its
-  # source patch; a mutant offered a node no environment reaches is routed no further. The
-  # classifier sees the arguments **as written**, the phase `Mutare.CallRouting` promises it:
-  # the walk desugared the pipes nested in them, so they are spelled as pipes again
-  # (`WrittenPipe.resugar/1`) for the classification alone; the stamp lands on the resolved
-  # node delivery uses. A mutant is source the classifier must classify as it classifies any
-  # call to its macro. The arguments are not walked again: a nested call keeps the stamp it
-  # was resolved with, and one the mutator rebuilt is rerouted as the walk reaches it.
-  # Warnings stay off — a misshapen mutant is not the author's call site.
+  # value; a mutator's own `quote` returns source no pass has seen at all. So a mutant is
+  # resolved as the source it is, by the walk that resolves a written file (`walk/2`): in the
+  # environment the offered node retained — a mutant is source at that node's position, and
+  # the compiler resolves its patch there — with every call of `original` (the node the
+  # mutator was offered; a call equal to one of its calls, term for term, is that call) named
+  # as already resolved (`env.unchanged`), so one is returned as the identical term, subtree
+  # and all, and no classifier runs on what the mutator did not touch. Everything else is
+  # source the walk has not seen, and takes the clauses a written node takes: a changed call
+  # is routed again for the call it now is, its stale stamps dropped first (`changed/1`) and
+  # looked up whether or not the written call was routed — `value(x)`, an ordinary function,
+  # rebuilt as `ignored(x)`, a routed macro; a fresh `|>` is made the direct call it is sugar
+  # for before its stage is looked up, so the stage is routed at the arity the piped operand
+  # gives it; a fresh statement sequence folds its `alias`/`import` directives for the
+  # statements after them; and the route found bounds the walk beneath it as it does
+  # anywhere — a call in a `:raw` position, a skipped call or quoted data of the replacement
+  # is that route's syntax, and no classifier is asked about it. A classifier sees the
+  # arguments as written, resolved operands spelled back, which `RouteStamp` guarantees at
+  # the one place classifiers are invoked. A mutant offered a node no environment reaches is
+  # routed no further. Warnings stay off — a misshapen mutant is not the author's call site —
+  # and a keyword route the rebuilt pairs no longer fit is read leniently
+  # (`keyword_decode/1`), since the misfit is a static route's count against a mutant.
   #
   # Applied where a mutant enters core (`Mutare.Transform.Analyze.Attach.build_candidates/2`),
   # so no later reader meets a stamp computed for another call — NOTES "A rebuilt call is
   # routed as the call it is", "A rebuilt call's route governs its delivery, and its classifier
-  # sees written syntax", "A rebuilt call is routed whether or not the written call was".
+  # sees written syntax", "A rebuilt call is routed whether or not the written call was", "A
+  # replacement is resolved by the walk".
   @doc false
-  @spec reroute(Macro.t(), Macro.t() | nil) :: Macro.t()
-  def reroute(mutant, original \\ nil),
-    do: reroute_node(mutant, retained_environment(original), calls_of(original))
+  @spec reroute(Macro.t(), Macro.t()) :: Macro.t()
+  def reroute(mutant, original) do
+    case retained_environment(original) do
+      nil ->
+        mutant
 
-  # A call of the offered node is that call, and so is everything beneath it. A changed call
-  # is routed in its environment, and its arguments are then entered as the walk enters a
-  # written call's: by its route (`Arguments.walk/4`), a `quote`'s by which parts run. So a
-  # call inside a region the replacement's route preserves — a `:raw` position, a skipped
-  # call, quoted data — is that route's syntax, as it would be were the mutant the written
-  # source, and no classifier is asked about it; the binding readers read it through the
-  # environment the enclosing call retained, as they read any preserved call. A keyword
-  # route the rebuilt pairs no longer fit is read leniently, as every later reader reads it
-  # (`KeywordRouting.decode/2`): the misfit is a static route's count against a mutant, not
-  # the author's call site.
-  defp reroute_node({head, meta, args} = node, env, unchanged)
-       when is_list(meta) and is_list(args) do
-    if node in unchanged do
-      node
-    else
-      env = retained_environment(node) || env
-      {head, meta, args} = if env, do: restamp(head, meta, args, env), else: node
-      descend = &reroute_node(&1, env, unchanged)
-      {descend.(head), meta, reroute_arguments(head, Meta.routing(meta), args, descend)}
+      env ->
+        env = %{env | diag: %{env.diag | warn?: false}}
+        walk(mutant, Map.put(env, :unchanged, calls_of(original)))
     end
   end
-
-  defp reroute_node({left, right}, env, unchanged),
-    do: {reroute_node(left, env, unchanged), reroute_node(right, env, unchanged)}
-
-  defp reroute_node(list, env, unchanged) when is_list(list),
-    do: Enum.map(list, &reroute_node(&1, env, unchanged))
-
-  defp reroute_node(other, _env, _unchanged), do: other
-
-  defp reroute_arguments(_head, :skip, args, _descend), do: args
-  defp reroute_arguments(:quote, _routing, args, descend), do: quote_args(args, descend)
-
-  defp reroute_arguments(_head, routing, args, descend),
-    do: Arguments.walk(args, routing, descend, &KeywordRouting.decode/2)
-
-  defp calls_of(nil), do: MapSet.new()
 
   defp calls_of(original) do
     {_node, calls} =
@@ -344,30 +317,40 @@ defmodule Mutare.Transform.Resolve do
 
   defp retained_environment(_node), do: nil
 
-  # An unchanged call comes back as the identical term — its meta in the order the pre-pass
-  # left it — since a delivery compares a mutant with the written node by equality
-  # (`Mutare.Transform.PipeEmit`, `Mutare.Transform.WrittenPipe.stage_attribution/2`).
-  defp restamp(head, meta, args, env) do
-    stripped = Meta.drop_routing(meta)
-    env = %{env | diag: %{env.diag | warn?: false}}
-    written = Enum.map(args, &WrittenPipe.resugar/1)
+  # A changed call may carry the offered call's meta (`rebuild` copies it, the stamped head
+  # included; a mutator may reuse it outright): every stamp resolution left there describes
+  # another call, and the walk stamps the call it now is. `Imports.stamp/5` and
+  # `Aliases.stamp_module/2` prepend, so a stale stamp left behind a fresh one is unread, but
+  # one left where the rebuilt name resolves to nothing would be read as the call's — a
+  # renamed bare import as the import it no longer is. The node's identity, spelling and
+  # positions are not resolution's (`:mutare_nid`, `:mutare_written_pipe`, `:mutare_operand_of`)
+  # and stay.
+  @call_stamps [
+    MetaKeys.import_key(),
+    MetaKeys.import_witness_key(),
+    MetaKeys.kernel_displaced_key(),
+    MetaKeys.route_key(),
+    MetaKeys.displaced_route_key(),
+    MetaKeys.route_call_key(),
+    MetaKeys.resolution_key(),
+    MetaKeys.mark_call_key()
+  ]
 
-    restamped =
-      case preserved_identity(head, stripped, written, env) do
-        nil ->
-          stripped
+  defp changed({form, meta, args}),
+    do: {unstamped_head(form), Keyword.drop(meta, @call_stamps), args}
 
-        {module_key, fun} ->
-          RouteStamp.stamp(stripped, module_key, fun, written, {head, stripped, written}, env)
-      end
+  defp unstamped_head({:., dot_meta, [{:__aliases__, alias_meta, path}, fun]}),
+    do:
+      {:., dot_meta,
+       [{:__aliases__, Keyword.delete(alias_meta, MetaKeys.alias_key()), path}, fun]}
 
-    if route_stamps(restamped) == route_stamps(meta),
-      do: {head, meta, args},
-      else: {head, retain_environment(restamped, env), args}
-  end
+  defp unstamped_head(form), do: form
 
-  defp route_stamps(meta),
-    do: {Meta.routing(meta), Meta.displaced_routing(meta), Meta.routed_call(meta)}
+  # The written call takes the strict reading of a keyword route: a positional list that does
+  # not fit the pairs is the route's error, raised there. A mutant's calls take the lenient one
+  # every later reader takes (`Mutare.Transform.Resolve.Arguments`).
+  defp keyword_decode(%{unchanged: %MapSet{}}), do: &KeywordRouting.decode/2
+  defp keyword_decode(_env), do: &KeywordRouting.decode!/2
 
   # Release every retained environment. A call's meta carries it, and a meta is carried
   # inside other metas — a desugared pipe's written spelling, a grouped prefix's
@@ -410,10 +393,20 @@ defmodule Mutare.Transform.Resolve do
   @spec nid(Macro.t()) :: non_neg_integer() | nil
   def nid(node), do: NodeIds.get(node)
 
+  # The walk enters source once. Over a mutant (`reroute/2`) the environment names the calls
+  # of the offered node as already resolved: one comes back as it is, subtree and all; a node
+  # that is not one is source the walk has not seen, and takes the clause a written node does.
+  defp walk({_form, meta, args} = node, %{unchanged: %MapSet{} = unchanged} = env)
+       when is_list(meta) and is_list(args) do
+    if MapSet.member?(unchanged, node), do: node, else: walk_node(changed(node), env)
+  end
+
+  defp walk(node, env), do: walk_node(node, env)
+
   # A statement sequence: fold the env left-to-right so an `alias`/`import` extends it for the
   # *subsequent* siblings only. Each statement is walked under the env in force *before* it
   # (so a directive resolves nothing on its own line, and order is textual).
-  defp walk({:__block__, meta, stmts}, env) when is_list(stmts) do
+  defp walk_node({:__block__, meta, stmts}, env) when is_list(stmts) do
     {walked, _env} =
       Enum.map_reduce(stmts, env, fn stmt, env ->
         {walk(stmt, env), register(stmt, env)}
@@ -427,7 +420,7 @@ defmodule Mutare.Transform.Resolve do
   # escaping `unquote`/`unquote_splicing` arguments in the quoted block, resolving them under the
   # env at the quote site. That keeps a quoted directive such as `alias List, as: S` from
   # restamping `unquote(S.trim(s))`, whose expression is evaluated in the outer scope.
-  defp walk({:quote, meta, args}, env) when is_list(args) do
+  defp walk_node({:quote, meta, args}, env) when is_list(args) do
     # The head (`Kernel.SpecialForms.quote`) is stamped like any bare call, so a `:skip` route on
     # it is honoured — the analyzer then leaves the whole quote alone, escaping unquotes included.
     {meta, _module_key} = stamp_bare_call(:quote, meta, args, env)
@@ -452,7 +445,7 @@ defmodule Mutare.Transform.Resolve do
   # open to it (its head resolves to a `:call`, not the structural `Kernel` pipe).
   # `Mutare.Transform.Calls.kernel_call?/1` is how every later reader of a `|>` node asks the
   # same question.
-  defp walk({:|>, meta, [lhs, rhs] = args}, env) do
+  defp walk_node({:|>, meta, [lhs, rhs] = args}, env) do
     {resolved_meta, module_key} = resolve_pipe_call(meta, args, env)
 
     if module_key != [:Kernel] do
@@ -482,7 +475,7 @@ defmodule Mutare.Transform.Resolve do
   #
   # If the right side is not a literal arity, this is an expression capture/body division
   # (`&foo / bar`), not `&fun/N`; fall back to normal descent so `/` remains mutatable there.
-  defp walk({:&, amp_meta, [{:/, slash_meta, [{fun, ref_meta, context} = ref, right]}]}, env)
+  defp walk_node({:&, amp_meta, [{:/, slash_meta, [{fun, ref_meta, context} = ref, right]}]}, env)
        when is_atom(fun) and is_list(ref_meta) and is_atom(context) do
     # The capture head (`Kernel.SpecialForms.&`) is stamped like any bare call, so a `:skip` route
     # on it is honoured here too (the other `&` shapes reach the bare-call clause on their own).
@@ -505,7 +498,10 @@ defmodule Mutare.Transform.Resolve do
   # A remote call `Mod.fun(...)`: stamp its module position with the alias-resolved module
   # (and, when it resolves to a known macro, its argument routing on the call meta), then
   # descend the arguments (they may contain bare imported calls).
-  defp walk({{:., dot_meta, [{:__aliases__, _am, path} = aliases, fun]}, call_meta, args}, env)
+  defp walk_node(
+         {{:., dot_meta, [{:__aliases__, _am, path} = aliases, fun]}, call_meta, args},
+         env
+       )
        when is_list(args) do
     stamped = Aliases.stamp_module(aliases, env.aliases)
     module_key = Aliases.resolve_path(path, env.aliases)
@@ -518,9 +514,12 @@ defmodule Mutare.Transform.Resolve do
     {{:., dot_meta, [stamped, fun]}, call_meta, walked}
   end
 
-  # A direct Erlang/atom-module remote call `:mod.fun(...)`: the receiver is a bare (or Sourceror-
-  # wrapped) atom — never alias-stamped, so the atom *is* the module key. (An *aliased* atom module
-  # `alias :binary, as: B; B.fun(...)` is the `__aliases__` shape above, resolved via the alias env.)
+  # A direct atom-module remote call `:mod.fun(...)`: the receiver is a bare (or Sourceror-
+  # wrapped) atom — never alias-stamped, so the atom names the module outright, and its key is
+  # `Aliases.from_module/1`'s encoding: an Erlang atom is its own key, an Elixir module atom
+  # (`Elixir.Enum`, what a mutator's `quote do: unquote(mod).f()` writes) its segment path, as
+  # the registry keys it. (An *aliased* atom module `alias :binary, as: B; B.fun(...)` is the
+  # `__aliases__` shape above, resolved via the alias env.)
   # `Aliases.resolve_node/2` is consulted **env-free** (`%{}`), exactly as
   # `Mutare.Transform.Calls.resolved_call/1`'s twin clause: the `__aliases__` (Elixir) shape was
   # handled above, so only bare/wrapped-atom (and non-module) receivers reach here, none of which
@@ -536,14 +535,15 @@ defmodule Mutare.Transform.Resolve do
   # silently skipped (the old generic-clause behaviour). The function-name atom `fun` is never
   # touched. (Analyze mirrors this split — `descend_receiver/2` — so such a receiver is also offered
   # to mutators.)
-  defp walk({{:., dot_meta, [mod, fun]}, call_meta, args}, env)
+  defp walk_node({{:., dot_meta, [mod, fun]}, call_meta, args}, env)
        when is_atom(fun) and is_list(args) do
     case Aliases.resolve_node(mod, %{}) do
       nil ->
         walked = walk(mod, env)
         {{:., dot_meta, [walked, fun]}, retain_environment(call_meta, env), descend(args, env)}
 
-      module_key ->
+      module ->
+        module_key = Aliases.from_module(module)
         call_node = {{:., dot_meta, [mod, fun]}, call_meta, args}
         call_meta = RouteStamp.stamp(call_meta, module_key, fun, args, call_node, env)
         call_meta = stamp_mark_call(call_meta, module_key, fun, args, env)
@@ -557,7 +557,7 @@ defmodule Mutare.Transform.Resolve do
   # no function name and its callee is never a module reference, so walk it like the non-module
   # receiver above — an aliased/imported/known-macro call inside an immediately-invoked `fn` gets its
   # stamp. (Analyze's `descend_receiver/2` has the matching clause.)
-  defp walk({{:., dot_meta, [callee]}, call_meta, args}, env) when is_list(args) do
+  defp walk_node({{:., dot_meta, [callee]}, call_meta, args}, env) when is_list(args) do
     {{:., dot_meta, [walk(callee, env)]}, retain_environment(call_meta, env), descend(args, env)}
   end
 
@@ -572,7 +572,7 @@ defmodule Mutare.Transform.Resolve do
   # except: [defmodule: 2]` + `import MyDSL, only: [defmodule: 2]`) defines no module named after its
   # head, so it opens NO scope: treating its `do` block as an Elixir module body would resolve/route
   # interior calls against a module that needn't exist. Must precede the bare-call clause below.
-  defp walk({:defmodule, meta, [head, body] = args}, env) when is_list(body) do
+  defp walk_node({:defmodule, meta, [head, body] = args}, env) when is_list(body) do
     {meta, module_key} = stamp_bare_call(:defmodule, meta, args, env)
 
     if kernel_module_definer?(:defmodule, meta, args, env) do
@@ -599,7 +599,7 @@ defmodule Mutare.Transform.Resolve do
   # body (lifting guards/head literals/clause structure under that module's `:skip_lifting` name)
   # rather than analyze it in place like any other statement. The stamp's *presence* is the
   # "this is Kernel's `defimpl`" signal; a displaced one carries none and stays an expression.
-  defp walk({:defimpl, meta, args}, env) when is_list(args) and length(args) >= 2 do
+  defp walk_node({:defimpl, meta, args}, env) when is_list(args) and length(args) >= 2 do
     {meta, module_key} = stamp_bare_call(:defimpl, meta, args, env)
 
     if kernel_module_definer?(:defimpl, meta, args, env) do
@@ -614,18 +614,18 @@ defmodule Mutare.Transform.Resolve do
 
   # A bare call `fun(...)`: stamp it with its resolved import (or Kernel-displacement), then —
   # when it resolves to a known macro — its argument routing, then descend the arguments.
-  defp walk({fun, meta, args}, env) when is_atom(fun) and is_list(args) do
+  defp walk_node({fun, meta, args}, env) when is_atom(fun) and is_list(args) do
     {meta, module_key} = resolve_bare_call(fun, meta, args, env)
     walk_bare_call(fun, meta, module_key, args, env)
   end
 
   # Any other n-ary node (`__aliases__`, operators with a tuple form, …): nothing to stamp —
   # descend the arguments.
-  defp walk({form, meta, args}, env) when is_list(args), do: {form, meta, descend(args, env)}
+  defp walk_node({form, meta, args}, env) when is_list(args), do: {form, meta, descend(args, env)}
 
-  defp walk({left, right}, env), do: {walk(left, env), walk(right, env)}
-  defp walk(list, env) when is_list(list), do: Enum.map(list, &walk(&1, env))
-  defp walk(node, _env), do: node
+  defp walk_node({left, right}, env), do: {walk(left, env), walk(right, env)}
+  defp walk_node(list, env) when is_list(list), do: Enum.map(list, &walk(&1, env))
+  defp walk_node(node, _env), do: node
 
   # The bare-call stamping shared by the generic bare-call clause and the `defmodule`
   # clause: the resolved import (or Kernel displacement), then — when the call resolves to a
@@ -677,7 +677,11 @@ defmodule Mutare.Transform.Resolve do
 
   # Every call retains the environment it was resolved in: a routed one for the readers of
   # the syntax its route preserves (`context/2`), any one for `reroute/2`. Released before
-  # the tree is retained or rendered (`forget/1`).
+  # the tree is retained or rendered (`forget/1`). The calls a mutant's walk takes as resolved
+  # are that walk's business, not the environment's.
+  defp retain_environment(meta, %{unchanged: _calls} = env),
+    do: retain_environment(meta, Map.delete(env, :unchanged))
+
   defp retain_environment(meta, env),
     do: Keyword.put_new(meta, MetaKeys.resolution_key(), env)
 
@@ -719,7 +723,7 @@ defmodule Mutare.Transform.Resolve do
   defp descend_marked(args, module_key, fun, meta, env) do
     args
     |> ArgumentMarks.stamp(module_key, fun, env.marks)
-    |> Arguments.walk(Meta.routing(meta), &walk(&1, env))
+    |> Arguments.walk(Meta.routing(meta), &walk(&1, env), keyword_decode(env))
   end
 
   # Record on the call's own meta that a mark declaration matched it (`:mutare_mark_call`) — the
@@ -916,11 +920,11 @@ defmodule Mutare.Transform.Resolve do
 
   # === quote data ============================================================
 
-  # `QuoteStructure` says which parts run; a walk resolves those (`resolve` — the resolution
-  # walk's, or `reroute/2`'s over a mutant) and leaves data as written. A live escape is a
-  # call with a resolvable head (`Kernel.SpecialForms.unquote`), resolved as any bare call is:
-  # stamped, so a `:skip` route on it is honoured by `Analyze.QuoteEscape` and its argument
-  # stays as written; entered otherwise.
+  # `QuoteStructure` says which parts run; the walk resolves those (`resolve`, over a file or
+  # a mutant) and leaves data as written. A live escape is a call with a resolvable head
+  # (`Kernel.SpecialForms.unquote`), resolved as any bare call is: stamped, so a `:skip` route
+  # on it is honoured by `Analyze.QuoteEscape` and its argument stays as written; entered
+  # otherwise.
   defp quote_args(args, resolve) do
     {parts, rebuild} = QuoteStructure.parts(args)
 

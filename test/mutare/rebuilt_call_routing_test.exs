@@ -28,6 +28,12 @@ defmodule Mutare.RebuiltCallRoutingTest do
   `opaque(keywords_only(123))` compiles, since `opaque/1` discards the syntax it is handed,
   and the transform must not abort on a classifier that rightly cannot classify a call that
   is never made.
+
+  And a replacement is resolved as source in every respect: a fresh statement sequence
+  folds its own `alias`/`import` directives for the statements after them, as the walk
+  folds a written block's, so `alias DSL, as: Local; Local.ignored(p = 6)` is routed as the
+  call to `DSL.ignored/1` it is — and read, delivered or withheld, as the qualified spelling
+  is.
   """
   use ExUnit.Case, async: true
 
@@ -293,7 +299,82 @@ defmodule Mutare.RebuiltCallRoutingTest do
     end
   end
 
-  describe "Resolve.reroute/1" do
+  describe "a replacement's fresh statement sequence folds its directives" do
+    @local "alias #{@syntax}, as: ReplacementLocal\n"
+
+    test "a locally aliased routed callee is routed: its raw region's classifier is not asked" do
+      assert [_site] =
+               replaced(@local <> "ReplacementLocal.opaque(ReplacementLocal.keywords_only(123))")
+
+      refute_received {SyntaxRoutes, :classified}
+    end
+
+    test "control: a locally aliased classified callee is classified" do
+      assert [_site] = replaced(@local <> "ReplacementLocal.keywords_only(value: 6)")
+      assert_received {SyntaxRoutes, :classified}
+    end
+
+    # Original: `{[8, 6], false}`; the macro discards `p = 6`, so the patch gives
+    # `{[8, 6], true}`. `p` is bound on entry, the sibling `p = 8` writes it inside the same
+    # statement — so the incoming value is not exportable — and `p == 8` reads it after: a
+    # write no branch can drop. The qualified spelling is withheld for it; the locally aliased
+    # spelling must be too.
+    @binding_source """
+    defmodule Fixture do
+      require Elixir.Mutare.RebuiltCallRoutingTest.DSL
+
+      def run do
+        p = :incoming
+        values = [p = 8, Function.identity(p = 6)]
+        {values, p == 8}
+      end
+    end
+    """
+
+    defp replaced_binding(replacement) do
+      assert_patches(
+        @binding_source,
+        [{ReplaceIdentity, replacement: replacement}],
+        [run: []],
+        extensions: [ShapeRoute],
+        clean_functions: false
+      )
+    end
+
+    @dsl "Elixir.Mutare.RebuiltCallRoutingTest.DSL"
+
+    test "a binding the locally aliased callee discards is not credited: the mutant is withheld" do
+      assert [] = replaced_binding("alias #{@dsl}, as: Local\nLocal.ignored(p = 6)")
+    end
+
+    test "control: the qualified spelling is withheld the same way" do
+      assert [] = replaced_binding("#{@dsl}.ignored(p = 6)")
+    end
+
+    test "control: an aliased callee that keeps the write is delivered" do
+      assert [_site] = replaced_binding("alias #{@dsl}, as: Local\nLocal.value(eval: (p = 6))")
+    end
+
+    test "Resolve.reroute/2 routes the call after a fresh alias by that alias" do
+      registry = Registry.build([], [], [ShapeRoute])
+
+      original =
+        "Function.identity(p = 6)" |> Sourceror.parse_string!() |> Resolve.annotate(registry)
+
+      replacement =
+        Code.string_to_quoted!(
+          "alias Elixir.Mutare.RebuiltCallRoutingTest.DSL, as: Local\nLocal.ignored(p = 6)"
+        )
+
+      assert BindingEscapeEmit.expression_bindings(replacement) == [:p]
+
+      {:__block__, _meta, [_alias, rerouted]} = Resolve.reroute(replacement, original)
+      assert Mutare.Calls.routed_treatments(rerouted) == [:raw]
+      assert BindingEscapeEmit.expression_bindings(rerouted) == []
+    end
+  end
+
+  describe "Resolve.reroute/2" do
     @call "Elixir.Mutare.RebuiltCallRoutingTest.DSL.value(eval: (p = 6), raw: 0)"
 
     setup do
@@ -305,7 +386,7 @@ defmodule Mutare.RebuiltCallRoutingTest do
 
     test "an unchanged call is the identical term", %{node: node} do
       assert Mutare.Calls.routed_treatments(node) == [{:keyword, [:expression, :raw]}]
-      assert Resolve.reroute(node) == node
+      assert Resolve.reroute(node, node) == node
     end
 
     test "a renamed keyword is classified again, and read by the new stamp", ctx do
@@ -314,13 +395,13 @@ defmodule Mutare.RebuiltCallRoutingTest do
 
       assert BindingEscapeEmit.expression_bindings(stale) == [:p]
 
-      rerouted = Resolve.reroute(stale)
+      rerouted = Resolve.reroute(stale, ctx.node)
       assert Mutare.Calls.routed_treatments(rerouted) == [{:keyword, [:raw, :raw]}]
       assert BindingEscapeEmit.expression_bindings(rerouted) == []
     end
 
     test "a renamed callee takes its own route", ctx do
-      rerouted = Resolve.reroute(ctx.rebuild.(:ignored, [ctx.pairs]))
+      rerouted = Resolve.reroute(ctx.rebuild.(:ignored, [ctx.pairs]), ctx.node)
 
       assert Mutare.Calls.routed_treatments(rerouted) == [:raw]
 
@@ -331,7 +412,7 @@ defmodule Mutare.RebuiltCallRoutingTest do
     end
 
     test "a callee no route matches carries none", ctx do
-      rerouted = Resolve.reroute(ctx.rebuild.(:other, [ctx.pairs]))
+      rerouted = Resolve.reroute(ctx.rebuild.(:other, [ctx.pairs]), ctx.node)
 
       assert Mutare.Calls.routed_treatments(rerouted) == nil
       assert Mutare.Calls.resolved_routed_call(rerouted) == nil
@@ -342,7 +423,7 @@ defmodule Mutare.RebuiltCallRoutingTest do
       stale = ctx.rebuild.(:value, [[{Keys.rename(key, :quoted), value}, raw]])
       mutant = {:not, [], [stale]}
 
-      {:not, [], [rerouted]} = Resolve.reroute(mutant)
+      {:not, _meta, [rerouted]} = Resolve.reroute(mutant, ctx.node)
       assert Mutare.Calls.routed_treatments(rerouted) == [{:keyword, [:raw, :raw]}]
     end
   end

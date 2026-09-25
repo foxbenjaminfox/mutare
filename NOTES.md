@@ -13131,6 +13131,81 @@ the export names), not a scoping one — Elixir reads the entry value either way
 baseline property's to check, with sibling rebinding in its vocabulary; `var!` and computed
 names stay the known limit ("The binding model reads syntax and declarations").
 
+### A replacement is resolved by the walk `[fixed; done]` (2026-09-25)
+
+A fifth review, of the entry below, drew the distinction the reroute had never made: between
+restamping a call the walk had resolved and resolving source no pass had seen. `reroute/2`
+was its own descent — route a changed call, enter its arguments by the route found — and so
+it approximated the walk clause by clause, with two clauses missing. **A fresh pipe was
+routed at the wrong arity.** A mutator that returns `quote do: unquote(x) |> DSL.ignored()`
+rather than `rebuild.(:ignored, [x])` hands back a `{:|>, …}` node; the descent took the
+generic call path, looked the stage up with its written arguments — `ignored/0`, not the
+`ignored/1` Kernel makes of it — found nothing, and left the pipe standing.
+`PipeEmit.keeps_argument?/2` then read the surviving pipe as an ordinary call with an atom
+head and no route — argument 0 unchanged, callee inert, position a value — and hoisted
+`input()` into the closure ahead of a stage whose route says it is never evaluated: `{6,
+true}` in the metamutant against the patch's `{6, false}`, the first entry's false survivor
+one spelling over. **A fresh statement sequence did not advance its environment.**
+`(alias DSL, as: Local; Local.ignored(p = 6))` was walked with the offered node's
+environment at every statement; `Local` resolved to nothing, the call read as ordinary, and
+`p = 6` was credited as a write the macro never makes — the export named the incoming
+value, and the metamutant gave the original's answer where the qualified spelling was
+withheld for the drop.
+
+Taken: the reroute is the walk. `reroute/2` runs `walk/2` over the mutant in the environment
+the offered node retained, with the offered node's calls named in that environment as
+already resolved (`env.unchanged`). The walk's entry returns one as the identical term,
+subtree and all — the guarantee the earlier entries established, that no classifier runs on
+what the mutator did not touch — and hands every other node, its stale stamps dropped
+(`changed/1`), to the clause a written node takes. So a fresh `|>` is desugared by the pipe
+clause before its stage is looked up, a fresh block folds its directives through
+`register/2`, a fresh `&fun/N` is stamped, a `quote` is entered by its live parts, and a
+route bounds the walk beneath it — by the code that does each of those for a file, with
+nothing left to approximate. What distinguishes a mutant's walk from a file's is the
+environment's to say: warnings off, the lenient keyword decode (`keyword_decode/1`), and the
+resolved set, which `retain_environment/2` drops before retaining, since it is the walk's,
+not the scope's. `restamp/4` and its equality guard went with the descent: a changed call is
+never equal to the written one, and an unchanged one is never entered. `reroute/2` takes the
+original; the unit tests that passed a mutant alone now pass it.
+
+Two things moved with it. **A classifier sees written syntax at the one place it is
+invoked.** The descent resugared a changed call's arguments before classifying; the walk
+classifies inside `RouteStamp.stamp/6`, so `as_written/1` lives there, in the `:routing`
+clause alone — a no-op over a written call, whose arguments are unresolved when it is
+routed, and the same spelling-back over a mutant's. **A mutator-written pipe has no node
+identity.** `WrittenPipe.direct/2` copied the pipe's nid onto the direct call
+unconditionally; a fresh pipe carries none, and no return tail is recorded against a node
+inside a mutant, so the copy is conditional. And one gap the fixture exposed beside the
+mechanism: a bare-atom Elixir module receiver — `{:., [], [Enum, :map]}`, what
+`quote do: unquote(mod).f()` writes — resolved to the module atom where the registry keys an
+Elixir module by its segment path, so it found no route under either descent, written
+directly or piped. The three atom-receiver readers (`walk_node/2`'s clause,
+`preserved_identity/4`'s, `Calls.read_resolved_call/1`'s) now key it through
+`Aliases.from_module/1`, the one encoding; an Erlang atom is its own key there as before.
+
+Regression tests: `rebuilt_call_delivery_test.exs` "a replacement written as a fresh pipe"
+(a lazy and a classified-lazy destination, an eager control, a fresh pipe over a source call
+written directly, and the `reroute/2` unit — all with the atom-module head), and
+`rebuilt_call_routing_test.exs` "a replacement's fresh statement sequence folds its
+directives" (the raw region a locally aliased callee opens, its classified control, the
+binding drop in the reviewer's list fixture with the qualified spelling and a delivered
+write-keeping alias as controls, and the `reroute/2` unit).
+
+The differential over the corpus moves one snapshot, `examples/shop/lib/shop/inventory.ex`,
+by 36 added lines and none removed: the mutated-branch import witness for each `Bitwise`
+operator swap. `Mutare.Mutators.Bitwise` builds `a ||| b` on the offered `&&&`'s meta, not
+through `rebuild`, so the mutant carried the original's witness, `ImportWitness.for_candidate/1`
+deduplicated it against the original's, and the witness the module documents as required for
+a renamed bare import — the one that proves the *emitted* name still resolves to the provider
+— was never emitted. The walk stamps the import for the call as it is, and it is now. That
+finding is what made `changed/1` drop every stamp resolution leaves on a call (the import
+trio, the routing trio, the retained environment, the mark-call stamp, and a rebuilt head's
+alias stamp), not the routing stamps alone: `Imports.stamp/5` and `Aliases.stamp_module/2`
+prepend, so a stale stamp behind a fresh one is unread, but one left where the rebuilt name
+resolves to nothing would be read as the call's. The node's identity, spelling and operator
+position (`:mutare_nid`, `:mutare_written_pipe`, `:mutare_operand_of`) are not resolution's
+and stay. Full suite green, the property soaks and the runner tests included.
+
 ### A replacement's route bounds its rerouting, and a released environment is a meta's `[fixed; done]` (2026-09-25)
 
 A fourth review, of the entry below, found that both traversals it broadened had lost a

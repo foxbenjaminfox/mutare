@@ -11,7 +11,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   alias Mutare.AST
   alias Mutare.CallRouting.Spec
   alias Mutare.Transform.Analyze.CallOptions
-  alias Mutare.Transform.{Calls, Imports, Meta, StructuralForms}
+  alias Mutare.Transform.{Calls, Imports, Meta, StructuralForms, WrittenPipe}
 
   @typep diag :: %{warn?: boolean(), file: String.t()}
 
@@ -121,7 +121,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
          _registry,
          diag
        ) do
-    call = resolved_call!(call_node, spec)
+    call = resolved_call!(as_written(call_node), spec)
     routes = invoke_router!(router, call, spec)
     routes = validate_routes!(spec, call, routes)
     warn_misshapen_keyword_routes(diag, router, spec, call, routes)
@@ -233,6 +233,16 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
     do: "#{diag.file}:#{meta[:line] || "?"}"
 
   defp location(diag, _arg), do: diag.file
+
+  # A classifier is contracted the arguments **as written** — a nested pipe as a `{:|>, …}`
+  # node, since it may be deciding whether that operator has Elixir semantics — and
+  # resolution runs after it, so in a written call they are. In a mutant
+  # (`Mutare.Transform.Resolve.reroute/2`) an operand the mutator reused is already resolved:
+  # the direct call the walk made of a nested pipe. Spelled back for the classification alone
+  # (`WrittenPipe.resugar/1`, the inverse the renderers use); the stamp lands on the resolved
+  # node delivery uses, and fits it, since respelling changes no position and no pair.
+  defp as_written({head, meta, args}),
+    do: {head, meta, Enum.map(args, &WrittenPipe.resugar/1)}
 
   defp resolved_call!(call_node, spec) do
     case Calls.resolved_routed_call(call_node) do

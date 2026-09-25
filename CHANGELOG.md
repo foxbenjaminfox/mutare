@@ -46,7 +46,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a mutator built without the offered call's meta is resolved where it is patched. The
   route found bounds what is routed beneath it: a call inside a `:raw` position, a skipped
   call or quoted data of the replacement is that route's syntax, and its classifier is not
-  asked.
+  asked. A replacement is resolved as the source it is, in every respect: a pipe a mutator
+  writes (`quote do: unquote(x) |> DSL.ignored()`) is the direct call it is sugar for, so
+  its stage is routed at the arity the piped operand gives it — not left standing as a
+  `|>` whose stage was looked up one argument short and then handed the operand as a value
+  — and a statement sequence a mutator writes folds its own `alias`/`import` directives
+  for the statements after them, so `alias DSL, as: Local; Local.ignored(p = 6)` is the
+  routed call the qualified spelling is. A module written as a bare atom (`unquote(mod).f()`
+  in a mutator's `quote`) is routed as the module it names; it found no route before. A
+  bare imported operator a mutator swaps on the offered call's meta (`&&&` → `|||`) now
+  carries the import witness for the name it emits, which the single compile checks.
 - **A pipe stage rebuilt into a callee that does not evaluate the piped value is no longer
   handed that value ahead of it.** A stage written as a pipe is delivered in a closure that
   binds the piped value once for every mutant of the stage; whether a mutant could ride it
