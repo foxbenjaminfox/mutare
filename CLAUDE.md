@@ -289,8 +289,11 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   NOTES "Evaluation is a route's to declare: `:lazy_expression`". A mutant is **resolved as
   source** where it enters core (`Resolve.reroute/2`, from `Attach.build_candidates/2`): the
   resolution walk itself, run over the mutant in the environment the offered node retained,
-  with the offered node's calls taken as already resolved — a call the mutator left as it was
-  keeps its stamp and is not entered; everything else takes the clause a written node takes,
+  with the offered node's *resolved* calls named — a call the mutator left in place, in an
+  environment that resolves it as before, keeps its stamp and is not entered, but a `:raw`
+  child made executable was never resolved and a call moved beneath a fresh `alias` is
+  resolved by it, NOTES "A reused call is one resolved in the environment now in force";
+  everything else takes the clause a written node takes,
   so a changed call is routed for the call it now is whether or not the written call had a
   route, a fresh `|>` is desugared before its stage is looked up, a fresh block folds its
   directives, and a route found bounds the walk beneath it (a call in the replacement's

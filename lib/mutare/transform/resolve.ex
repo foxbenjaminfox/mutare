@@ -262,10 +262,16 @@ defmodule Mutare.Transform.Resolve do
   # value; a mutator's own `quote` returns source no pass has seen at all. So a mutant is
   # resolved as the source it is, by the walk that resolves a written file (`walk/2`): in the
   # environment the offered node retained — a mutant is source at that node's position, and
-  # the compiler resolves its patch there — with every call of `original` (the node the
-  # mutator was offered; a call equal to one of its calls, term for term, is that call) named
-  # as already resolved (`env.unchanged`), so one is returned as the identical term, subtree
-  # and all, and no classifier runs on what the mutator did not touch. Everything else is
+  # the compiler resolves its patch there — with the resolved calls of `original` (the node
+  # the mutator was offered) named (`env.unchanged`), so one the mutator left in place is
+  # returned as the identical term, subtree and all, and no classifier runs on what the
+  # mutator did not touch. Left in place means three things at once (`resolved_here?/3`):
+  # the term is one of the offered node's, so a call `rebuild` made on the offered meta is
+  # not it; the walk resolved it there, so a subtree the offered node's route kept as syntax
+  # — a `:raw` argument, quoted data — is not it either, and is resolved for the first time
+  # where a mutant makes it executable; and it was resolved in the environment now in force,
+  # so a call a mutator moved beneath a fresh `alias` is resolved again by that alias, as the
+  # compiler resolves the patch. Everything else is
   # source the walk has not seen, and takes the clauses a written node takes: a changed call
   # is routed again for the call it now is, its stale stamps dropped first (`changed/1`) and
   # looked up whether or not the written call was routed — `value(x)`, an ordinary function,
@@ -295,15 +301,18 @@ defmodule Mutare.Transform.Resolve do
 
       env ->
         env = %{env | diag: %{env.diag | warn?: false}}
-        walk(mutant, Map.put(env, :unchanged, calls_of(original)))
+        walk(mutant, Map.put(env, :unchanged, resolved_calls_of(original)))
     end
   end
 
-  defp calls_of(original) do
+  # The offered node's subtrees the walk resolved: those retaining an environment. A subtree
+  # it left as written — beneath a `:raw` or `:hosted` position, a skipped call, quoted data
+  # — retains none, and is not one.
+  defp resolved_calls_of(original) do
     {_node, calls} =
       Macro.prewalk(original, MapSet.new(), fn
         {_head, meta, args} = node, acc when is_list(meta) and is_list(args) ->
-          {node, MapSet.put(acc, node)}
+          if retained_environment(node), do: {node, MapSet.put(acc, node)}, else: {node, acc}
 
         node, acc ->
           {node, acc}
@@ -311,6 +320,24 @@ defmodule Mutare.Transform.Resolve do
 
     calls
   end
+
+  # Whether the walk returns a mutant's node as it is: one of the offered node's resolved
+  # calls, resolved in the environment now in force. The environments are compared on their
+  # resolution inputs alone — aliases, imports, the `Kernel` selector, the module, the routes
+  # and marks — not on the walk's wiring (`diag`, `on_resolve`, the resolved set), which a
+  # mutant's walk sets differently from a file's. A field added to the environment is compared
+  # until named as wiring, so an unforeseen difference re-resolves rather than reuses.
+  defp resolved_here?(node, unchanged, env) do
+    case retained_environment(node) do
+      nil -> false
+      retained -> MapSet.member?(unchanged, node) and same_inputs?(retained, env)
+    end
+  end
+
+  @walk_wiring [:diag, :on_resolve, :unchanged]
+
+  defp same_inputs?(retained, env),
+    do: Map.drop(retained, @walk_wiring) == Map.drop(env, @walk_wiring)
 
   defp retained_environment({_head, meta, _args}) when is_list(meta),
     do: Keyword.get(meta, MetaKeys.resolution_key())
@@ -393,12 +420,13 @@ defmodule Mutare.Transform.Resolve do
   @spec nid(Macro.t()) :: non_neg_integer() | nil
   def nid(node), do: NodeIds.get(node)
 
-  # The walk enters source once. Over a mutant (`reroute/2`) the environment names the calls
-  # of the offered node as already resolved: one comes back as it is, subtree and all; a node
-  # that is not one is source the walk has not seen, and takes the clause a written node does.
+  # The walk enters source once. Over a mutant (`reroute/2`) the environment names the
+  # resolved calls of the offered node: one resolved in the environment now in force comes
+  # back as it is, subtree and all (`resolved_here?/3`); any other node is source the walk has
+  # not seen here, and takes the clause a written node does.
   defp walk({_form, meta, args} = node, %{unchanged: %MapSet{} = unchanged} = env)
        when is_list(meta) and is_list(args) do
-    if MapSet.member?(unchanged, node), do: node, else: walk_node(changed(node), env)
+    if resolved_here?(node, unchanged, env), do: node, else: walk_node(changed(node), env)
   end
 
   defp walk(node, env), do: walk_node(node, env)

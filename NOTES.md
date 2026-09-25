@@ -13131,6 +13131,55 @@ the export names), not a scoping one — Elixir reads the entry value either way
 baseline property's to check, with sibling rebinding in its vocabulary; `var!` and computed
 names stay the known limit ("The binding model reads syntax and declarations").
 
+### A reused call is one resolved in the environment now in force `[fixed; done]` (2026-09-25)
+
+A sixth review, of the entry below, found the shortcut beside the walk it approved: the
+resolved set. `reroute/2` named every subtree of the offered node as already resolved
+(`calls_of/1`, an unrestricted `Macro.prewalk`), and `walk/2` returned a member without
+asking whether the walk had ever resolved it, or under what. Membership in the offered term
+establishes neither. Both failures were confirmed by test before anything changed, each a
+false survivor with the metamutant at the original's `{[8, 6], false}` against the patch's
+`{[8, 6], true}`. **A raw argument made executable was taken as resolved.** With `keep/2`
+routed `[:expression, :raw]`, `DSL.ignored(p = 7)` in its second position is that route's
+syntax — never walked, no route, no retained environment — and a mutator that returns it
+(`keep(first, second)` → `second`) makes it executable source. It was in the set, so it came
+back unrouted; the binding reader took the routed macro for an ordinary call and credited
+`p = 7`, a write the macro never makes, and the export named the incoming value over the
+sibling's `8`. A reparsed copy of the same term — the same source, fresh syntax — was
+withheld correctly, since the walk found `ignored/1`'s lazy route. The difference was
+provenance, not semantics. **A resolved call beneath a fresh alias kept its stale
+callee.** A mutator that wraps the offered `Local.value(p = 6)` — the identical term — in
+`(alias Discard, as: Local; Local.value(p = 6))` changes what the call resolves to without
+changing its spelling; the compiler reads the patch by the new alias, and the renderer
+strips Mutare's stamps, so the metamutant's own compile did too. The block clause folded the
+alias through `register/2` as the previous entry had it, and the reuse check then returned
+the call by its old `Eager` identity without consulting the environment the fold had just
+advanced. The tests that entry added built the directive *and* the following call from fresh
+syntax, so they never met the path.
+
+Taken: the reuse condition is provenance and context, not occurrence. The set is the offered
+node's *resolved* calls — those retaining an environment (`resolved_calls_of/1`) — and
+`walk/2` returns a member (`resolved_here?/3`) only where its retained environment agrees
+with the one now in force on every resolution input: the environments compared with the
+walk's wiring dropped (`@walk_wiring`: `diag`, `on_resolve`, the resolved set), so aliases,
+imports, the `Kernel` selector, the module, the routes and the marks all count, and a field
+added later counts until it is named as wiring — the unforeseen difference re-resolves rather
+than reuses. Membership stays necessary: `rebuild` copies the offered meta onto a different
+call, retained environment included, so a matching environment alone does not say the term is
+the offered one. What fails the condition takes the clause a written node takes, in the
+environment in force — the raw child is routed for the first time where the mutant makes it
+executable (its classifier asked, which its raw position never did); the call beneath the
+fresh alias is resolved again by that alias. What passes it is still the identical term: an
+untouched call in an unchanged context, a block of such calls (a `__block__` retains no
+environment and is entered, and each statement's retained environment matches the one the
+fold re-derives). The comparison is cheap in practice — the retained environment and the
+walk's share their sub-terms physically, and term equality short-circuits on that.
+
+Regression tests: `rebuilt_call_reuse_test.exs` — the raw argument made executable (the
+`reroute/2` unit, its classifier asked, the source patch, and the reparsed control), the
+resolved call beneath a fresh alias (the unit, the patch, the reparsed control), and the
+identity guarantee in an unchanged context, alone and beneath a block that changes nothing.
+
 ### A replacement is resolved by the walk `[fixed; done]` (2026-09-25)
 
 A fifth review, of the entry below, drew the distinction the reroute had never made: between
