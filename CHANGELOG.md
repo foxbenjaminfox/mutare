@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.1] - 2026-09-25
+## [0.4.1] - 2026-09-26
 
 ### Added
 
@@ -94,9 +94,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (y = x)` and `(x = 1) == (x = 2)` changed value the same way. And a binding in a call's
   arguments was moved ahead of the call's receiver or anonymous function, which the
   original runs first: `receiver().accept?(x = record())` ran `record()` before
-  `receiver()`. Such a condition now keeps its bindings in place, and its decision mutants
+  `receiver()`. A function imported as `and/2` was read as `Kernel`'s short circuit, so
+  `(x = 1) and x` compared 1 with 1 where the original passes it the incoming `x`. And a
+  directive inside a moved binding came to precede names the original resolved without it:
+  under `alias List, as: Local`, `Local == (v = (alias Enum, as: Local; Enum))` compared
+  `Enum` with `Enum`, and a receiver `Local.f(v = (alias New, as: Local; x))` called
+  `New.f`. Such a condition now keeps its bindings in place, and its decision mutants
   are withheld. A binding read only after it — in an `and`'s right operand or a later
   statement of a block — still hoists.
+- **A refutable `if`/`unless` condition keeps what its pins read.** A condition such as
+  `if {:ok, v} = fetch()` is hoisted by moving the match ahead of the `if`, and the match
+  was split in two — its right side bound first, then the pattern matched against that. A
+  pin reads the value from before the right side ran, so `{^x, y} = {1, x = v}` compared
+  the pin with the rebound `x`: the baseline raised `MatchError` where the original matched,
+  and matched where it raised. The match now moves whole.
 - **A pipe stage rebuilt into a callee that does not evaluate the piped value is no longer
   handed that value ahead of it.** A stage written as a pipe is delivered in a closure that
   binds the piped value once for every mutant of the stage; whether a mutant could ride it
