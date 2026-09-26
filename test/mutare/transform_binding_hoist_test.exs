@@ -810,6 +810,132 @@ defmodule Mutare.TransformBindingHoistTest do
     end
   end
 
+  describe "if/unless hoisting preserves what the condition reads" do
+    # The hoist lifts spine bindings ahead of the `if`. Unconditional evaluation says each
+    # binding runs; it does not say that moving it leaves every read denoting the same
+    # binding, or that nothing ran before it. Each case compiles the original (no mutators)
+    # and the metamutant without clean copies, and compares them under mutant 0. The hazards
+    # may be met by withholding the decision; the controls must keep it.
+
+    defp assert_baseline(source, examples) do
+      opts = [clean_functions: false]
+      {[original], []} = Mutare.Test.compile_metamutant(source, [], opts)
+
+      {[instrumented], sites} =
+        Mutare.Test.compile_metamutant(source, [Mutare.Mutators.IfCondition], opts)
+
+      for {arguments, expected} <- examples do
+        assert Mutare.Test.with_active_mutant(0, fn -> apply(original, :run, arguments) end) ==
+                 expected
+
+        assert Mutare.Test.with_active_mutant(0, fn -> apply(instrumented, :run, arguments) end) ==
+                 expected
+      end
+
+      sites
+    end
+
+    defp comparison_source(condition, form \\ "if") do
+      """
+      defmodule HoistReads do
+        def run(x) do
+          #{form} #{condition}, do: :yes, else: :no
+        end
+      end
+      """
+    end
+
+    defp effect_source(condition) do
+      """
+      defmodule HoistCallee do
+        def run do
+          Process.put(:hoist_callee_events, [])
+          result = if #{condition}, do: :yes, else: :no
+          {result, Enum.reverse(Process.get(:hoist_callee_events))}
+        end
+
+        defp record(event) do
+          Process.put(:hoist_callee_events, [event | Process.get(:hoist_callee_events, [])])
+          1
+        end
+
+        defp receiver do
+          record(:receiver)
+          __MODULE__
+        end
+
+        defp callee do
+          record(:callee)
+          &Function.identity/1
+        end
+
+        def accept?(_value), do: true
+      end
+      """
+    end
+
+    test "a read beside a sibling rebinding still reads the incoming value" do
+      # Elixir resets reads between an operator's operands: both sides of `==` read the `x`
+      # bound before the condition, whichever side rebinds it.
+      for condition <- ["x == (x = 1)", "(x = 1) == x"] do
+        assert_baseline(comparison_source(condition), [{[0], :no}, {[1], :yes}, {[2], :no}])
+      end
+
+      assert_baseline(comparison_source("x == (x = 1)", "unless"), [{[0], :yes}, {[1], :no}])
+    end
+
+    test "two bindings of one name keep their distinct values" do
+      # Each lifted `x = e` leaves a read of `x` for `e`'s value; a second lift overwrote it.
+      assert_baseline(comparison_source("(x = 1) == (x = 2)"), [{[0], :no}])
+    end
+
+    test "a later binding's right-hand side reads the incoming value, not a sibling's" do
+      assert_baseline(comparison_source("(x = 1) == (y = x)"), [{[0], :no}, {[1], :yes}])
+    end
+
+    test "a dynamic callee still runs before the binding in its arguments" do
+      assert_baseline(effect_source("receiver().accept?(x = record(:argument))"), [
+        {[], {:yes, [:receiver, :argument]}}
+      ])
+
+      assert_baseline(effect_source("callee().(x = record(:argument))"), [
+        {[], {:yes, [:callee, :argument]}}
+      ])
+    end
+
+    test "controls: bindings the original reads the same way still hoist" do
+      controls = [
+        # One fresh binding; two with different names.
+        {"def run(x), do: if((y = abs(x)) > 0, do: {:yes, y}, else: {:no, y})",
+         [{[0], {:no, 0}}, {[-2], {:yes, 2}}]},
+        {"def run(x), do: if((l = x) != (r = 2), do: {:yes, l, r}, else: {:no, l, r})",
+         [{[2], {:no, 2, 2}}, {[1], {:yes, 1, 2}}]},
+        # A short-circuit's right operand sees its left operand's binding.
+        {"def run(x), do: if((x = x + 1) > 0 and x < 3, do: {:yes, x}, else: {:no, x})",
+         [{[0], {:yes, 1}}, {[5], {:no, 6}}]},
+        # A block's later statement sees its earlier one.
+        {"def run(x), do: if((x = x * 2; x > 2), do: {:yes, x}, else: {:no, x})",
+         [{[1], {:no, 2}}, {[2], {:yes, 4}}]},
+        # A binding reading the name it writes moves whole.
+        {"def run(x), do: if((x = x - 1) > 0, do: {:yes, x}, else: {:no, x})",
+         [{[1], {:no, 0}}, {[3], {:yes, 2}}]}
+      ]
+
+      for {definition, examples} <- controls do
+        source = "defmodule HoistControl do\n  #{definition}\nend\n"
+        sites = assert_baseline(source, examples)
+        assert Enum.any?(sites, &(&1.mutator == :if_condition)), definition
+      end
+
+      sites =
+        assert_baseline(effect_source("Function.identity(x = record(:argument))"), [
+          {[], {:yes, [:argument]}}
+        ])
+
+      assert Enum.any?(sites, &(&1.mutator == :if_condition))
+    end
+  end
+
   test "with/else blocks are walked without corrupting the metamutant" do
     source = """
     defmodule W do

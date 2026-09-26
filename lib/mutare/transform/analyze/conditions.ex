@@ -18,7 +18,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Spec
-  alias Mutare.Transform.{Candidate, KeywordRouting, Meta, Resolve}
+  alias Mutare.Transform.{Bindings, Candidate, KeywordRouting, Meta, Resolve}
   alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.Env
   alias Mutare.Transform.Analyze.Attach
@@ -156,7 +156,11 @@ defmodule Mutare.Transform.Analyze.Conditions do
   #     would otherwise be reordered *after* it on the baseline (mutant 0 must match the
   #     original program). Vetoed when an impure expression precedes a spine binding in
   #     evaluation order — the common shapes (`if x = e`, `(x = e) != nil`, `(x = e) and
-  #     g(x)`, two bindings) have the binding(s) evaluated first, so they still hoist.
+  #     g(x)`, two bindings) have the binding(s) evaluated first, so they still hoist. A
+  #     dynamic callee (`receiver().accept?(x = e)`) evaluates before its arguments too.
+  #   * Only when no read changes the binding it denotes (`spine_rebinds?/1`): the hoist moves
+  #     writes ahead of reads that, as siblings, saw the incoming value (`x == (x = 1)`), and
+  #     leaves a read of `x` standing for each `x = e`, which a second write would change.
   #   * Only when no binding sits where the callee decides whether, when or how it runs
   #     (`discretionary_binding?/1`) — a routed position that is not an unconditional value,
   #     or a branch of a `Kernel` conditional however spelled.
@@ -181,6 +185,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
       not offspine_escaping_binding?(analyzed_condition) and
       not discretionary_binding?(analyzed_condition) and
       not spine_reorders?(analyzed_condition) and
+      not spine_rebinds?(analyzed_condition) and
       refutable_spine_count(analyzed_condition) <= refutable_cap(env)
   end
 
@@ -382,7 +387,8 @@ defmodule Mutare.Transform.Analyze.Conditions do
   #
   # `eval_steps/1` flattens the condition into its left-to-right evaluation order as
   # `:binding` (a spine `=`, which rides whole), `:pure` (a literal or bare-variable
-  # read — no side effect, safe to reorder around), or `:other` (anything else — a call,
+  # read — no side effect, safe to reorder around; which binding a read denotes is
+  # `spine_rebinds?/1`'s question), or `:other` (anything else — a call,
   # an operator application, a short-circuit/branch/isolating subtree — conservatively
   # treated as possibly side-effecting). It is unsafe iff an `:other` precedes a
   # `:binding`. The common shapes evaluate their binding(s) first (`if x = e`,
@@ -425,11 +431,16 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # A bare variable read — pure (an atom name with an atom hygiene context).
   def eval_steps({name, _meta, ctx}) when is_atom(name) and is_atom(ctx), do: [:pure]
 
-  # Any other call/operator (including a remote `{:., …}` call): its arguments evaluate
-  # left to right, then the application itself runs — one `:other` step after the args.
+  # A static alias (`Foo.Bar`) — pure.
+  def eval_steps({:__aliases__, _meta, parts} = node) when is_list(parts) do
+    if Enum.all?(parts, &is_atom/1), do: [:pure], else: call_steps(node)
+  end
+
+  # Any other call/operator (including a remote `{:., …}` call): its callee (`callee_steps/1`),
+  # then its arguments evaluate left to right, then the application itself runs — one
+  # `:other` step after the args.
   # mutare:ignore[guard_drop] equivalent — a non-leaf AST node always carries a list of args, so the `is_list/1` guard never excludes a real node.
-  def eval_steps({_form, _meta, args}) when is_list(args),
-    do: Enum.flat_map(args, &eval_steps/1) ++ [:other]
+  def eval_steps({_form, _meta, args} = node) when is_list(args), do: call_steps(node)
 
   def eval_steps({left, right}), do: eval_steps(left) ++ eval_steps(right)
 
@@ -437,6 +448,136 @@ defmodule Mutare.Transform.Analyze.Conditions do
   def eval_steps(list) when is_list(list), do: Enum.flat_map(list, &eval_steps/1)
   def eval_steps(leaf) when is_atom(leaf) or is_number(leaf) or is_binary(leaf), do: [:pure]
   def eval_steps(_other), do: [:other]
+
+  defp call_steps({form, _meta, args}),
+    do: callee_steps(form) ++ Enum.flat_map(args, &eval_steps/1) ++ [:other]
+
+  # What a call evaluates before its arguments. A local call's name evaluates nothing, and
+  # neither does a static module (`Foo.bar`, `:erlang.max`); a dynamic receiver
+  # (`receiver().accept?(…)`) or an anonymous function's expression (`make().(…)`) runs
+  # first. The spine walks never enter a callee, so a `=` there is not lifted: it is an
+  # `:other` step, not a `:binding`.
+  defp callee_steps(name) when is_atom(name), do: []
+  defp callee_steps({:., _meta, [receiver, name]}) when is_atom(name), do: unlifted(receiver)
+  defp callee_steps({:., _meta, [function]}), do: unlifted(function)
+  defp callee_steps(_other), do: [:other]
+
+  defp unlifted(expression) do
+    Enum.map(eval_steps(expression), fn
+      :binding -> :other
+      step -> step
+    end)
+  end
+
+  # Would hoisting change which binding a read denotes? Ordering alone does not settle it:
+  # a variable read has no side effect, but the hoist rebinds the names it reads. In the
+  # original, the siblings of an expression — a call's callee and arguments, an operator's
+  # operands, a tuple's or list's elements, a pair's halves — all read the bindings in force
+  # before the expression (Elixir resets reads between them), and only a short-circuit's
+  # right operand and a block's later statements see what came before them. After the
+  # hoist, the rewritten condition sees every lifted binding, and each lifted statement sees
+  # the ones lifted before it. So `x == (x = 1)` and `(x = 1) == x`, which compare the
+  # incoming `x` with 1, would compare 1 with 1; and `(x = 1) == (y = x)` would bind `y` to
+  # 1, not to the incoming `x`.
+  #
+  # Vetoed when a name is written by two spine bindings — each lifted `v = e` leaves a read of
+  # `v` standing for `e`'s value, which a later write of `v` would change, so `(x = 1) == (x =
+  # 2)` would compare 2 with 2 — or when a read of a name a spine binding writes is not one
+  # both programs agree on (`rebinding_read?/3`). A binding's reads of what it writes itself
+  # (`acc = step(acc)`) are exempt: the statement moves whole, and no earlier lift writes its
+  # names. The common shapes still hoist: `(x = e) != nil`, `(x = e) and g(x)`, `(x = e) !=
+  # (y = g())`, and a block condition that binds and then reads.
+  @doc false
+  def spine_rebinds?(condition) do
+    hoists = spine_bindings(condition)
+    written = Enum.map(hoists, &Bindings.matched_names/1)
+    names = List.flatten(written)
+
+    if length(names) != length(Enum.uniq(names)) do
+      true
+    else
+      {lifted_before, _all} =
+        Enum.map_reduce(written, MapSet.new(), &{&2, MapSet.union(&2, MapSet.new(&1))})
+
+      scope = %{
+        spine?: true,
+        written: MapSet.new(names),
+        own: MapSet.new(),
+        lifted: :all,
+        hoists: hoists |> Enum.zip(lifted_before) |> Map.new()
+      }
+
+      condition |> rebinding_read(MapSet.new(), scope) |> elem(0)
+    end
+  end
+
+  # `{rebinds?, seen}` for `node`, given `seen`: the written names the *original* program has
+  # bound at this point, returned with what `node` lets out. `seen` may miss a name (a read the
+  # hoist would not change is then vetoed for nothing) but never claims one. `scope.lifted` is
+  # the written names the *hoisted* program has bound here: every one (`:all`) in the rewritten
+  # condition, and those lifted before it inside a lifted statement. A read of a written name
+  # is safe only where both programs have bound it.
+  defp rebinding_read({:=, _meta, [lhs, rhs]} = node, seen, %{spine?: true} = scope) do
+    own = node |> Bindings.matched_names() |> MapSet.new()
+    lifted = %{scope | spine?: false, own: own, lifted: Map.fetch!(scope.hoists, node)}
+    {rhs?, _} = rebinding_read(rhs, seen, lifted)
+    {lhs?, _} = rebinding_read(lhs, seen, lifted)
+    {rhs? or lhs?, MapSet.union(seen, own)}
+  end
+
+  defp rebinding_read({op, _meta, [left, right]}, seen, scope) when op in @short_circuit_ops do
+    {left?, seen} = rebinding_read(left, seen, scope)
+    {right?, _} = rebinding_read(right, seen, %{scope | spine?: false})
+    {left? or right?, seen}
+  end
+
+  defp rebinding_read({form, _meta, args}, seen, scope)
+       when (form in @branch_forms or form in @binding_isolating_forms) and is_list(args) do
+    {rebinds?, _} = rebinding_group(args, seen, %{scope | spine?: false})
+    {rebinds?, seen}
+  end
+
+  defp rebinding_read({:__block__, _meta, statements}, seen, scope) when is_list(statements) do
+    Enum.reduce(statements, {false, seen}, fn statement, {rebinds?, seen} ->
+      {statement?, seen} = rebinding_read(statement, seen, scope)
+      {rebinds? or statement?, seen}
+    end)
+  end
+
+  defp rebinding_read({name, _meta, ctx}, seen, scope) when is_atom(name) and is_atom(ctx),
+    do: {rebinding_read?(name, seen, scope), seen}
+
+  defp rebinding_read({:=, _meta, [lhs, rhs]} = node, seen, scope) do
+    {rebinds?, _} = rebinding_group([rhs, lhs], seen, scope)
+    {rebinds?, MapSet.union(seen, MapSet.new(Bindings.matched_names(node)))}
+  end
+
+  defp rebinding_read({form, _meta, args}, seen, scope) when is_list(args) do
+    {callee?, _} = rebinding_read(form, seen, %{scope | spine?: false})
+    {args?, seen} = rebinding_group(args, seen, scope)
+    {callee? or args?, seen}
+  end
+
+  defp rebinding_read({left, right}, seen, scope), do: rebinding_group([left, right], seen, scope)
+
+  defp rebinding_read(list, seen, scope) when is_list(list),
+    do: rebinding_group(list, seen, scope)
+
+  defp rebinding_read(_leaf, seen, _scope), do: {false, seen}
+
+  # Siblings: each reads `seen` as it was before the group; their writes come out together.
+  defp rebinding_group(nodes, seen, scope) do
+    Enum.reduce(nodes, {false, seen}, fn node, {rebinds?, out} ->
+      {node?, node_out} = rebinding_read(node, seen, scope)
+      {rebinds? or node?, MapSet.union(out, node_out)}
+    end)
+  end
+
+  defp rebinding_read?(name, seen, scope) do
+    MapSet.member?(scope.written, name) and not MapSet.member?(scope.own, name) and
+      not (MapSet.member?(seen, name) and
+             (scope.lifted == :all or MapSet.member?(scope.lifted, name)))
+  end
 
   # Is there an escaping binding *off* the unconditional spine — under a short-circuit
   # right operand or inside a nested branch — that hoisting therefore can't lift?

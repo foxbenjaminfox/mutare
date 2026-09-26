@@ -13131,6 +13131,42 @@ the export names), not a scoping one — Elixir reads the entry value either way
 baseline property's to check, with sibling rebinding in its vocabulary; `var!` and computed
 names stay the known limit ("The binding model reads syntax and declarations").
 
+### The condition hoist keeps what each read denotes, and a callee's turn `[fixed; done]` (2026-09-26)
+
+A ninth review, of the entry below, found two older gaps in the hoist's claim that lifting an
+unconditional binding ahead of the `if` preserves the baseline; both reproduce with
+`IfCondition` alone on ordinary code. First, `eval_steps/1` read a variable as `:pure`, which
+settles ordering but not *versions*: Elixir resets reads between an expression's siblings, so
+in `x == (x = 1)` and `(x = 1) == x` both operands read the incoming `x`, and in `(x = 1) == (y
+= x)` so does `y`'s right-hand side; lifted, all of them read 1. And each lifted `x = e` leaves
+a read of `x` standing for `e`'s value, so `(x = 1) == (x = 2)` compared 2 with 2. Second,
+`eval_steps/1` skipped a call's callee, which runs before its arguments: in
+`receiver().accept?(x = record(:a))` the lift ran `record(:a)` before `receiver()`, and the
+same for `make().(x = …)`.
+
+Taken: `spine_rebinds?/1` in `hoist_if?/2`. It vetoes a name two spine bindings write, and a
+read of a written name that the two programs would bind differently: the original sees a
+binding only in a short-circuit's right operand or a block's later statement (siblings, a
+callee included, see what preceded the expression); the hoisted program sees every lifted
+binding in the rewritten condition, and the earlier lifts in a lifted statement. A binding's
+reads of its own names (`acc = step(acc)`) are exempt — the statement moves whole. The walk's
+`seen` errs to under-claiming, so the veto may withhold a hoist for nothing, as `(y = x) == (x
+= 1)` is, but never admits a changed read. Not taken: changing `:pure` to `:other` for reads —
+it catches `x == (x = 1)` but neither `(x = 1) == x` nor the double write. `eval_steps/1` now
+walks a dynamic receiver or anonymous callee before the arguments (a static module evaluates
+nothing, and a `=` in a callee is not lifted, so it counts as `:other`).
+
+The evaluation soak (`conditions_property_test.exs`) could not have found either: its generator
+named every binding fresh and never read one, and every callee was static. It now rebinds the
+incoming `x`/`y` (to numbers, so conditions stay total), generates dynamic-receiver and
+anonymous-callee effects and two-statement blocks, and compares the incoming names' final
+values too. Against the previous `conditions.ex` it fails on each gap separately.
+
+Regression tests: `transform_binding_hoist_test.exs`, describe "if/unless hoisting preserves
+what the condition reads" — the original (no mutators) against the metamutant without clean
+copies under mutant 0, with controls that must keep the decision (a short-circuit's right
+operand and a block reading the lifted binding, a self-reading binding, a static callee).
+
 ### The condition hoist reads routes `[fixed; done]` (2026-09-26)
 
 Found by the activation soak (`transform_activation_property_test.exs`) while checking the

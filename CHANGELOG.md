@@ -87,6 +87,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Kernel.if`/`Kernel.unless` or the right operand of a qualified `Kernel.and`/`Kernel.or`,
   which the lift took for ordinary calls: `Kernel.if(false, do: y = send(…))` in a
   condition sent the message on the baseline.
+- **An `if`/`unless` condition's binding is no longer hoisted where the move changes what
+  the condition reads or runs.** The same rewrite moved `x = 1` in `if x == (x = 1)` ahead of
+  the `if`, so the left operand read 1 where the original reads the incoming `x` — Elixir
+  gives an expression's operands the bindings from before it. `(x = 1) == x`, `(x = 1) ==
+  (y = x)` and `(x = 1) == (x = 2)` changed value the same way. And a binding in a call's
+  arguments was moved ahead of the call's receiver or anonymous function, which the
+  original runs first: `receiver().accept?(x = record())` ran `record()` before
+  `receiver()`. Such a condition now keeps its bindings in place, and its decision mutants
+  are withheld. A binding read only after it — in an `and`'s right operand or a later
+  statement of a block — still hoists.
 - **A pipe stage rebuilt into a callee that does not evaluate the piped value is no longer
   handed that value ahead of it.** A stage written as a pipe is delivered in a closure that
   binds the piped value once for every mutant of the stage; whether a mutant could ride it

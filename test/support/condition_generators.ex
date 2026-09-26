@@ -7,7 +7,10 @@ defmodule Mutare.Test.ConditionGen do
   (`bindings_env/0`), built in three sorts so it always evaluates without raising:
 
     * a **num** — an integer (Sourceror-wrapped or bare), a variable read, `+`/`-`/`*`, an
-      `effect/1` call, a bare binding `b = num`, or a `case`/`if`/`try … after` yielding a num;
+      `effect/1` call (statically, through a receiver an effect returns, or through an
+      anonymous function an effect returns), a bare binding `b = num` — or `x = num`/`y =
+      num`, rebinding an incoming name — a two-statement block, or a `case`/`if`/`try …
+      after` yielding a num;
     * a **bool** — `==`/`!=` over terms, an ordering over nums, `and`/`or` over bools,
       `!term`, `not bool`, a bare binding `b = bool`, or a branch yielding a bool;
     * a **term** — any of the above, a 2-tuple, a `{:{}, …}` tuple, a list, a `&&`/`||`
@@ -17,10 +20,13 @@ defmodule Mutare.Test.ConditionGen do
   So bindings land on the unconditional *spine* (an operand, the left of a short-circuit),
   *off* it (a short-circuit's right operand, a `case`/`if` branch or subject), or *isolated*
   (inside `for`/`try`), and `Effects.effect(n)` — sends `{:effect, n}` to the caller, returns
-  `n` — makes evaluation order observable in the mailbox. A post-pass renames every binding
-  to a unique `b1`, `b2`, … (no expression reads a binding, so order of binding never matters
-  for validity), and the placeholder a refutable hoist introduces is a real variable name the
-  generator never uses.
+  `n` — makes evaluation order observable in the mailbox, a dynamic callee's included. A
+  post-pass renames every `b` binding to a unique `b1`, `b2`, … (no expression reads one, so
+  order of binding never matters for validity), and the placeholder a refutable hoist
+  introduces is a real variable name the generator never uses. The incoming `x` and `y` are
+  read everywhere and rebound too, always to a number, so a read may see the incoming value
+  or a rebinding, and two bindings may write one name — which binding a read denotes is
+  observable in the value.
   """
 
   use PropCheck
@@ -30,6 +36,16 @@ defmodule Mutare.Test.ConditionGen do
     def effect(n) do
       send(self(), {:effect, n})
       n
+    end
+
+    def receiver(n) do
+      effect(n)
+      __MODULE__
+    end
+
+    def function(n) do
+      effect(n)
+      &effect/1
     end
   end
 
@@ -52,7 +68,11 @@ defmodule Mutare.Test.ConditionGen do
       {3, num_leaf()},
       {3, let({op, l, r} <- {oneof([:+, :-, :*]), sub, sub}, do: {op, [], [l, r]})},
       {3, let(n <- sub, do: effect(n))},
+      {1, let({r, n} <- {sub, sub}, do: receiver_effect(r, n))},
+      {1, let({f, n} <- {sub, sub}, do: anonymous_effect(f, n))},
       {3, let(n <- sub, do: bind(n))},
+      {2, let({v, n} <- {oneof([:x, :y]), sub}, do: {:=, [], [var(v), n]})},
+      {1, let({t, n} <- {term(div(size, 2)), sub}, do: {:__block__, [], [t, n]})},
       {1, branch(term(div(size, 2)), bool(div(size, 2)), sub)}
     ])
   end
@@ -128,6 +148,14 @@ defmodule Mutare.Test.ConditionGen do
   defp bind(rhs), do: {:=, [], [var(:b), rhs]}
   defp effect(n), do: {{:., [], [Effects, :effect]}, [], [n]}
 
+  # `Effects.receiver(r).effect(n)` and `Effects.function(f).(n)`: the callee's effect runs
+  # before the argument's.
+  defp receiver_effect(r, n),
+    do: {{:., [], [{{:., [], [Effects, :receiver]}, [], [r]}, :effect]}, [], [n]}
+
+  defp anonymous_effect(f, n),
+    do: {{:., [], [{{:., [], [Effects, :function]}, [], [f]}]}, [], [n]}
+
   # === post-pass ============================================================
 
   # Rename each binding's `b` to `b1`, `b2`, … in prewalk order, so names are unique.
@@ -143,4 +171,5 @@ defmodule Mutare.Test.ConditionGen do
 
   defp rename({:b, meta, ctx}, n), do: {:"b#{n}", meta, ctx}
   defp rename({:ok, v}, n), do: {:ok, rename(v, n)}
+  defp rename(incoming, _n), do: incoming
 end

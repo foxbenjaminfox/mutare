@@ -71,6 +71,7 @@ defmodule Mutare.ConditionsPropertyTest do
         Conditions.escaping_binding?(c) and
           not Conditions.offspine_escaping_binding?(c) and
           not Conditions.spine_reorders?(c) and
+          not Conditions.spine_rebinds?(c) and
           Conditions.refutable_spine_count(c) <= 1
 
       implies hoistable? do
@@ -131,8 +132,9 @@ defmodule Mutare.ConditionsPropertyTest do
 
   # === evaluation ===========================================================
 
-  # `{value, bindings made, effects in order}` of evaluating `ast` in the generator's
-  # environment. Compiler diagnostics (an unused binding, say) stay per-process.
+  # `{value, bindings after, effects in order}` of evaluating `ast` in the generator's
+  # environment — the incoming `x` and `y` included, since a condition may rebind them.
+  # Compiler diagnostics (an unused binding, say) stay per-process.
   defp run(ast) do
     flush()
 
@@ -147,8 +149,7 @@ defmodule Mutare.ConditionsPropertyTest do
 
     case result do
       {:ok, {value, binding}} ->
-        made = binding |> Map.new() |> Map.drop(Keyword.keys(Gen.bindings_env()))
-        {value, made, flush()}
+        {value, Map.new(binding), flush()}
 
       {:error, e} ->
         # Premise: the generated condition must evaluate. Both the original and its hoist go
