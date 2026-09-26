@@ -158,7 +158,8 @@ defmodule Mutare.Transform.Analyze.Conditions do
   #     evaluation order — the common shapes (`if x = e`, `(x = e) != nil`, `(x = e) and
   #     g(x)`, two bindings) have the binding(s) evaluated first, so they still hoist.
   #   * Only when no binding sits where the callee decides whether, when or how it runs
-  #     (`discretionary_binding?/1`) — a routed position that is not an unconditional value.
+  #     (`discretionary_binding?/1`) — a routed position that is not an unconditional value,
+  #     or a branch of a `Kernel` conditional however spelled.
   #     The spine walks read every call argument as evaluated in order, which holds for an
   #     unrouted or skipped call's arguments alone: `pick(s = 0, on?)` routed
   #     `[:lazy_expression, :expression]` may run `s = 0` inside a branch of its own, or never,
@@ -456,8 +457,11 @@ defmodule Mutare.Transform.Analyze.Conditions do
   def offspine_escaping_binding?(node),
     do: Enum.any?(children(node), &offspine_escaping_binding?/1)
 
-  # Is there a `=` in a position its call's route does not evaluate as an unconditional value?
-  # Read by the route the binding readers read (`Resolve.effective_routing/2`, through the
+  # Is there a `=` in a position its call's route does not evaluate as an unconditional value,
+  # or in a `Kernel` conditional's branch or short-circuit operator's right operand? The spine
+  # walks recognise those by spelling; the veto reads them by identity (`Resolve.kernel_form/2`),
+  # so `Kernel.if(false, do: y = f())` is the conditional the bare `if` is. A route is read as
+  # the binding readers read it (`Resolve.effective_routing/2`, through the
   # boundary's retained environment beneath a skipped call): an `:expression` or `:interior`
   # position, a keyword pair's value by its own treatment, and an unrouted or skipped call's
   # arguments are the spine's to judge; any other position — lazy, syntax, a pattern — and a
@@ -485,6 +489,23 @@ defmodule Mutare.Transform.Analyze.Conditions do
        when is_list(meta) and is_list(args) do
     context = Resolve.context(node, context)
 
+    case Resolve.kernel_form(node, context) do
+      form when form in @branch_forms ->
+        escaping_binding?(args)
+
+      op when op in @short_circuit_ops ->
+        [left | right] = args
+        discretionary_binding?(left, context) or escaping_binding?(right)
+
+      _other_call ->
+        discretionary_arguments?(node, args, context)
+    end
+  end
+
+  defp discretionary_binding?(node, context),
+    do: Enum.any?(children(node), &discretionary_binding?(&1, context))
+
+  defp discretionary_arguments?(node, args, context) do
     case Resolve.effective_routing(node, context) do
       routes when is_list(routes) and length(routes) == length(args) ->
         args
@@ -498,9 +519,6 @@ defmodule Mutare.Transform.Analyze.Conditions do
         Enum.any?(args, &discretionary_binding?(&1, context))
     end
   end
-
-  defp discretionary_binding?(node, context),
-    do: Enum.any?(children(node), &discretionary_binding?(&1, context))
 
   defp discretionary_position?(arg, treatment, context)
        when treatment in [:expression, :interior],

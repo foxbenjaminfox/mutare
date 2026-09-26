@@ -83,7 +83,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   routed `[:lazy_expression, :expression]` ran `s = 0` first and leaked it: the baseline
   raised where the original returned. A binding in any position but an `:expression` or
   `:interior` one now leaves the condition unhoisted — its decision mutants withheld, as
-  for a binding under `&&`.
+  for a binding under `&&`. The same holds for a binding in a branch of a qualified
+  `Kernel.if`/`Kernel.unless` or the right operand of a qualified `Kernel.and`/`Kernel.or`,
+  which the lift took for ordinary calls: `Kernel.if(false, do: y = send(…))` in a
+  condition sent the message on the baseline.
 - **A pipe stage rebuilt into a callee that does not evaluate the piped value is no longer
   handed that value ahead of it.** A stage written as a pipe is delivered in a closure that
   binds the piped value once for every mutant of the stage; whether a mutant could ride it

@@ -782,6 +782,32 @@ defmodule Mutare.TransformBindingHoistTest do
         assert module.run() == true
       end
     end
+
+    test "a binding in a Kernel conditional's branch vetoes the hoist however it is spelled" do
+      # The spine walks recognise `if` by its spelling, so a qualified `Kernel.if` read as an
+      # ordinary call, and `y = send(…)` in its unselected branch was lifted ahead of the
+      # outer `if` — the baseline sent a message the original never sends.
+      source = """
+      defmodule HoistQualifiedIf do
+        def run do
+          if (
+               x = 1
+               Kernel.if(false, do: _y = send(self(), :ran))
+               x > 0
+             ) do
+            x
+          else
+            :no
+          end
+        end
+      end
+      """
+
+      {[module], _mutants} = Mutare.Test.compile_metamutant(source, [Mutare.Mutators.IfCondition])
+
+      assert module.run() == 1
+      refute_received :ran
+    end
   end
 
   test "with/else blocks are walked without corrupting the metamutant" do

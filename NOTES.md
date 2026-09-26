@@ -13155,9 +13155,19 @@ fewer mutants, no rewrite. Not taken: threading routes through all six mirror wa
 lazy position counts as off-spine (the same answer, six places to keep agreeing; `hoist_if?/2`
 vetoing once is the one place).
 
+The same walks recognise a branch (`@branch_forms`) and a short-circuit operator by spelling,
+so `Kernel.if(false, do: y = send(self(), :ran))` in a condition was an ordinary call whose
+keyword argument was spine: `y = send(…)` was lifted ahead of the outer `if`, and the baseline
+sent a message the original never sends (confirmed before the change). The veto reads those
+forms by identity too (`Resolve.kernel_form/2`, as the binding readers do): a Kernel
+conditional with any `=` in it, or a short-circuit operator with one in its right operand,
+vetoes the hoist. A bare spelling was already vetoed by `offspine_escaping_binding?/1`, so the
+new answer agrees with the old one there.
+
 Regression test: `transform_binding_hoist_test.exs`, "a binding in a position its callee
 evaluates at its discretion vetoes the hoist" — the lazy call bare and beneath a skipped
-`same/1`, the metamutant's baseline against the original's `true`.
+`same/1`, the metamutant's baseline against the original's `true`; and "a binding in a
+Kernel conditional's branch vetoes the hoist however it is spelled".
 
 ### What a replacement's boundary keeps is returned as written `[fixed; done]` (2026-09-26)
 
