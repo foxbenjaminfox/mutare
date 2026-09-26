@@ -7,6 +7,7 @@ defmodule Mutare.TransformBindingHoistTest do
   import Mutare.Test.Metamutant
 
   alias Mutare.Site
+  alias Mutare.Transform.Analyze.Conditions
 
   # Pin context-routing probes to the two operator-swap families (stable site counts).
   @probe [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
@@ -983,16 +984,26 @@ defmodule Mutare.TransformBindingHoistTest do
       assert_baseline(qualified, examples)
     end
 
+    # Where a lifted binding's right-hand side may hold a directive: the value itself, the
+    # receiver of a remote call, or the expression an anonymous call applies.
+    defp redirecting_rhs(directive, module, value) do
+      [
+        "(#{directive} #{module}, as: Local; #{value})",
+        "(#{directive} #{module}, as: Local; Elixir.Function).identity(#{value})",
+        "(#{directive} #{module}, as: Local; &Elixir.Function.identity/1).(#{value})"
+      ]
+    end
+
     test "a directive in a lifted binding does not reach the names written before it" do
       # A directive governs what follows it. Lifted, it precedes the whole condition, and a
       # module reference or a static receiver the original resolved without it would change.
-      comparison = fn form, directive ->
+      comparison = fn form, rhs ->
         """
         defmodule HoistLexical do
           alias Elixir.List, as: Local
 
           def run do
-            #{form} Local == (value = (#{directive} Elixir.Enum, as: Local; Elixir.Enum)),
+            #{form} Local == (value = #{rhs}),
               do: :equal,
               else: :different
           end
@@ -1000,27 +1011,34 @@ defmodule Mutare.TransformBindingHoistTest do
         """
       end
 
-      assert_baseline(comparison.("if", "alias"), [{[], :different}])
-      assert_baseline(comparison.("unless", "alias"), [{[], :equal}])
-      assert_baseline(comparison.("if", "require"), [{[], :different}])
+      for directive <- ["alias", "require"],
+          rhs <- redirecting_rhs(directive, "Elixir.Enum", "Elixir.Enum") do
+        assert Conditions.lifts_directive?(Code.string_to_quoted!("Local == (value = #{rhs})")),
+               rhs
+
+        assert_baseline(comparison.("if", rhs), [{[], :different}])
+        assert_baseline(comparison.("unless", rhs), [{[], :equal}])
+      end
     end
 
     test "a directive in a lifted argument does not reach the receiver written before it" do
       # Elixir resolves a remote call's receiver before expanding its arguments.
-      assert_baseline(
-        """
-        defmodule HoistLexical do
-          alias #{inspect(OldCallee)}, as: Local
+      for rhs <- redirecting_rhs("alias", inspect(NewCallee), ":payload") do
+        assert_baseline(
+          """
+          defmodule HoistLexical do
+            alias #{inspect(OldCallee)}, as: Local
 
-          def run do
-            if Local.verdict(value = (alias #{inspect(NewCallee)}, as: Local; :payload)),
-              do: :new,
-              else: :old
+            def run do
+              if Local.verdict(value = #{rhs}),
+                do: :new,
+                else: :old
+            end
           end
-        end
-        """,
-        [{[], :old}]
-      )
+          """,
+          [{[], :old}]
+        )
+      end
     end
 
     test "controls: bindings the original reads the same way still hoist" do
@@ -1057,10 +1075,17 @@ defmodule Mutare.TransformBindingHoistTest do
 
       assert Enum.any?(sites, &(&1.mutator == :if_condition))
 
-      # A module reference or an aliased receiver, with no directive lifted past it.
+      # A module reference or an aliased receiver, with no directive lifted past it — the
+      # binding's own callee dynamic or not.
       lexical_controls = [
         {"alias Elixir.List, as: Local",
          "if Local == (value = Elixir.Enum), do: :equal, else: :different", :different},
+        {"alias Elixir.List, as: Local",
+         "if Local == (value = receiver().identity(Elixir.Enum)), do: :equal, else: :different",
+         :different},
+        {"alias Elixir.List, as: Local",
+         "if Local == (value = callee().(Elixir.Enum)), do: :equal, else: :different",
+         :different},
         {"alias #{inspect(OldCallee)}, as: Local",
          "if Local.verdict(value = :payload), do: :new, else: :old", :old}
       ]
@@ -1070,6 +1095,8 @@ defmodule Mutare.TransformBindingHoistTest do
         defmodule HoistLexicalControl do
           #{directive}
           def run, do: #{condition}
+          def receiver, do: Elixir.Function
+          def callee, do: &Elixir.Function.identity/1
         end
         """
 

@@ -13161,6 +13161,16 @@ Local; num)`, often bound. Without the veto it fails every run. Regression tests
 (an aliased reference and receiver with nothing redirected still hoist) in the same describe of
 `transform_binding_hoist_test.exs`.
 
+A twelfth review found the scan's first version walked `children/1`, which returns a call's
+arguments and not its head — right for the spine collectors, since nothing in a callee is
+lifted, but the directive scan asks what the binding *moves*, and a receiver `(alias …; M).f(x)`
+or an anonymous callee `(alias …; &f/1).(x)` moves with it. `directive?/1` now enters a call's
+head too; `children/1` is unchanged. The generator's redirect now takes all three positions
+(value, receiver, anonymous callee); against the head-blind scan it fails in most runs rather
+than every one, so the deterministic regressions (each position, `alias` and `require`, `if`
+and `unless`, an outer receiver) are the guard, and dynamic-callee controls without a
+directive must still hoist.
+
 ### A refutable hoist lifts the match whole, and only `Kernel`'s `and` is a short circuit `[fixed; done]` (2026-09-26)
 
 A tenth review, of the entry below, found two more baseline changes with `IfCondition` alone.

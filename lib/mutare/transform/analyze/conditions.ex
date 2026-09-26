@@ -626,6 +626,12 @@ defmodule Mutare.Transform.Analyze.Conditions do
   defp directive?({form, _meta, args}) when form in @lexical_directives and is_list(args),
     do: true
 
+  # Everything the binding moves, a callee included: `(alias New, as: Local; M).f(x)` and
+  # `(alias New, as: Local; &f/1).(x)` hold theirs in the call's head, which `children/1`
+  # leaves out because nothing there is lifted.
+  defp directive?({form, _meta, args}) when is_list(args),
+    do: directive?(form) or Enum.any?(args, &directive?/1)
+
   defp directive?(node), do: Enum.any?(children(node), &directive?/1)
 
   # Is there an escaping binding *off* the unconditional spine — under a short-circuit
