@@ -815,6 +815,16 @@ defmodule Mutare.TransformBindingHoistTest do
     def unquote(:and)(left, right), do: left == right
   end
 
+  defmodule OldCallee do
+    @moduledoc false
+    def verdict(_argument), do: false
+  end
+
+  defmodule NewCallee do
+    @moduledoc false
+    def verdict(_argument), do: true
+  end
+
   describe "if/unless hoisting preserves what the condition reads" do
     # The hoist lifts spine bindings ahead of the `if`. Unconditional evaluation says each
     # binding runs; it does not say that moving it leaves every read denoting the same
@@ -973,6 +983,46 @@ defmodule Mutare.TransformBindingHoistTest do
       assert_baseline(qualified, examples)
     end
 
+    test "a directive in a lifted binding does not reach the names written before it" do
+      # A directive governs what follows it. Lifted, it precedes the whole condition, and a
+      # module reference or a static receiver the original resolved without it would change.
+      comparison = fn form, directive ->
+        """
+        defmodule HoistLexical do
+          alias Elixir.List, as: Local
+
+          def run do
+            #{form} Local == (value = (#{directive} Elixir.Enum, as: Local; Elixir.Enum)),
+              do: :equal,
+              else: :different
+          end
+        end
+        """
+      end
+
+      assert_baseline(comparison.("if", "alias"), [{[], :different}])
+      assert_baseline(comparison.("unless", "alias"), [{[], :equal}])
+      assert_baseline(comparison.("if", "require"), [{[], :different}])
+    end
+
+    test "a directive in a lifted argument does not reach the receiver written before it" do
+      # Elixir resolves a remote call's receiver before expanding its arguments.
+      assert_baseline(
+        """
+        defmodule HoistLexical do
+          alias #{inspect(OldCallee)}, as: Local
+
+          def run do
+            if Local.verdict(value = (alias #{inspect(NewCallee)}, as: Local; :payload)),
+              do: :new,
+              else: :old
+          end
+        end
+        """,
+        [{[], :old}]
+      )
+    end
+
     test "controls: bindings the original reads the same way still hoist" do
       controls = [
         # One fresh binding; two with different names.
@@ -1006,6 +1056,26 @@ defmodule Mutare.TransformBindingHoistTest do
         ])
 
       assert Enum.any?(sites, &(&1.mutator == :if_condition))
+
+      # A module reference or an aliased receiver, with no directive lifted past it.
+      lexical_controls = [
+        {"alias Elixir.List, as: Local",
+         "if Local == (value = Elixir.Enum), do: :equal, else: :different", :different},
+        {"alias #{inspect(OldCallee)}, as: Local",
+         "if Local.verdict(value = :payload), do: :new, else: :old", :old}
+      ]
+
+      for {directive, condition, expected} <- lexical_controls do
+        source = """
+        defmodule HoistLexicalControl do
+          #{directive}
+          def run, do: #{condition}
+        end
+        """
+
+        sites = assert_baseline(source, [{[], expected}])
+        assert Enum.any?(sites, &(&1.mutator == :if_condition)), condition
+      end
     end
   end
 

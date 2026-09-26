@@ -13133,6 +13133,34 @@ the export names), not a scoping one — Elixir reads the entry value either way
 baseline property's to check, with sibling rebinding in its vocabulary; `var!` and computed
 names stay the known limit ("The binding model reads syntax and declarations").
 
+### A hoisted binding carries no directive past what it would redirect `[fixed; done]` (2026-09-26)
+
+An eleventh review, of the entry below, found the lexical counterpart of the read-version gap.
+The hoist moves a binding ahead of every pure step before it, and a static alias or the static
+receiver of a call is pure: running it later changes nothing. But a directive inside the binding
+governs what follows it, so lifting the binding moves the directive ahead of names the original
+resolved without it. `Local == (v = (alias Enum, as: Local; Enum))` compared `List` with `Enum`
+under an outer `alias List, as: Local`, and lifted compared `Enum` with `Enum`;
+`Local.verdict(v = (alias New, as: Local; :x))` called the old `Local` (Elixir expands a remote
+receiver before its arguments), and lifted called `New`. `spine_rebinds?/1` tracks variables,
+not what an alias names, and the renderer re-spells `Local` rather than pinning its resolution.
+
+Taken: `lifts_directive?/1` in `hoist_if?/2` vetoes a hoist whose spine bindings contain a
+statement the resolver folds into the environment after it — `alias`/`import`/`require`, a
+`use`, a nested `defmodule`/`defprotocol`. Read by spelling, which errs toward the veto (the
+three directives are special forms no import displaces). Not taken: treating a static alias as
+`:other` — it would withhold the ordinary `Local.verdict(v = e)` for the sake of a directive
+almost no condition holds; nor re-resolving the rewritten condition, which would find the new
+meaning but still run it. A directive *before* a binding was already vetoed (a directive is an
+`:other` step) and one after it is not moved past anything. A macro that injects a directive
+into its caller unasked is the known limit, as for resolution.
+
+The evaluation soak's generator gained the dimension: every condition evaluates under `alias
+Effects.Old, as: Local`, and generates `Local`, `Local.value(num)` and `(alias Effects.New, as:
+Local; num)`, often bound. Without the veto it fails every run. Regression tests and controls
+(an aliased reference and receiver with nothing redirected still hoist) in the same describe of
+`transform_binding_hoist_test.exs`.
+
 ### A refutable hoist lifts the match whole, and only `Kernel`'s `and` is a short circuit `[fixed; done]` (2026-09-26)
 
 A tenth review, of the entry below, found two more baseline changes with `IfCondition` alone.

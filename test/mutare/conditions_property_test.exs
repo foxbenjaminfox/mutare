@@ -72,6 +72,7 @@ defmodule Mutare.ConditionsPropertyTest do
           not Conditions.offspine_escaping_binding?(c) and
           not Conditions.spine_reorders?(c) and
           not Conditions.spine_rebinds?(c) and
+          not Conditions.lifts_directive?(c) and
           Conditions.refutable_spine_count(c) <= 1
 
       implies hoistable? do
@@ -136,7 +137,8 @@ defmodule Mutare.ConditionsPropertyTest do
   # === evaluation ===========================================================
 
   # `{:ok, value, bindings after, effects in order}` of evaluating `ast` in the generator's
-  # environment — the incoming `x` and `y` included, since a condition may rebind them — or
+  # environment — the incoming `x` and `y` included, since a condition may rebind them, and
+  # the `Local` alias, since it may redirect it — or
   # `{:match_error, term, effects}` where a pinned match fails. Compiler diagnostics (an
   # unused binding, say) stay per-process.
   defp run(ast) do
@@ -145,7 +147,7 @@ defmodule Mutare.ConditionsPropertyTest do
     {result, diagnostics} =
       Code.with_diagnostics(fn ->
         try do
-          {:ok, Code.eval_quoted(ast, Gen.bindings_env())}
+          {:ok, Code.eval_quoted({:__block__, [], [Gen.lexical_env(), ast]}, Gen.bindings_env())}
         rescue
           e -> {:error, e}
         end

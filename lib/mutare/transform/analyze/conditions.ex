@@ -63,6 +63,10 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # bindings outward, so the taint propagates through it.
   @binding_isolating_forms [:fn, :for, :with, :try, :quote]
 
+  # The statements whose lexical effect the resolver folds for the statements after them
+  # (`Resolve`'s `register/2`), as `lifts_directive?/1` reads them.
+  @lexical_directives [:alias, :import, :require, :use, :defmodule, :defprotocol]
+
   # The post-analysis step shared by `cond` and the *plain* (non-hoisted) `if`/`unless`
   # path: prune the binding-ancestors; if no binding escapes, additionally offer the
   # IfCondition decision pair on the whole condition.
@@ -164,6 +168,9 @@ defmodule Mutare.Transform.Analyze.Conditions do
   #   * Only when no read changes the binding it denotes (`spine_rebinds?/1`): the hoist moves
   #     writes ahead of reads that, as siblings, saw the incoming value (`x == (x = 1)`), and
   #     leaves a read of `x` standing for each `x = e`, which a second write would change.
+  #   * Only when no spine binding carries a lexical directive (`lifts_directive?/1`): an
+  #     `alias` in `Local == (v = (alias Enum, as: Local; Enum))` governs only what follows
+  #     it, and lifted it precedes the `Local` the original resolved without it.
   #   * Only when no binding sits where the callee decides whether, when or how it runs
   #     (`discretionary_binding?/1`) — a routed position that is not an unconditional value,
   #     or a branch of a `Kernel` conditional however spelled.
@@ -189,6 +196,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
       not discretionary_binding?(analyzed_condition) and
       not spine_reorders?(analyzed_condition) and
       not spine_rebinds?(analyzed_condition) and
+      not lifts_directive?(analyzed_condition) and
       refutable_spine_count(analyzed_condition) <= refutable_cap(env)
   end
 
@@ -600,6 +608,25 @@ defmodule Mutare.Transform.Analyze.Conditions do
       not (MapSet.member?(seen, name) and
              (scope.lifted == :all or MapSet.member?(scope.lifted, name)))
   end
+
+  # Does a spine binding change the lexical environment for what follows it? The hoist moves a
+  # binding ahead of the whole condition, and the pure steps `spine_reorders?/1` lets it pass —
+  # a static alias, the static receiver of a call it is an argument of — resolve their names
+  # where they are written: `Local.verdict(v = (alias New, as: Local; :x))` calls the `Local`
+  # in force before the argument, and lifted it would call `New`. Which statements change that
+  # environment is the resolver's to say (`Resolve`'s `register/2`): the directives, a `use`
+  # (through what it injects), and a nested module definition (its implicit alias). They are
+  # read by spelling, which errs toward the veto — `alias`, `import` and `require` are special
+  # forms no import displaces, and a displaced `use` costs only a hoist. A macro that injects a
+  # directive into its caller unasked is the known limit, as it is for resolution itself.
+  @doc false
+  def lifts_directive?(condition),
+    do: condition |> spine_bindings() |> Enum.any?(&directive?/1)
+
+  defp directive?({form, _meta, args}) when form in @lexical_directives and is_list(args),
+    do: true
+
+  defp directive?(node), do: Enum.any?(children(node), &directive?/1)
 
   # Is there an escaping binding *off* the unconditional spine — under a short-circuit
   # right operand or inside a nested branch — that hoisting therefore can't lift?

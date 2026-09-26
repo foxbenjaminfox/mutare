@@ -10,12 +10,13 @@ defmodule Mutare.Test.ConditionGen do
     * a **num** — an integer (Sourceror-wrapped or bare), a variable read, `+`/`-`/`*`, an
       `effect/1` call (statically, through a receiver an effect returns, or through an
       anonymous function an effect returns), a bare binding `b = num` — or `x = num`/`y =
-      num`, rebinding an incoming name — a two-statement block, or a `case`/`if`/`try …
-      after` yielding a num;
+      num`, rebinding an incoming name — a two-statement block, `Local.value(num)`, a block
+      that first redirects `Local` with an `alias` (often bound: `b = (alias …; num)`), or a
+      `case`/`if`/`try … after` yielding a num;
     * a **bool** — `==`/`!=` over terms, an ordering over nums, `and`/`or` over bools,
       `!term`, `not bool`, a bare binding `b = bool`, or a branch yielding a bool;
-    * a **term** — any of the above, a 2-tuple, a `{:{}, …}` tuple, a list, a `&&`/`||`
-      (whose value is either operand), a refutable binding `{:ok, b} = {:ok, term}` or
+    * a **term** — any of the above, the module `Local` names, a 2-tuple, a `{:{}, …}`
+      tuple, a list, a `&&`/`||` (whose value is either operand), a refutable binding `{:ok, b} = {:ok, term}` or
       `{^x, b} = {x, term}` (its pin reads `x` from before the right side, which may rebind
       it), or a `for` comprehension (a binding-isolating form).
 
@@ -28,7 +29,9 @@ defmodule Mutare.Test.ConditionGen do
   introduces is a real variable name the generator never uses. The incoming `x` and `y` are
   read everywhere and rebound too, always to a number, so a read may see the incoming value
   or a rebinding, and two bindings may write one name — which binding a read denotes is
-  observable in the value.
+  observable in the value. `Local` names `Effects.Old` (`lexical_env/0`) until an `alias`
+  redirects it to `Effects.New`, whose `value/1` differs, so which module a written `Local`
+  resolves to is observable too.
   """
 
   use PropCheck
@@ -49,7 +52,24 @@ defmodule Mutare.Test.ConditionGen do
       effect(n)
       &effect/1
     end
+
+    # The two modules `Local` may name: `lexical_env/0`'s, and a redirecting block's.
+    defmodule Old do
+      @moduledoc false
+      def value(n), do: n
+    end
+
+    defmodule New do
+      @moduledoc false
+      def value(n), do: n + 100
+    end
   end
+
+  @doc """
+  The lexical environment every generated condition evaluates in: `Local` names
+  `Effects.Old` until a generated `alias` redirects it to `Effects.New`.
+  """
+  def lexical_env, do: {:alias, [], [Effects.Old, [as: local()]]}
 
   @doc "The variable environment every generated condition evaluates in."
   def bindings_env, do: [x: 3, y: -2]
@@ -72,6 +92,9 @@ defmodule Mutare.Test.ConditionGen do
       {3, let(n <- sub, do: effect(n))},
       {1, let({r, n} <- {sub, sub}, do: receiver_effect(r, n))},
       {1, let({f, n} <- {sub, sub}, do: anonymous_effect(f, n))},
+      {2, let(n <- sub, do: {{:., [], [local(), :value]}, [], [n]})},
+      {1, let(n <- sub, do: redirect(n))},
+      {2, let(n <- sub, do: bind(redirect(n)))},
       {3, let(n <- sub, do: bind(n))},
       {2, let({v, n} <- {oneof([:x, :y]), sub}, do: {:=, [], [var(v), n]})},
       {1, let({t, n} <- {term(div(size, 2)), sub}, do: {:__block__, [], [t, n]})},
@@ -99,7 +122,7 @@ defmodule Mutare.Test.ConditionGen do
     ])
   end
 
-  defp term(0), do: oneof([num_leaf(), bool_leaf(), atom_leaf()])
+  defp term(0), do: oneof([num_leaf(), bool_leaf(), atom_leaf(), local()])
 
   defp term(size) do
     half = div(size, 2)
@@ -109,6 +132,7 @@ defmodule Mutare.Test.ConditionGen do
       {3, num(size)},
       {3, bool(size)},
       {1, atom_leaf()},
+      {1, local()},
       {2, let({l, r} <- {sub, sub}, do: {l, r})},
       {1, let({a, b, c} <- {sub, sub, sub}, do: {:{}, [], [a, b, c]})},
       {1, let(es <- oneof([vector(1, sub), vector(2, sub), vector(3, sub)]), do: es)},
@@ -155,6 +179,11 @@ defmodule Mutare.Test.ConditionGen do
   # right side's own read does, so it matches unless a sibling rebinds `v` first — a
   # rebinding in `t` (half the time `v = num` itself) does not.
   defp pinned_match(v, t), do: {:=, [], [{{:^, [], [var(v)]}, var(:b)}, {var(v), t}]}
+
+  defp local, do: {:__aliases__, [], [:Local]}
+
+  # `(alias Effects.New, as: Local; n)`: `Local` names `New` from here on.
+  defp redirect(n), do: {:__block__, [], [{:alias, [], [Effects.New, [as: local()]]}, n]}
 
   defp var(name), do: {name, [], nil}
   defp bind(rhs), do: {:=, [], [var(:b), rhs]}
