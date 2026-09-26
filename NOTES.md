@@ -13131,6 +13131,49 @@ the export names), not a scoping one — Elixir reads the entry value either way
 baseline property's to check, with sibling rebinding in its vocabulary; `var!` and computed
 names stay the known limit ("The binding model reads syntax and declarations").
 
+### What a replacement's boundary keeps is returned as written `[fixed; done]` (2026-09-26)
+
+An eighth review, of the entry below, found both of its repairs undone by a boundary. Reuse is
+decided where the walk reaches a node; a route that keeps its arguments as written — a
+`:skip`, a `:raw` or `:hosted` position, a skipped `quote` or `|>` — stops the walk before it
+gets there (`Arguments.walk/4`), which is right for resolution and classifiers. But the binding
+readers go on into a skipped call's arguments, since they run, and read what they find by its
+stamps where it has them (`Aliases.resolved_module/2` prefers the stamp to the environment;
+`Resolve.context/2` installs a routed child's retained environment; a direct call made of a
+pipe reads as the call). In a file that region holds no stamps. In a mutant it may hold the
+offered node's resolved calls, which reuse was never asked about. Both failures confirmed by
+test before the change, at the familiar counts — metamutant `{[8, 6], false}`, patch
+`{[8, 6], true}`: `(alias Discard, as: Local; Function.identity(Local.value(p = 6)))` with
+`Function.identity/1` skipped, whose `Local.value` kept its stamp naming `Eager`, and the
+pipe case of the entry below with the offered call moved into a skipped `List.first([…])`,
+where the direct call `Function.identity(p = 6)` kept presuming `Kernel`'s `|>`. In each the
+reader credited `p = 6`, the gate was satisfied, and the export named the incoming value over
+the sibling's `8`. Reparsed copies of the same replacements were withheld correctly.
+
+Taken: a mutant's walk returns what a boundary keeps as the source it spells —
+`as_written/1` at every node of the region (`Resolve.preserved/2`): desugared pipes written
+again, every resolution stamp and retained environment dropped, alias stamps included. The
+readers then resolve it as they resolve a file's preserved syntax, through the boundary's
+retained environment advanced by local directives — the reading the reparsed controls already
+had, and which a file's walk is the only producer of. Nothing inside is resolved, desugared
+or classified: the region stays the route's syntax. The whole region is returned as written,
+not only the calls that would fail reuse: deciding reuse inside would mean folding the
+region's own directives, which is resolving it. So a call left in place beneath a fresh
+skipped wrapper in an unchanged environment loses a classifier's positions and reads
+`:unknown`, as it would written there — the withholding direction. Not taken: making the
+readers validate stamps themselves (every reader, every stamp, and the retained environment
+`context/2` installs would need the check — the stale answer would stay reachable), and
+invoking classifiers under the skip to make copied stamps current (a skip withholds them).
+
+Not fixed here, same class, no reader found: a bare capture's `&fun/N` ref carries its
+import stamp on the ref, where `changed/1` does not reach, and `Imports.stamp/5` prepends
+nothing when the new environment resolves no import.
+
+Regression tests: `rebuilt_call_reuse_test.exs`, "… beneath a skipped call" (both) — the
+`reroute/2` units, the source patches, the reparsed controls, an unchanged-environment control
+whose argument write is still read, and a classifier under the skip left unasked, stale or
+fresh.
+
 ### A desugared pipe is re-resolved as the pipe `[fixed; done]` (2026-09-25)
 
 A seventh review, of the entry below, found what its fallback hands the walk. Reuse is now

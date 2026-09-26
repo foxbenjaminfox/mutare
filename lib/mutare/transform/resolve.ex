@@ -282,7 +282,8 @@ defmodule Mutare.Transform.Resolve do
   # a fresh statement sequence folds its `alias`/`import` directives for the
   # statements after them; and the route found bounds the walk beneath it as it does
   # anywhere — a call in a `:raw` position, a skipped call or quoted data of the replacement
-  # is that route's syntax, and no classifier is asked about it. A classifier sees the
+  # is that route's syntax, and no classifier is asked about it — it comes back as the source
+  # it spells, no stamp of the offered node's left in it (`preserved/2`). A classifier sees the
   # arguments as written, resolved operands spelled back, which `RouteStamp` guarantees at
   # the one place classifiers are invoked. A mutant offered a node no environment reaches is
   # routed no further. Warnings stay off — a misshapen mutant is not the author's call site —
@@ -454,6 +455,33 @@ defmodule Mutare.Transform.Resolve do
     end
   end
 
+  # What a route keeps as written — a skipped call's arguments, a `:raw` or `:hosted`
+  # position, a skipped `quote` or `|>` — the walk does not resolve, and the readers that look
+  # into it resolve it themselves, through the environment the boundary retained (`context/2`,
+  # `kernel_form/2`, `preserved_routing/2`). A file's walk leaves such a region as parsed, with
+  # nothing to mislead them. A mutant's may hold the offered node's resolved calls there, and
+  # reuse was never decided for them: their alias and import stamps, route and retained
+  # environment were computed where the mutator found them, and a direct call desugared from a
+  # pipe presumes the `|>` was `Kernel`'s, when the replacement may import another. Read as
+  # the region's resolution, any of these stands in for what the compiler reads from the
+  # patch. So a mutant's preserved region is returned as the source it spells — every
+  # desugared pipe written again, every resolution stamp dropped (`as_written/1`, at each node)
+  # — and the readers find what a reparse of that source would give them. Nothing is
+  # resolved, desugared, or classified inside: the route that kept the region still bounds
+  # the walk.
+  defp preserved(syntax, %{unchanged: %MapSet{}}), do: Macro.prewalk(syntax, &unresolved/1)
+  defp preserved(syntax, _env), do: syntax
+
+  # A remote head's module stamp is dropped with its call (`changed/1`); an `__aliases__`
+  # outside a call head (a `defmodule`'s) carries one too.
+  defp unresolved({:__aliases__, meta, path}) when is_list(meta),
+    do: {:__aliases__, Keyword.delete(meta, MetaKeys.alias_key()), path}
+
+  defp unresolved({_form, meta, args} = node) when is_list(meta) and is_list(args),
+    do: as_written(node)
+
+  defp unresolved(node), do: node
+
   # A statement sequence: fold the env left-to-right so an `alias`/`import` extends it for the
   # *subsequent* siblings only. Each statement is walked under the env in force *before* it
   # (so a directive resolves nothing on its own line, and order is textual).
@@ -477,7 +505,10 @@ defmodule Mutare.Transform.Resolve do
     {meta, _module_key} = stamp_bare_call(:quote, meta, args, env)
 
     {:quote, meta,
-     if(Meta.routing(meta) == :skip, do: args, else: quote_args(args, &walk(&1, env)))}
+     if(Meta.routing(meta) == :skip,
+       do: preserved(args, env),
+       else: quote_args(args, &walk(&1, env))
+     )}
   end
 
   # `left |> stage(args)` is sugar for `stage(left, args)`, and from here on it *is* that call —
@@ -506,7 +537,7 @@ defmodule Mutare.Transform.Resolve do
 
       cond do
         Meta.routing(meta) == :skip ->
-          {:|>, meta, args}
+          {:|>, meta, preserved(args, env)}
 
         match?({:|>, _, [_, _]}, rhs) ->
           # Kernel flattens grouped right-hand stages before expanding the pipe.
@@ -774,7 +805,10 @@ defmodule Mutare.Transform.Resolve do
   defp descend_marked(args, module_key, fun, meta, env) do
     args
     |> ArgumentMarks.stamp(module_key, fun, env.marks)
-    |> Arguments.walk(Meta.routing(meta), &walk(&1, env), keyword_decode(env))
+    |> Arguments.walk(Meta.routing(meta), &walk(&1, env),
+      decode: keyword_decode(env),
+      preserve: &preserved(&1, env)
+    )
   end
 
   # Record on the call's own meta that a mark declaration matched it (`:mutare_mark_call`) — the

@@ -13,40 +13,48 @@ defmodule Mutare.Transform.Resolve.Arguments do
   # since a static route's count may no longer fit its pairs (`KeywordRouting.decode/2`).
   @type decode :: (Macro.t(), KeywordRouting.routing() -> KeywordRouting.decoded())
 
-  @spec walk([Macro.t()], nil | :skip | [term()], (Macro.t() -> Macro.t()), decode()) ::
-          [Macro.t()]
-  def walk(args, routes, resolve, decode \\ &KeywordRouting.decode!/2)
+  # `preserve` is applied to what the route keeps as written — a skipped call's arguments, a
+  # `:raw` or `:hosted` position. A file's walk returns it as parsed (the default); a mutant's
+  # returns it as the source it spells (`Resolve.reroute/2`).
+  @type opts :: [decode: decode(), preserve: (Macro.t() -> Macro.t())]
 
-  def walk(args, :skip, _resolve, _decode), do: args
-  def walk(args, nil, resolve, _decode), do: Enum.map(args, resolve)
+  @spec walk([Macro.t()], nil | :skip | [term()], (Macro.t() -> Macro.t()), opts()) ::
+          [Macro.t()]
+  def walk(args, routes, resolve, opts \\ []) do
+    decode = Keyword.get(opts, :decode, &KeywordRouting.decode!/2)
+    preserve = Keyword.get(opts, :preserve, &Function.identity/1)
+    descend(args, routes, %{resolve: resolve, decode: decode, preserve: preserve})
+  end
+
+  defp descend(args, :skip, walker), do: walker.preserve.(args)
+  defp descend(args, nil, walker), do: Enum.map(args, walker.resolve)
 
   # ArgumentRoutes has already established one treatment per argument.
-  def walk(args, routes, resolve, decode) when is_list(routes),
-    do: Enum.zip_with(args, routes, &position(&1, &2, resolve, decode))
+  defp descend(args, routes, walker) when is_list(routes),
+    do: Enum.zip_with(args, routes, &position(&1, &2, walker))
 
-  defp position(arg, :raw, _resolve, _decode), do: arg
-  defp position(arg, {:hosted, _hosts}, _resolve, _decode), do: arg
+  defp position(arg, :raw, walker), do: walker.preserve.(arg)
+  defp position(arg, {:hosted, _hosts}, walker), do: walker.preserve.(arg)
 
-  defp position(arg, {:keyword, _} = treatment, resolve, decode),
-    do: keyword_position(arg, treatment, resolve, decode)
+  defp position(arg, {:keyword, _} = treatment, walker),
+    do: keyword_position(arg, treatment, walker)
 
-  defp position(arg, {:keyed, _, _} = treatment, resolve, decode),
-    do: keyword_position(arg, treatment, resolve, decode)
+  defp position(arg, {:keyed, _, _} = treatment, walker),
+    do: keyword_position(arg, treatment, walker)
 
-  defp position(arg, _treatment, resolve, _decode), do: resolve.(arg)
+  defp position(arg, _treatment, walker), do: walker.resolve.(arg)
 
-  defp keyword_position(arg, treatment, resolve, decode) do
-    case decode.(arg, treatment) do
+  defp keyword_position(arg, treatment, walker) do
+    case walker.decode.(arg, treatment) do
       {:pairs, pairs, rewrap} ->
         pairs
         |> Enum.map(fn {{key, key_treatment}, {value, value_treatment}} ->
-          {position(key, key_treatment, resolve, decode),
-           position(value, value_treatment, resolve, decode)}
+          {position(key, key_treatment, walker), position(value, value_treatment, walker)}
         end)
         |> rewrap.()
 
       {:whole, fallback} ->
-        position(arg, fallback, resolve, decode)
+        position(arg, fallback, walker)
     end
   end
 end

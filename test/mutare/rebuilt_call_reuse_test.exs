@@ -29,6 +29,14 @@ defmodule Mutare.RebuiltCallReuseTest do
   call finds no operator to reconsider: the walk must hand the pipe back as written, and
   resolve it there.
 
+  Neither repair may be undone by a boundary. A mutator that puts the offered call beneath a
+  fresh *skipped* call — `(alias Discard, as: Local; Function.identity(Local.value(p = 6)))`
+  with `Function.identity/1` skipped, or the pipe beneath the imports and a skipped
+  `List.first/1` — leaves it where the walk does not go: a skip keeps its arguments as
+  written. The binding readers still read them, since a skipped call's arguments run, and
+  what they find there must be the source the patch spells — no alias stamp naming `Eager`,
+  no direct call presuming `Kernel`'s `|>` — so the walk returns the region as written.
+
   The end-to-end tests accept either faithful delivery or a withheld mutant; the unit tests
   pin what the rerouted node reads as. Each hazard has a control that reaches the same
   source through fresh syntax (a reparsed copy of the same term), which the walk always
@@ -151,6 +159,52 @@ defmodule Mutare.RebuiltCallReuseTest do
     end
   end
 
+  # The two shadowing mutants above with the offered call beneath a call their routes skip:
+  # `(alias Discard, as: Local; Function.identity(Local.value(e)))` and `(import …;
+  # List.first([left |> Function.identity()]))`.
+  defmodule ShadowAliasUnderSkip do
+    @behaviour Mutare.Mutator
+    alias Mutare.RebuiltCallReuseTest.{Discard, Eager, SelectSecond}
+
+    @impl Mutare.Mutator
+    def name, do: :shadow_alias_under_skip
+
+    @impl Mutare.Mutator
+    def mutate(node, %{opts: opts}) do
+      case Mutare.Calls.resolved_call_to(node, Eager, :value) do
+        {:ok, :value, _arguments, _rebuild} -> [replacement(node, opts)]
+        _other -> :skip
+      end
+    end
+
+    def replacement(node, opts) do
+      directive = Code.string_to_quoted!("alias #{inspect(Discard)}, as: Local")
+      wrapped = {{:., [], [Function, :identity]}, [], [SelectSecond.maybe_reparse(node, opts)]}
+      {:__block__, [], [directive, wrapped]}
+    end
+  end
+
+  defmodule ShadowPipeUnderSkip do
+    @behaviour Mutare.Mutator
+    alias Mutare.RebuiltCallReuseTest.ShadowPipe
+
+    @impl Mutare.Mutator
+    def name, do: :shadow_pipe_under_skip
+
+    @impl Mutare.Mutator
+    def mutate(node, %{opts: opts}) do
+      case ShadowPipe.mutate(node, %{opts: opts}) do
+        [replacement] -> [beneath_skip(replacement)]
+        :skip -> :skip
+      end
+    end
+
+    def beneath_skip({:__block__, meta, statements}) do
+      {directives, [expression]} = Enum.split(statements, -1)
+      {:__block__, meta, directives ++ [{{:., [], [List, :first]}, [], [[expression]]}]}
+    end
+  end
+
   # `ignored/1` through a classifier, so the test can see whether one was asked.
   defmodule ClassifiedIgnored do
     @behaviour Mutare.CallRouting
@@ -158,6 +212,21 @@ defmodule Mutare.RebuiltCallReuseTest do
 
     @impl Mutare.CallRouting
     def call_routes, do: [{DSL, :ignored, 1, :routing}]
+
+    @impl Mutare.CallRouting
+    def route_arguments(call) do
+      send(self(), {__MODULE__, :classified})
+      Mutare.CallRouting.ArgumentRoutes.new(call, [:lazy_expression])
+    end
+  end
+
+  # `Discard.value/1` through a classifier.
+  defmodule ClassifiedDiscard do
+    @behaviour Mutare.CallRouting
+    alias Mutare.RebuiltCallReuseTest.Discard
+
+    @impl Mutare.CallRouting
+    def call_routes, do: [{Discard, :value, 1, :routing}]
 
     @impl Mutare.CallRouting
     def route_arguments(call) do
@@ -178,6 +247,14 @@ defmodule Mutare.RebuiltCallReuseTest do
 
   @pipe_routes [{DiscardPipe, :|>, 2, [:raw, :raw]}]
   @pipe_opts [call_routes: @pipe_routes, clean_functions: false]
+
+  @skip_identity {Function, :identity, 1, :skip}
+  @skipped_alias_opts [call_routes: [@skip_identity | @alias_routes], clean_functions: false]
+
+  @skipped_pipe_opts [
+    call_routes: [{List, :first, 1, :skip} | @pipe_routes],
+    clean_functions: false
+  ]
 
   # Original `{[8, 6], false}`: `keep` splices `p = 6`. Selecting the raw argument gives
   # `{[8, 6], true}`: `ignored` discards `p = 7`, and the sibling's `p = 8` is the outgoing
@@ -246,9 +323,9 @@ defmodule Mutare.RebuiltCallReuseTest do
   defp grouped_call,
     do: resolve("(p = 6) |> (Function.identity() |> Function.identity())", @pipe_routes)
 
-  defp aliased_call do
+  defp aliased_call(routes \\ @alias_routes, extensions \\ []) do
     {:__block__, _meta, [_directive, call]} =
-      resolve("alias #{@eager}, as: Local\nLocal.value(p = 6)", @alias_routes)
+      resolve("alias #{@eager}, as: Local\nLocal.value(p = 6)", routes, extensions)
 
     call
   end
@@ -434,6 +511,81 @@ defmodule Mutare.RebuiltCallReuseTest do
 
       assert Resolve.forget(WrittenPipe.resugar(call)) ==
                Resolve.forget(WrittenPipe.resugar(original))
+    end
+  end
+
+  describe "a resolved call a mutant moves beneath a skipped call" do
+    test "is returned as written, and read by the environment in force there" do
+      original = aliased_call([@skip_identity | @alias_routes])
+      assert BindingEscapeEmit.expression_bindings(original) == [:p]
+
+      {:__block__, _meta, [_directive, wrapper]} =
+        rerouted = Resolve.reroute(ShadowAliasUnderSkip.replacement(original, []), original)
+
+      assert Mutare.Calls.routed_treatments(wrapper) == :skip
+      {_head, _meta, [call]} = wrapper
+      assert Meta.routing(elem(call, 1)) == nil
+      assert Mutare.Calls.resolved_call_to(call, Eager) == :error
+      assert BindingEscapeEmit.expression_bindings(rerouted) == []
+    end
+
+    test "behaves as its patch" do
+      assert_patches(@alias_source, [ShadowAliasUnderSkip], [run: []], @skipped_alias_opts)
+    end
+
+    test "control: the same source through fresh syntax is withheld for the dropped write" do
+      assert [] =
+               assert_patches(
+                 @alias_source,
+                 [{ShadowAliasUnderSkip, reparse: true}],
+                 [run: []],
+                 @skipped_alias_opts
+               )
+    end
+
+    test "control: beneath a skipped call that changes nothing, its writes are still read" do
+      original = aliased_call([@skip_identity | @alias_routes])
+      wrapped = {{:., [], [Function, :identity]}, [], [original]}
+      assert BindingEscapeEmit.expression_bindings(Resolve.reroute(wrapped, original)) == [:p]
+    end
+
+    test "has no classifier asked beneath the skip, stale or fresh" do
+      for opts <- [[], [reparse: true]] do
+        original = aliased_call([@skip_identity], [ClassifiedDiscard])
+        rerouted = Resolve.reroute(ShadowAliasUnderSkip.replacement(original, opts), original)
+
+        assert BindingEscapeEmit.expression_bindings(rerouted) == []
+        refute_received {ClassifiedDiscard, :classified}
+      end
+    end
+  end
+
+  describe "a desugared pipe a mutant moves beneath a skipped call" do
+    test "is returned as the written pipe, and read by the operator in force there" do
+      original = resolve("(p = 6) |> Function.identity()", @skipped_pipe_opts[:call_routes])
+      assert BindingEscapeEmit.expression_bindings(original) == [:p]
+
+      replacement = ShadowPipeUnderSkip.beneath_skip(ShadowPipe.replacement(original, false))
+      {:__block__, _meta, statements} = rerouted = Resolve.reroute(replacement, original)
+      {_head, _meta, [[pipe]]} = List.last(statements)
+
+      assert {:|>, _pipe_meta, [_left, stage]} = pipe
+      assert Meta.routing(elem(stage, 1)) == nil
+      assert BindingEscapeEmit.expression_bindings(rerouted) == []
+    end
+
+    test "behaves as its patch" do
+      assert_patches(@pipe_source, [ShadowPipeUnderSkip], [run: []], @skipped_pipe_opts)
+    end
+
+    test "control: the same source through fresh syntax is withheld for the dropped write" do
+      assert [] =
+               assert_patches(
+                 @pipe_source,
+                 [{ShadowPipeUnderSkip, reparse: true}],
+                 [run: []],
+                 @skipped_pipe_opts
+               )
     end
   end
 end

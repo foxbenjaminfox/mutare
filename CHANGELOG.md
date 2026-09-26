@@ -70,7 +70,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decided its delivery; and a piped call a mutant moves beneath an `import` of another
   `|>` is resolved again as the pipe it was written, by that operator — before, the direct
   call `Kernel`'s pipe had made of it was resolved again, with no operator left to
-  reconsider, while the patch compiled under the new one.
+  reconsider, while the patch compiled under the new one. The last two hold beneath a
+  boundary too: a call or pipe a mutant moves beneath a fresh `alias` or `import` *and* a
+  skipped call is not resolved there, but the analysis that decides its delivery still reads
+  it, since a skipped call's arguments run — and it now reads the source the patch spells,
+  not the offered call's stale callee or desugaring.
 - **A pipe stage rebuilt into a callee that does not evaluate the piped value is no longer
   handed that value ahead of it.** A stage written as a pipe is delivered in a closure that
   binds the piped value once for every mutant of the stage; whether a mutant could ride it

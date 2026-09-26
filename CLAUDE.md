@@ -300,7 +300,9 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   so a changed call is routed for the call it now is whether or not the written call had a
   route, a fresh `|>` is desugared before its stage is looked up, a fresh block folds its
   directives, and a route found bounds the walk beneath it (a call in the replacement's
-  `:raw`, skipped or quoted region is syntax; no classifier is asked about it). A classifier
+  `:raw`, skipped or quoted region is syntax; no classifier is asked about it, and what a
+  route keeps comes back as the source it spells — stamps dropped, pipes restored — NOTES "What a replacement's
+  boundary keeps is returned as written"). A classifier
   sees arguments as written, which `RouteStamp` guarantees where it invokes one. So the
   offered call's stamp never describes a different call, and the replacement's own route
   governs its delivery too: `PipeEmit` lets a mutant ride the piped-value closure only where
