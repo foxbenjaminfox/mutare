@@ -13131,6 +13131,34 @@ the export names), not a scoping one — Elixir reads the entry value either way
 baseline property's to check, with sibling rebinding in its vocabulary; `var!` and computed
 names stay the known limit ("The binding model reads syntax and declarations").
 
+### The condition hoist reads routes `[fixed; done]` (2026-09-26)
+
+Found by the activation soak (`transform_activation_property_test.exs`) while checking the
+entry below, and independent of it: HEAD failed the stored counterexample without that change.
+The `if`/`unless` hoist (`Analyze.Conditions`) lifts a condition's spine bindings ahead of the
+`if`, and its six spine walks (`escaping_binding?`, `spine_bindings`, `spine_rewrite`, …) read
+every call argument as evaluated unconditionally, in order — true of an unrouted or skipped
+call's, false of a routed position: `pick(s = 0, on?)`, routed `[:lazy_expression,
+:expression]`, runs `s = 0` inside an `if` of its own, where the binding does not leak. Lifted,
+it ran first and leaked: in `if (s = true; pick(s = 0, 0); s and 0)` the baseline evaluated
+`0 and 0` and raised `BadBooleanError`, where the original returns. Mutant 0 unlike the
+original, which the soak saw as a second function perturbed by another's mutant: under any id
+outside its range the function ran its clean copy, which is the original.
+
+Taken: one veto, `discretionary_binding?/1` in `hoist_if?/2` — a `=` in any position its
+route does not read as an unconditional value (`:expression`/`:interior`, keyword pairs by
+their own treatments), or under a call whose positions were not obtained (`:unknown`, a route
+that does not fit), leaves the condition on the prune path. Routes are read as the binding
+readers read them (`Resolve.effective_routing/2`, and `Resolve.context/2` beneath a skipped
+call). The prune path strips the ancestors' in-place candidates and withholds the decision —
+fewer mutants, no rewrite. Not taken: threading routes through all six mirror walks so a
+lazy position counts as off-spine (the same answer, six places to keep agreeing; `hoist_if?/2`
+vetoing once is the one place).
+
+Regression test: `transform_binding_hoist_test.exs`, "a binding in a position its callee
+evaluates at its discretion vetoes the hoist" — the lazy call bare and beneath a skipped
+`same/1`, the metamutant's baseline against the original's `true`.
+
 ### What a replacement's boundary keeps is returned as written `[fixed; done]` (2026-09-26)
 
 An eighth review, of the entry below, found both of its repairs undone by a boundary. Reuse is

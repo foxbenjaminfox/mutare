@@ -75,6 +75,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skipped call is not resolved there, but the analysis that decides its delivery still reads
   it, since a skipped call's arguments run — and it now reads the source the patch spells,
   not the offered call's stale callee or desugaring.
+- **An `if`/`unless` condition no longer has a binding hoisted out of a routed call's lazy
+  or syntax position.** To deliver its `true`/`false` mutants, a condition that binds a
+  variable is rewritten with the binding lifted ahead of the `if`, which is sound only for
+  bindings the condition evaluates unconditionally. The lift read every call argument as
+  such, routes included, so `if (s = true; pick(s = 0, on?); s and 0)` with `pick/2`
+  routed `[:lazy_expression, :expression]` ran `s = 0` first and leaked it: the baseline
+  raised where the original returned. A binding in any position but an `:expression` or
+  `:interior` one now leaves the condition unhoisted — its decision mutants withheld, as
+  for a binding under `&&`.
 - **A pipe stage rebuilt into a callee that does not evaluate the piped value is no longer
   handed that value ahead of it.** A stage written as a pipe is delivered in a closure that
   binds the piped value once for every mutant of the stage; whether a mutant could ride it

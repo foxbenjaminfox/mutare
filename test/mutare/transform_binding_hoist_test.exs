@@ -745,6 +745,43 @@ defmodule Mutare.TransformBindingHoistTest do
       assert Enum.any?(sites, &(&1.mutator == :if_condition))
       assert_compiles(meta)
     end
+
+    test "a binding in a position its callee evaluates at its discretion vetoes the hoist" do
+      # `pick/2` is routed `[:lazy_expression, :expression]`: it runs `s = 0` inside an `if`
+      # of its own, whose binding does not leak, so the original returns the outer `true`.
+      # Hoisting read the call's arguments as the spine and lifted `s = 0` ahead of the `if`,
+      # so the baseline evaluated `0 and 0` and raised. The call beneath a skipped `same/1`
+      # is read through the environment the skip retained, as the binding readers read it.
+      for call <- ["RoutedSoak.pick(s = 0, 0)", "RoutedSoak.same(RoutedSoak.pick(s = 0, 0))"] do
+        source = """
+        defmodule HoistLazy do
+          alias Mutare.Test.RoutedSoak
+          require RoutedSoak
+
+          def run do
+            s = :outer
+
+            if (
+                 s = true
+                 #{call}
+                 s and 0
+               ) do
+              s
+            else
+              :no
+            end
+          end
+        end
+        """
+
+        {[module], _mutants} =
+          Mutare.Test.compile_metamutant(source, [Mutare.Mutators.IfCondition],
+            call_routes: Mutare.Test.RoutedSoak.call_routes()
+          )
+
+        assert module.run() == true
+      end
+    end
   end
 
   test "with/else blocks are walked without corrupting the metamutant" do

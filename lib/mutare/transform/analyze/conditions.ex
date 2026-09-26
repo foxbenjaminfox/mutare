@@ -18,7 +18,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Spec
-  alias Mutare.Transform.{Candidate, Meta}
+  alias Mutare.Transform.{Candidate, KeywordRouting, Meta, Resolve}
   alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.Env
   alias Mutare.Transform.Analyze.Attach
@@ -157,6 +157,12 @@ defmodule Mutare.Transform.Analyze.Conditions do
   #     original program). Vetoed when an impure expression precedes a spine binding in
   #     evaluation order — the common shapes (`if x = e`, `(x = e) != nil`, `(x = e) and
   #     g(x)`, two bindings) have the binding(s) evaluated first, so they still hoist.
+  #   * Only when no binding sits where the callee decides whether, when or how it runs
+  #     (`discretionary_binding?/1`) — a routed position that is not an unconditional value.
+  #     The spine walks read every call argument as evaluated in order, which holds for an
+  #     unrouted or skipped call's arguments alone: `pick(s = 0, on?)` routed
+  #     `[:lazy_expression, :expression]` may run `s = 0` inside a branch of its own, or never,
+  #     and hoisting it would run it first and leak it.
   #   * At most **one** refutable spine binding (they would all need a distinct temp, and
   #     the env carries one — `env.cond_var`; with none, in collect mode, zero), while
   #     bare-variable bindings reuse their own name, so any number is fine.
@@ -172,6 +178,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
       condition_implementers(env) != [] and
       escaping_binding?(analyzed_condition) and
       not offspine_escaping_binding?(analyzed_condition) and
+      not discretionary_binding?(analyzed_condition) and
       not spine_reorders?(analyzed_condition) and
       refutable_spine_count(analyzed_condition) <= refutable_cap(env)
   end
@@ -448,6 +455,72 @@ defmodule Mutare.Transform.Analyze.Conditions do
 
   def offspine_escaping_binding?(node),
     do: Enum.any?(children(node), &offspine_escaping_binding?/1)
+
+  # Is there a `=` in a position its call's route does not evaluate as an unconditional value?
+  # Read by the route the binding readers read (`Resolve.effective_routing/2`, through the
+  # boundary's retained environment beneath a skipped call): an `:expression` or `:interior`
+  # position, a keyword pair's value by its own treatment, and an unrouted or skipped call's
+  # arguments are the spine's to judge; any other position — lazy, syntax, a pattern — and a
+  # call whose positions were not obtained (`:unknown`, or a route that does not fit) are the
+  # callee's, and a `=` there vetoes the hoist.
+  @doc false
+  def discretionary_binding?(node), do: discretionary_binding?(node, %{})
+
+  defp discretionary_binding?({form, _meta, _args}, _context)
+       when form in @binding_isolating_forms,
+       do: false
+
+  defp discretionary_binding?({:__block__, _meta, statements}, context)
+       when is_list(statements) do
+    statements
+    |> Enum.reduce_while(context, fn statement, context ->
+      if discretionary_binding?(statement, context),
+        do: {:halt, :found},
+        else: {:cont, Resolve.advance_context(statement, context)}
+    end)
+    |> Kernel.==(:found)
+  end
+
+  defp discretionary_binding?({_form, meta, args} = node, context)
+       when is_list(meta) and is_list(args) do
+    context = Resolve.context(node, context)
+
+    case Resolve.effective_routing(node, context) do
+      routes when is_list(routes) and length(routes) == length(args) ->
+        args
+        |> Enum.zip(routes)
+        |> Enum.any?(fn {arg, treatment} -> discretionary_position?(arg, treatment, context) end)
+
+      routing when is_list(routing) or routing == :unknown ->
+        escaping_binding?(args)
+
+      _unrouted_or_skipped ->
+        Enum.any?(args, &discretionary_binding?(&1, context))
+    end
+  end
+
+  defp discretionary_binding?(node, context),
+    do: Enum.any?(children(node), &discretionary_binding?(&1, context))
+
+  defp discretionary_position?(arg, treatment, context)
+       when treatment in [:expression, :interior],
+       do: discretionary_binding?(arg, context)
+
+  defp discretionary_position?(arg, treatment, context)
+       when is_tuple(treatment) and elem(treatment, 0) in [:keyword, :keyed] do
+    case KeywordRouting.decode(arg, treatment) do
+      {:pairs, pairs, _rewrap} ->
+        Enum.any?(pairs, fn {{key, key_treatment}, {value, value_treatment}} ->
+          discretionary_position?(key, key_treatment, context) or
+            discretionary_position?(value, value_treatment, context)
+        end)
+
+      {:whole, fallback} ->
+        discretionary_position?(arg, fallback, context)
+    end
+  end
+
+  defp discretionary_position?(arg, _treatment, _context), do: escaping_binding?(arg)
 
   # Does the subtree contain an escaping `=` binding (one not isolated inside a
   # closure/comprehension/`try`/`quote`)? The presence counterpart of
