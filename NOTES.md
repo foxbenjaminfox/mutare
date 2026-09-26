@@ -6100,10 +6100,12 @@ The non-obvious parts:
     and the Site — no separate delivery field needed (unlike `Relational`'s `name == nil`, which
     *would* differ and so is **not** recovered: an operator swap on a binding-ancestor stays
     pruned, its mutant still embedding the binding). The diff stays `(name = f()) != nil → true`.
-  - **Refutable patterns keep `MatchError`.** `if {:ok, v} = f() do` lifts as `mutare_cond = f();
-    {:ok, v} = mutare_cond; if … mutare_cond …` — the match value (always `f()`, *not* the
-    pattern's bindings) goes to a temp, and the pattern is re-matched against it (so a non-match
-    still raises the same `MatchError`). The temp is the salted `cond_var`, carried into the
+  - **Refutable patterns keep `MatchError`.** `if {:ok, v} = f() do` lifts as `mutare_cond =
+    {:ok, v} = f(); if … mutare_cond …` — the match lifts whole (so a non-match still raises the
+    same `MatchError`) and its value (always `f()`, *not* the pattern's bindings) goes to a temp.
+    (It was once split, `mutare_cond = f(); {:ok, v} = mutare_cond`, which changed what a pin
+    reads — "A refutable hoist lifts the match whole, and only `Kernel`'s `and` is a short
+    circuit" below.) The temp is the salted `cond_var`, carried into the
     analyze pass on `Analyze.Env` (with the enriched mutator list). Originally analyze was
     "name-free" and left a `Names.hoist_placeholder/0` (a var with an impossible hygiene
     *context*) that emit substituted with a whole-subtree prewalk per `emit/2` — but the names
@@ -13130,6 +13132,32 @@ Not covered, by design: a conflict on a name bound on entry is a delivery fact (
 the export names), not a scoping one — Elixir reads the entry value either way — so it is the
 baseline property's to check, with sibling rebinding in its vocabulary; `var!` and computed
 names stay the known limit ("The binding model reads syntax and declarations").
+
+### A refutable hoist lifts the match whole, and only `Kernel`'s `and` is a short circuit `[fixed; done]` (2026-09-26)
+
+A tenth review, of the entry below, found two more baseline changes with `IfCondition` alone.
+First, the refutable hoist split `PAT = RHS` into `tmp = RHS; PAT = tmp`. Elixir matches a pin
+against the environment from *before* the right side ran, so in `{^x, y} = {1, x = v}` the pin
+reads the old `x`; split, the second statement's pin read the new one — a `MatchError` where
+the original matched, and a match where it raised. `spine_rebinds?/1` had exempted the pin as
+a read of the binding's own name, on the premise that the statement moves whole, which the
+split made false. Second, `spine_rebinds?/1` gave the right operand of anything *spelled*
+`and`/`or`/`&&`/`||` the left operand's bindings; a function imported as `and/2` is an ordinary
+call whose operands both read the incoming value, so `(x = 1) and x` compared 1 with 1.
+
+Taken: the refutable hoist emits one statement, `tmp = PAT = RHS`, which keeps the match intact
+and makes the exemption's premise true. Not taken: vetoing matches whose right side rebinds a
+pinned name — a second rule for what one rewrite fixes. The read tracker grants the short
+circuit's sequential reads only where `Resolve.kernel_form/2` says the operator is `Kernel`'s
+(threading the resolution context as `discretionary_binding?/2` does); otherwise the operands
+are siblings, the right one still read as off the spine because the spine walks go by
+spelling and lift nothing there. A qualified `Kernel.and(x = 1, x)` stays on the conservative
+sibling reading and is withheld.
+
+The evaluation soak now generates `{^v, b} = {v, t}`, half the time with `t` rebinding `v`, and
+compares a `MatchError` (term and effects) as an outcome rather than flunking on it; against the
+split it fails on every run. Regression tests join the describe "if/unless hoisting preserves
+what the condition reads" in `transform_binding_hoist_test.exs`, with a pinned-match control.
 
 ### The condition hoist keeps what each read denotes, and a callee's turn `[fixed; done]` (2026-09-26)
 

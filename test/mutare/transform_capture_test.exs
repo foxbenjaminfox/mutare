@@ -400,9 +400,9 @@ defmodule Mutare.TransformCaptureTest do
       Selector.put(Selector.baseline())
     end
 
-    test "a refutable-pattern hoist (temp + re-match) also folds under &, and compiles" do
-      # The refutable shape lifts *two* statements (`tmp = fetch(&1); {:ok, v} = tmp`);
-      # both fold into the condition, preserving the MatchError-on-non-match semantics.
+    test "a refutable-pattern hoist (temp + whole match) also folds under &, and compiles" do
+      # The refutable shape lifts `tmp = {:ok, v} = fetch(&1)`, which folds into the
+      # condition, preserving the MatchError-on-non-match semantics.
       source = """
       defmodule Mutare.CaptureHoistRefutableFixture do
         def go(list), do: Enum.map(list, &if({:ok, v} = fetch(&1), do: v, else: :none))

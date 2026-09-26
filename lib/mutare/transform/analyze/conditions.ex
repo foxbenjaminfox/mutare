@@ -137,10 +137,13 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # except the *direct argument of a capture*, the one expression position that rejects
   # a block; the `&` clause in `Mutare.Transform.Analyze` re-delivers that case via
   # `fold_hoist_into_condition/1`).
-  # A **refutable** pattern (`if {:ok, v} = f() do`) keeps its `MatchError` semantics
-  # by binding the match value to a temp first: `mutare_cond = f(); {:ok, v} =
-  # mutare_cond; if … mutare_cond … do`. The temp is the file's salted `cond_var`, carried
-  # in on the env (`Mutare.Transform.Analyze.Env`).
+  # A **refutable** pattern (`if {:ok, v} = f() do`) lifts whole, its value captured in a
+  # temp: `mutare_cond = {:ok, v} = f(); if … mutare_cond … do`. The match is never split
+  # into `tmp = f(); {:ok, v} = tmp`, which would keep the `MatchError` but not what a pin
+  # reads: Elixir matches `^x` against the `x` in force *before* the right side ran, so
+  # `{^x, y} = {1, x = v}` compares with the old `x`, and the split's second statement would
+  # compare with the new one. The temp is the file's salted `cond_var`, carried in on the env
+  # (`Mutare.Transform.Analyze.Env`).
   #
   # Scope (each a soundness or fidelity guard, the rest staying on the prune path):
   #   * The decision is delivered; everything else on a *binding-ancestor* node (an
@@ -309,8 +312,9 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # each spine binding `PAT = EXPR` with a read of the lifted value and returning the
   # hoist statements, in evaluation (left-to-right) order. A bare-variable binding
   # `v = EXPR` lifts as `v = EXPR` and the condition reads `v`; a refutable `PAT =
-  # EXPR` lifts as `tmp = EXPR; PAT = tmp` (the match value is `EXPR`, not the
-  # pattern's bindings) and the condition reads `tmp`. The walk stops at short-circuit
+  # EXPR` lifts whole as `tmp = PAT = EXPR` (the match value is `EXPR`, not the
+  # pattern's bindings, and the match keeps the pin environment it had) and the condition
+  # reads `tmp`. The walk stops at short-circuit
   # right operands, nested branches, and binding-isolating forms — `hoist_if?/2` has
   # already verified no escaping binding hides there.
   @doc false
@@ -346,15 +350,14 @@ defmodule Mutare.Transform.Analyze.Conditions do
     {nodes, List.flatten(hoists)}
   end
 
-  # One spine binding → `{read_node, [hoist_statement(s)]}`. The read node and the
-  # hoist's RHS keep the *analyzed* EXPR, so its mutations are delivered in the lifted
-  # statement.
+  # One spine binding → `{read_node, [hoist_statement]}`. The hoist keeps the *analyzed*
+  # EXPR, so its mutations are delivered in the lifted statement.
   defp hoist_one(lhs, rhs, cond_var) do
     if bare_var?(lhs) do
       {clean_var(lhs), [{:=, [], [lhs, rhs]}]}
     else
       temp = {cond_var, [], nil}
-      {temp, [{:=, [], [temp, rhs]}, {:=, [], [lhs, temp]}]}
+      {temp, [{:=, [], [temp, {:=, [], [lhs, rhs]}]}]}
     end
   end
 
@@ -501,6 +504,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
 
       scope = %{
         spine?: true,
+        context: %{},
         written: MapSet.new(names),
         own: MapSet.new(),
         lifted: :all,
@@ -516,7 +520,8 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # hoist would not change is then vetoed for nothing) but never claims one. `scope.lifted` is
   # the written names the *hoisted* program has bound here: every one (`:all`) in the rewritten
   # condition, and those lifted before it inside a lifted statement. A read of a written name
-  # is safe only where both programs have bound it.
+  # is safe only where both programs have bound it. `scope.context` is the resolution context
+  # `discretionary_binding?/2` threads, for reading an operator's identity.
   defp rebinding_read({:=, _meta, [lhs, rhs]} = node, seen, %{spine?: true} = scope) do
     own = node |> Bindings.matched_names() |> MapSet.new()
     lifted = %{scope | spine?: false, own: own, lifted: Map.fetch!(scope.hoists, node)}
@@ -525,10 +530,23 @@ defmodule Mutare.Transform.Analyze.Conditions do
     {rhs? or lhs?, MapSet.union(seen, own)}
   end
 
-  defp rebinding_read({op, _meta, [left, right]}, seen, scope) when op in @short_circuit_ops do
-    {left?, seen} = rebinding_read(left, seen, scope)
-    {right?, _} = rebinding_read(right, seen, %{scope | spine?: false})
-    {left? or right?, seen}
+  # Only `Kernel`'s short-circuit lets its right operand see the left's bindings; a function
+  # imported as `and` is an ordinary call, whose operands are siblings. The spine walks go by
+  # spelling, so either way the right operand is off the spine: nothing there is lifted.
+  defp rebinding_read({op, _meta, [left, right]} = node, seen, scope)
+       when op in @short_circuit_ops do
+    scope = %{scope | context: Resolve.context(node, scope.context)}
+    offspine = %{scope | spine?: false}
+
+    if Resolve.kernel_form(node, scope.context) == op do
+      {left?, seen} = rebinding_read(left, seen, scope)
+      {right?, _} = rebinding_read(right, seen, offspine)
+      {left? or right?, seen}
+    else
+      {left?, left_out} = rebinding_read(left, seen, scope)
+      {right?, right_out} = rebinding_read(right, seen, offspine)
+      {left? or right?, MapSet.union(left_out, right_out)}
+    end
   end
 
   defp rebinding_read({form, _meta, args}, seen, scope)
@@ -538,10 +556,13 @@ defmodule Mutare.Transform.Analyze.Conditions do
   end
 
   defp rebinding_read({:__block__, _meta, statements}, seen, scope) when is_list(statements) do
-    Enum.reduce(statements, {false, seen}, fn statement, {rebinds?, seen} ->
+    statements
+    |> Enum.reduce({false, seen, scope}, fn statement, {rebinds?, seen, scope} ->
       {statement?, seen} = rebinding_read(statement, seen, scope)
-      {rebinds? or statement?, seen}
+      scope = %{scope | context: Resolve.advance_context(statement, scope.context)}
+      {rebinds? or statement?, seen, scope}
     end)
+    |> then(fn {rebinds?, seen, _scope} -> {rebinds?, seen} end)
   end
 
   defp rebinding_read({name, _meta, ctx}, seen, scope) when is_atom(name) and is_atom(ctx),
@@ -552,7 +573,8 @@ defmodule Mutare.Transform.Analyze.Conditions do
     {rebinds?, MapSet.union(seen, MapSet.new(Bindings.matched_names(node)))}
   end
 
-  defp rebinding_read({form, _meta, args}, seen, scope) when is_list(args) do
+  defp rebinding_read({form, _meta, args} = node, seen, scope) when is_list(args) do
+    scope = %{scope | context: Resolve.context(node, scope.context)}
     {callee?, _} = rebinding_read(form, seen, %{scope | spine?: false})
     {args?, seen} = rebinding_group(args, seen, scope)
     {callee? or args?, seen}

@@ -187,9 +187,8 @@ defmodule Mutare.TransformBindingHoistTest do
           mutators: [Mutare.Mutators.IfCondition]
         )
 
-      # The match value is bound to a temp first, then the pattern re-matched against it
-      # (so a non-match still raises MatchError exactly as the original `=` did); the
-      # condition reads the temp. The decision diff still names the original condition.
+      # The match lifts whole (so a non-match still raises MatchError exactly as the
+      # original `=` did) and its value is bound to a temp, which the condition reads. The decision diff still names the original condition.
       assert meta =~ "= fetch(opts)"
       assert meta =~ "{:ok, v} ="
 
@@ -810,6 +809,12 @@ defmodule Mutare.TransformBindingHoistTest do
     end
   end
 
+  defmodule EqualityAnd do
+    @moduledoc false
+    import Kernel, except: [and: 2]
+    def unquote(:and)(left, right), do: left == right
+  end
+
   describe "if/unless hoisting preserves what the condition reads" do
     # The hoist lifts spine bindings ahead of the `if`. Unconditional evaluation says each
     # binding runs; it does not say that moving it leaves every read denoting the same
@@ -817,22 +822,26 @@ defmodule Mutare.TransformBindingHoistTest do
     # and the metamutant without clean copies, and compares them under mutant 0. The hazards
     # may be met by withholding the decision; the controls must keep it.
 
-    defp assert_baseline(source, examples) do
-      opts = [clean_functions: false]
+    defp assert_baseline(source, examples, opts \\ []) do
+      opts = Keyword.put(opts, :clean_functions, false)
       {[original], []} = Mutare.Test.compile_metamutant(source, [], opts)
 
       {[instrumented], sites} =
         Mutare.Test.compile_metamutant(source, [Mutare.Mutators.IfCondition], opts)
 
       for {arguments, expected} <- examples do
-        assert Mutare.Test.with_active_mutant(0, fn -> apply(original, :run, arguments) end) ==
-                 expected
-
-        assert Mutare.Test.with_active_mutant(0, fn -> apply(instrumented, :run, arguments) end) ==
-                 expected
+        assert baseline_outcome(original, arguments) == expected
+        assert baseline_outcome(instrumented, arguments) == expected
       end
 
       sites
+    end
+
+    # A refutable condition's `MatchError` is part of what the baseline must keep.
+    defp baseline_outcome(module, arguments) do
+      Mutare.Test.with_active_mutant(0, fn -> apply(module, :run, arguments) end)
+    rescue
+      error in MatchError -> {:match_error, error.term}
     end
 
     defp comparison_source(condition, form \\ "if") do
@@ -903,6 +912,67 @@ defmodule Mutare.TransformBindingHoistTest do
       ])
     end
 
+    test "a refutable match keeps the pin environment from before its right-hand side" do
+      # `^x` matches against the `x` in force before the right side rebinds it. Split into
+      # `tmp = rhs; pattern = tmp`, the pin would read the rebound `x`: a match error where
+      # the original matches, and a match where the original raises.
+      assert_baseline(
+        """
+        defmodule HoistPinned do
+          def run(value) do
+            x = 1
+            if {^x, y} = {1, x = value}, do: {x, y}, else: :no
+          end
+        end
+        """,
+        [{[1], {1, 1}}, {[2], {2, 2}}, {[0], {0, 0}}]
+      )
+
+      assert_baseline(
+        """
+        defmodule HoistPinned do
+          def run(value) do
+            x = 1
+            if {^x, y} = {x = value, :ok}, do: {x, y}, else: :no
+          end
+        end
+        """,
+        [{[1], {1, :ok}}, {[2], {:match_error, {2, :ok}}}]
+      )
+    end
+
+    test "a function imported as `and` reads its operands as siblings" do
+      # Only Kernel's `and` lets its right operand see the left's binding; an ordinary
+      # function's arguments both read the incoming `x`, however it is spelled or routed.
+      imported = """
+      defmodule HoistForeignAnd do
+        import Kernel, except: [and: 2]
+        import #{inspect(EqualityAnd)}, only: [and: 2]
+
+        def run(x) do
+          if (x = 1) and x, do: :equal, else: :different
+        end
+      end
+      """
+
+      qualified = """
+      defmodule HoistForeignAnd do
+        def run(x) do
+          if #{inspect(EqualityAnd)}.and(x = 1, x), do: :equal, else: :different
+        end
+      end
+      """
+
+      examples = [{[0], :different}, {[1], :equal}, {[2], :different}]
+      assert_baseline(imported, examples)
+
+      assert_baseline(imported, examples,
+        call_routes: [{EqualityAnd, :and, 2, [:expression, :expression]}]
+      )
+
+      assert_baseline(qualified, examples)
+    end
+
     test "controls: bindings the original reads the same way still hoist" do
       controls = [
         # One fresh binding; two with different names.
@@ -918,7 +988,10 @@ defmodule Mutare.TransformBindingHoistTest do
          [{[1], {:no, 2}}, {[2], {:yes, 4}}]},
         # A binding reading the name it writes moves whole.
         {"def run(x), do: if((x = x - 1) > 0, do: {:yes, x}, else: {:no, x})",
-         [{[1], {:no, 0}}, {[3], {:yes, 2}}]}
+         [{[1], {:no, 0}}, {[3], {:yes, 2}}]},
+        # A pinned refutable match moves whole too, raising where the original raises.
+        {"def run(x), do: if({^x, y} = {1, x}, do: {:yes, y}, else: :no)",
+         [{[1], {:yes, 1}}, {[2], {:match_error, {1, 2}}}]}
       ]
 
       for {definition, examples} <- controls do

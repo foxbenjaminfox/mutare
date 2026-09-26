@@ -56,7 +56,7 @@ defmodule Mutare.ConditionsPropertyTest do
       {rewritten, hoists} = Conditions.spine_rewrite(c, :mutare_cond)
 
       Conditions.spine_bindings(rewritten) == [] and
-        length(hoists) == length(spine(c)) + Enum.count(spine(c), &refutable?/1) and
+        length(hoists) == length(spine(c)) and
         Conditions.escaping_binding?(rewritten) == Conditions.offspine_escaping_binding?(c)
     end
   end
@@ -78,11 +78,14 @@ defmodule Mutare.ConditionsPropertyTest do
         {rewritten, hoists} = Conditions.spine_rewrite(c, :mutare_cond)
         hoisted = {:__block__, [], hoists ++ [rewritten]}
 
-        {value, bindings, effects} = run(c)
-        {value2, bindings2, effects2} = run(hoisted)
+        case {run(c), run(hoisted)} do
+          {{:ok, value, bindings, effects}, {:ok, value2, bindings2, effects2}} ->
+            value2 == value and effects2 == effects and
+              Map.delete(bindings2, :mutare_cond) == bindings
 
-        value2 == value and effects2 == effects and
-          Map.delete(bindings2, :mutare_cond) == bindings
+          {raised, raised2} ->
+            raised2 == raised
+        end
       end
     end
   end
@@ -132,9 +135,10 @@ defmodule Mutare.ConditionsPropertyTest do
 
   # === evaluation ===========================================================
 
-  # `{value, bindings after, effects in order}` of evaluating `ast` in the generator's
-  # environment — the incoming `x` and `y` included, since a condition may rebind them.
-  # Compiler diagnostics (an unused binding, say) stay per-process.
+  # `{:ok, value, bindings after, effects in order}` of evaluating `ast` in the generator's
+  # environment — the incoming `x` and `y` included, since a condition may rebind them — or
+  # `{:match_error, term, effects}` where a pinned match fails. Compiler diagnostics (an
+  # unused binding, say) stay per-process.
   defp run(ast) do
     flush()
 
@@ -149,7 +153,10 @@ defmodule Mutare.ConditionsPropertyTest do
 
     case result do
       {:ok, {value, binding}} ->
-        {value, Map.new(binding), flush()}
+        {:ok, value, Map.new(binding), flush()}
+
+      {:error, %MatchError{term: term}} ->
+        {:match_error, term, flush()}
 
       {:error, e} ->
         # Premise: the generated condition must evaluate. Both the original and its hoist go

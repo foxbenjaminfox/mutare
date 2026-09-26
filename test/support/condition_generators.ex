@@ -3,8 +3,9 @@ defmodule Mutare.Test.ConditionGen do
   PropCheck generators for `if`/`unless` *conditions* that bind variables — the input to the
   `Mutare.Transform.Analyze.Conditions` spine-walk properties (`conditions_property_test.exs`).
 
-  A generated condition is a total expression over two pre-bound integer variables
-  (`bindings_env/0`), built in three sorts so it always evaluates without raising:
+  A generated condition is an expression over two pre-bound integer variables
+  (`bindings_env/0`), built in three sorts so it evaluates without raising anything but the
+  `MatchError` of a pinned match whose pin a sibling rebound:
 
     * a **num** — an integer (Sourceror-wrapped or bare), a variable read, `+`/`-`/`*`, an
       `effect/1` call (statically, through a receiver an effect returns, or through an
@@ -14,8 +15,9 @@ defmodule Mutare.Test.ConditionGen do
     * a **bool** — `==`/`!=` over terms, an ordering over nums, `and`/`or` over bools,
       `!term`, `not bool`, a bare binding `b = bool`, or a branch yielding a bool;
     * a **term** — any of the above, a 2-tuple, a `{:{}, …}` tuple, a list, a `&&`/`||`
-      (whose value is either operand), a refutable binding `{:ok, b} = {:ok, term}`, or a
-      `for` comprehension (a binding-isolating form).
+      (whose value is either operand), a refutable binding `{:ok, b} = {:ok, term}` or
+      `{^x, b} = {x, term}` (its pin reads `x` from before the right side, which may rebind
+      it), or a `for` comprehension (a binding-isolating form).
 
   So bindings land on the unconditional *spine* (an operand, the left of a short-circuit),
   *off* it (a short-circuit's right operand, a `case`/`if` branch or subject), or *isolated*
@@ -112,6 +114,11 @@ defmodule Mutare.Test.ConditionGen do
       {1, let(es <- oneof([vector(1, sub), vector(2, sub), vector(3, sub)]), do: es)},
       {2, let({op, l, r} <- {oneof([:&&, :||]), sub, sub}, do: {op, [], [l, r]})},
       {2, let(t <- sub, do: {:=, [], [{:ok, var(:b)}, {:ok, t}]})},
+      {2,
+       let(
+         {v, t, n, rebind?} <- {oneof([:x, :y]), sub, num(half), boolean()},
+         do: pinned_match(v, if(rebind?, do: {:=, [], [var(v), n]}, else: t))
+       )},
       {1, let(t <- sub, do: {:for, [], [{:<-, [], [{:_, [], nil}, [1]]}, [do: t]]})}
     ])
   end
@@ -144,6 +151,11 @@ defmodule Mutare.Test.ConditionGen do
   defp atom_leaf,
     do: oneof([oneof([:a, :b]), let(a <- oneof([:a, :b]), do: {:__block__, [], [a]})])
 
+  # `{^v, b} = {v, t}`: the pin reads `v` as it stood before the right side ran, as the
+  # right side's own read does, so it matches unless a sibling rebinds `v` first — a
+  # rebinding in `t` (half the time `v = num` itself) does not.
+  defp pinned_match(v, t), do: {:=, [], [{{:^, [], [var(v)]}, var(:b)}, {var(v), t}]}
+
   defp var(name), do: {name, [], nil}
   defp bind(rhs), do: {:=, [], [var(:b), rhs]}
   defp effect(n), do: {{:., [], [Effects, :effect]}, [], [n]}
@@ -171,5 +183,6 @@ defmodule Mutare.Test.ConditionGen do
 
   defp rename({:b, meta, ctx}, n), do: {:"b#{n}", meta, ctx}
   defp rename({:ok, v}, n), do: {:ok, rename(v, n)}
+  defp rename({{:^, _meta, _args} = pin, v}, n), do: {pin, rename(v, n)}
   defp rename(incoming, _n), do: incoming
 end
