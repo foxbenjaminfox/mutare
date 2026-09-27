@@ -113,7 +113,9 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --only lib/a --only lib/b   # ...or several paths (repeatable)
       mix mutare --exclude "lib/generated/**" --exclude lib/legacy
                                           # skip files matching globs (repeatable)
-      mix mutare --since master           # only lines changed vs a git ref
+      mix mutare --since master           # only lines this branch changed
+                                          #   since forking from master, untracked
+                                          #   .ex files included
       mix mutare --line lib/billing/invoice.ex:42
                                           # only the mutants on that file:line — a
                                           #   narrow rerun, e.g. to recheck one

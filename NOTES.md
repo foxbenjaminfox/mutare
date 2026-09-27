@@ -7343,8 +7343,9 @@ a metamutant with **zero** poisons.
   actually expect. The `-U0` parse is robust by construction: it consumes each
   hunk's declared body-line count (`\ No newline` markers excepted) rather than
   pattern-matching text, so content that *looks* like a `+++ `/`@@` header can't
-  be misread as one. Limits (unchanged): untracked new files aren't reported by
-  `git diff` (stage/commit them); pure deletions contribute no new-side line, so
+  be misread as one. It diffs from the merge base and adds untracked `.ex` files
+  (NOTES "`--since` is the branch's change: merge base, untracked files").
+  Limits: pure deletions contribute no new-side line, so
   a delete-only change drops that file out of scope entirely; only the changed
   lines themselves are mutated, not code that transitively depends on them;
   `--since` assumes `root` is inside the repo.
@@ -14741,3 +14742,29 @@ the scope was computed.
 `missing_paths/2` resolves each path under every mutated app's directory, as discovery does.
 The runner's hint previously joined `:paths` to the umbrella root, where `lib` never exists,
 so every empty umbrella scan appended the hint whether or not a path was wrong.
+
+### `--since` is the branch's change: merge base, untracked files (2026-09-27)
+
+`git diff REF` compares the working tree with REF's *tip*. When REF moved on after the branch
+forked, every line REF changed since then differs too, and the branch side — still holding the
+old text — shows it as added. A stale branch was mutated on code it never touched, and a
+`--min-score` gate could fail on someone else's change. `Changes.since/2` now diffs from
+`git merge-base REF HEAD`, the fork point a pull request's diff is taken against. It keeps
+`git diff <base>` rather than `git diff REF...`: the three-dot form compares commits only and
+would drop uncommitted changes. GitHub's default pull-request checkout is a merge commit whose
+first parent is REF's tip, so there the two coincide; the difference showed locally and for
+agents working on long-lived branches.
+
+The cost is history: a shallow clone cut off above the fork point has no merge base, and
+`git merge-base` exits 1 silently. That is reported as an error naming `fetch-depth`, not
+silently widened to the tip diff — a wrong scope that passes a gate is worse than a clear
+failure. No flag restores the tip diff; nothing has asked for one.
+
+`git diff` also never saw untracked files, so a new module written without `git add` got no
+mutants until someone ran `git add -N`. An untracked file is new relative to any ref, so
+`git ls-files --others --exclude-standard -- '*.ex'` adds every line of each one, numbered as
+`git diff` numbers an added file. The pathspec keeps `.gitignore`d files out, and limits the
+listing to `.ex` because discovery mutates nothing else — reading an unignored build artefact
+would cost time for no site. A whole-file marker in `:only_lines` was considered and rejected:
+listing the lines is exactly what the diff yields once the file is added, so both routes into
+the scope agree, and `:only_lines` keeps one entry shape.

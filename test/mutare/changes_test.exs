@@ -119,6 +119,50 @@ defmodule Mutare.ChangesTest do
     assert Changes.since(repo, "HEAD") == {:ok, MapSet.new()}
   end
 
+  test "reports every line of an untracked .ex file, as git diff does for an added one", %{
+    repo: repo
+  } do
+    File.write!(Path.join(repo, "lib/c.ex"), "defmodule C do\n  def h, do: 3\nend")
+    File.write!(Path.join(repo, "lib/empty.ex"), "")
+
+    assert Changes.since(repo, "HEAD") ==
+             {:ok, MapSet.new([{"lib/c.ex", 1}, {"lib/c.ex", 2}, {"lib/c.ex", 3}])}
+  end
+
+  test "leaves out ignored and non-.ex untracked files", %{repo: repo} do
+    File.write!(Path.join(repo, ".gitignore"), "lib/generated.ex\n")
+    git!(repo, ["add", ".gitignore"])
+    commit!(repo)
+
+    File.write!(Path.join(repo, "lib/generated.ex"), "defmodule G do\nend\n")
+    File.write!(Path.join(repo, "lib/notes.txt"), "not source\n")
+
+    assert Changes.since(repo, "HEAD") == {:ok, MapSet.new()}
+  end
+
+  test "diffs from the merge base, leaving out what the ref gained after the fork", %{
+    repo: repo
+  } do
+    git!(repo, ["checkout", "-q", "-b", "upstream"])
+    File.write!(Path.join(repo, "lib/a.ex"), "defmodule A do\n  def f, do: 9\nend\n")
+    git!(repo, ["commit", "-q", "-a", "-m", "upstream moves on"] |> with_identity())
+    git!(repo, ["checkout", "-q", "-"])
+
+    File.write!(Path.join(repo, "lib/b.ex"), "defmodule B do\n  def g, do: 3\nend\n")
+
+    # Against upstream's tip, the branch's unchanged `def f, do: 1` would differ.
+    assert Changes.since(repo, "upstream") == {:ok, MapSet.new([{"lib/b.ex", 2}])}
+  end
+
+  test "errors, naming the shallow-clone cause, when the ref shares no history", %{repo: repo} do
+    {unrelated, 0} =
+      System.cmd("git", ["-C", repo | with_identity(["commit-tree", "HEAD^{tree}", "-m", "root"])])
+
+    assert {:error, detail} = Changes.since(repo, String.trim(unrelated))
+    assert detail =~ "no merge base"
+    assert detail =~ "fetch-depth"
+  end
+
   test "errors on a bad ref", %{repo: repo} do
     assert {:error, detail} = Changes.since(repo, "no-such-ref")
     assert is_binary(detail)
@@ -147,6 +191,11 @@ defmodule Mutare.ChangesTest do
     assert is_binary(message)
     assert message != ""
   end
+
+  defp commit!(repo), do: git!(repo, with_identity(["commit", "-q", "-m", "change"]))
+
+  defp with_identity(args),
+    do: ["-c", "user.email=test@example.com", "-c", "user.name=Test" | args]
 
   defp git!(repo, args) do
     {_out, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)

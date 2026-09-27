@@ -122,7 +122,7 @@ The full grammar is in [`Mutare.Ignore`](https://hexdocs.pm/mutare/Mutare.Ignore
 ```
 mix mutare                             # mutate everything under lib/
 mix mutare --only lib/billing          # scope to one path
-mix mutare --since master              # only lines changed vs a git ref
+mix mutare --since master              # only lines this branch changed
 mix mutare --mutators relational       # run one built-in family
 mix mutare --skip-lifting MyApp.Mod.fun/2
                                        # keep one function in-place; no guard,

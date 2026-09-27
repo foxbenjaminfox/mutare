@@ -7,6 +7,11 @@ defmodule Mutare.Changes do
   only that line, not the whole file. The changed lines are fed to `:only_lines`
   (the same site filter `--line` uses), so a `--since` run and a `--line` run
   share all the downstream machinery.
+
+  "Changed" means what the branch changed: lines differing between the working
+  tree and the point where `HEAD` forked from the ref (their merge base), plus
+  every line of an untracked `.ex` file. Commits the ref gained after the fork are
+  not the branch's changes and are not included.
   """
 
   # Hunk header: `@@ -<old_start>[,<old_count>] +<new_start>[,<new_count>] @@`.
@@ -19,43 +24,95 @@ defmodule Mutare.Changes do
   Lines changed under `root` versus `ref`, as a set of `{relative_path, line}`
   pairs on the *new* side of the diff (the lines that now exist to be mutated).
 
-  Uses `git diff -U0 --relative`, run with `root` as the working dir, so it
-  reports working-tree changes (committed and uncommitted) since `ref`, scoped
-  to and relative to `root`. The diff command disables presentation/user hooks
-  and pins prefixes because the output is parsed, and turns off `core.quotePath`
-  so a non-ASCII pathname is returned verbatim rather than octal-escaped. `-U0` drops context lines so
-  only genuinely-added lines land in the set; pure deletions contribute nothing
-  (their file drops out entirely if it has no other changes). Returns
-  `{:error, detail}` if git fails (no repo, bad ref, git missing).
+  The diff runs from the merge base of `ref` and `HEAD` to the working tree, so
+  it holds the branch's committed and uncommitted changes and nothing `ref` gained
+  after the branch forked — what a pull request's diff shows. Untracked files
+  that `.gitignore` does not exclude are new relative to any ref, so every line
+  of each untracked `.ex` file is included, as `git diff` reports a newly added
+  file. Only `.ex` files, because only those are discovered for mutation; reading
+  other untracked files would cost time and add nothing.
+
+  Uses `git diff -U0 --relative`, run with `root` as the working dir, so paths
+  are scoped to and relative to `root`. The diff command disables
+  presentation/user hooks and pins prefixes because the output is parsed, and
+  turns off `core.quotePath` so a non-ASCII pathname is returned verbatim rather
+  than octal-escaped. `-U0` drops context lines so only genuinely-added lines
+  land in the set; pure deletions contribute nothing (their file drops out
+  entirely if it has no other changes). Returns `{:error, detail}` if git fails
+  (no repo, bad ref, git missing) or finds no merge base (unrelated histories,
+  or a shallow clone missing the fork point).
   """
   @spec since(Path.t(), String.t()) :: {:ok, MapSet.t()} | {:error, String.t()}
   def since(root, ref) do
-    case System.cmd(
-           "git",
-           [
-             "-C",
-             root,
-             "-c",
-             "core.quotePath=false",
-             "diff",
-             "--no-ext-diff",
-             "--no-color",
-             "--src-prefix=a/",
-             "--dst-prefix=b/",
-             "-U0",
-             "--relative",
-             ref
-           ],
-           stderr_to_stdout: true
-         ) do
+    with {:ok, base} <- merge_base(root, ref),
+         {:ok, diff} <- git(root, diff_args(base)),
+         {:ok, untracked} <- git(root, untracked_args()) do
+      {:ok, diff |> parse_diff() |> add_untracked(root, untracked)}
+    end
+  rescue
+    error -> {:error, Exception.message(error)}
+  end
+
+  # `git merge-base` exits 1, printing nothing, when the two commits share no
+  # history — unrelated roots, or a shallow clone cut off above the fork point.
+  # A bare "failed" would leave a CI user guessing, so name the likely cause.
+  defp merge_base(root, ref) do
+    case System.cmd("git", ["-C", root, "merge-base", ref, "HEAD"], stderr_to_stdout: true) do
       {output, 0} ->
-        {:ok, parse_diff(output)}
+        {:ok, String.trim(output)}
+
+      {"", 1} ->
+        {:error,
+         "no merge base between #{ref} and HEAD. In a shallow clone, fetch the history " <>
+           "back to where the branch forked (for actions/checkout, `fetch-depth: 0`)."}
 
       {output, _status} ->
         {:error, String.trim(output)}
     end
-  rescue
-    error -> {:error, Exception.message(error)}
+  end
+
+  defp diff_args(base) do
+    [
+      "-c",
+      "core.quotePath=false",
+      "diff",
+      "--no-ext-diff",
+      "--no-color",
+      "--src-prefix=a/",
+      "--dst-prefix=b/",
+      "-U0",
+      "--relative",
+      base
+    ]
+  end
+
+  # NUL-terminated (`-z`), so a path is never quoted. Run in `root`, `ls-files`
+  # lists only that subtree, relative to it — the same paths `--relative` gives
+  # the diff. `*.ex` matches at any depth.
+  defp untracked_args, do: ["ls-files", "--others", "--exclude-standard", "-z", "--", "*.ex"]
+
+  defp git(root, args) do
+    case System.cmd("git", ["-C", root | args], stderr_to_stdout: true) do
+      {output, 0} -> {:ok, output}
+      {output, _status} -> {:error, String.trim(output)}
+    end
+  end
+
+  # Every line of each untracked file, numbered as `git diff` numbers a newly
+  # added one: a final line without a trailing newline still counts.
+  defp add_untracked(acc, root, output) do
+    output
+    |> String.split(<<0>>, trim: true)
+    |> Enum.reduce(acc, fn file, acc ->
+      add_lines(acc, file, 1, line_count(File.read!(Path.join(root, file))))
+    end)
+  end
+
+  defp line_count(""), do: 0
+
+  defp line_count(content) do
+    newlines = content |> :binary.matches("\n") |> length()
+    if String.ends_with?(content, "\n"), do: newlines, else: newlines + 1
   end
 
   # Fold the unified diff into a set of {file, new_line} pairs.
