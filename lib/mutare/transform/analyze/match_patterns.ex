@@ -239,11 +239,9 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   defp call_mutation_candidate(%Candidate.InPlace{} = ip, export, mutant_expr) do
     %Candidate.MacroPattern{
       mutator: ip.mutator,
-      original: ip.original,
-      mutated: ip.mutated,
+      report: ip.report,
       export: export,
       mutant_expr: mutant_expr,
-      range: ip.range,
       note: ip.note,
       variant: ip.variant
     }
@@ -259,11 +257,9 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
     |> Enum.map(fn {mutator, mutated} ->
       %Candidate.MacroPattern{
         mutator: mutator,
-        original: pattern,
-        mutated: mutated,
+        report: Candidate.Report.new(pattern, mutated, range),
         export: export,
-        mutant_expr: rebuild_mutant.(mutated),
-        range: range
+        mutant_expr: rebuild_mutant.(mutated)
       }
     end)
   end
@@ -377,7 +373,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # — a `=`'s RHS, or the whole binding-macro call — binds that its branch would otherwise
   # trap. Every branch evaluates `expression` whole (the `=`'s RHS is common to all of them;
   # a macro branch runs the call with only the pattern changed), so it is read exactly as
-  # `Mutare.Transform.PipeEmit` reads an ordinary selector's export, from the scope stamped
+  # `Mutare.Transform.SelectorDelivery` reads an ordinary selector's export, from the scope stamped
   # on `node` (`Mutare.Transform.Bindings`):
   #
   #   * a name **bound on entry** and in no conflict that the expression *may* rebind — a

@@ -28,8 +28,6 @@ defmodule Mutare.Runner.Hydrate do
   # smallest surviving id is not the file's first mutant, and a re-render started there pairs
   # every id with another site's code (NOTES "Defer the per-mutant diff render to report time").
 
-  require Logger
-
   alias Mutare.{Options, Result, Schema, Site, Transform}
   alias Mutare.Result.Status
 
@@ -96,20 +94,9 @@ defmodule Mutare.Runner.Hydrate do
       {original_code, mutated_code} ->
         %{site | original_code: original_code, mutated_code: mutated_code}
 
-      # Defensive: the deterministic re-render always covers the file's ids, so a miss can't
-      # happen — but if it ever did, warn and leave the site as-is (the reporter degrades to
-      # an empty diff via `Site.describe/1`) rather than crash a reporting path. The warning
-      # is the tripwire: a miss means the re-render no longer reproduces the scan (a broken
-      # determinism/`:start_id` invariant), which the silently-empty diff would otherwise hide.
       nil ->
-        Logger.warning(
-          "mutant ##{site.id} (#{site.file}:#{site.line}) — deferred diff hydration missed: " <>
-            "the report-time re-render of this file did not reproduce this mutant id, so its " <>
-            "diff will show as empty. This indicates a Mutare bug (the transform re-render " <>
-            "diverged from the scan); please report it."
-        )
-
-        site
+        raise "deferred diff hydration missed mutant ##{site.id} (#{site.file}:#{site.line}): " <>
+                "the report-time transform did not reproduce the scan's mutant id"
     end
   end
 

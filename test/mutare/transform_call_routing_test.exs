@@ -677,7 +677,7 @@ defmodule Mutare.TransformCallRoutingTest do
       # `where` registered `:skip`, so its effective arg 0 — the piped `xs |> Enum.sum()` — is
       # opaque. Nothing inside it is offered (not even the inner `Enum.sum/1` rename), and no
       # selector machinery is woven in: the pipe renders verbatim, with neither the mutated call
-      # nor the `PipeEmit.hoist` closure (`mutare_piped`) a runtime exemption would have spliced.
+      # nor the `SelectorDelivery.hoist` closure (`mutare_piped`) a runtime exemption would have spliced.
       assert sites == []
       assert meta =~ "xs |> Enum.sum() |> where(10)"
       refute meta =~ "Enum.product"

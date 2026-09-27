@@ -1,4 +1,4 @@
-defmodule Mutare.Transform.PipeEmit do
+defmodule Mutare.Transform.SelectorDelivery do
   @moduledoc false
 
   # Binding-preserving selector delivery, with a shared-operand optimization for calls

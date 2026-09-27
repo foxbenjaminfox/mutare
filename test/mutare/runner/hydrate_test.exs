@@ -1,8 +1,6 @@
 defmodule Mutare.Runner.HydrateTest do
   use ExUnit.Case, async: true
 
-  import ExUnit.CaptureLog
-
   alias Mutare.{Result, Run, Schema}
   alias Mutare.Runner.Hydrate
 
@@ -91,23 +89,15 @@ defmodule Mutare.Runner.HydrateTest do
     assert result.site.mutated_code == nil
   end
 
-  test "a miss warns and leaves the site as-is instead of crashing the reporting path",
+  test "a missing id fails explicitly instead of reporting an empty diff",
        %{schema: schema, hydrate: hydrate} do
     # The re-render is deterministic, so a real scan can't miss; force one by
     # asking for an id the file never produced.
     [site] = schema.sites
     missing = %{site | id: site.id + 1_000_000}
-    test_pid = self()
 
-    log =
-      capture_log(fn ->
-        result = Hydrate.result(hydrate, %Result{site: missing, status: :survived})
-        send(test_pid, {:hydrated, result})
-      end)
-
-    assert_received {:hydrated, result}
-    assert result.site == missing
-    assert log =~ "mutant ##{missing.id}"
-    assert log =~ "hydration missed"
+    assert_raise RuntimeError, ~r/hydration missed mutant ##{missing.id}/, fn ->
+      Hydrate.result(hydrate, %Result{site: missing, status: :survived})
+    end
   end
 end

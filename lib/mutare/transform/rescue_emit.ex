@@ -59,7 +59,7 @@ defmodule Mutare.Transform.RescueEmit do
     end
   end
 
-  defp rescue_candidate?(%Candidate.CasePattern{}), do: true
+  defp rescue_candidate?(%Candidate.RescueNarrow{}), do: true
   defp rescue_candidate?(%Candidate.RescueDrop{}), do: true
   defp rescue_candidate?(_), do: false
 

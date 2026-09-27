@@ -499,7 +499,7 @@ defmodule Mutare.Transform.Analyze do
   # can't be dispatched per-clause the way `case` is. `Mutare.Mutators.RescueType` mutates them
   # two ways, both represented as whole-try replacements (RescueEmit factors eligible
   # bound-handler shapes; other shapes retain a whole-construct selector): it narrows a
-  # `var in [A, B]` list by dropping one type (`Candidate.CasePattern`), and — for the idiomatic
+  # `var in [A, B]` list by dropping one type (`Candidate.RescueNarrow`), and — for the idiomatic
   # multi-branch shape where each clause catches a single type and there is no list to narrow —
   # it drops a whole `rescue` clause (`Candidate.RescueDrop`, only when ≥2 clauses are present so
   # the `rescue` is never left empty). The construct is still analyzed normally (do/rescue-bodies/

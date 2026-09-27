@@ -104,7 +104,7 @@ defmodule Mutare.CallRouting.Spec do
   @doc """
   Whether `treatment` is analyzed as an ordinary Elixir expression — offered to mutators whole
   and descended. `:lazy_expression` is one: it differs from `:expression` only in what
-  *delivery* may do (`Mutare.Transform.PipeEmit` never evaluates it ahead of the call).
+  *delivery* may do (`Mutare.Transform.SelectorDelivery` never evaluates it ahead of the call).
 
       iex> Enum.map([:expression, :lazy_expression, :interior], &Mutare.CallRouting.Spec.expression?/1)
       [true, true, false]

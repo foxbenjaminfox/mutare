@@ -851,7 +851,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
           mutator: spec,
           original: raw_condition,
           mutated: mutated,
-          range: range
+          report: Candidate.Report.new(raw_condition, mutated, range)
         }
       end)
     end)

@@ -265,7 +265,7 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   stamped on the call
   (`Meta.written_pipe_meta/1`); `WrittenPipe.written/1` is the one inverse, and three modules
   read the spelling through it: `Mutare.Transform.WrittenPipe` keeps a Site in the user's
-  spelling and footprint, `Mutare.Transform.PipeEmit` binds the piped value, and
+  spelling and footprint, `Mutare.Transform.SelectorDelivery` binds the piped value, and
   `Mutare.Transform.Render` spells every such call as a pipe again, including in clean copies
   (foreign syntax already keeps its written pipes). So **an
   emitter that builds a generated node on the user's meta must drop the stamp**
@@ -286,7 +286,7 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   heuristic in a walk, and never a default chosen because a macro is "likelier": PHILOSOPHY
   "Every call is ordinary until a route says otherwise", NOTES "Calls are ordinary; routes are
   the only exception". Evaluation is the instance that bites: the closure that binds a piped
-  value (`PipeEmit.delivery/2`) evaluates it ahead of any stage whose position 0 is a value —
+  value (`SelectorDelivery.delivery/2`) evaluates it ahead of any stage whose position 0 is a value —
   unrouted, `:expression` or `:interior`. The one way to say otherwise is the position word
   `:lazy_expression`; anything that binds a user expression ahead of a call must honour it —
   NOTES "Evaluation is a route's to declare: `:lazy_expression`". A mutant is **resolved as
@@ -308,7 +308,7 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   boundary keeps is returned as written"). A classifier
   sees arguments as written, which `RouteStamp` guarantees where it invokes one. So the
   offered call's stamp never describes a different call, and the replacement's own route
-  governs its delivery too: `PipeEmit` lets a mutant ride the piped-value closure only where
+  governs its delivery too: `SelectorDelivery` lets a mutant ride the piped-value closure only where
   *its* route reads position 0 as a value. NOTES "A rebuilt call is routed as the call it
   is", "A rebuilt call's route governs its delivery, and its classifier sees written
   syntax", "A rebuilt call is routed whether or not the written call was", "A replacement's

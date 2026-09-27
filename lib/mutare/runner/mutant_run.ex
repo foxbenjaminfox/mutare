@@ -53,11 +53,10 @@ defmodule Mutare.Runner.MutantRun do
       {:ok, selection} ->
         run_selected(ctx, site, selection, partition)
 
-      # `outcomes` is total over every mutant id, so this is unreachable in
-      # practice; a missing id is a bug, not a no-coverage signal — run it rather
-      # than silently drop a mutant from the score.
+      # A failed probe has the explicit :run_all variant. A selective result is total;
+      # a missing id contradicts that internal contract rather than expressing uncertainty.
       :error ->
-        run_selected(ctx, site, :suite, partition)
+        raise "selective coverage missed mutant ##{site.id} (#{site.file}:#{site.line})"
     end
   end
 

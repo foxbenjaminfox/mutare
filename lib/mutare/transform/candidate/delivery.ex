@@ -24,14 +24,14 @@ defmodule Mutare.Transform.Candidate.Delivery do
   #     reports `:hosted` (so `classify_node_candidates/1` rejects it); `site/4` is never called
   #     on it.
 
-  alias Mutare.Mutator.Mutation.Attribution
+  alias Mutare.Transform.Candidate.Report
   alias Mutare.{AST, Site}
-  alias Mutare.Transform.{BindingFacts, Bindings, Candidate, Meta, NodeRange}
+  alias Mutare.Transform.{BindingFacts, Bindings, Candidate, Meta}
 
   @type node_candidate ::
           Candidate.InPlace.t()
           | Candidate.Return.t()
-          | Candidate.CasePattern.t()
+          | Candidate.RescueNarrow.t()
           | Candidate.RescueDrop.t()
           | Candidate.CaseClause.t()
           | Candidate.FnClause.t()
@@ -247,8 +247,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
   the named clause, everything else to its own offered node.
   """
   @spec range(Candidate.t()) :: Sourceror.Range.t() | nil
-  def range(%Candidate.InPlace{attribution: %Attribution{} = attribution} = c),
-    do: c.attribution_range || NodeRange.get(attribution.original)
+  def range(%{report: %Report{range: range}}), do: range
 
   def range(candidate), do: candidate.range
 
@@ -261,7 +260,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
   line number.
   """
   @spec line(Candidate.t()) :: pos_integer() | nil
-  def line(%Candidate.InPlace{position: [_ | _] = position}), do: position[:line]
+  def line(%{report: %Report{position: [_ | _] = position}}), do: position[:line]
 
   def line(candidate) do
     case range(candidate) do
@@ -314,7 +313,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
   @spec profile(Candidate.t()) :: {node_route() | :lifted | :hosted, atom(), atom() | nil}
   defp profile(%Candidate.InPlace{}), do: {:in_place, :in_place, :mutated}
   defp profile(%Candidate.Return{}), do: {:in_place, :return_value, :mutated}
-  defp profile(%Candidate.CasePattern{}), do: {:in_place, :in_place, :replacement}
+  defp profile(%Candidate.RescueNarrow{}), do: {:in_place, :in_place, :replacement}
   defp profile(%Candidate.RescueDrop{}), do: {:in_place, :in_place_drop, :replacement}
   defp profile(%Candidate.CaseClause{}), do: {:case_clause, :in_place, nil}
   defp profile(%Candidate.FnClause{}), do: {:fn_clause, :in_place, nil}
@@ -332,39 +331,30 @@ defmodule Mutare.Transform.Candidate.Delivery do
   # Each `site_kind` knows which `Mutare.Site` constructor to call and which candidate fields it
   # reads (the constructors differ in arity and in which fields they record). `flags` is the
   # `{render?, summary?}` pair, forwarded as the two render opts.
-  # An in-place candidate whose producing mutator supplied a report-location override
-  # (`Candidate.InPlace`'s `:attribution`, validated at attach time) records the site at the named
-  # clause, not the offered node — a clause-level replace (`at/2`) or delete (`at_drop/1`). The
-  # selector is unaffected: `selector_branch/1` still splices `c.mutated` (the whole rewrite) to
-  # build the metamutant; only the recorded `Mutare.Site` moves. Any other `:in_place` candidate
-  # (an unattributed `InPlace`, or a `CasePattern`, which carries no `:attribution` field) takes the
-  # plain path below.
-  defp build_site(
-         :in_place,
-         id,
-         %Candidate.InPlace{attribution: %Attribution{} = attribution} = c,
-         file,
-         {render?, summary?}
-       ) do
-    range = range(c)
+  defp build_site(:in_place, id, %{report: %Report{} = report} = c, file, {render?, summary?}) do
+    opts = [
+      note: note(c),
+      variant: variant(c),
+      position: report.position,
+      render?: render?,
+      summary?: summary?
+    ]
 
-    case attribution.operation do
-      :delete ->
-        Site.in_place_drop(id, file, range, attribution.original, c.mutator,
-          note: note(c),
-          variant: variant(c),
-          render?: render?,
-          summary?: summary?
-        )
+    case report.edit do
+      {:delete, original} ->
+        Site.in_place_drop(id, file, report.range, original, c.mutator, opts)
 
-      :replace ->
-        Site.in_place(id, file, range, attribution.original, attribution.mutated, c.mutator,
-          note: note(c),
-          variant: variant(c),
-          classified: c.classified,
-          position: position(c),
-          render?: render?,
-          summary?: summary?
+      {:replace, original, mutated} ->
+        {:replace, classified, classified_as} = report.classification
+
+        Site.in_place(
+          id,
+          file,
+          report.range,
+          original,
+          mutated,
+          c.mutator,
+          Keyword.put(opts, :classified, {classified, classified_as})
         )
     end
   end
@@ -374,7 +364,6 @@ defmodule Mutare.Transform.Candidate.Delivery do
       Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator,
         note: note(c),
         variant: variant(c),
-        position: position(c),
         render?: render?,
         summary?: summary?
       )
@@ -421,11 +410,6 @@ defmodule Mutare.Transform.Candidate.Delivery do
   # `Site` then derives the label via `c:Mutare.Mutator.variant/2`.
   defp variant(%{variant: variant}), do: variant
   defp variant(_candidate), do: nil
-
-  # Where the site is keyed when that is not its range's start (`Candidate.InPlace`'s
-  # `:position`); `line/1` reads the same field, so the two cannot disagree.
-  defp position(%{position: position}), do: position
-  defp position(_candidate), do: nil
 
   # A candidate's node-local route, raising for the lifted / hosted kinds that have no place in
   # the node-local classifier (matching `classify_node_candidates/1`'s contract).

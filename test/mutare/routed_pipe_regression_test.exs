@@ -264,7 +264,7 @@ defmodule Mutare.RoutedPipeRegressionTest do
 
   # A stage whose candidates disagree about argument 0: the ones that keep it ride inside the
   # bound closure, the ones that move or drop it in a selector around it
-  # (`Mutare.Transform.PipeEmit`, `{:split, …}`). Unrouted, so this is every user's delivery.
+  # (`Mutare.Transform.SelectorDelivery`, `{:split, …}`). Unrouted, so this is every user's delivery.
   test "a split stage keeps bindings, evaluation order and evaluation count under every mutant" do
     source = """
     defmodule Split do

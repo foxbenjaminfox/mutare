@@ -71,7 +71,16 @@ defmodule Mutare.OverlapTest do
     defp leaf(nid, value), do: {:__block__, [mutare_nid: nid], [value]}
 
     defp in_place(original, mutated),
-      do: %Candidate.InPlace{mutator: :test, original: original, mutated: mutated}
+      do: %Candidate.InPlace{
+        mutator: :test,
+        original: original,
+        mutated: mutated,
+        report:
+          Candidate.Report.new(original, mutated, %{
+            start: [line: 1, column: 1],
+            end: [line: 1, column: 5]
+          })
+      }
 
     # The set of candidates surviving `resolve/1`, by their `{original, mutated}` nid pair.
     defp surviving(tree) do

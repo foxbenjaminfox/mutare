@@ -294,6 +294,33 @@ defmodule Mutare.AttributionTest do
   end
 
   describe "a mis-placed attribution degrades safely" do
+    test "the scan warns once; render, invariant re-emission and hydration stay quiet" do
+      opts = [mutators: [Mutare.Test.MisattributedQueryMutator]]
+      capture = fn fun -> ExUnit.CaptureIO.capture_io(:stderr, fun) end
+      warning = capture.(fn -> Mutare.Transform.count_report(@source, opts) end)
+      assert length(Regex.scan(~r/ignoring a mutation :attribution/, warning)) == 1
+
+      assert capture.(fn ->
+               Mutare.Transform.transform_string_with_sites(
+                 @source,
+                 Keyword.put(opts, :warnings, false)
+               )
+
+               Mutare.Transform.count_report(@source, Keyword.put(opts, :warnings, false))
+               Mutare.Transform.render_sites(@source, opts)
+             end) == ""
+
+      warning =
+        capture.(fn ->
+          Mutare.Transform.transform_string_with_sites(
+            @source,
+            Keyword.put(opts, :verify_invariants, true)
+          )
+        end)
+
+      assert length(Regex.scan(~r/ignoring a mutation :attribution/, warning)) == 1
+    end
+
     test "core warns and falls back to the offered node when the clause can't be placed" do
       ref = make_ref()
 

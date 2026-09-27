@@ -471,9 +471,9 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
     put_clause_head(clause, patterns, new_guard)
   end
 
-  # --- try: rescue narrowing + clause drop (CasePattern / RescueDrop) ---------
+  # --- try: rescue narrowing + clause drop (RescueNarrow / RescueDrop) ---------
 
-  # The `rescue` mutations: per-clause type-list narrowings (`Candidate.CasePattern`, each
+  # The `rescue` mutations: per-clause type-list narrowings (`Candidate.RescueNarrow`, each
   # `replacement` the whole `try` with one clause's list shrunk) plus whole-clause drops
   # (`Candidate.RescueDrop`, the `try` with one clause removed). Gated on
   # `Mutare.Mutators.RescueType` being enabled. RescueEmit shares the non-handler blocks
@@ -541,7 +541,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
 
   defp rescue_clause_drops(_clauses, _rebuild_try, _spec), do: []
 
-  # One rescue clause — a `CasePattern` per type-drop, whose `replacement` is the whole `try`
+  # One rescue clause — a `RescueNarrow` per type-drop, whose `replacement` is the whole `try`
   # rebuilt with this clause's exception-type list narrowed. Both list-bearing shapes are
   # mutated: `var in [t1, ..., tn]` (bound) and a bare `[t1, ..., tn]` head (no binding) —
   # `narrowable_types/1` returns the type list and a head-rebuilder for each. The diff
@@ -557,7 +557,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
         mutated_head = rebuild_head.(kept)
         mutated_clause = {:->, cmeta, [[mutated_head], body]}
 
-        %Candidate.CasePattern{
+        %Candidate.RescueNarrow{
           mutator: spec,
           original: head,
           mutated: mutated_head,

@@ -36,8 +36,8 @@ defmodule Mutare.Transform.Candidate do
 
     # A body-expression operator swap. Rides in the mutated node's own
     # `meta[:mutare]` so emission finds "this exact node" without a fragile
-    # `{line, column}` identity. `original` is the raw (un-annotated) node — what
-    # the report renders — and `mutated` the replacement the mutator produced.
+    # `{line, column}` identity. `original` is the raw executable node and `mutated`
+    # the resolved replacement. The checked `report` describes their textual edit.
     #
     # `call_option_key?` flags an in-place candidate that mutates the *key* of a keyword
     # list passed as a call's final argument (`foo(x, timeout: 5)` → `timeout:`). The
@@ -64,61 +64,22 @@ defmodule Mutare.Transform.Candidate do
     # takes precedence over the `c:Mutare.Mutator.variant/2` derivation. Default `nil` — an operator
     # family (or an untagged mutation) leaves the label to be derived from the node.
     #
-    # `attribution` is the optional report-location override (a `%Mutare.Mutator.Mutation.Attribution{}`
-    # from `Mutare.Mutator.Mutation.at/2` / `at_drop/1`), carried when a `mutate/2` returned a
-    # **whole-node rewrite** whose textual footprint is one inner clause (the motivating case:
-    # `mutare_ecto` rebuilding a whole `from(...)` but changing only its `order_by:`). It decouples
-    # the site's *location + diff* (the clause the plugin names) from the *selector* (which still
-    # splices `original`/`mutated`, the whole node, to build the metamutant): `Candidate.Delivery`
-    # reads it and records a clause-level replace or delete `Mutare.Site` instead of one pinned to
-    # the offered node. Validated at attach time (`Attach.build_candidates/2` drops a clause that is
-    # unrangeable or escapes the node's span). `attribution_range` is the already-normalized range
-    # validated there; delivery uses it instead of recomputing from `attribution.original`, because
-    # Sourceror can over-count a clause ending in bare `true`/`false`/`nil` by the following
-    # delimiter. Defaults `nil` — an ordinary mutation is reported at the offered node, exactly as
-    # before.
-    #
-    # `position` is where the site is *keyed* (`[line:, column:]`) when that is not where its
-    # range starts: a pipe stage's mutant that moves the piped value patches the whole pipe, but
-    # is a mutation of the stage, and it is the stage's line a `# mutare:ignore` or a `--line`
-    # names (`Mutare.Transform.WrittenPipe.stage_position/1`). `nil` keys the site at its range.
-    #
-    # `classified` is the `{original, mutated}` pair `c:Mutare.Mutator.variant/2` derives labels
-    # from when that is not the pair the site reports. Core's own stage attribution
-    # (`Mutare.Transform.WrittenPipe.stage_attribution/2`) reports the *written stage* — a call
-    # one argument short, which no mutator is ever shown — so the mutator classifies the call it
-    # was offered and the replacement it returned. `nil` classifies the reported pair, as a
-    # mutator's own attribution does.
-
+    # `report` is the checked textual edit, selection position and classification input.
+    # It is constructed at attachment and stays separate from `original`/`mutated`,
+    # which describe execution (including whole-call rewrites and resolved pipes).
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
             original: Macro.t(),
             mutated: Macro.t(),
-            range: Sourceror.Range.t(),
+            report: Mutare.Transform.Candidate.Report.t(),
             call_option_key?: boolean(),
             pin?: boolean(),
             note: String.t() | nil,
-            variant: Mutare.Mutator.Mutation.variant(),
-            attribution: Mutare.Mutator.Mutation.Attribution.t() | nil,
-            attribution_range: Sourceror.Range.t() | nil,
-            position: keyword() | nil,
-            classified: {Macro.t(), Macro.t()} | nil
+            variant: Mutare.Mutator.Mutation.variant()
           }
 
-    defstruct [
-      :mutator,
-      :original,
-      :mutated,
-      :range,
-      call_option_key?: false,
-      pin?: false,
-      note: nil,
-      variant: nil,
-      attribution: nil,
-      attribution_range: nil,
-      position: nil,
-      classified: nil
-    ]
+    @enforce_keys [:mutator, :original, :mutated, :report]
+    defstruct @enforce_keys ++ [call_option_key?: false, pin?: false, note: nil, variant: nil]
   end
 
   defmodule Lifted do
@@ -234,13 +195,12 @@ defmodule Mutare.Transform.Candidate do
     defstruct [:clause_index, :mutator, :mutated_args, :original, :mutated, :range]
   end
 
-  defmodule CasePattern do
+  defmodule RescueNarrow do
     @moduledoc false
 
     # A rescue type-list narrowing, delivered by a whole-try selector. `replacement`
     # is the complete try with one rescue clause changed; `original`/`mutated`/`range`
-    # describe just that type-list edit for the in-place Site. The historical name
-    # predates per-clause delivery: cases, fns and receives now have their own variants.
+    # describe just that type-list edit for the in-place Site.
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
@@ -326,13 +286,13 @@ defmodule Mutare.Transform.Candidate do
     @moduledoc false
 
     # A whole `rescue` *clause* removed from an explicit `try`, delivered **in place** by the
-    # **whole-construct selector** (like `CasePattern`). The structural twin of the type-list
+    # **whole-construct selector** (like `RescueNarrow`). The structural twin of the type-list
     # narrowing `Mutare.Mutators.RescueType` already does for a single `var in [A, B]` clause —
     # for the idiomatic multi-branch shape (`rescue e in A -> …; e in B -> …`), where each branch
     # catches a single type, there is no list to narrow, so the equivalent "is this exception's
     # handling relied on?" question is asked by dropping one whole branch. Only offered when ≥2
     # rescue clauses are present (a `try` cannot have an empty `rescue`), so the result always
-    # compiles; sound for the same reason as `CasePattern` — a rescue binding is body-local.
+    # compiles; sound for the same reason as `RescueNarrow` — a rescue binding is body-local.
     #
     # `replacement` is the whole `try` rebuilt with this clause removed (the selector branch);
     # `dropped` is the removed clause (for the focused `:delete` diff) and `range` locates it.
@@ -459,8 +419,8 @@ defmodule Mutare.Transform.Candidate do
     #         mutare_active -> <record>; destructure(<pat>, v); {x, y}   # baseline
     #       end
     #
-    # `original`/`mutated` are the pattern before/after (the focused one-line diff) and
-    # `range` locates it; `export` is the shared `{vars}` tuple (built from the pattern's
+    # `report` describes the focused pattern edit, or the whole-call producer's
+    # attributed edit when re-homed from InPlace; `export` is the shared `{vars}` tuple (built from the pattern's
     # `bound_var_names`, so every branch and the outer match agree — plus what the call's
     # other positions bind, `destructure([x, y], v = f())`, read through the scope stamped on
     # the call: `Analyze.MatchPatterns.export_with_scope/3`); `mutant_expr` is the
@@ -480,22 +440,18 @@ defmodule Mutare.Transform.Candidate do
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
-            original: Macro.t(),
-            mutated: Macro.t(),
+            report: Mutare.Transform.Candidate.Report.t(),
             export: Macro.t(),
             mutant_expr: Macro.t(),
-            range: Sourceror.Range.t(),
             note: String.t() | nil,
             variant: Mutare.Mutator.Mutation.variant()
           }
 
     defstruct [
       :mutator,
-      :original,
-      :mutated,
+      :report,
       :export,
       :mutant_expr,
-      :range,
       note: nil,
       variant: nil
     ]
@@ -653,7 +609,7 @@ defmodule Mutare.Transform.Candidate do
           | Lifted.t()
           | LiftedGuard.t()
           | PatternStructure.t()
-          | CasePattern.t()
+          | RescueNarrow.t()
           | FnClause.t()
           | ReceiveClause.t()
           | ClauseGuard.t()

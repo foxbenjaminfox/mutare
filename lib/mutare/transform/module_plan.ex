@@ -20,7 +20,7 @@ defmodule Mutare.Transform.ModulePlan do
   #     `Mutare.Transform` as a nested scope, a statement block, a macro block, or
   #     compile-time scaffold.
 
-  require Logger
+  alias Mutare.Transform.Diagnostics
 
   alias Mutare.Lifting
   alias Mutare.Transform.Calls
@@ -311,7 +311,7 @@ defmodule Mutare.Transform.ModulePlan do
   # `{name, arity}` — the four lift-refusal diagnoses differ only in that text.
   defp warn(signatures, file, message_fn) do
     Enum.each(signatures, fn {_vis, name, arity} ->
-      Logger.warning("#{file}: " <> message_fn.(name, arity))
+      Diagnostics.warn(fn -> "#{file}: " <> message_fn.(name, arity) end, :log)
     end)
   end
 

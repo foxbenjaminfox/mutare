@@ -82,7 +82,7 @@ defmodule Mutare.Transform do
   A **pipe stage** is analyzed as the call it is sugar for (`left |> stage(args)` as
   `stage(left, args)` — `WrittenPipe`), so no selector ever lands on the
   right side of a pipe, where a `case` is illegal. Emission binds the piped value once, in a
-  one-shot closure invoked on it (`PipeEmit`):
+  one-shot closure invoked on it (`SelectorDelivery`):
   `lhs |> (fn v -> case … (each branch pipes `v`) … end).()`. Each branch references a cheap
   variable — keeping a chain of mutated stages **linear** in the rendered source, where
   distributing `lhs` into every branch would copy the whole upstream chain per branch. The
@@ -208,7 +208,7 @@ defmodule Mutare.Transform do
     ModulePlan,
     Names,
     Overlap,
-    PipeEmit,
+    SelectorDelivery,
     Render,
     RescueEmit,
     Result,
@@ -452,6 +452,12 @@ defmodule Mutare.Transform do
   # the `:count` sink (carried on `ctx.claim`) makes it cheaper still by skipping per-mutant
   # `Mutare.Site` construction.
   defp plan_and_emit(source, opts) do
+    Mutare.Transform.Diagnostics.with_warnings(Keyword.get(opts, :warnings, true), fn ->
+      do_plan_and_emit(source, opts)
+    end)
+  end
+
+  defp do_plan_and_emit(source, opts) do
     parsed = Sourceror.parse_string!(source)
     # Pin the generated names this source provably never collides with before any
     # lifting assigns them: the private-function prefix, the dispatch variable, the
@@ -1367,7 +1373,7 @@ defmodule Mutare.Transform do
     # alone: a withheld candidate is absent from the program, so it must not decide what the
     # program exports. A call written as a pipe binds its piped value once, so a chain of
     # mutated stages stays linear; a candidate that moves that operand goes in a selector
-    # around the closure instead. `Mutare.Transform.PipeEmit` decides and places; every other
+    # around the closure instead. `Mutare.Transform.SelectorDelivery` decides and places; every other
     # node is one selector.
     {claimed, ctx} =
       SelectorEmit.claim_items(candidates, ctx, {&Delivery.site/4, &Delivery.line/1}, fn id,
@@ -1375,22 +1381,26 @@ defmodule Mutare.Transform do
         {id, candidate}
       end)
 
-    delivery = PipeEmit.delivery(node, Enum.map(claimed, &elem(&1, 1)))
+    delivery = SelectorDelivery.delivery(node, Enum.map(claimed, &elem(&1, 1)))
 
     claimed =
       Enum.map(claimed, fn {id, candidate} ->
-        {layer, branch} = PipeEmit.branch(candidate, delivery, ctx)
+        {layer, branch} = SelectorDelivery.branch(candidate, delivery, ctx)
         witness = ImportWitness.for_candidate(candidate)
         {layer, {candidate, {:->, [], [[id], ImportWitness.wrap(branch, witness)]}}}
       end)
 
-    PipeEmit.layers(delivery, Meta.Lifecycle.consume_delivery(node), claimed, ctx, fn default,
-                                                                                      live,
-                                                                                      ctx ->
-      {candidates, clauses} = Enum.unzip(live)
-      {case_node, ctx} = SelectorEmit.selector_case(default, clauses, ctx)
-      {pin_if_needed(case_node, candidates), ctx}
-    end)
+    SelectorDelivery.layers(
+      delivery,
+      Meta.Lifecycle.consume_delivery(node),
+      claimed,
+      ctx,
+      fn default, live, ctx ->
+        {candidates, clauses} = Enum.unzip(live)
+        {case_node, ctx} = SelectorEmit.selector_case(default, clauses, ctx)
+        {pin_if_needed(case_node, candidates), ctx}
+      end
+    )
   end
 
   # An `:interpolated` in-place candidate's selector must be **`^`-pinned**: the value sits

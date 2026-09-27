@@ -205,6 +205,7 @@ defmodule Mutare.Site do
         Mutare.Mutator.Dispatch.variant(mutator, :delete, opts[:variant])
       )
     )
+    |> keyed_at(opts[:position])
   end
 
   # The shared body of the two delete-site constructors (`clause_drop/4`, `in_place_drop/5`):

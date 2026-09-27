@@ -14650,3 +14650,55 @@ Validation: loading the original modules in a separate VM makes both collected a
 regressions fail for each finding (four failures; direct controls pass). The fixed full suite
 passes with `--max-cases 8`: 96 doctests, 36 properties, 4,142 tests, zero failures and one skip.
 `mix compile --warnings-as-errors` and `mix check` also pass.
+
+### Attachment constructs the report, independently of execution (2026-09-27)
+
+`Candidate.InPlace` now carries a `Candidate.Report` beside its executable original and
+replacement. Its constructor chooses the textual edit, checks the range (including an
+adapter attribution's containment), fixes the selection position, and records the input
+for variant classification together. Delivery reads those facts; it cannot recompute an
+unchecked attribution range. Replacement and deletion use distinct edit tuples, and a
+delete's classification is explicitly `:delete`. A written pipe stage still classifies
+as the complete call offered to the mutator.
+
+Collection relays that report through the public Attribution boundary. Re-homing a whole
+call as `MacroPattern` preserves the report unchanged, including its attribution and
+classification; structural macro-pattern edits construct the same description. Delete
+sites now honor the report's explicit selection position too, so count-time line selection
+and the emitted Site agree even when an edit starts elsewhere.
+
+Two internal names now describe their remaining jobs: `Candidate.CasePattern` became
+`Candidate.RescueNarrow`, and `PipeEmit` became `SelectorDelivery` (binding preservation
+for ordinary selectors as well as the shared-operand optimization for written pipes).
+
+### Transform advisories share a suppression-aware sink (2026-09-27)
+
+Attribution advisories bypassed `:warnings`, so rendering, invariant re-emission and deferred
+diff hydration could print the scan's warning again. `Transform.Diagnostics` now owns
+advisory output. Its invocation-scoped suppression covers attachment and synchronous
+adapter re-entry and restores its caller on failure. Collection also reads the policy
+from the retained resolution context, so hosts collecting islands in child Tasks keep the
+originating scan's suppression. Resolver and lifting advisories use the same sink, retaining
+their existing IO/Logger channels. Suppressed messages are not formatted.
+
+This is the smaller diagnostic-sink step, not a migration of every advisory to structured
+CountReport findings. Existing diagnostic facts still come from the count pass; no new
+parse is introduced. The per-file Schema record remains separate follow-up work because
+replacing its parallel maps affects its public consumers as well as hydration and poison.
+
+### Internal omissions fail instead of producing plausible reports (2026-09-27)
+
+A deferred hydration miss now raises with the mutant id and source location. This supersedes
+the warned empty-diff fallback under "Defer the per-mutant diff render to report time":
+re-derivation promises the same ids, so a miss contradicts an internal invariant. Likewise,
+a selective coverage map must cover every runnable id; a missing entry raises instead of
+silently widening the run. The existing explicit whole-suite fallback for an uncertain or
+failed external coverage probe remains the recovery path.
+
+Validation for these changes: the fast suite passed (96 doctests, 14 properties, 3,822 tests),
+as did the 45 focused reporting/diagnostic/runner regressions. Compilation with warnings as
+errors and `mix check` passed. The differential against `HEAD` kept all 3,145 snapshots
+identical.
+The full suite completed with 96 doctests, 36 properties, 4,147 tests and one skip. Three
+tests timed out while compiling during the overlap with the differential/check runs; all
+three passed in 1.4 seconds on `mix test --failed --max-cases 1`, without code changes.

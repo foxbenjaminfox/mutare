@@ -28,7 +28,7 @@ defmodule Mutare.Transform.Analyze.Collect do
   #
   #   * **Structural candidates** — def-level, clause-level, and return-value shapes don't apply
   #     to a bare expression subtree. Only `Candidate.InPlace` is collected; the clause-delivery
-  #     kinds (`CaseClause`/`FnClause`/`ReceiveClause`/`CasePattern`/`MatchPattern`/`MacroPattern`/`RescueDrop`) and the
+  #     kinds (`CaseClause`/`FnClause`/`ReceiveClause`/`RescueNarrow`/`MatchPattern`/`MacroPattern`/`RescueDrop`) and the
   #     structural-only families that produce them are dropped. Spec filtering to
   #     `mutate/1`/`mutate/2` exporters removes the structural-only families up front (which also
   #     keeps the `if`-condition hoist inert — it is gated on a `condition_replacements`
@@ -79,6 +79,12 @@ defmodule Mutare.Transform.Analyze.Collect do
 
   @spec collect_expression(Macro.t(), [Spec.t() | module()], map()) :: [Mutation.t()]
   def collect_expression(subtree, mutators, context \\ %{}) do
+    Mutare.Transform.Diagnostics.with_context(context, fn ->
+      do_collect_expression(subtree, mutators, context)
+    end)
+  end
+
+  defp do_collect_expression(subtree, mutators, context) do
     subtree =
       subtree
       |> Resolve.expression(context)
@@ -198,13 +204,12 @@ defmodule Mutare.Transform.Analyze.Collect do
   # wins; otherwise this node is the logical origin. The report range and selection
   # position can differ for pipes, and both must survive every relay.
   defp mutation(%Candidate.InPlace{} = candidate) do
-    attribution = candidate.attribution || Mutation.at(candidate.original, candidate.mutated)
-    attribution = %{attribution | range: Delivery.range(candidate), position: candidate.position}
+    attribution = Mutare.Transform.Candidate.Report.attribution(candidate.report)
 
     Mutation.new(candidate.mutated,
       producer: candidate.mutator,
       note: candidate.note,
-      variant: resolved_variant(candidate, attribution),
+      variant: resolved_variant(candidate),
       attribution: attribution
     )
   end
@@ -237,20 +242,9 @@ defmodule Mutare.Transform.Analyze.Collect do
   # the host's `%Mutation{}` as a carried tag, which Site-side `Dispatch.variant/3` takes
   # verbatim. `[]` is carried for an opted-in family whose node-level mutation has no label;
   # `nil` is kept only for families with no variant vocabulary.
-  defp resolved_variant(candidate, attribution) do
-    change =
-      case attribution.operation do
-        :delete ->
-          :delete
-
-        :replace ->
-          {original, mutated} =
-            candidate.classified || {attribution.original, attribution.mutated}
-
-          {:replace, original, mutated}
-      end
-
-    labels = Dispatch.variant(candidate.mutator, change, candidate.variant)
+  defp resolved_variant(candidate) do
+    labels =
+      Dispatch.variant(candidate.mutator, candidate.report.classification, candidate.variant)
 
     if labels == [] and not Dispatch.opted_in?(candidate.mutator.module),
       do: nil,

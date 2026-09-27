@@ -68,7 +68,7 @@ defmodule Mutare.DisplacedPipeTest do
   end
 
   test "a displaced pipe keeps a pinned left side as written" do
-    # `PipeEmit` expands `^x |> stage` the way `Kernel.|>/2` would; a custom operator is owed
+    # `SelectorDelivery` expands `^x |> stage` the way `Kernel.|>/2` would; a custom operator is owed
     # its operands untouched.
     source = """
     defmodule Pinned do

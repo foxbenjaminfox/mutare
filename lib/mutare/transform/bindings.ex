@@ -5,7 +5,7 @@ defmodule Mutare.Transform.Bindings do
   #
   # An in-place selector is a `case`, and a `case` branch traps what it binds; so a mutated
   # expression's bindings are re-exported through a tuple and rebound outside
-  # (`Mutare.Transform.PipeEmit`). Which names a branch *can* export depends on the scope the
+  # (`Mutare.Transform.SelectorDelivery`). Which names a branch *can* export depends on the scope the
   # expression stands in, and no reading of the expression alone can say:
   #
   #   * a name **bound on entry** can be exported by every branch, whether it rebinds the name

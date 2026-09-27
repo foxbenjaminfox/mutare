@@ -186,15 +186,14 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
         end)
 
       :error ->
-        IO.warn(
+        Mutare.Transform.Diagnostics.warn(fn ->
           "#{inspect(router)}.route_arguments/1 routed argument #{index} of " <>
             "#{inspect(Spec.key(spec))} as {:keyword, …}, but " <>
             "`#{Macro.to_string(arg)}` is not a literal keyword list " <>
             "(#{location(diag, arg)}). The value is left unrouted and produces no " <>
             "mutants. A runtime-built keyword list has no pairs to route — classify this " <>
-            "shape explicitly (:raw to leave it as written).",
-          []
-        )
+            "shape explicitly (:raw to leave it as written)."
+        end)
     end
   end
 
