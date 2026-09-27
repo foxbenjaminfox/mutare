@@ -75,6 +75,7 @@ defmodule Mutare.Sandbox.Command do
   must run every test to capture coverage) bypass `timed_test/4` and are unaffected.
   """
 
+  alias Mutare.TestSelection
   alias Mutare.Sandbox.Command.{Exit, Invocation, Output, Result}
 
   # Startup work a per-mutant `mix test` can safely skip. The metamutant lib is compiled
@@ -225,7 +226,7 @@ defmodule Mutare.Sandbox.Command do
   end
 
   @doc """
-  Build the `mix test` argv for a mutant kill-detection run from `test_args`.
+  Build the `mix test` argv for a mutant kill-detection run from a test selection.
 
   Always prepends `test --exit-status #{Exit.failure()} --max-failures 1` plus the
   boot-skip flags `#{Enum.join(@boot_skip_flags, " ")}`:
@@ -238,32 +239,37 @@ defmodule Mutare.Sandbox.Command do
       overhead under the one-compile invariant (the lib is built once, sources never
       change between runs) — see `@boot_skip_flags`.
 
-  `test_args` are the extra arguments (`[]` = whole suite, file-granular args
-  otherwise), appended last so file-granular selection stays at the tail. Pure, so
-  the contract is unit-testable without spawning `mix`.
+  The selection stays typed until this boundary. Its file paths, test names, or
+  app directories become arguments here, after the common flags. `:no_coverage`
+  has no command: it must be handled before execution. Pure, so the contract is
+  unit-testable without spawning `mix`.
   """
-  @spec test_argv([String.t()]) :: [String.t()]
-  def test_argv(test_args) do
+  @spec test_argv(TestSelection.runnable()) :: [String.t()]
+  def test_argv(selection) do
     ["test", "--exit-status", Integer.to_string(Exit.failure()), "--max-failures", "1"] ++
-      @boot_skip_flags ++ test_args
+      @boot_skip_flags ++ selection_args(selection)
   end
 
   @doc """
   Run the suite against mutant `mutant_id`, wall-clock-timed, and return a typed
   `Mutare.Sandbox.Command.Result`.
 
-  `test_args` are extra `mix test` arguments (`[]` = whole suite, file-granular
-  args otherwise); they are folded into the kill-detection argv by `test_argv/1`
+  `selection` names the tests to run; `test_argv/1` serializes it to Mix arguments
   (forcing `--exit-status #{Exit.failure()}` and `--max-failures 1`). `opts` are the
   run options of `Mutare.Sandbox.Command.Invocation.mix/4` — `:cap` bounds an
   overrun via the watcher, `:max_heap_mb` caps the heap, `:schedulers` trims the
   run's scheduler threads, `:partition` carries the per-worker partition entry; `[]`
   sets none.
   """
-  @spec timed_test(Path.t(), [String.t()], Mutare.RuntimeId.t(), Invocation.run_opts()) ::
+  @spec timed_test(
+          Path.t(),
+          TestSelection.runnable(),
+          Mutare.RuntimeId.t(),
+          Invocation.run_opts()
+        ) ::
           Result.t()
-  def timed_test(sandbox, test_args, mutant_id, opts \\ []) do
-    {ms, output, status} = Invocation.timed_mix(sandbox, test_argv(test_args), mutant_id, opts)
+  def timed_test(sandbox, selection, mutant_id, opts \\ []) do
+    {ms, output, status} = Invocation.timed_mix(sandbox, test_argv(selection), mutant_id, opts)
 
     %Result{
       outcome: outcome(status, output),
@@ -271,5 +277,15 @@ defmodule Mutare.Sandbox.Command do
       output: output,
       duration_ms: ms
     }
+  end
+
+  defp selection_args(:suite), do: []
+  defp selection_args({:files, [_ | _] = files}), do: files
+  defp selection_args({:app, [_ | _] = dirs}), do: dirs
+
+  defp selection_args({:tests, [_ | _] = files, [_ | _] = names}) do
+    # Each name is one argv token, including spaces and colons. Mix splits the
+    # filter on its first colon; no shell quoting or reparsing is involved.
+    files ++ Enum.flat_map(names, &["--only", "test:" <> &1])
   end
 end

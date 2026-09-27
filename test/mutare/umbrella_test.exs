@@ -181,6 +181,7 @@ defmodule Mutare.UmbrellaTest do
 
     core = Enum.find(run.results, &(&1.site.file == "apps/core/lib/core.ex"))
     assert core.status == :killed
+    assert core.selection == :app
     # The umbrella prints `==> <app>` only for apps it actually runs. core's
     # dependent (web) ran; the independent solo was excluded by the narrowing.
     assert core.output =~ "==> web"

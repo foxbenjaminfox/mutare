@@ -84,7 +84,7 @@ defmodule Mutare.Runner.CoverageProbe do
   mutant as it runs — a silent whole-suite run reads as a hang, or as Mutare being slow.
   """
 
-  alias Mutare.{Coverage, Schema, Selector}
+  alias Mutare.{Coverage, Schema, Selector, TestSelection}
   alias Mutare.Coverage.Recorder
   alias Mutare.Sandbox.Command.{Exit, Invocation, Output}
 
@@ -98,20 +98,11 @@ defmodule Mutare.Runner.CoverageProbe do
   # that whole class of degradations for the price of one extra suite run.
   @probe_attempts 2
 
-  # The `mix test` filter flag `:tests` narrowing writes (`only_args/1`) and `shape/1` reads
-  # back — the one spelling, so a narrowed run is recognised by the flag that narrows it.
-  @only_flag "--only"
-
   @typedoc """
-  What the probe decided for one mutant:
-
-    * `{:run, test_args}` — its line is covered; run `mix test` with these args
-      (`[]` = whole suite; file-granular file paths otherwise; under `:tests` those
-      file paths plus `--only test:<name>` flags narrowing to the covering tests).
-    * `:no_coverage` — nothing runs its line; skip it and keep it out of the
-      score's denominator.
+  What the probe decided for one mutant: a whole suite, whole files, particular
+  tests, or no coverage. Umbrella app scoping happens later, before execution.
   """
-  @type outcome :: {:run, [String.t()]} | :no_coverage
+  @type outcome :: TestSelection.covered() | :no_coverage
 
   @typedoc """
   Why the probe degraded to run-all (`t:selection/0`): the probe run exited non-zero
@@ -136,15 +127,6 @@ defmodule Mutare.Runner.CoverageProbe do
       is named, never implied by a missing key.
   """
   @type selection :: {:run_all, degrade()} | {:selective, %{pos_integer() => outcome()}}
-
-  @typedoc """
-  The shape of one mutant's test run, read off its `t:outcome/0` args by `shape/1`:
-  `:suite` (the whole suite), `:files` (its covering test files), or `:tests` (those
-  files narrowed to the covering test cases). `Mutare.Result.selection` records the
-  shape a mutant actually ran, with `:app` for a whole-suite run an umbrella narrowed to
-  the owning app and its dependents (`Mutare.Runner.MutantRun`).
-  """
-  @type shape :: :suite | :files | :tests
 
   @doc """
   Build the per-mutant test selection (see `t:selection/0`).
@@ -185,7 +167,7 @@ defmodule Mutare.Runner.CoverageProbe do
 
   @doc """
   Summarise a `t:selection/0` for display (the `{:coverage_done, …}` phase event
-  `Mutare.Report.Live` renders): how many mutants run under each `t:shape/0` —
+  `Mutare.Report.Live` renders): how many mutants run under each `Mutare.TestSelection` shape —
   `tests`, `files`, `suite` — versus were skipped as `no_coverage`. A whole-suite
   run under `:tests`/`:coverage` is the slowdown nobody asked for, so it is counted
   apart, never folded into a "covered" total. `{:run_all, degrade}` (coverage unusable
@@ -207,15 +189,14 @@ defmodule Mutare.Runner.CoverageProbe do
   def summarize({:selective, outcomes}) do
     counts =
       Enum.reduce(outcomes, %{tests: 0, files: 0, suite: 0, no_coverage: 0}, fn
-        {_id, :no_coverage}, acc -> Map.update!(acc, :no_coverage, &(&1 + 1))
-        {_id, {:run, args}}, acc -> Map.update!(acc, shape(args), &(&1 + 1))
+        {_id, selection}, acc -> Map.update!(acc, TestSelection.shape(selection), &(&1 + 1))
       end)
 
     Map.merge(counts, %{run_all?: false, degrade: nil})
   end
 
   @doc """
-  The ids whose run is the whole suite (`{:run, []}`) in a selective selection — what
+  The ids whose run is the whole suite (`:suite`) in a selective selection — what
   the live display marks in flight, so a run that takes fifty times its neighbours is
   explained on the line that shows it. `:all` under run-all. Pure.
   """
@@ -223,19 +204,10 @@ defmodule Mutare.Runner.CoverageProbe do
   def broad_ids({:run_all, _degrade}), do: :all
 
   def broad_ids({:selective, outcomes}),
-    do: for({id, {:run, []}} <- outcomes, into: MapSet.new(), do: id)
+    do: for({id, :suite} <- outcomes, into: MapSet.new(), do: id)
 
   @doc """
-  The `t:shape/0` of a run with these `mix test` args: `[]` is the whole suite, args
-  carrying a `--only` filter are narrowed test cases, anything else is whole files. The
-  reader of the argv `select/3` builds (`only_args/1` writes the flag this reads).
-  """
-  @spec shape([String.t()]) :: shape()
-  def shape([]), do: :suite
-  def shape(args), do: if(@only_flag in args, do: :tests, else: :files)
-
-  @doc """
-  Does `selection` hold a whole-suite run — run-all, or any `{:run, []}` outcome
+  Does `selection` hold a whole-suite run — run-all, or any `:suite` outcome
   (`:full` mode's covered mutants; an id covered only from an unlabeled process)?
   `Mutare.Runner` reads the umbrella dependency graph (a Mix boot) only when it does,
   since that graph narrows nothing else. Pure.
@@ -244,7 +216,7 @@ defmodule Mutare.Runner.CoverageProbe do
   def broad_runs?({:run_all, _degrade}), do: true
 
   def broad_runs?({:selective, outcomes}),
-    do: Enum.any?(outcomes, &match?({_id, {:run, []}}, &1))
+    do: Enum.any?(outcomes, &match?({_id, :suite}, &1))
 
   # Run the probe, retrying a failed attempt while attempts remain; `:ok` on a green
   # run, else `{:error, degrade}` naming why (`t:degrade/0`). A cap overrun
@@ -331,7 +303,7 @@ defmodule Mutare.Runner.CoverageProbe do
 
   # `:full` — covered (ran at all) → whole suite; otherwise `:no_coverage`.
   defp outcome(:full, id, %{aggregate: aggregate}) do
-    if MapSet.member?(aggregate, id), do: {:run, []}, else: :no_coverage
+    if MapSet.member?(aggregate, id), do: :suite, else: :no_coverage
   end
 
   # `:coverage`, per id:
@@ -349,8 +321,8 @@ defmodule Mutare.Runner.CoverageProbe do
   defp outcome(:coverage, id, %{aggregate: aggregate, unlabeled: unlabeled, by_file: by_file}) do
     cond do
       not MapSet.member?(aggregate, id) -> :no_coverage
-      MapSet.member?(unlabeled, id) -> {:run, []}
-      true -> by_file |> covering_files(id) |> run_args()
+      MapSet.member?(unlabeled, id) -> :suite
+      true -> by_file |> covering_files(id) |> file_selection()
     end
   end
 
@@ -358,19 +330,19 @@ defmodule Mutare.Runner.CoverageProbe do
   # individual covering tests when — and only when — every attribution of the id is a concrete,
   # runnable test. It reuses `:coverage` verbatim for everything else, so all of that mode's
   # conservatism is inherited unchanged:
-  #   * `:no_coverage` and the whole-suite (`{:run, []}`) unlabeled/degraded cases pass through —
-  #     `narrow/2` only touches a non-empty file list;
+  #   * `:no_coverage` and the whole-suite (`:suite`) unlabeled/degraded cases pass through —
+  #     `narrow/3` only touches a non-empty file list;
   #   * an id in `wholefile` (covered via a `setup_all`/`on_exit`, not a single test) keeps its
   #     whole covering files — narrowing would drop the covering context;
-  #   * a narrowable id runs its covering files plus `--only test:<name>` for each covering test.
+  #   * a narrowable id runs the covering tests within its covering files.
   defp outcome(:tests, id, coverage) do
     case outcome(:coverage, id, coverage) do
-      {:run, [_ | _] = files} = base -> narrow(id, files, coverage) || base
+      {:files, files} = base -> narrow(id, files, coverage) || base
       other -> other
     end
   end
 
-  # `{:run, files ++ name filters}` when the id is safely narrowable, else `nil` (keep whole files).
+  # `{:tests, files, names}` when the id is safely narrowable, else `nil` (keep whole files).
   # Narrowable = not in `wholefile` (no non-runnable attribution) AND at least one covering test
   # name — an empty name set can't be narrowed without risking a `mix test --only` "no test
   # executed" error, so it degrades to the whole-file `:coverage` decision.
@@ -378,21 +350,14 @@ defmodule Mutare.Runner.CoverageProbe do
     with false <- MapSet.member?(wholefile, id),
          %MapSet{} = names <- Map.get(by_test, id),
          false <- MapSet.size(names) == 0 do
-      {:run, files ++ only_args(names)}
+      TestSelection.tests(files, Enum.to_list(names))
     else
       _ -> nil
     end
   end
 
-  # `["--only", "test:<name>", ...]`, sorted for a deterministic argv. Built as list elements, so a
-  # test name with spaces (`"test foo bar"`) is one argv token needing no shell quoting; `mix test`
-  # splits `test:<name>` on the first `:` (`ExUnit.Filters.parse/1`), so a name with a `:` survives.
-  defp only_args(names) do
-    names |> Enum.sort() |> Enum.flat_map(&[@only_flag, "test:" <> &1])
-  end
-
-  defp run_args([]), do: {:run, []}
-  defp run_args(files), do: {:run, Enum.sort(files)}
+  defp file_selection([]), do: :suite
+  defp file_selection([_ | _] = files), do: TestSelection.files(files)
 
   defp covering_files(by_file, id) do
     for {file, ids} <- by_file, MapSet.member?(ids, id), do: file

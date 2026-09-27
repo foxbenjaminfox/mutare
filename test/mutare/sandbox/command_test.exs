@@ -274,16 +274,16 @@ defmodule Mutare.Sandbox.CommandTest do
     end
 
     test "forces the failure exit status so a kill is distinct from a harness error" do
-      assert flag_value(Command.test_argv([]), "--exit-status") ==
+      assert flag_value(Command.test_argv(:suite), "--exit-status") ==
                Integer.to_string(Exit.failure())
     end
 
     test "forces --max-failures 1, since one failure is enough to declare a kill" do
-      assert flag_value(Command.test_argv([]), "--max-failures") == "1"
+      assert flag_value(Command.test_argv(:suite), "--max-failures") == "1"
     end
 
     test "skips mix startup checks that are pure overhead under the one-compile invariant" do
-      argv = Command.test_argv([])
+      argv = Command.test_argv(:suite)
       # Sources never change between per-mutant runs, so the compile-staleness scan and the
       # deps/archives checks are redundant work paid N times — see `@boot_skip_flags`.
       assert "--no-compile" in argv
@@ -291,17 +291,57 @@ defmodule Mutare.Sandbox.CommandTest do
       assert "--no-archives-check" in argv
     end
 
-    test "appends the caller's test args (file-granular selection) after the flags" do
-      argv = Command.test_argv(["test/foo_test.exs", "test/bar_test.exs"])
-      # The forced flags come first; the selection is appended verbatim at the tail.
+    test "serializes selected files after the flags" do
+      argv =
+        Command.test_argv(Mutare.TestSelection.files(["test/foo_test.exs", "test/bar_test.exs"]))
+
+      # The forced flags come first; the selected files follow in deterministic order.
       assert List.starts_with?(argv, ["test", "--exit-status", "101", "--max-failures", "1"])
-      assert Enum.take(argv, -2) == ["test/foo_test.exs", "test/bar_test.exs"]
+      assert Enum.take(argv, -2) == ["test/bar_test.exs", "test/foo_test.exs"]
     end
 
-    test "a whole-suite run ([] args) carries the forced + boot-skip flags, no selection" do
-      assert Command.test_argv([]) ==
+    test "a whole-suite run carries the forced + boot-skip flags, no selection" do
+      assert Command.test_argv(:suite) ==
                ["test", "--exit-status", "101", "--max-failures", "1"] ++
                  ["--no-compile", "--no-deps-check", "--no-archives-check"]
+    end
+
+    test "serializes app scopes as test directories" do
+      selection = Mutare.TestSelection.app(["apps/core/test", "apps/web/test"])
+
+      assert Command.test_argv(selection) ==
+               Command.test_argv(:suite) ++ ["apps/core/test", "apps/web/test"]
+    end
+
+    test "serializes each test name as one filter token, preserving spaces and colons" do
+      selection =
+        Mutare.TestSelection.tests(
+          ["test/b_test.exs", "test/a_test.exs"],
+          ["test beta: with spaces", "test alpha --only"]
+        )
+
+      assert Command.test_argv(selection) ==
+               Command.test_argv(:suite) ++
+                 [
+                   "test/a_test.exs",
+                   "test/b_test.exs",
+                   "--only",
+                   "test:test alpha --only",
+                   "--only",
+                   "test:test beta: with spaces"
+                 ]
+    end
+
+    test "no coverage and empty selections cannot become whole-suite commands" do
+      for selection <- [
+            :no_coverage,
+            {:files, []},
+            {:app, []},
+            {:tests, [], ["test a"]},
+            {:tests, ["test/a_test.exs"], []}
+          ] do
+        assert_raise FunctionClauseError, fn -> Command.test_argv(selection) end
+      end
     end
   end
 end

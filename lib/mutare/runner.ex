@@ -320,7 +320,7 @@ defmodule Mutare.Runner do
 
         # Per owning app, the test dirs a whole-suite run may be narrowed to (the app +
         # its declared dependents). Empty for a single project, and when nothing broad
-        # will run — see `app_scopes/3` and `Mutare.Runner.MutantRun`'s broadening.
+        # will run — see `app_scopes/3` and `Mutare.TestSelection.narrow_to_app/3`.
         scopes = app_scopes(context.project, sandbox, selection)
 
         # The selection's breakdown, the derived cap, and — for the display to mark each

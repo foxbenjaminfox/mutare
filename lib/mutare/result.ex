@@ -19,7 +19,7 @@ defmodule Mutare.Result do
   `:files`, or the covering `:tests` within them (`Mutare.Runner.CoverageProbe`).
   `nil` for a mutant that launched no run (`ran?/1` is false).
   """
-  @type selection :: :suite | :app | :files | :tests | nil
+  @type selection :: Mutare.TestSelection.shape() | nil
 
   @type t :: %__MODULE__{
           site: Site.t(),

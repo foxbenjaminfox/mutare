@@ -18,7 +18,7 @@ defmodule Mutare.Runner.CoverageProbeTest do
   defp schema(ids), do: %Schema{sites: Enum.map(ids, &%Site{id: &1})}
 
   describe "select/3 — :tests mode narrows to covering test cases" do
-    test "a narrowable id runs its covering files plus one --only per covering test" do
+    test "a narrowable id selects covering files and test names" do
       cov =
         coverage(
           aggregate: [1],
@@ -26,9 +26,8 @@ defmodule Mutare.Runner.CoverageProbeTest do
           by_test: %{1 => ["test alpha", "test beta"]}
         )
 
-      assert {:selective, %{1 => {:run, args}}} = CoverageProbe.select(:tests, schema([1]), cov)
-      # File(s) first, then sorted `--only test:<name>` flags.
-      assert args == ["test/a_test.exs", "--only", "test:test alpha", "--only", "test:test beta"]
+      assert {:selective, %{1 => {:tests, ["test/a_test.exs"], ["test alpha", "test beta"]}}} =
+               CoverageProbe.select(:tests, schema([1]), cov)
     end
 
     test "narrowing unions files and names across the modules that covered a shared-lib id" do
@@ -39,16 +38,9 @@ defmodule Mutare.Runner.CoverageProbeTest do
           by_test: %{7 => ["test in b", "test in a"]}
         )
 
-      assert {:selective, %{7 => {:run, args}}} = CoverageProbe.select(:tests, schema([7]), cov)
-
-      assert args == [
-               "test/a_test.exs",
-               "test/b_test.exs",
-               "--only",
-               "test:test in a",
-               "--only",
-               "test:test in b"
-             ]
+      assert {:selective,
+              %{7 => {:tests, ["test/a_test.exs", "test/b_test.exs"], ["test in a", "test in b"]}}} =
+               CoverageProbe.select(:tests, schema([7]), cov)
     end
 
     test "an id with a non-narrowable (setup_all/on_exit) attribution keeps its whole covering files" do
@@ -61,7 +53,7 @@ defmodule Mutare.Runner.CoverageProbeTest do
         )
 
       # Even though a per-test name exists, the whole-file attribution forbids narrowing.
-      assert {:selective, %{2 => {:run, ["test/a_test.exs"]}}} =
+      assert {:selective, %{2 => {:files, ["test/a_test.exs"]}}} =
                CoverageProbe.select(:tests, schema([2]), cov)
     end
 
@@ -74,13 +66,13 @@ defmodule Mutare.Runner.CoverageProbeTest do
           unlabeled: [3]
         )
 
-      assert {:selective, %{3 => {:run, []}}} = CoverageProbe.select(:tests, schema([3]), cov)
+      assert {:selective, %{3 => :suite}} = CoverageProbe.select(:tests, schema([3]), cov)
     end
 
     test "a covered id with no per-test names falls back to whole covering files" do
       cov = coverage(aggregate: [4], by_file: %{"test/a_test.exs" => [4]}, by_test: %{})
 
-      assert {:selective, %{4 => {:run, ["test/a_test.exs"]}}} =
+      assert {:selective, %{4 => {:files, ["test/a_test.exs"]}}} =
                CoverageProbe.select(:tests, schema([4]), cov)
     end
 
@@ -88,6 +80,21 @@ defmodule Mutare.Runner.CoverageProbeTest do
       cov = coverage(aggregate: [1], by_file: %{"test/a_test.exs" => [1]})
 
       assert {:selective, %{9 => :no_coverage}} = CoverageProbe.select(:tests, schema([9]), cov)
+    end
+
+    test "an empty per-test name set retains whole covering files" do
+      cov = coverage(aggregate: [1], by_file: %{"test/a_test.exs" => [1]}, by_test: %{1 => []})
+
+      assert {:selective, %{1 => {:files, ["test/a_test.exs"]}}} =
+               CoverageProbe.select(:tests, schema([1]), cov)
+    end
+
+    test "a covered id without file attribution explicitly selects the suite" do
+      cov = coverage(aggregate: [1], by_test: %{1 => ["test alpha"]})
+
+      for mode <- [:tests, :coverage, :full] do
+        assert CoverageProbe.select(mode, schema([1]), cov) == {:selective, %{1 => :suite}}
+      end
     end
 
     test "a valid empty aggregate skips every mutant in every selection mode" do
@@ -113,14 +120,14 @@ defmodule Mutare.Runner.CoverageProbeTest do
           by_test: %{1 => ["test alpha"]}
         )
 
-      assert {:selective, %{1 => {:run, ["test/a_test.exs"]}}} =
+      assert {:selective, %{1 => {:files, ["test/a_test.exs"]}}} =
                CoverageProbe.select(:coverage, schema([1]), cov)
     end
 
     test ":full runs the whole suite for any covered id" do
       cov = coverage(aggregate: [1], by_test: %{1 => ["test alpha"]})
 
-      assert {:selective, %{1 => {:run, []}}} = CoverageProbe.select(:full, schema([1]), cov)
+      assert {:selective, %{1 => :suite}} = CoverageProbe.select(:full, schema([1]), cov)
     end
   end
 
@@ -136,10 +143,10 @@ defmodule Mutare.Runner.CoverageProbeTest do
       selection =
         {:selective,
          %{
-           1 => {:run, []},
-           2 => {:run, ["test/a_test.exs"]},
+           1 => :suite,
+           2 => {:files, ["test/a_test.exs"]},
            3 => :no_coverage,
-           4 => {:run, ["test/b_test.exs", "--only", "test:test alpha"]},
+           4 => {:tests, ["test/b_test.exs"], ["test alpha"]},
            5 => :no_coverage
          }}
 
@@ -148,28 +155,22 @@ defmodule Mutare.Runner.CoverageProbeTest do
     end
 
     test "an all-covered selection reports zero no-coverage" do
-      selection = {:selective, %{1 => {:run, []}, 2 => {:run, []}}}
+      selection = {:selective, %{1 => :suite, 2 => :suite}}
 
       assert CoverageProbe.summarize(selection) ==
                %{tests: 0, files: 0, suite: 2, no_coverage: 0, run_all?: false, degrade: nil}
     end
   end
 
-  describe "shape/1 and broad_ids/1" do
-    test "reads a run's shape off its args: bare = suite, --only = tests, else files" do
-      assert CoverageProbe.shape([]) == :suite
-      assert CoverageProbe.shape(["test/a_test.exs"]) == :files
-      assert CoverageProbe.shape(["test/a_test.exs", "--only", "test:test alpha"]) == :tests
-    end
-
+  describe "broad_ids/1" do
     test "names the whole-suite mutants of a selective selection, or :all under run-all" do
       selection =
         {:selective,
          %{
-           1 => {:run, []},
-           2 => {:run, ["test/a_test.exs"]},
+           1 => :suite,
+           2 => {:files, ["test/a_test.exs"]},
            3 => :no_coverage,
-           4 => {:run, []}
+           4 => :suite
          }}
 
       assert CoverageProbe.broad_ids(selection) == MapSet.new([1, 4])

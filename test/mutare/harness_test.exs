@@ -52,7 +52,7 @@ defmodule Mutare.HarnessTest do
     assert {_out, 0} = Project.compile(project)
 
     assert %Result{outcome: :passed, exit_status: 0, duration_ms: ms} =
-             Command.timed_test(project, [], 0)
+             Command.timed_test(project, :suite, 0)
 
     assert is_integer(ms) and ms >= 0
   end
@@ -73,7 +73,7 @@ defmodule Mutare.HarnessTest do
 
     # The forced `--exit-status` is what makes this a `:failed` (kill) rather than
     # an ambiguous non-zero exit indistinguishable from infrastructure failure.
-    assert %Result{outcome: :failed, exit_status: status} = Command.timed_test(project, [], 0)
+    assert %Result{outcome: :failed, exit_status: status} = Command.timed_test(project, :suite, 0)
     assert status == Exit.failure()
   end
 
@@ -99,7 +99,7 @@ defmodule Mutare.HarnessTest do
     # run can't start the app, exits non-zero, and is read as a harness error — never a
     # clean test failure, so never charged as a kill.
     assert %Result{outcome: :harness_error, exit_status: status} =
-             Command.timed_test(project, [], 0)
+             Command.timed_test(project, :suite, 0)
 
     refute status in [0, Exit.failure()]
   end
@@ -123,7 +123,7 @@ defmodule Mutare.HarnessTest do
     assert {_out, 0} = Project.compile(project)
 
     assert %Result{outcome: :suite_compile_error, exit_status: status} =
-             Command.timed_test(project, [], 0)
+             Command.timed_test(project, :suite, 0)
 
     # Still exit 1 (a compile error), but the output refinement makes it a kill,
     # not the infra `:harness_error` a bare exit-code read would give.

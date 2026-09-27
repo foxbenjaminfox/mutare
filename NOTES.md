@@ -4856,12 +4856,13 @@ never *called* there. `MutareCov.hit/1` returns `true` so the `and` chain stays
 boolean (an `:ets` write returns an int/`true` → would raise `BadBooleanError`).
 
 The probe's decision is **typed** (`Mutare.Runner.CoverageProbe`): `selection` is
-`:run_all | {:selective, %{id => outcome}}`, `outcome` is `{:run, test_args} |
-:no_coverage`. The `{:selective, _}` map is **total** — every mutant id has an
+`{:run_all, degrade} | {:selective, %{id => outcome}}`, with each outcome a
+`Mutare.TestSelection` (see "Test selection stays semantic until the command boundary"
+below). The `{:selective, _}` map is **total** — every mutant id has an
 explicit outcome, so `:no_coverage` is *named*, never implied by a missing key.
 Reconciliation, per id: never ran → `:no_coverage`; ran in **an unlabeled
-process** → `{:run, []}` (whole suite); else ran with attributed files →
-`{:run, files}`. The unlabeled check **dominates attribution** on purpose — this
+process** → `:suite`; else ran with attributed files →
+`{:files, files}`. The unlabeled check **dominates attribution** on purpose — this
 is the fix for a real false survivor. An id can be attributed to file A (a test
 there touches the line) *and* be covered via an unlabeled process. The old rule
 "ran with attributed files → those files" trusted the partial attribution, ran only
@@ -4895,9 +4896,9 @@ A labeled-but-not-runnable hit (`setup_all` → `:setup_all`; an `on_exit` closu
 (`%{id => [name]}`) and `wholefile` (`[id]`); both default empty in `Coverage`, so an
 old dump degrades `:tests` to `:coverage`. `CoverageProbe` computes `:tests` by
 *refining* the `:coverage` outcome: a non-empty file selection narrows to
-`files ++ --only test:<name>…` **iff** the id is not in `wholefile` and has ≥1
+`{:tests, files, names}` **iff** the id is not in `wholefile` and has ≥1
 runnable name; everything else (`:no_coverage`, the unlabeled/degraded whole-suite
-`{:run, []}`, an id with any non-runnable attribution, or an empty name set) keeps the
+`:suite`, an id with any non-runnable attribution, or an empty name set) keeps the
 `:coverage` decision verbatim. So all of `:coverage`'s conservatism is inherited; the
 narrowing only *subtracts* sibling tests where every covering attribution is a
 concrete test.
@@ -8685,16 +8686,16 @@ a larger `backtrace_depth` cannot pass them vacuously.
 Prompted by the observation that a run which falls back to the whole suite "looks stuck", or
 makes the speed claim look false. Three fallbacks were silent, unevenly: the run-level run-all
 degrade had a `Logger.warning` (visible, but printed under the animated block, which garbles it)
-and a verbose-only `✓` note; the per-mutant whole-suite outcome (`{:run, []}`, an id covered
+and a verbose-only `✓` note; the per-mutant whole-suite outcome (`:suite`, an id covered
 only from an unlabeled process) was invisible even under `--verbose` — `summarize/1` folded it
 into `covered`, and the only reader that told it apart was `broad_runs?/1`, for the umbrella
 graph decision; the `:tests` → whole-file fallback was uncounted. All reporting, no change to
 selection itself:
 
 - **`summarize/1` counts the shapes apart** (`tests`/`files`/`suite`/`no_coverage`) instead of
-  a `covered` total; `shape/1` reads a run's shape off its argv (the `--only` flag `only_args/1`
-  writes — one `@only_flag`, so builder and reader cannot drift). `broad_ids/1` names the
-  whole-suite mutants.
+  a `covered` total; `TestSelection.shape/1` reads the selection variant directly (see
+  "Test selection stays semantic until the command boundary" below). `broad_ids/1`
+  names the whole-suite mutants.
 - **Run-all carries its reason.** `run/4` returns `{:run_all, degrade}` — `:probe_failed` with
   the exit status, `:probe_timed_out` with the cap, `:dump_unreadable` with the error — as data,
   rendered by `Lines`; the `Logger.warning` with the probe's output tail stays, because the tail
@@ -8711,7 +8712,8 @@ selection itself:
   `on_start` hook growing a second argument: `on_start` is documented as "called with each
   `Mutare.Site`", custom hooks depend on it, and the id set is one run-level fact the reporter
   can hold. The verbose per-mutant line reads `Mutare.Result.selection` instead — the shape that
-  actually ran, `:app` included, recorded by `MutantRun` where `broaden/3` decides it.
+  actually ran, `:app` included, recorded by `MutantRun` after
+  `TestSelection.narrow_to_app/3` decides it.
 - **`{:coverage_done, …}` fires after the umbrella scopes are read**, so the note can say which
   suite "the whole suite" is; `probe_coverage/5` no longer fires it.
 - **JSON:** `testSelection` on each mutant that ran. The report schema does not forbid extra
@@ -14560,3 +14562,21 @@ fallback stays, as `:inert`, and the Elixir-oracle test now has a probe beside a
 reach it. `quoted/1` keeps its `is_list/1` guard with an `equivalent` ignore: without it a
 variable named `quote` reads `:inert` where it read `:data`, and no consumer can tell.
 `bench/transform_diff.sh HEAD`: identical over 1,355 snapshots.
+
+### Test selection stays semantic until the command boundary `[done]`
+
+Coverage used to return `{:run, args}`: `[]` meant the suite, a list of paths
+meant files, and `--only` inside that list meant individual tests. Summaries
+searched the arguments to recover the decision; umbrella narrowing interpreted
+it again. `Mutare.TestSelection` now names each alternative directly: suite,
+files, tests within files, app test directories, or no coverage. Nonempty list
+types and constructors prevent an empty file/name/directory selection from
+silently becoming a whole-suite command. Missing attribution and empty app
+scopes explicitly retain the broader selection.
+
+`MutantRun` carries the selection through app narrowing and retries, deriving
+only the result's existing shape label for reporting. `CoverageProbe` reads
+variants for summaries and broad-run ids. `Sandbox.Command.test_argv/1` alone
+serializes paths and test filters, and accepts only runnable selections. Probe
+fallbacks, the declared-dependency app scopes, result labels, and the emitted
+Mix arguments keep their existing meanings.

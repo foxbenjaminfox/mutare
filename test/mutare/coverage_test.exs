@@ -662,6 +662,7 @@ defmodule Mutare.CoverageTest do
       # Narrowed to `--only test:"test covers add loosely"` → ExUnit runs 1 test, not the 2-test
       # file.
       assert tests_run(result.output) == 1
+      assert result.selection == :tests
     end
 
     @tag :runner
@@ -678,6 +679,7 @@ defmodule Mutare.CoverageTest do
       assert [%Result{status: :survived} = result] = run.results
       # The whole covering file runs — both tests, no per-test narrowing.
       assert tests_run(result.output) == 2
+      assert result.selection == :files
     end
   end
 
