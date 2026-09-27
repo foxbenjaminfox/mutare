@@ -4,7 +4,8 @@ defmodule Mutare.Report.Live.Lines do
 
   `Mutare.Report.Live` manages the process, output modes, and terminal writes; every line it
   draws or leaves in scrollback is rendered here — the animated status block
-  (`status_block/2`), a mutant's leave-behind or `--verbose` line, a phase's label or
+  (`status_block/2`), the plain-mode progress line (`progress_line/2`), a mutant's
+  leave-behind or `--verbose` line, a phase's label or
   detail note, and compile-poison diagnostics. Nothing here touches the terminal, so
   each line is testable on its own. Cursor-control sequences are the reporter's, never
   part of a line.
@@ -107,6 +108,33 @@ defmodule Mutare.Report.Live.Lines do
   end
 
   def status_block(_state, _now), do: []
+
+  @doc """
+  Returns the plain-mode progress line for `state` at monotonic time `now_ms`, or `nil`
+  when no phase is under way.
+
+  A running phase shows the status block's counter (`done/total`, counts, elapsed, ETA);
+  a pre-run phase shows its label and the time spent in it (`state.phase_at`). Every line
+  leads with a fixed `PROGRESS` label, so a log reader finds the latest status with
+  `grep PROGRESS log | tail -n 1`.
+  """
+  @spec progress_line(map(), integer()) :: String.t() | nil
+  def progress_line(%{phase: :running} = state, now), do: progress(counter(state, now))
+
+  def progress_line(%{phase: :scanning} = state, now),
+    do: progress(scan_activity(state) <> in_phase(state, now))
+
+  def progress_line(%{phase: phase} = state, now) when is_map_key(@phase_labels, phase),
+    do: progress(@phase_labels[phase] <> in_phase(state, now))
+
+  def progress_line(_state, _now), do: nil
+
+  defp progress(text), do: "  " <> String.pad_trailing("PROGRESS", @label_width) <> "  " <> text
+
+  defp in_phase(%{phase_at: at}, now) when is_integer(at),
+    do: " · #{humanize_secs(max(div(now - at, 1000), 0))} elapsed"
+
+  defp in_phase(_state, _now), do: ""
 
   @doc """
   Renders a verbose detail event as a persistent status line: a phase's completion, or a

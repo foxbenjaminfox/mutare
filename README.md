@@ -190,7 +190,7 @@ These are the common keys. `mix help mutare` documents the full option set, incl
 
 ### Live progress
 
-While a run is in flight, Mutare writes progress to stderr: the current phase, each survivor as soon as it appears, timeouts, harness errors, and — in a terminal — a live status block with the active mutant and an ETA. Mutare still prints the final report to stdout, so `mix mutare > report.txt` captures the report while progress stays visible in the terminal.
+While a run is in flight, Mutare writes progress to stderr: the current phase, each survivor as soon as it appears, timeouts, harness errors, and — in a terminal — a live status block with the active mutant and an ETA. When stderr is not a terminal (a CI log, a redirect), the status block becomes a `PROGRESS` line with the counts and ETA, written at every tenth of the mutants and at least every two minutes, compile included; `grep PROGRESS progress.log | tail -n 1` shows where a run stands. Mutare still prints the final report to stdout, so `mix mutare > report.txt` captures the report while progress stays visible in the terminal.
 
 ### Machine-readable output
 

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- When stderr is not a terminal, live progress writes a `PROGRESS` line with the counts
+  and ETA at each tenth of the mutants, and at least every two minutes in every phase
+  (the compile included), so a CI system that kills jobs after a stretch without output
+  no longer kills a healthy run, and the latest line tells a log reader where the run stands.
+
 ## [0.4.2] - 2026-09-27
 
 ### Added

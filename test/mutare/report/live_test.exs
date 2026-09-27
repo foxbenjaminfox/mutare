@@ -708,6 +708,122 @@ defmodule Mutare.Report.LiveTest do
     end
   end
 
+  describe "progress_line/2" do
+    test "the running phase is the counter, behind a fixed label" do
+      state = %{
+        phase: :running,
+        total: 10,
+        counts: %{killed: 3, survived: 1},
+        started_at: 0
+      }
+
+      assert Lines.progress_line(state, 41_000) ==
+               "  PROGRESS  4/10 · 1 survived · 3 killed · 41s elapsed · ~1m 2s left"
+    end
+
+    test "a pre-mutant phase is its label and the time spent in it" do
+      state = %{phase: :compiling, phase_at: 1_000}
+
+      assert Lines.progress_line(state, 367_000) ==
+               "  PROGRESS  compiling metamutant (once)… · 6m 6s elapsed"
+    end
+
+    test "the scanning phase carries its file progress" do
+      state = %{phase: :scanning, phase_at: 0, scan: %{done: 3, total: 12, found: 47}}
+
+      assert Lines.progress_line(state, 5_000) ==
+               "  PROGRESS  scanning for mutants — 3/12 file(s) · 47 found · 5s elapsed"
+    end
+
+    test "idle has no progress line" do
+      assert Lines.progress_line(%{phase: :idle}, 0) == nil
+    end
+  end
+
+  describe "plain-mode progress (end to end)" do
+    defp output(io) do
+      {_in, out} = StringIO.contents(io)
+      out
+    end
+
+    # Polls until the reporter has written `pattern` — the heartbeat is a real timer.
+    defp await_output(io, pattern, deadline_ms \\ 2_000) do
+      out = output(io)
+
+      cond do
+        out =~ pattern ->
+          out
+
+        deadline_ms <= 0 ->
+          flunk("never wrote #{inspect(pattern)}; wrote:\n#{out}")
+
+        true ->
+          Process.sleep(5)
+          await_output(io, pattern, deadline_ms - 5)
+      end
+    end
+
+    test "a progress line at each tenth of the mutants" do
+      {:ok, io} = StringIO.open("")
+      {:ok, live} = Live.start_link(device: io, ansi: false, width: 80, heartbeat_ms: 60_000)
+
+      Live.phase(live, {:running, 20})
+      for _ <- 1..4, do: Live.report(live, result(:killed))
+      Live.finish(live)
+      out = output(io)
+
+      assert out =~ "PROGRESS  2/20 · 0 survived · 2 killed"
+      assert out =~ "PROGRESS  4/20 · 0 survived · 4 killed"
+      refute out =~ "1/20"
+      refute out =~ "3/20"
+    end
+
+    test "the heartbeat reports a pre-mutant phase that outlasts the interval" do
+      {:ok, io} = StringIO.open("")
+      {:ok, live} = Live.start_link(device: io, ansi: false, width: 80, heartbeat_ms: 10)
+
+      Live.phase(live, :compiling)
+      await_output(io, ~r/PROGRESS  compiling metamutant \(once\)… · \d+s elapsed/)
+      Live.finish(live)
+    end
+
+    test "the heartbeat reports the counter while no mutant finishes" do
+      {:ok, io} = StringIO.open("")
+      {:ok, live} = Live.start_link(device: io, ansi: false, width: 80, heartbeat_ms: 10)
+
+      Live.phase(live, {:running, 5})
+      await_output(io, "PROGRESS  0/5 · 0 survived · 0 killed")
+      Live.finish(live)
+    end
+
+    test "the heartbeat stops once the reporter finishes" do
+      {:ok, io} = StringIO.open("")
+      {:ok, live} = Live.start_link(device: io, ansi: false, width: 80, heartbeat_ms: 10)
+
+      Live.phase(live, :compiling)
+      Live.finish(live)
+      finished = output(io)
+      Process.sleep(50)
+
+      assert output(io) == finished
+      refute finished =~ "PROGRESS"
+    end
+
+    test "an animating reporter never writes a progress line" do
+      {:ok, io} = StringIO.open("")
+
+      {:ok, live} =
+        Live.start_link(device: io, ansi: true, color: false, width: 80, heartbeat_ms: 10)
+
+      Live.phase(live, {:running, 20})
+      for _ <- 1..4, do: Live.report(live, result(:killed))
+      Process.sleep(50)
+      Live.finish(live)
+
+      refute output(io) =~ "PROGRESS"
+    end
+  end
+
   describe "end to end (plain mode)" do
     test "the scan phase notes once and per-file ticks stay silent (no scrollback spam)" do
       {:ok, io} = StringIO.open("")

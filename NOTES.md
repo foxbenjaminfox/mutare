@@ -7033,6 +7033,23 @@ ETA) that animates via an internal tick timer. Design decisions worth rememberin
   the block, leaving the cursor at column 0 for a clean stdout write; the runner's
   first phase (`:compiling`) then redraws fresh. In plain mode the scan note prints
   once and per-file ticks stay silent (no CI-log flooding).
+- **Plain mode gets a `PROGRESS` line; a timer, not results, guarantees it.** Plain
+  mode used to print only phase notes and leave-behind lines, so a run where everything
+  was killed said nothing between "testing N mutant(s)…" and the report — and CI
+  systems that kill a job after a stretch with no output (CircleCI's default is 10
+  minutes) would kill a healthy run. Three choices: (1) The guaranteed line comes from a
+  heartbeat timer (`@heartbeat_ms`, two minutes), because a result-driven line stays
+  silent through one slow mutant (a whole-suite run, a timeout cap) or the sequential
+  timeout confirmations. (2) The heartbeat covers the pre-mutant phases too: the compile
+  (hours, under inference, with poison rounds recompiling), the baseline, and the probe
+  are the likeliest silences. (3) Milestones at each tenth, with the heartbeat as a
+  *longest-silence* bound re-armed by every progress line — not a fixed period — so a
+  fast run gets ≤ 10 lines and a slow one one per interval, where "every 30s" would add
+  hundreds of lines to a three-hour log. The text is the status block's counter
+  (`Lines.progress_line/2`) behind a fixed `PROGRESS` label, so the two cannot drift and
+  `grep PROGRESS | tail -n 1` finds it among survivor lines. A re-arm makes a fresh ref
+  and orphans the old timer rather than cancelling it (a cancel can lose to a delivered
+  message). `--quiet` still silences it.
 - **Deferred touches:** a per-worker multi-line in-flight view (chose aggregate +
   one activity line). The once-deferred "baseline green in Ns" timing note is now
   delivered by `--verbose` (below) — `baseline_ms` (and the compile time, coverage

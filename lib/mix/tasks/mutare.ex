@@ -148,7 +148,7 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --strict-ignores         # exit 1 if any `# mutare:` comment matched
                                           #   no mutant (a typo'd verb/family or stale line)
 
-  Combine `--since` with CI gates to gate only the code a pull request changed, and `--quiet` to drop the live progress animation (spinner, phases, per-survivor lines); the final report (and any machine reports) will still be printed.
+  Combine `--since` with CI gates to gate only the code a pull request changed, and `--quiet` to drop the live progress (spinner, phases, per-survivor and `PROGRESS` lines); the final report (and any machine reports) will still be printed. When stderr is not a terminal, the `PROGRESS` lines are what keep a long run from looking silent, so leave them on where a CI system kills jobs that produce no output for a while.
 
       mix mutare --since origin/main --min-score 80 --quiet
 
@@ -392,7 +392,7 @@ defmodule Mix.Tasks.Mutare do
         # check every transformed file before trusting it (for developing custom
         # mutators; see "Mutator families" above)
         verify_invariants: false,
-        # suppress the live stderr progress (for CI / piped use)
+        # suppress the live stderr progress
         quiet: false,
         # print each step in detail: a line per mutant + per-phase numbers
         # (compile/baseline timing, coverage breakdown, cap, workers). `quiet` wins

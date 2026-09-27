@@ -4,6 +4,8 @@ defmodule Mutare.Report.Live do
 
   Progress is written to stderr so stdout remains safe for the final or machine-readable report. An interactive terminal gets a spinner, current mutant, counts, and ETA; pipes and CI logs get plain scrollback. Survivors, timeouts, and harness errors remain visible after the live display advances.
 
+  In plain mode a `PROGRESS` line (`Lines.progress_line/2`) stands in for the status block: the counts and ETA at each tenth of the mutants, and the current phase with its elapsed time whenever the interval passes with no such line. A timer drives the second trigger, not results, so a long compile or one slow mutant still writes to the log — CI systems that kill a job after a stretch with no output would otherwise kill a healthy run.
+
   `--verbose` prints a line for every mutant and timing details for each phase. `--quiet` suppresses live progress entirely and takes precedence over `--verbose`.
 
   This module manages the process, output modes, and terminal writes; the text of every line it draws is rendered by `Mutare.Report.Live.Lines`.
@@ -17,6 +19,10 @@ defmodule Mutare.Report.Live do
   @device :standard_error
   @tick_ms 80
   @default_width 80
+  # The longest plain-mode silence between progress lines: well under the 10-minute
+  # no-output timeouts of CI systems (CircleCI's default), and fresh enough for someone
+  # checking the tail of a log.
+  @heartbeat_ms 120_000
 
   # The server's internal state. A struct (not a bare map) so a mistyped field access in
   # any handler is a compile error, not a silent runtime `nil`. `init/1` overrides the five
@@ -32,6 +38,10 @@ defmodule Mutare.Report.Live do
             counts: %{},
             started_at: nil,
             phase: nil,
+            phase_at: nil,
+            heartbeat_ms: @heartbeat_ms,
+            heartbeat: nil,
+            milestone: 0,
             scan: nil,
             run_config: nil,
             broad_ids: MapSet.new(),
@@ -57,6 +67,8 @@ defmodule Mutare.Report.Live do
     * `:width` — terminal width; defaults to the detected width or 80
     * `:verbose` — retains a line for every mutant and shows phase details;
       defaults to `false`
+    * `:heartbeat_ms` — without animation, the longest stretch without a progress
+      line; defaults to two minutes
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -172,7 +184,8 @@ defmodule Mutare.Report.Live do
       ansi: ansi,
       color: Keyword.get_lazy(opts, :color, fn -> ansi and color_enabled?() end),
       width: Keyword.get(opts, :width, width),
-      verbose: Keyword.get(opts, :verbose, false)
+      verbose: Keyword.get(opts, :verbose, false),
+      heartbeat_ms: Keyword.get(opts, :heartbeat_ms, @heartbeat_ms)
     }
 
     {:ok, state}
@@ -184,7 +197,18 @@ defmodule Mutare.Report.Live do
   # starts the block.
   @impl true
   def handle_cast({:phase, {:running, total}}, state) do
-    state = %{state | phase: :running, total: total, started_at: now_ms(), current: nil}
+    now = now_ms()
+
+    state =
+      arm_heartbeat(%{
+        state
+        | phase: :running,
+          total: total,
+          started_at: now,
+          phase_at: now,
+          milestone: 0,
+          current: nil
+      })
 
     if scrollback?(state),
       do: {:noreply, state |> tick_if_ansi() |> put_line(Lines.running_label(state, total))},
@@ -273,7 +297,7 @@ defmodule Mutare.Report.Live do
         {:noreply, state}
 
       label ->
-        state = %{state | phase: phase}
+        state = arm_heartbeat(%{state | phase: phase, phase_at: now_ms()})
 
         if scrollback?(state),
           do: {:noreply, note(state, label)},
@@ -297,18 +321,21 @@ defmodule Mutare.Report.Live do
   def handle_cast({:report, %Result{} = result}, state) do
     state = %{state | counts: bump(state.counts, result.status)}
 
-    cond do
-      # Verbose: every mutant leaves a line (kills included), with its duration.
-      state.verbose ->
-        {:noreply, put_line(state, Lines.verbose_line(result, state.color))}
+    state =
+      cond do
+        # Verbose: every mutant leaves a line (kills included), with its duration.
+        state.verbose ->
+          put_line(state, Lines.verbose_line(result, state.color))
 
-      # Non-verbose: only survivors/problems leave a line; the rest move the counter.
-      styled = Lines.leave_behind(result.status) ->
-        {:noreply, put_line(state, Lines.leave_line(styled, result, state.color))}
+        # Non-verbose: only survivors/problems leave a line; the rest move the counter.
+        styled = Lines.leave_behind(result.status) ->
+          put_line(state, Lines.leave_line(styled, result, state.color))
 
-      true ->
-        {:noreply, refresh(state)}
-    end
+        true ->
+          refresh(state)
+      end
+
+    {:noreply, maybe_milestone(state)}
   end
 
   @impl true
@@ -320,17 +347,30 @@ defmodule Mutare.Report.Live do
 
   def handle_info(:tick, state), do: {:noreply, %{state | ticking: false}}
 
+  # The plain-mode heartbeat: the interval passed with no progress line. Only the latest
+  # armed timer counts — a phase entry or a milestone re-arms, orphaning the one before.
+  # Idle (after `clear/1` or `finish/1`) has no line, and the heartbeat stops there
+  # until the next phase arms it.
+  def handle_info({:heartbeat, ref}, %{heartbeat: ref} = state) do
+    case Lines.progress_line(state, now_ms()) do
+      nil -> {:noreply, %{state | heartbeat: nil}}
+      line -> {:noreply, state |> put_line(line) |> arm_heartbeat()}
+    end
+  end
+
+  def handle_info({:heartbeat, _orphaned}, state), do: {:noreply, state}
+
   @impl true
   def handle_call(:animating?, _from, state), do: {:reply, state.ansi, state}
 
   def handle_call(:clear, _from, state) do
     # Erase the block and drop to idle, but stay live (the tick keeps running, the
     # next phase redraws). Distinct from `:finish`, which is terminal.
-    {:reply, :ok, %{erase(state) | phase: :idle, scan: nil}}
+    {:reply, :ok, %{erase(state) | phase: :idle, scan: nil, heartbeat: nil}}
   end
 
   def handle_call(:finish, _from, state) do
-    {:reply, :ok, %{erase(state) | finished: true, phase: :idle}}
+    {:reply, :ok, %{erase(state) | finished: true, phase: :idle, heartbeat: nil}}
   end
 
   # === modes =================================================================
@@ -357,6 +397,23 @@ defmodule Mutare.Report.Live do
   defp maybe_seed_note(state, _summary), do: state
 
   defp bump(counts, status), do: Map.update(counts, status, 1, &(&1 + 1))
+
+  # Plain mode's progress line at each tenth of the mutants, re-arming the heartbeat. The
+  # status block shows the counter on a tty, so an animating run never writes one.
+  defp maybe_milestone(%{ansi: false, phase: :running, total: total} = state) when total > 0 do
+    done = state.counts |> Map.values() |> Enum.sum()
+    tenth = div(done * 10, total)
+
+    if tenth > state.milestone do
+      %{state | milestone: tenth}
+      |> put_line(Lines.progress_line(state, now_ms()))
+      |> arm_heartbeat()
+    else
+      state
+    end
+  end
+
+  defp maybe_milestone(state), do: state
 
   # === terminal IO (effectful) ===============================================
 
@@ -409,6 +466,17 @@ defmodule Mutare.Report.Live do
         IO.write(state.device, Enum.intersperse(lines, "\n"))
         %{state | drawn: length(lines)}
     end
+  end
+
+  # (Re)start the plain-mode heartbeat. A fresh ref per arming, so a timer already in
+  # flight is recognised as orphaned and ignored rather than cancelled (a cancel can lose
+  # the race with a message already delivered).
+  defp arm_heartbeat(%{ansi: true} = state), do: state
+
+  defp arm_heartbeat(state) do
+    ref = make_ref()
+    Process.send_after(self(), {:heartbeat, ref}, state.heartbeat_ms)
+    %{state | heartbeat: ref}
   end
 
   defp maybe_start_tick(%{ticking: true} = state), do: state
