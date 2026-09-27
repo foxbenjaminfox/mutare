@@ -896,6 +896,29 @@ defmodule Mutare.SchemaTest do
     assert Enum.map(schema.skipped, &elem(&1, 0)) == ["lib/z_bad.ex", "lib/a_bad.ex"]
   end
 
+  describe "missing_paths/2" do
+    setup do
+      root = Mutare.Test.Project.tmp_dir(:missing_paths)
+      File.mkdir_p!(Path.join(root, "apps/core/lib"))
+      on_exit(fn -> File.rm_rf!(root) end)
+      %{root: root}
+    end
+
+    test "names the configured paths that exist under no scope", %{root: root} do
+      assert Schema.missing_paths(root, paths: ["apps/core/lib", "lib"]) == ["lib"]
+    end
+
+    test "resolves each path under every mutated umbrella app", %{root: root} do
+      project = %Mutare.Project{
+        copy_root: root,
+        umbrella?: true,
+        mutate_scope: [%{app: :core, dir: "apps/core"}, %{app: :web, dir: "apps/web"}]
+      }
+
+      assert Schema.missing_paths(root, project: project, paths: ["lib", "priv"]) == ["priv"]
+    end
+  end
+
   describe "forwards options through to the transform" do
     test ":skip_ids reaches the transform (poison recovery renders the mutant raw)", %{root: root} do
       write(

@@ -457,6 +457,50 @@ defmodule Mix.Tasks.MutareTest do
       refute output =~ ~s({"lib/a.ex", 2})
     end
 
+    test "--since succeeds, writing empty reports, when no changed line holds a site" do
+      root = committed_project("defmodule A do\n  def f(x), do: x + 1\nend\n")
+      File.mkdir_p!(Path.join(root, "test"))
+      File.write!(Path.join(root, "test/a_test.exs"), "# a change only a test file sees\n")
+      out = Path.join(root, "mutare.json")
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        Mix.Tasks.Mutare.run([
+          root,
+          "--since",
+          "HEAD",
+          "--min-score",
+          "80",
+          "--report",
+          "json:" <> out
+        ])
+      end)
+
+      output = drain_shell_info()
+      assert output =~ "no mutation sites on lines changed since HEAD; nothing to test"
+      assert %{"files" => files} = out |> File.read!() |> JSON.decode!()
+      assert files == %{}
+    end
+
+    test "--check under --since reports an empty scope rather than aborting" do
+      root = committed_project("defmodule A do\n  def f(x), do: x + 1\nend\n")
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        Mix.Tasks.Mutare.run([root, "--check", "--since", "HEAD"])
+      end)
+
+      assert drain_shell_info() =~ "no mutation sites on lines changed since HEAD"
+    end
+
+    test "--since still aborts on a configured path that does not exist" do
+      root = committed_project("defmodule A do\n  def f(x), do: x + 1\nend\n")
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        assert_raise Mix.Error, ~r/resolved relative to the target project/, fn ->
+          Mix.Tasks.Mutare.run([root, "--since", "HEAD", "--only", "lib/nonexistent.ex"])
+        end
+      end)
+    end
+
     test "--show-config scopes umbrella apps from comma-separated --app values" do
       %{umbrella: umbrella} =
         Umbrella.build(:task_scope_umbrella, %{
@@ -636,6 +680,26 @@ defmodule Mix.Tasks.MutareTest do
   # Write a `.mutare.exs` (a keyword-list literal) into a bare project's root.
   defp write_config(root, contents) do
     File.write!(Path.join(root, ".mutare.exs"), contents)
+  end
+
+  # A bare project with its sources committed, so `--since HEAD` sees a clean tree.
+  defp committed_project(source) do
+    root = bare_project(source)
+    git!(root, ["init", "-q"])
+    git!(root, ["add", "."])
+
+    git!(root, [
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "user.name=Test",
+      "commit",
+      "-q",
+      "-m",
+      "init"
+    ])
+
+    root
   end
 
   defp git!(root, args) do

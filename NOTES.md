@@ -14719,3 +14719,25 @@ identical.
 The full suite completed with 96 doctests, 36 properties, 4,147 tests and one skip. Three
 tests timed out while compiling during the overlap with the differential/check runs; all
 three passed in 1.4 seconds on `mix test --failed --max-cases 1`, without code changes.
+
+### An empty `--since` scope is an answer, not a mistake (2026-09-27)
+
+The zero-sites abort (`:nothing_to_mutate`) exists to catch a scope the user named and got
+wrong — typically an `--only` path typed relative to the caller's directory instead of the
+target. Under `--since` the scope is computed, and "nothing changed that can be mutated" is a
+legitimate outcome: a pull request that touches only tests, docs or comments. Aborting there
+failed every such PR in a CI job gating on `--since origin/main`, and wrote no report, so a
+step uploading the SARIF file failed too.
+
+The Mix task now short-circuits before the runner when `--since` is set, the scan found no
+sites, and every configured path exists (`Schema.missing_paths/2`): it prints a note, writes
+every reporter over an empty result set, and applies the gates, which pass because
+`Mutare.Score` scores an empty denominator at 100. A nonexistent path still aborts with the
+target-relative hint, `--since` or not. `--line` without `--since` still aborts on an empty
+result — there the user named the line. The runner's own contract is unchanged: a library
+caller that builds an empty schema still gets `:nothing_to_mutate`, since only the CLI knows
+the scope was computed.
+
+`missing_paths/2` resolves each path under every mutated app's directory, as discovery does.
+The runner's hint previously joined `:paths` to the umbrella root, where `lib` never exists,
+so every empty umbrella scan appended the hint whether or not a path was wrong.

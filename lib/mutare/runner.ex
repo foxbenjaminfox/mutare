@@ -215,7 +215,7 @@ defmodule Mutare.Runner do
     on_phase = Context.hook(context, :on_phase)
 
     if Schema.count(schema) == 0 do
-      {:error, :nothing_to_mutate, nothing_to_mutate_detail(options.paths, root)}
+      {:error, :nothing_to_mutate, nothing_to_mutate_detail(root, context)}
     else
       lock = Sandbox.acquire_lock(root, context)
 
@@ -251,15 +251,17 @@ defmodule Mutare.Runner do
   # project. Name that; a bare "found nothing" leaves the user staring at a path that
   # looks right from where they're standing. Existing-but-siteless paths (an empty
   # dir, an excluded glob) keep the plain message — the hint would mislead there.
-  defp nothing_to_mutate_detail(paths, root) do
-    base = "no mutation sites found under #{inspect(paths)}"
+  defp nothing_to_mutate_detail(root, %Context{} = context) do
+    base = "no mutation sites found under #{inspect(context.options.paths)}"
 
-    if Enum.any?(paths, &(not File.exists?(Path.join(root, &1)))) do
-      base <>
-        " — note that paths (--only/:paths) are resolved relative to the target " <>
-        "project being mutated, not the directory mix was invoked from"
-    else
-      base
+    case Schema.missing_paths(root, context) do
+      [] ->
+        base
+
+      _missing ->
+        base <>
+          " — note that paths (--only/:paths) are resolved relative to the target " <>
+          "project being mutated, not the directory mix was invoked from"
     end
   end
 

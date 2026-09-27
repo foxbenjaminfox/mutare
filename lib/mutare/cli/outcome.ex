@@ -29,8 +29,27 @@ defmodule Mutare.CLI.Outcome do
   end
 
   def report(run, %Options{} = options) do
-    Enum.each(options.reporters, fn {format, path} -> emit(format, path, run, options) end)
+    emit_all(run.results, run.schema, options)
     finish_run(run, options)
+  end
+
+  # A `--since` run whose changed lines hold no mutation site. The reporters still
+  # write — empty — so a CI step that uploads a report file finds one, and the gates
+  # still apply: over no results they pass (`Mutare.Score` scores an empty denominator
+  # at 100), as they would for a run whose every mutant went uncovered.
+  def report_unchanged(%Schema{} = schema, since, %Options{} = options) do
+    Mix.shell().info(unchanged_note(since))
+    emit_all([], schema, options)
+    gate([], options)
+  end
+
+  def unchanged_note(since),
+    do: "no mutation sites on lines changed since #{since}; nothing to test"
+
+  defp emit_all(results, %Schema{} = schema, %Options{} = options) do
+    Enum.each(options.reporters, fn {format, path} ->
+      emit(format, path, results, schema, options)
+    end)
   end
 
   # On a complete run, apply the post-report CI gates. On an early stop
@@ -94,17 +113,17 @@ defmodule Mutare.CLI.Outcome do
 
   # A `nil` path means stdout (the console); a path means write the rendered
   # report to that file and note where it went.
-  defp emit(format, nil, run, options) do
-    Mix.shell().info(render_for(format, run, options))
+  defp emit(format, nil, results, schema, options) do
+    Mix.shell().info(render_for(format, results, schema, options))
   end
 
-  defp emit(format, path, run, options) do
-    File.write!(path, render_for(format, run, options))
+  defp emit(format, path, results, schema, options) do
+    File.write!(path, render_for(format, results, schema, options))
     Mix.shell().info("wrote #{format} report to #{path}")
   end
 
-  defp render_for(format, run, options) do
-    Options.renderer(format).render(run.results, run.schema.sources, min_score: options.min_score)
+  defp render_for(format, results, schema, options) do
+    Options.renderer(format).render(results, schema.sources, min_score: options.min_score)
   end
 
   defp gate(results, %Options{} = options) do

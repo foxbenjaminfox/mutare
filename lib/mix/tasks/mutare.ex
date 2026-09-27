@@ -134,7 +134,7 @@ defmodule Mix.Tasks.Mutare do
                                           #   app's built beams on a narrowed run
                                           #   (on by default)
 
-  `--only`/`--exclude`/`--line` paths (and `:paths` in `.mutare.exs`) are resolved relative to the **target project**, not the directory `mix` was invoked from: targeting another checkout is `mix mutare ./phoenix --only lib/phoenix/naming.ex` — not `--only phoenix/lib/...`. A path that matches nothing aborts with `no mutation sites found`.
+  `--only`/`--exclude`/`--line` paths (and `:paths` in `.mutare.exs`) are resolved relative to the **target project**, not the directory `mix` was invoked from: targeting another checkout is `mix mutare ./phoenix --only lib/phoenix/naming.ex` — not `--only phoenix/lib/...`. A path that matches nothing aborts with `no mutation sites found`. Under `--since`, a scope that exists but whose changed lines hold no mutation site is not an error: the run reports `nothing to test`, writes empty reports, and exits 0.
 
   ## Continuous integration
 
@@ -148,7 +148,7 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --strict-ignores         # exit 1 if any `# mutare:` comment matched
                                           #   no mutant (a typo'd verb/family or stale line)
 
-  Combine `--since` with CI gates to gate only the code a pull request changed, and `--quiet` to drop the live progress (spinner, phases, per-survivor and `PROGRESS` lines); the final report (and any machine reports) will still be printed. When stderr is not a terminal, the `PROGRESS` lines are what keep a long run from looking silent, so leave them on where a CI system kills jobs that produce no output for a while.
+  Combine `--since` with CI gates to gate only the code a pull request changed, and `--quiet` to drop the live progress (spinner, phases, per-survivor and `PROGRESS` lines); the final report (and any machine reports) will still be printed. When stderr is not a terminal, the `PROGRESS` lines are what keep a long run from looking silent, so leave them on where a CI system kills jobs that produce no output for a while. A pull request that changes no mutatable line — only tests, docs, or comments — passes, with empty reports written.
 
       mix mutare --since origin/main --min-score 80 --quiet
 
@@ -494,8 +494,8 @@ defmodule Mix.Tasks.Mutare do
         flags[:list_macros] -> Info.print_macro_registry(options)
         flags[:list_ignores] -> Info.print_ignores(project, scan(context, root))
         flags[:dry_run] -> Info.print_dry_run(project, scan(context, root))
-        flags[:check] -> run_check(project, context, root)
-        true -> run_mutation_testing(project, context, root)
+        flags[:check] -> run_check(project, context, root, flags[:since])
+        true -> run_mutation_testing(project, context, root, flags[:since])
       end
     rescue
       # A variant-label spec error from *any* scan — a normal run *or* a `--dry-run`/`--list-ignores`
@@ -509,7 +509,7 @@ defmodule Mix.Tasks.Mutare do
     end
   end
 
-  defp run_mutation_testing(%Project{} = project, %Context{} = context, root) do
+  defp run_mutation_testing(%Project{} = project, %Context{} = context, root, since) do
     options = context.options
 
     # Defer the per-mutant diff render (the build's dominant cost) when the active reporters need
@@ -519,10 +519,13 @@ defmodule Mix.Tasks.Mutare do
     # rendering eagerly (they describe *every* site).
     context = %{context | defer_site_code: defer_site_code?(options)}
 
-    run_compiled(project, context, root, &Runner.run_with_schema/3, fn run ->
-      Outcome.warn_poison_recovery(run)
-      Outcome.report(run, options)
-    end)
+    run_compiled(project, context, root, since, &Runner.run_with_schema/3, %{
+      ok: fn run ->
+        Outcome.warn_poison_recovery(run)
+        Outcome.report(run, options)
+      end,
+      unchanged: &Outcome.report_unchanged(&1, since, options)
+    })
   end
 
   # `--check`: the compile-only preflight. Scan + compile the metamutant (with the same
@@ -532,12 +535,13 @@ defmodule Mix.Tasks.Mutare do
   # discovering poison mid-run. Shares the scan/live prelude with the full run; only the
   # runner call and the reporting differ. Site diffs are never shown, so the scan defers
   # them (`defer_site_code: true`) to keep the render cheap.
-  defp run_check(%Project{} = project, %Context{} = context, root) do
+  defp run_check(%Project{} = project, %Context{} = context, root, since) do
     context = %{context | defer_site_code: true}
 
-    run_compiled(project, context, root, &Runner.check_with_schema/3, fn check ->
-      Info.print_check(check, project)
-    end)
+    run_compiled(project, context, root, since, &Runner.check_with_schema/3, %{
+      ok: &Info.print_check(&1, project),
+      unchanged: fn _schema -> Mix.shell().info(Outcome.unchanged_note(since)) end
+    })
   end
 
   # The shape both compile-backed runs share: scan with live progress, hand the schema to
@@ -547,21 +551,37 @@ defmodule Mix.Tasks.Mutare do
   # runner; `Live.finish/1` is idempotent. A scan-time abort (a variant-label
   # `Mutare.Ignore.SpecError`, or a `--strict-ignores` failure) is already torn down inside
   # `start_live_scan/3` before it reaches here.
-  defp run_compiled(project, context, root, runner, on_ok) do
+  #
+  # A `--since` scan that found nothing on the changed lines is an answer, not a mistake —
+  # a branch that touched only tests, docs or comments changes no code to mutate — so it
+  # goes to `on.unchanged` instead of the runner, whose zero-sites abort is for a scope the
+  # user named and got wrong. A configured path that exists nowhere is that mistake even
+  # under `--since`, so it still reaches the abort.
+  defp run_compiled(project, context, root, since, runner, on) do
     {live, schema, run_context} = start_live_scan(project, context, root)
 
     try do
-      result = runner.(schema, root, run_context)
-      finish_live(live)
+      if unchanged?(schema, since, root, run_context) do
+        finish_live(live)
+        on.unchanged.(schema)
+      else
+        result = runner.(schema, root, run_context)
+        finish_live(live)
 
-      case result do
-        {:ok, value} -> on_ok.(value)
-        {:error, reason, detail} -> Mix.raise(Outcome.format_error(reason, detail, root))
+        case result do
+          {:ok, value} -> on.ok.(value)
+          {:error, reason, detail} -> Mix.raise(Outcome.format_error(reason, detail, root))
+        end
       end
     after
       finish_live(live)
     end
   end
+
+  defp unchanged?(_schema, nil, _root, _context), do: false
+
+  defp unchanged?(schema, _since, root, context),
+    do: Schema.count(schema) == 0 and Schema.missing_paths(root, context) == []
 
   # Tear the live reporter down, or nothing under `--quiet` (no reporter).
   defp finish_live(nil), do: :ok

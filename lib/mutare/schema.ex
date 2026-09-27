@@ -195,6 +195,27 @@ defmodule Mutare.Schema do
     for %{dir: dir} <- scope, base <- paths, uniq: true, do: join_scope(dir, base)
   end
 
+  @doc """
+  The configured `:paths` entries that exist under no scope of the target project.
+
+  Paths resolve against the target project (in an umbrella, against each mutated
+  app), not the directory `mix` was invoked from, so a path typed relative to the
+  caller names nothing. A scan that found no sites uses this to tell that mistake
+  apart from a path that exists but holds nothing to mutate.
+  """
+  @spec missing_paths(Path.t(), Context.t() | Options.t() | keyword()) :: [String.t()]
+  def missing_paths(root, opts) do
+    context = Context.new(opts)
+    scopes = scope_dirs(context.project)
+
+    Enum.reject(context.options.paths, fn base ->
+      Enum.any?(scopes, &File.exists?(Path.join(root, join_scope(&1, base))))
+    end)
+  end
+
+  defp scope_dirs(nil), do: ["."]
+  defp scope_dirs(%{mutate_scope: scope}), do: Enum.map(scope, & &1.dir)
+
   # mutare:ignore[string, clause_drop] equivalent — join_scope only feeds discover's Path.wildcard/relative_to, which normalize the "./" that Path.join(".", base) adds, so "./" <> base and base discover identical files under identical relative paths
   defp join_scope(".", base), do: base
   defp join_scope(dir, base), do: Path.join(dir, base)
