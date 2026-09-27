@@ -4,21 +4,16 @@ defmodule Mutare.Analyze do
 
   Core analysis skips regions routed `:hosted` or `:raw`. These regions can still contain ordinary Elixir expressions: everything under an Ecto `^` pin is evaluated at runtime and interpolated as a query parameter. Expressions such as `^18` or `^(min + 1)` can therefore be mutated with the user's configured Elixir families.
 
-  `expression_mutations/3` generates the logical single-point mutants of an expression subtree using the same analysis as for code outside a DSL. It returns them as data for the caller to embed through either delivery path:
+  `collect_expression/3` generates the logical single-point mutants of an expression subtree using the same analysis as for code outside a DSL. It returns them as data for the caller to embed through either delivery path:
 
-    * a selector host (`c:Mutare.Mutator.MacroHost.host/2`) wraps each rebuilt subtree back under its pin, appends it to its `Mutare.Mutator.MacroHost.Target` mutants (tagged with the producing spec via `Mutare.Mutator.Mutation`'s `:producer`), and the ordinary hosted pipeline assigns ids, records sites under the producing family, and weaves the host's selector;
+    * a selector host (`c:Mutare.Mutator.MacroHost.host/2`) wraps each rebuilt subtree back under its pin, appends it to its `Mutare.Mutator.MacroHost.Target` mutants with its original attribution and producing spec intact, and the ordinary hosted pipeline assigns ids, records sites under the producing family, and weaves the host's selector;
     * a mutator offered the whole call of a registered macro (`c:Mutare.Mutator.mutate/2` — the free-standing `dynamic/1,2` shape, where the macro sits in ordinary expression position and its `:raw` argument stays as written) rebuilds the call around each mutant and relays it the same way; delivery is the ordinary in-place selector.
 
   On both paths `context.mutators` contains the **full** set of enabled specs, including selector hosts, `:as` renames, and per-instance options. The interior is analyzed under that configuration, with no mutants from disabled families. For a mutator implementing hosting, generation uses both its ordinary node-level `mutate/1,2` and its hosted callbacks. A registered macro inside the expression is passed whole to its registered mutator, as with a nested `dynamic` call. Hosted targets are **lowered** to whole-call rebuilds (`splice(wrap(mutant))`) using just the selected branch. This preserves their mutations without nesting hosted selectors:
 
       defp pin_mutants({:^, meta, [inner]}, context) do
-        for {spec, mutated, note, variant} <-
-              Mutare.Analyze.expression_mutations(inner, context.mutators, context) do
-          Mutare.Mutator.Mutation.new({:^, meta, [mutated]},
-            producer: spec,
-            note: note,
-            variant: variant
-          )
+        for mutation <- Mutare.Analyze.collect_expression(inner, context.mutators, context) do
+          Mutare.Mutator.Mutation.map_node(mutation, &{:^, meta, [&1]})
         end
       end
   """
@@ -27,12 +22,23 @@ defmodule Mutare.Analyze do
   alias Mutare.Transform.Analyze.Collect
 
   @doc """
-  Returns the logical single-point mutants of the expression subtree, one rebuild per mutant.
+  Collects expression mutations as producer-attributed `Mutare.Mutator.Mutation` values.
 
-  Each element is `{producing_spec, mutated_subtree, note, variant}`: the whole subtree with
-  exactly one position swapped, plus the producing `Mutare.Mutator.Spec` and the mutation's
-  optional advisory note and resolved `# mutare:ignore` variant label(s) — ready to wrap under
-  a `%Mutare.Mutator.Mutation{}` with `producer: spec`.
+  Each `node` is the whole expression rebuilt around one mutation. Its `attribution`
+  preserves the logical source change, including explicit replacement/deletion attribution
+  and the source range and selection position. Notes, producer configuration and resolved
+  variant labels survive nested collection and hosting. The producing family's `finalize/2`
+  has already run; relaying the value does not finalize it again.
+
+  Use `Mutare.Mutator.Mutation.map_node/2` to embed the replacement in surrounding syntax
+  without replacing its origin:
+
+      for mutation <- Mutare.Analyze.collect_expression(inner, context.mutators, context) do
+        Mutare.Mutator.Mutation.map_node(mutation, &{:^, meta, [&1]})
+      end
+
+  A source patch at the preserved attribution must have the same behavior as the delivered
+  mutant; adapters remain responsible for that contract when rebuilding foreign syntax.
 
   This function uses the core analyzer's traversal of runtime expressions, with the same
   mutation rules as for code outside the DSL: call-routing stamps apply (a `:raw` or
@@ -60,6 +66,20 @@ defmodule Mutare.Analyze do
   the island's route/mark matches, even when it produces no mutations.
 
   Without a callback context, the subtree must already carry any resolution its mutations need.
+  """
+  @spec collect_expression(Macro.t(), [Spec.t() | module()], map()) :: [Mutation.t()]
+  defdelegate collect_expression(subtree, mutators, context \\ %{}), to: Collect
+
+  @doc """
+  Returns the logical single-point mutants of the expression subtree, one rebuild per mutant.
+
+  This tuple-returning compatibility API discards source attribution. Prefer
+  `collect_expression/3` when relaying mutations into a host or another call.
+
+  Each element is `{producing_spec, mutated_subtree, note, variant}`: the whole subtree with
+  exactly one position swapped, plus the producing `Mutare.Mutator.Spec` and the mutation's
+  optional advisory note and resolved `# mutare:ignore` variant label(s) — ready to wrap under
+  a `%Mutare.Mutator.Mutation{}` with `producer: spec`.
 
   ## Examples
 
@@ -75,7 +95,7 @@ defmodule Mutare.Analyze do
 
   @doc """
   Resolves a region of the host's call that core left as written, in the lexical environment
-  the callback `context` carries — the first step of `expression_mutations/3`, on its own.
+  the callback `context` carries — the first step of `collect_expression/3`, on its own.
 
   Core does not interpret a `:raw` or `:hosted` argument (or a keyword value under either):
   no call inside it is stamped, no `Kernel` pipe desugared, no registered macro routed. A

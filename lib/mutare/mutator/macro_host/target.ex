@@ -21,7 +21,10 @@ defmodule Mutare.Mutator.MacroHost.Target do
   Build a hosted mutation target.
 
   Options are `:wrap`, a one-argument branch wrapper, and `:range`, the source range reported for
-  the site. Mutare defaults `:wrap` to identity and `:range` to the original fragment's range.
+  the site when a mutation has no attribution of its own. Mutare defaults `:wrap` to identity
+  and `:range` to the original fragment's range. A mutation's explicit attribution takes
+  precedence and must lie within the target's range; it changes reporting, not the node
+  passed through `:wrap` and `splice`.
   """
   @spec new(
           Macro.t(),

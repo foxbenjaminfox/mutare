@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Mutare.Analyze.collect_expression/3` returns mutations with their original source
+  attribution, producer, note and resolved variants. `Mutation.map_node/2` embeds their
+  replacements while preserving that metadata; `expression_mutations/3` remains available
+  as the tuple-returning compatibility API.
+
+### Fixed
+
+- Hosted delivery now honors replacement and deletion attribution, including through nested
+  expression collection. Reports, line selection and ignores retain the original change's
+  location even when delivery rebuilds an enclosing call.
+- The source range of infix `not in` includes its left operand.
+
 ## [0.4.1] - 2026-09-26
 
 ### Added

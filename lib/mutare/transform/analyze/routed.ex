@@ -108,17 +108,24 @@ defmodule Mutare.Transform.Analyze.Routed do
 
     spec
     |> Dispatch.host_targets(call, Map.take(context, [:mutators, :resolution]))
-    |> Enum.map(fn target ->
-      %Candidate.Hosted{
-        mutator: spec,
-        original: target.original,
-        mutants: target.mutants,
-        wrap: target.wrap,
-        splice: target.splice,
-        range: target.range || NodeRange.get(target.original)
-      }
+    |> Enum.flat_map(fn target ->
+      range = target.range || NodeRange.get(target.original)
+
+      if range do
+        [
+          %Candidate.Hosted{
+            mutator: spec,
+            original: target.original,
+            mutants: Attach.hosted_candidates(target.original, target.mutants, range),
+            wrap: target.wrap,
+            splice: target.splice,
+            range: range
+          }
+        ]
+      else
+        []
+      end
     end)
-    |> Enum.filter(& &1.range)
   end
 
   defp put_hosted_candidates(node, candidates), do: Meta.put_candidates(node, :hosted, candidates)

@@ -16,13 +16,12 @@ defmodule Mutare.Mutator.Dispatch do
 
     # One produced mutation, as the transform sees it — the single shape on **both** delivery
     # paths: the ordinary `mutate/1`/`mutate/2` return (`mutations/3`) and a selector host's
-    # target `:mutants` (`host_targets/3`, carried on `Mutare.Transform.Candidate.Hosted`). Built
+    # target `:mutants` (`host_targets/3`). Built
     # only by `to_result/2`, which is where the author-facing return contract (a bare node or a
     # `%Mutare.Mutator.Mutation{}`) is validated and the recording spec resolved. A struct so a
-    # field only some consumers read (`:attribution`, read by `Mutare.Transform.Analyze.Attach`
-    # alone) rides through every choke point without a positional slot: the consumers that don't
-    # care (guard/pattern tagging in `Mutare.Transform.Tag`, `Mutare.Transform.HostedEmit`) match
-    # `%Result{}` and read only the fields they use. `spec` is the **recording** `Mutare.Mutator.Spec`
+    # field only some consumers read (`:attribution`, validated by `Mutare.Transform.Analyze.Attach`
+    # on both delivery paths) rides through every choke point without a positional slot.
+    # Guard/pattern tagging in `Mutare.Transform.Tag` reads only the fields it uses. `spec` is the **recording** `Mutare.Mutator.Spec`
     # (the `%Mutation{}`'s explicit `:producer` when relayed, else the returning mutator); `node` the
     # replacement AST; `note`/`variant` the optional advisory / `# mutare:ignore` tag; `attribution`
     # the optional `Mutare.Mutator.Mutation.Attribution` (`nil` for a bare-node or unattributed
@@ -323,7 +322,7 @@ defmodule Mutare.Mutator.Dispatch do
   # declaring `variants/0` may tag one via `Mutation.tagged/2`, and that label rides through
   # `Mutare.Transform.HostedEmit` to the Site. The result's `spec` is the sub-contract
   # attribution resolved: a mutant the host relayed from a core family (collected via
-  # `Mutare.Analyze.expression_mutations/3`) records under that family's spec, a host-authored
+  # `Mutare.Analyze.collect_expression/3`) records under that family's spec, a host-authored
   # one under the host's.
   defp normalize_target(
          %Mutare.Mutator.MacroHost.Target{

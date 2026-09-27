@@ -9,8 +9,7 @@ defmodule Mutare.Transform.HostedEmit do
   # node are delivered afterwards through the callback supplied by `Mutare.Transform`, because
   # ordinary selector delivery owns the piped-value binding and pinned cases.
 
-  alias Mutare.Mutator.Dispatch.Result
-  alias Mutare.Site
+  alias Mutare.Transform.Candidate.Delivery
   alias Mutare.Transform.{Candidate, Ctx, Meta, NodeRange, SelectorEmit}
 
   @type emit_inplace :: (Macro.t(), [Candidate.t()], Ctx.t() -> {Macro.t(), Ctx.t()})
@@ -64,17 +63,15 @@ defmodule Mutare.Transform.HostedEmit do
   # target's `splice`. Returns the target's selector parts, `nil` when no mutant was delivered
   # (the earlier host's selector, if any, stays where its splice put it).
   defp weave_target(node, %Candidate.Hosted{} = cand, prior, ctx) do
-    # Each claimed item pairs the target with one of its `%Dispatch.Result{}` mutants. The result
-    # already carries everything the Site needs: its `spec` is the recording family (the relayed
-    # producer for a sub-contracted mutant, else the host itself), and its `variant` the label a
-    # `variants/0`-declaring host may have tagged via `Mutation.tagged/2` (usually `nil` — a host
-    # fragment has foreign semantics and no vocabulary), gated at the Site by `Dispatch.variant/4`.
+    # Each logical replacement already carries its validated report attribution.
+    # Claiming through Delivery keeps suppression and line selection identical to
+    # ordinary replacements; only the branch wrapping and splice are host-specific.
     carriers = Enum.map(cand.mutants, &{cand, &1})
 
     {clauses, ctx} =
       SelectorEmit.claim_items(carriers, ctx, {&hosted_site/4, &hosted_line/1}, fn id,
                                                                                    {_cand, result} ->
-        {:->, [], [[id], cand.wrap.(result.node)]}
+        {:->, [], [[id], cand.wrap.(result.mutated)]}
       end)
 
     case clauses do
@@ -128,24 +125,10 @@ defmodule Mutare.Transform.HostedEmit do
   defp target_key(%Candidate.Hosted{range: report_range, original: original}),
     do: {NodeRange.get(original) || report_range, original}
 
-  # The `Mutare.Site` for one hosted mutant: an `:in_place` replacement showing the logical
-  # fragment swap, not the `wrap`/`splice`/selector scaffolding. The result's optional note rides
-  # onto the Site for the report, and its optional variant label onto the Site for
-  # `# mutare:ignore` filtering (`nil` for the common untagged fragment); its `spec` is the
-  # recording family. `flags` is the `{render?, summary?}` pair (the scan's diff-deferral flag +
-  # the live-summary flag).
-  # The line `hosted_site/4` records, for the count pass's `--line` test (see
-  # `Mutare.Transform.Candidate.Delivery.line/1`): the hosted fragment's own report range, not
-  # the selector scaffolding woven around it.
-  defp hosted_line({%Candidate.Hosted{range: range}, _result}),
-    do: if(range, do: range.start[:line])
+  # Report each logical mutation through the same attribution, line and deletion
+  # handling as an ordinary replacement. The target's wrap/splice affects delivery only.
+  defp hosted_line({_target, mutation}), do: Delivery.line(mutation)
 
-  defp hosted_site(id, {cand, %Result{} = result}, file, {render?, summary?}),
-    do:
-      Site.in_place(id, file, cand.range, cand.original, result.node, result.spec,
-        note: result.note,
-        variant: result.variant,
-        render?: render?,
-        summary?: summary?
-      )
+  defp hosted_site(id, {_target, mutation}, file, flags),
+    do: Delivery.site(id, mutation, file, flags)
 end

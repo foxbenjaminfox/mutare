@@ -68,7 +68,7 @@ defmodule Mutare.Mutator.MacroHost do
   Subscribe through `c:hosted_macros/0`. The active macro route must contain `:hosted`, either
   statically or from `c:Mutare.CallRouting.route_arguments/1`. `context` is the same map
   `c:Mutare.Mutator.mutate/2` receives, plus `:mutators` — the run's enabled
-  `Mutare.Mutator.Spec`s (hosts included; `Mutare.Analyze.expression_mutations/3` lowers a
+  `Mutare.Mutator.Spec`s (hosts included; `Mutare.Analyze.collect_expression/3` lowers a
   nested host's targets to whole-call rebuilds instead of weaving them, so a sub-contracted
   island analyzes with every surface — ordinary and hosted — and hosted delivery never nests).
 
@@ -87,13 +87,14 @@ defmodule Mutare.Mutator.MacroHost do
 
   A hosted fragment may contain ordinary Elixir expressions: everything under an Ecto `^` pin
   is evaluated at runtime. Use core's value mutations for those expressions through
-  `Mutare.Analyze.expression_mutations(island, context.mutators, context)`. Forward the context
+  `Mutare.Analyze.collect_expression(island, context.mutators, context)`. Forward the context
   unchanged: it retains the enclosing call's lexical environment and configured routes/marks,
   which core uses to resolve the island before analyzing it. It returns each
-  single-point mutant as a rebuild of the expression, produced by the user's actual
-  configuration. Relay each rebuild as a `Mutare.Mutator.Mutation` with `producer:` set to the
-  returned spec — the host then embeds the mutant, while its
-  site and `# mutare:ignore` labels refer to the producing core family.
+  single-point mutant as a `Mutare.Mutator.Mutation`, produced by the user's actual
+  configuration. Embed its replacement with `Mutare.Mutator.Mutation.map_node/2` and relay
+  the resulting value. Its source attribution, producer, note and resolved variant survive
+  the rebuild, so the site's diff and line selection refer to the original change and its
+  `# mutare:ignore` labels refer to the producing family.
   """
   @callback host(
               call :: Mutare.CallRouting.Call.t(),

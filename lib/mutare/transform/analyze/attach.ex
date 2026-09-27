@@ -83,8 +83,33 @@ defmodule Mutare.Transform.Analyze.Attach do
         attribution: attribution,
         attribution_range: attribution_range,
         # Core's pipe attribution may cover an enclosing group; it still belongs to this stage.
-        position: if(is_nil(attribution) or stage, do: WrittenPipe.stage_position(node)),
+        position:
+          if(attribution && attribution.position,
+            do: attribution.position,
+            else: if(is_nil(attribution) or stage, do: WrittenPipe.stage_position(node))
+          ),
         classified: if(stage && attribution, do: {node, mutated})
+      }
+    end)
+  end
+
+  # Hosted fragments have foreign semantics: validate their report origins without
+  # rerouting their replacement as Elixir. The same InPlace report machinery serves both
+  # delivery paths; only HostedEmit decides how to weave these logical replacements.
+  def hosted_candidates(original, results, range) do
+    Enum.map(results, fn %Dispatch.Result{} = result ->
+      {attribution, attribution_range} = checked_attribution(result.attribution, original, range)
+
+      %Candidate.InPlace{
+        original: original,
+        mutated: result.node,
+        mutator: result.spec,
+        range: range,
+        note: result.note,
+        variant: result.variant,
+        attribution: attribution,
+        attribution_range: attribution_range,
+        position: if(attribution, do: attribution.position)
       }
     end)
   end
@@ -105,7 +130,7 @@ defmodule Mutare.Transform.Analyze.Attach do
          offered_node,
          offered_range
        ) do
-    case safe_range(clause) do
+    case attribution.range || safe_range(clause) do
       nil ->
         warn_attribution(offered_node, "its clause is not rangeable")
         {nil, nil}

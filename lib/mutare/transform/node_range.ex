@@ -102,6 +102,11 @@ defmodule Mutare.Transform.NodeRange do
   # The child a node's source text begins with, where that is not the node's own head.
   defp left_child({{:., _dot_meta, [left | _name]}, _meta, args}) when is_list(args), do: left
 
+  # `left not in right` is parsed as `not(in(left, right))`, but the `not`
+  # metadata starts after the left operand. Its source begins at the membership.
+  # For prefix `not (left in right)`, the earlier prefix still wins.
+  defp left_child({:not, _meta, [{:in, _, _} = membership]}), do: membership
+
   defp left_child({operator, _meta, [left, _right]}) when is_atom(operator),
     do: if(Macro.operator?(operator, 2), do: left)
 

@@ -2,7 +2,7 @@ defmodule Mutare.Transform.Analyze.Collect do
   @moduledoc false
 
   # The **collect mode** of the analyze pass, behind the public
-  # `Mutare.Analyze.expression_mutations/3`: the logical single-point mutants of one expression
+  # `Mutare.Analyze.collect_expression/3`: the logical single-point mutants of one expression
   # subtree, as data — each returned as a rebuild of the whole subtree with exactly one position
   # swapped. Built for the selector-host sub-contract (a host handing an Elixir island inside its
   # DSL fragment — an Ecto pin interior — back to core's families for *generation*, while keeping
@@ -50,7 +50,7 @@ defmodule Mutare.Transform.Analyze.Collect do
   #     hosting again, whose islands sub-contract again) is structural: every sub-contract
   #     recurses on a strict subtree, and an AST is finite.
   #   * **Ids, sites, coverage, emission** — collect builds none. The host folds the rebuilds into
-  #     its Target `:mutants` (tagging each with its `producer` spec), and the ordinary hosted
+  #     its Target `:mutants` (preserving each mutation's attribution and `producer` spec), and the ordinary hosted
   #     pipeline claims ids and records Sites when the Target flows through `HostedEmit`.
   #
   # Two knowingly-accepted fidelity notes, both cosmetic-only (the rebuild is always
@@ -73,6 +73,12 @@ defmodule Mutare.Transform.Analyze.Collect do
   @spec expression_mutations(Macro.t(), [Spec.t() | module()], map()) ::
           [{Spec.t(), Macro.t(), String.t() | nil, Mutation.variant()}]
   def expression_mutations(subtree, mutators, context \\ %{}) do
+    for mutation <- collect_expression(subtree, mutators, context),
+        do: {mutation.producer, mutation.node, mutation.note, mutation.variant}
+  end
+
+  @spec collect_expression(Macro.t(), [Spec.t() | module()], map()) :: [Mutation.t()]
+  def collect_expression(subtree, mutators, context \\ %{}) do
     subtree =
       subtree
       |> Resolve.expression(context)
@@ -87,9 +93,8 @@ defmodule Mutare.Transform.Analyze.Collect do
         annotated = subtree |> Analyze.annotate(%Env{mutators: specs}) |> Overlap.resolve()
         {stripped, collected} = walk(annotated, [], [])
 
-        for {rev_path, cand} <- collected do
-          mutated_tree = replace_at(stripped, Enum.reverse(rev_path), cand.mutated)
-          {cand.mutator, mutated_tree, cand.note, resolved_variant(cand)}
+        for {rev_path, mutation} <- collected do
+          Mutation.map_node(mutation, &replace_at(stripped, Enum.reverse(rev_path), &1))
         end
     end
   end
@@ -137,7 +142,7 @@ defmodule Mutare.Transform.Analyze.Collect do
       candidates
       |> Enum.filter(&match?(%Candidate.InPlace{}, &1))
       |> Delivery.gate(stripped)
-      |> Enum.map(&{rev_path, &1})
+      |> Enum.map(&{rev_path, mutation(&1)})
 
     lowered = Enum.flat_map(hosted, &lower_hosted(&1, stripped, rev_path))
 
@@ -173,21 +178,36 @@ defmodule Mutare.Transform.Analyze.Collect do
   # selector degenerated to its chosen branch. Attribution mirrors `HostedEmit`'s Site
   # recording: the result's `spec` is already the recording family (a relayed mutant's producer,
   # else the host); `note` rides verbatim, and `variant` is resolved now against the hosted
-  # fragment's own `{original, mutated}` pair. That pair is lost once an outer host relays this lowered
-  # rebuild, so a producer that derives labels through `variant/2` must be materialized here.
+  # logical `{original, mutated}` pair. Resolve labels before rebuilding so classification
+  # never observes a delivery wrapper; preserve the pair separately as attribution.
   # The way emit combines several hosts' selectors on one target (`target_key`, `extend/4`) has
   # no analog here: each lowered mutant is an independent single-point rebuild, not a combined
   # build.
   defp lower_hosted(%Candidate.Hosted{} = cand, call_node, rev_path) do
-    for %Dispatch.Result{spec: mutator, node: mutated} = result <- cand.mutants do
-      {rev_path,
-       %{
-         mutator: mutator,
-         mutated: cand.splice.(call_node, cand.wrap.(mutated)),
-         note: result.note,
-         variant: resolved_variant(mutator, cand.original, mutated, result.variant)
-       }}
+    for candidate <- cand.mutants do
+      lowered =
+        candidate
+        |> mutation()
+        |> Mutation.map_node(&cand.splice.(call_node, cand.wrap.(&1)))
+
+      {rev_path, lowered}
     end
+  end
+
+  # Preserve the source mutation before rebuilding its carrier. Explicit attribution
+  # wins; otherwise this node is the logical origin. The report range and selection
+  # position can differ for pipes, and both must survive every relay.
+  defp mutation(%Candidate.InPlace{} = candidate) do
+    attribution = candidate.attribution || Mutation.at(candidate.original, candidate.mutated)
+    attribution = %{attribution | range: Delivery.range(candidate), position: candidate.position}
+    {original, mutated} = candidate.classified || {attribution.original, attribution.mutated}
+
+    Mutation.new(candidate.mutated,
+      producer: candidate.mutator,
+      note: candidate.note,
+      variant: resolved_variant(candidate.mutator, original, mutated, candidate.variant),
+      attribution: attribution
+    )
   end
 
   # --- rebuild: substitute one node by index path ------------------------------
@@ -225,11 +245,4 @@ defmodule Mutare.Transform.Analyze.Collect do
       do: nil,
       else: labels
   end
-
-  defp resolved_variant(%Candidate.InPlace{} = cand),
-    do: resolved_variant(cand.mutator, cand.original, cand.mutated, cand.variant)
-
-  # A lowered hosted mutant (`lower_hosted/3`) has already resolved its variant against the
-  # hosted fragment's own node pair, so the carried value is authoritative.
-  defp resolved_variant(%{variant: variant}), do: variant
 end

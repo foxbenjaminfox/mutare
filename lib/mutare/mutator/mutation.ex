@@ -2,11 +2,11 @@ defmodule Mutare.Mutator.Mutation do
   @moduledoc """
   A replacement AST node with optional report metadata.
 
-  Mutators normally return a bare replacement node. Return a `Mutation` when the replacement also needs either of these fields:
+  Mutators normally return a bare replacement node. Return a `Mutation` when the replacement also needs any of these fields:
 
     * `note` — text shown with a surviving mutant. It does not suppress the mutant or change its score.
     * `variant` — one or more labels used by `# mutare:ignore[family:label]`. A mutator may attach the label here or derive it with `c:Mutare.Mutator.variant/2`.
-    * `producer` — the `Mutare.Mutator.Spec` this mutation is recorded under *instead of* the mutator that returned it. Set it only when relaying a mutation another family reasoned about — the selector-host sub-contract case, where `c:Mutare.Mutator.MacroHost.host/2` returns interior mutants collected from core's families via `Mutare.Analyze.expression_mutations/3`: the site (and its `# mutare:ignore` vocabulary) then belongs to the producing family, not the host. `nil` (the default) records the mutation under the returning mutator, exactly as before.
+    * `producer` — the `Mutare.Mutator.Spec` this mutation is recorded under *instead of* the mutator that returned it. Set it only when relaying a mutation another family reasoned about — the selector-host sub-contract case, where `c:Mutare.Mutator.MacroHost.host/2` returns interior mutants collected from core's families via `Mutare.Analyze.collect_expression/3`: the site (and its `# mutare:ignore` vocabulary) then belongs to the producing family, not the host. `nil` (the default) records the mutation under the returning mutator, exactly as before.
     * `attribution` — decouples *where the mutant is reported* from *what is spliced into the metamutant*. Set it when `:node` is a **whole-node rewrite** whose textual footprint is one inner clause — a `mutate/2` that rebuilds and returns an entire `from(...)` query but only changed its `order_by:`. Without it the site's line/column and before/after diff are pinned to the offered node (the whole `from`), so a multi-line rewrite reports every mutant at the `from` line and `# mutare:ignore` (line-keyed) cannot target the clause. Build one with `at/2` (a replacement clause) or `at_drop/1` (a removed clause); the metamutant is still built by splicing `:node`, attribution only moves the report. `nil` (the default) attributes to the offered node, exactly as before.
 
   `Mutation` values are accepted by `c:Mutare.Mutator.mutate/1`, `c:Mutare.Mutator.mutate/2`, and `c:Mutare.Mutator.MacroHost.host/2`. Use this struct rather than a plain map, because a map is also a valid replacement AST node.
@@ -19,14 +19,23 @@ defmodule Mutare.Mutator.Mutation do
     Names the clause a whole-node rewrite should be *reported at*, independent of the node spliced
     into the metamutant. `original` is the clause before the change (its range locates the site and
     renders the diff's "before"); `mutated` is the clause after — a replacement node for `at/2`, or
-    the atom `:drop` for `at_drop/1` (a removed clause, reported as a delete). Built only through
-    `Mutare.Mutator.Mutation.at/2` and `Mutare.Mutator.Mutation.at_drop/1`.
+    the atom `:drop` for `at_drop/1` (a removed clause, reported as a delete). Build through `Mutare.Mutator.Mutation.at/2` and `Mutare.Mutator.Mutation.at_drop/1`.
+
+    Collected mutations also carry the core-resolved `range` and `position`: the source
+    footprint and, when different, the location used for line selection and suppression
+    (for example a stage whose replacement spans its whole pipe). Preserve these fields
+    when relaying a mutation; adapters need not set them.
     """
 
     @enforce_keys [:original, :mutated]
-    defstruct [:original, :mutated]
+    defstruct [:original, :mutated, :range, :position]
 
-    @type t :: %__MODULE__{original: Macro.t(), mutated: Macro.t() | :drop}
+    @type t :: %__MODULE__{
+            original: Macro.t(),
+            mutated: Macro.t() | :drop,
+            range: Sourceror.Range.t() | nil,
+            position: keyword() | nil
+          }
   end
 
   @typedoc "A produced mutation's variant label(s): `nil`, one label, or a list (see `c:Mutare.Mutator.variant/2`)."
@@ -108,6 +117,17 @@ defmodule Mutare.Mutator.Mutation do
       attribution: attribution
     }
   end
+
+  @doc """
+  Rebuilds the delivered node while preserving its producer, note, variant and attribution.
+
+  Use this when embedding a mutation returned by `Mutare.Analyze.collect_expression/3`
+  into surrounding syntax. The attributed source change must still describe the same
+  mutation after rebuilding; delivery wrappers do not belong in the reported diff.
+  """
+  @spec map_node(t(), (Macro.t() -> Macro.t())) :: t()
+  def map_node(%__MODULE__{node: node} = mutation, rebuild) when is_function(rebuild, 1),
+    do: %{mutation | node: rebuild.(node)}
 
   @doc """
   Builds a mutation with one or more ignore-variant labels.

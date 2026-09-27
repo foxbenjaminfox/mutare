@@ -520,23 +520,18 @@ defmodule Mutare.Transform.Candidate do
     # fragment swap — the `dynamic`/`^` scaffolding invisible, exactly as the tuple-export Sites
     # hide theirs), and emits the coverage catch-all (`Mutare.Transform.HostedEmit.emit/5`).
     #
-    # `original` is the logical fragment before mutation (rendered in each Site's diff and run by
-    # the wrapped catch-all baseline); `mutants` are the logical mutated fragments, each the same
-    # `Mutare.Mutator.Dispatch.Result` the ordinary path records (one id + Site each: `node` the
-    # mutated fragment, the optional `note` recorded on the Site for the report; `variant` is
-    # *usually* `nil` — a host fragment has foreign semantics and no variant vocabulary — but a
-    # hosting mutator declaring `variants/0` may tag one via `Mutation.tagged/2`, and that label
-    # rides through `HostedEmit` to the Site's `# mutare:ignore` filter; `spec` is the recording
-    # family — the sub-contract attribution already resolved: a mutant the host relayed from a core
-    # family via `Mutare.Analyze.expression_mutations/3` carries that family's spec, a host-authored
-    # one the host's); `wrap` maps a logical fragment to its woven branch value; `splice` weaves the
-    # assembled `case` into a copy of the (emitted) macro node; `range` locates the fragment for the
-    # Site; `mutator` is the hosting `Mutare.Mutator.Spec`.
+    # `original` is the logical fragment used by the baseline branch. Each entry of
+    # `mutants` is an InPlace logical replacement with validated attribution, so
+    # HostedEmit uses the ordinary Delivery site/line readers. These replacements
+    # never pass through Elixir rerouting or selector emission on their own:
+    # `wrap` maps each branch to its runtime value and `splice` places the selector.
+    # `range` identifies the target (and defaults each unattributed report's range);
+    # `mutator` is the host, while each replacement retains its actual producer.
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
             original: Macro.t(),
-            mutants: [Mutare.Mutator.Dispatch.Result.t()],
+            mutants: [Mutare.Transform.Candidate.InPlace.t()],
             wrap: (Macro.t() -> Macro.t()),
             splice: (Macro.t(), Macro.t() -> Macro.t()),
             range: Sourceror.Range.t()
