@@ -2,6 +2,8 @@ defmodule Mutare.CLI.Outcome do
   @moduledoc false
   # The run-outcome presentation of `mix mutare`, extracted from `Mix.Tasks.Mutare`: `report/2`
   # emits every configured reporter and applies the post-report CI gates (or notes an early stop);
+  # `checkpoint/3` and `report_interrupted/4` write the partial reports of a run still in
+  # progress (`Mutare.CLI.PartialReport`);
   # `warn_poison_recovery/1` prints the durable `:call_routes` fix after a poison-recovered run; and
   # `format_error/3` renders each terminal `{:error, reason, detail}` into the message the task
   # `Mix.raise`s. All output is the task's (stdout report, stderr notes) — this only builds it.
@@ -50,6 +52,76 @@ defmodule Mutare.CLI.Outcome do
     Enum.each(options.reporters, fn {format, path} ->
       emit(format, path, results, schema, options)
     end)
+  end
+
+  # The formats a report of an unfinished run is written in. JSON (and the HTML page embedding
+  # it) marks each untested mutant `Pending`, so a partial one reads as partial; SARIF has no such
+  # mark, and a partial upload would close the code-scanning alerts of every mutant not yet tested.
+  @partial_formats [:human, :json, :html]
+
+  # The formats worth rewriting on disk as a run progresses: those that mark untested mutants.
+  @checkpoint_formats [:json, :html]
+
+  @doc false
+  # Whether `options` configure any report a checkpoint would write.
+  def checkpoints?(%Options{} = options), do: checkpoint_targets(options) != []
+
+  @doc false
+  # Rewrite each JSON/HTML report bound for a file with the results so far, untested mutants
+  # `Pending`. Silent: the live progress already says how far the run has got.
+  def checkpoint(results, %Schema{} = schema, %Options{} = options) do
+    Enum.each(checkpoint_targets(options), fn {format, path} ->
+      write_report!(path, render_for(format, results, schema, options))
+    end)
+  end
+
+  defp checkpoint_targets(%Options{reporters: reporters}),
+    do: Enum.filter(reporters, fn {format, path} -> format in @checkpoint_formats and path end)
+
+  @doc false
+  # The reports of a run stopped by a signal: every report but SARIF, from the results the run
+  # had accepted, then a note on stderr of how far it got. With no result yet — the signal came
+  # before the first mutant finished, and `schema` is `nil` if it came during the scan — no
+  # report is written, so a previous run's reports stay as they were.
+  def report_interrupted(results, schema, %Options{} = options, signal) do
+    if results != [] do
+      options.reporters
+      |> Enum.filter(fn {format, _path} -> format in @partial_formats end)
+      |> Enum.each(fn {format, path} -> emit(format, path, results, schema, options) end)
+    end
+
+    IO.puts(:stderr, interrupted_note(results, schema, options, signal))
+  end
+
+  defp interrupted_note(results, schema, options, signal) do
+    [headline(results, schema, options, signal) | partial_notes(results, options)]
+    |> Enum.join(" ")
+  end
+
+  defp headline([], _schema, _options, signal),
+    do: "stopped on #{signal} before any mutant was tested; no report was written."
+
+  defp headline(results, %Schema{} = schema, options, signal) do
+    total = Schema.count(schema)
+
+    "stopped on #{signal}; evaluated #{length(results)} of #{total} mutant#{CLI.plural(total)}. " <>
+      "The mutation score above is over this partial set" <> gate_skipped_note(options)
+  end
+
+  defp partial_notes(results, %Options{reporters: reporters}) do
+    formats = Enum.map(reporters, &elem(&1, 0))
+    marking = Enum.filter(@checkpoint_formats, &(&1 in formats))
+
+    [
+      (results != [] and marking != []) &&
+        "The #{Enum.map_join(marking, " and ", &String.upcase(to_string(&1)))} " <>
+          "report#{CLI.plural(length(marking))} mark#{if length(marking) == 1, do: "s"} " <>
+          "the untested mutants Pending.",
+      :sarif in formats &&
+        "The SARIF report was not written: a partial one would close the code-scanning " <>
+          "alerts of the untested mutants."
+    ]
+    |> Enum.filter(&is_binary/1)
   end
 
   # On a complete run, apply the post-report CI gates. On an early stop
@@ -118,12 +190,37 @@ defmodule Mutare.CLI.Outcome do
   end
 
   defp emit(format, path, results, schema, options) do
-    File.write!(path, render_for(format, results, schema, options))
+    write_report!(path, render_for(format, results, schema, options))
     Mix.shell().info("wrote #{format} report to #{path}")
   end
 
-  defp render_for(format, results, schema, options) do
-    Options.renderer(format).render(results, schema.sources, min_score: options.min_score)
+  # Every site with no result is `pending:` — none after a complete run; after an early stop,
+  # an interruption, or at a checkpoint, the mutants not yet tested.
+  defp render_for(format, results, %Schema{} = schema, options) do
+    tested = MapSet.new(results, & &1.site.id)
+    pending = Enum.reject(schema.sites, &MapSet.member?(tested, &1.id))
+
+    Options.renderer(format).render(results, schema.sources,
+      min_score: options.min_score,
+      pending: pending
+    )
+  end
+
+  # Write beside `path`, then rename over it: a kill mid-write leaves the previous report (a
+  # checkpoint's, or an earlier run's) whole, plus a stray temporary file, never a truncated one.
+  defp write_report!(path, content) do
+    temp =
+      Path.join(
+        Path.dirname(path),
+        ".#{Path.basename(path)}.#{System.unique_integer([:positive])}.tmp"
+      )
+
+    try do
+      File.write!(temp, content)
+      File.rename!(temp, path)
+    after
+      File.rm(temp)
+    end
   end
 
   defp gate(results, %Options{} = options) do

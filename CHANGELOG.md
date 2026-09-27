@@ -13,6 +13,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and ETA at each tenth of the mutants, and at least every two minutes in every phase
   (the compile included), so a CI system that kills jobs after a stretch without output
   no longer kills a healthy run, and the latest line tells a log reader where the run stands.
+- A JSON or HTML report bound for a file is rewritten as the run progresses — at each tenth
+  of the mutants and within two minutes of any new result — with the mutants not yet tested
+  marked `Pending`, so a run that is killed, even by SIGKILL, keeps its results.
+- On SIGTERM, a run writes every report except SARIF from the results so far (untested
+  mutants `Pending` in JSON and HTML), says on stderr how far it got, and exits with status 143.
+
+### Changed
+
+- A JSON or HTML report of a run that stopped early (`--max-survivors`, `--time-budget`)
+  lists the mutants it did not test as `Pending` rather than leaving them out.
+- Reports are written to a temporary file beside their path and renamed into place, so a
+  kill mid-write leaves the previous report whole.
+
+### Fixed
+
+- A run stopped by SIGTERM exited with status 0, as if it had succeeded.
 
 ## [0.4.2] - 2026-09-27
 

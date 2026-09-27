@@ -34,6 +34,24 @@ defmodule Mutare.Report.JsonTest do
     results |> Json.render(sources, opts) |> JSON.decode!()
   end
 
+  test "a site with no result is Pending, beside the results, in id order" do
+    pending = [site(3, file: "lib/a.ex"), site(1, file: "lib/b.ex", mutated_code: "a - b")]
+
+    doc =
+      decode([result(:killed, id: 2)], %{"lib/a.ex" => "a >= b", "lib/b.ex" => "a + b"},
+        pending: pending
+      )
+
+    assert Enum.map(doc["files"]["lib/a.ex"]["mutants"], &{&1["id"], &1["status"]}) ==
+             [{"2", "Killed"}, {"3", "Pending"}]
+
+    assert [%{"id" => "1", "status" => "Pending", "replacement" => "a - b"} = mutant] =
+             doc["files"]["lib/b.ex"]["mutants"]
+
+    refute Map.has_key?(mutant, "duration")
+    assert doc["files"]["lib/b.ex"]["source"] == "a + b"
+  end
+
   test "emits the schema envelope: version, thresholds, files" do
     doc = decode([result(:survived)])
     assert doc["schemaVersion"] == "1.0"

@@ -204,6 +204,8 @@ mix mutare --report json:mutare.json --report sarif:mutare.sarif
 - `html` — the same JSON embedded in a single interactive HTML report.
 - `sarif` — surviving mutants as SARIF 2.1.0 findings for GitHub code scanning.
 
+A JSON or HTML report written to a file is kept up to date while the run is in progress, with the mutants not yet tested marked `Pending`, so a run killed partway still leaves its results behind. On SIGTERM, Mutare writes every report except SARIF from the results so far and exits with status 143.
+
 When every machine format is written to a file, Mutare still prints the human report to the console; when any report is directed to stdout (no `:PATH`), the human report is suppressed to avoid a collision. Only one report may be directed to stdout, and no two may share a path — a second document on the same destination would corrupt or overwrite the first, so `--report json --report sarif` is rejected rather than run.
 
 ### Routing calls: skipping calls and arguments

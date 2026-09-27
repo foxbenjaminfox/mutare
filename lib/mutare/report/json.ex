@@ -2,12 +2,12 @@ defmodule Mutare.Report.Json do
   @moduledoc """
   Renders a mutation run as a mutation-testing-elements report-schema JSON document (the schema used by Stryker and its viewer/dashboard).
 
-  This is the lossless machine format: every mutant (not just survivors) is emitted, keyed by file, with its location and status. Mutare's `Mutare.Result` statuses map exactly onto the schema's `MutantStatus` vocabulary (see `status/1`), so the report drops straight into the existing ecosystem — `Mutare.Report.Html` embeds this same document into the report web component, and it can be uploaded to the Stryker dashboard unchanged.
+  This is the lossless machine format: every mutant (not just survivors) is emitted, keyed by file, with its location and status. A mutant the run has no result for — a report written before the run finished, or after it stopped early — is emitted as `Pending`, so a partial report never reads as a complete one. Mutare's `Mutare.Result` statuses map exactly onto the schema's `MutantStatus` vocabulary (see `status/1`), so the report drops straight into the existing ecosystem — `Mutare.Report.Html` embeds this same document into the report web component, and it can be uploaded to the Stryker dashboard unchanged.
 
   Emitted by `mix mutare --report json` or `mix mutare --report json:path.json`.
   """
 
-  alias Mutare.Result
+  alias Mutare.{Result, Site}
   alias Mutare.Report.HarnessDiagnostic
   alias Mutare.Result.Status
 
@@ -31,14 +31,15 @@ defmodule Mutare.Report.Json do
   @doc """
   Render `results` and their original `sources` as a report-schema JSON string.
 
-  `opts[:min_score]` (when set) becomes the report's score thresholds.
+  `opts[:min_score]` (when set) becomes the report's score thresholds, and
+  `opts[:pending]` lists the sites with no result yet, emitted as `Pending`.
   """
   @spec render([Result.t()], %{optional(String.t()) => String.t()}, keyword()) :: String.t()
   def render(results, sources, opts \\ []) do
     %{
       schemaVersion: @schema_version,
       thresholds: thresholds(opts[:min_score]),
-      files: files(results, sources)
+      files: files(results ++ Keyword.get(opts, :pending, []), sources)
     }
     |> JSON.encode!()
   end
@@ -50,31 +51,47 @@ defmodule Mutare.Report.Json do
     %{high: n, low: n}
   end
 
-  defp files(results, sources) do
-    results
-    |> Enum.group_by(& &1.site.file)
-    |> Map.new(fn {file, file_results} ->
+  # `entries` are results and pending sites together, each file's in id order.
+  defp files(entries, sources) do
+    entries
+    |> Enum.group_by(&site(&1).file)
+    |> Map.new(fn {file, file_entries} ->
       {file,
        %{
          language: "elixir",
          source: Map.get(sources, file, ""),
-         mutants: Enum.map(file_results, &mutant/1)
+         mutants: file_entries |> Enum.sort_by(&site(&1).id) |> Enum.map(&mutant/1)
        }}
     end)
   end
 
+  defp site(%Result{site: site}), do: site
+  defp site(%Site{} = site), do: site
+
+  defp mutant(%Site{} = site) do
+    site
+    |> base_mutant()
+    |> Map.put(:status, "Pending")
+    |> put_present(:description, site.note)
+  end
+
   defp mutant(%Result{site: site} = result) do
-    %{
-      id: to_string(site.id),
-      mutatorName: to_string(site.mutator),
-      replacement: site.mutated_code || "",
-      location: location(site.range),
-      status: Status.fetch!(result.status).json
-    }
+    site
+    |> base_mutant()
+    |> Map.put(:status, Status.fetch!(result.status).json)
     |> put_present(:statusReason, status_reason(result))
     |> put_present(:description, site.note)
     |> put_present(:duration, result.duration_ms)
     |> put_present(:testSelection, selection(result.selection))
+  end
+
+  defp base_mutant(%Site{} = site) do
+    %{
+      id: to_string(site.id),
+      mutatorName: to_string(site.mutator),
+      replacement: site.mutated_code || "",
+      location: location(site.range)
+    }
   end
 
   # Mutare's addition to the schema's `MutantResult` (the schema permits extra

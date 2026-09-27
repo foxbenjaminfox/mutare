@@ -1297,6 +1297,55 @@ conditions into the one drain trigger. Several decisions make it well-behaved:
   are not charged against it (they have their own caps), so the budget means "time spent running
   mutants."
 
+### A killed run keeps its reports `[done]`
+Reports used to be rendered once, after the runner returned, so a killed run left nothing —
+and a SIGTERM went to the VM's default handler, `init:stop()`, which exits **0**: a cancelled
+or timed-out CI job read as a success. Now `Mutare.CLI.PartialReport` (started by the Mix task,
+fed through the `:reporter` hook) keeps every accepted result and writes them two ways.
+
+- **Checkpoints, for SIGKILL.** Nothing catches a SIGKILL (the OOM killer, a CI hard timeout,
+  a grace period running out), so the only report that survives one is already on disk. The
+  JSON/HTML reports bound for a file are rewritten at each tenth of the mutants and within
+  `@interval_ms` (two minutes) of any unwritten result — a timer, so a result followed by one
+  slow mutant is not held back. Every report write goes through a temporary file beside the
+  path and a rename, so a kill mid-write leaves the previous checkpoint whole (at worst a stray
+  `.name.N.tmp` beside it) rather than a truncated file.
+- **`Pending`, so partial reads as partial.** The report schema's `MutantStatus` has `Pending`
+  (checked in the schema the HTML page's pinned bundle ships), and `Json.render/3` takes the
+  untested sites as `pending:`. The same rule covers every report: a site with no result is
+  pending — none after a complete run, the untested ones after an early stop or at a checkpoint.
+  Pending is computed against the *scan-time* schema; poison recovery keeps ids stable and marks
+  sites rather than dropping them, so the two schemas list the same ids.
+- **SARIF is never partial by accident.** It has no pending mark, and GitHub code scanning
+  closes the alerts absent from a new upload in the same category — a killed run followed by an
+  `if: always()` upload step would close alerts for survivors that were merely not tested. So
+  checkpoints never write it and a SIGTERM skips it; the only partial SARIF is one a user asked
+  for with `--max-survivors`/`--time-budget`. Writing it to an invented sibling path
+  (`mutare.sarif.partial`) was considered and rejected: the user names the paths Mutare writes.
+- **SIGTERM halts; it does not drain.** An early stop lets in-flight mutants finish, which can
+  take a full per-mutant cap; SIGTERM grace periods are seconds (10s for `docker stop`, 30s for
+  Kubernetes). So the trap writes from the results already accepted — the in-flight ones would
+  be discarded anyway — and `System.halt(143)`; the sandbox subprocesses die with it through
+  the owner-death watcher (NOTES "Owner-death reaping"), and a stale sandbox lock is reclaimed
+  by its liveness check. A `--no-keep-sandbox` temp copy is left behind, as after a SIGKILL.
+- **The trap must not return.** `System.trap_signal/3` is the sanctioned way (its docs allow it
+  in Mix tasks), but the VM's default SIGTERM handler still runs *after* every trap — so a trap
+  that returned would be followed by `init:stop()` and exit 0. `PartialReport.interrupt/1`
+  halts in an `after`, whatever the writes do — there rather than in the task's callback, which
+  keeps the never-returning code to one clause (and Dialyzer's `no_return` quiet). A hand-rolled `:erl_signal_server` handler that
+  removed the default was the first version; the trap does the same job without touching the
+  VM's own handler (and without taking SIGQUIT/SIGUSR1 handling with it).
+- **`close/1` before the final reports.** The final reports go to the checkpoints' paths, so a
+  checkpoint landing after them would replace a complete report with a partial one. Once
+  closed, `PartialReport` drops further results, and a SIGTERM during the final writes just
+  halts (the atomic writes leave each file either the last checkpoint or the final report).
+- **SIGINT is not covered.** The VM does not let a program trap it: it opens the BREAK menu,
+  which on a terminal waits for input and without one reads EOF and exits with status 0. Only
+  the last checkpoint survives.
+- **Deferred: resume.** An append-only log of results would let a re-run skip mutants a killed
+  run already tested — the fix for runs too long for one CI job. It needs to know an old verdict
+  still holds (same source, same suite, same mutant ids), so it is a feature of its own.
+
 ### Umbrella support `[M5, done; was in progress]`
 Following the cargo-mutants precedent: **copy the whole umbrella, mutate a scoped
 subset of apps.** The whole tree travels to the sandbox so `in_umbrella` sibling

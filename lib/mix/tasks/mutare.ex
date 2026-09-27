@@ -282,6 +282,8 @@ defmodule Mix.Tasks.Mutare do
 
   Each destination takes one report: at most one may omit `:PATH` (two documents on stdout would be valid in neither format), and no two may name the same path (only the last written would survive). Either collision is a startup error naming the clashing formats.
 
+  A run that is killed keeps what it found. While mutants run, a `json` or `html` report bound for a file is rewritten at each tenth of the mutants and within two minutes of any new result, with every mutant not yet tested marked `Pending`; each write replaces the file whole, so even a SIGKILL leaves the last complete checkpoint. A SIGTERM stops the run at once: every report except SARIF is written from the results so far (untested mutants `Pending` in JSON and HTML), a note on stderr says how far the run got, and the run exits with status 143. SARIF is written only by a run that finishes or stops early on `--max-survivors`/`--time-budget` — a partial upload would close the code-scanning alerts of every mutant it did not test. A report written after an early stop also marks the untested mutants `Pending`. A SIGINT (Ctrl-C) is not trapped — the VM answers it with its BREAK menu — so it leaves only the last checkpoint.
+
   ## Configuration file (`.mutare.exs`)
 
   Configuration may also be placed in `.mutare.exs` (a keyword list); a CLI flag overrides the matching key. Every option is optional — the block below lists all the file-settable keys with their defaults:
@@ -407,7 +409,7 @@ defmodule Mix.Tasks.Mutare do
 
   alias Mutare.{Config, Options, Project, Runner, Schema}
   alias Mutare.CLI
-  alias Mutare.CLI.{Diagnostics, Info, Outcome}
+  alias Mutare.CLI.{Diagnostics, Info, Outcome, PartialReport}
   alias Mutare.Options.Registry
   alias Mutare.Report.Live
   alias Mutare.Run.Context
@@ -521,13 +523,50 @@ defmodule Mix.Tasks.Mutare do
     # rendering eagerly (they describe *every* site).
     context = %{context | defer_site_code: defer_site_code?(options)}
 
-    run_compiled(project, context, root, since, &Runner.run_with_schema/3, %{
-      ok: fn run ->
-        Outcome.warn_poison_recovery(run)
-        Outcome.report(run, options)
-      end,
-      unchanged: &Outcome.report_unchanged(&1, since, options)
-    })
+    # A killed run keeps its reports: the partial report checkpoints the JSON/HTML reports as
+    # results arrive, and a SIGTERM writes every report but SARIF from the results so far, then
+    # halts with the status a SIGTERM death reports. Trapped before the scan, so a SIGTERM at
+    # any point of the run exits non-zero; `begin/3` replaces the scan-time callback once the
+    # schema and the live reporter exist. NOTES "A killed run keeps its reports".
+    {:ok, partial} = PartialReport.start_link(options, &interrupted(&1, nil, nil, options))
+    sigterm = trap_sigterm(fn -> PartialReport.interrupt(partial) end)
+
+    runner = fn schema, root, run_context, live ->
+      :ok = PartialReport.begin(partial, schema, &interrupted(&1, schema, live, options))
+      result = Runner.run_with_schema(schema, root, PartialReport.observe(run_context, partial))
+      # The final reports go to the checkpoints' paths: no checkpoint may land after them.
+      :ok = PartialReport.close(partial)
+      result
+    end
+
+    try do
+      run_compiled(project, context, root, since, runner, %{
+        ok: fn run ->
+          Outcome.warn_poison_recovery(run)
+          Outcome.report(run, options)
+        end,
+        unchanged: &Outcome.report_unchanged(&1, since, options)
+      })
+    after
+      if sigterm, do: System.untrap_signal(:sigterm, sigterm)
+      GenServer.stop(partial)
+    end
+  end
+
+  # The VM's own SIGTERM handler (`init:stop()`, exit status 0) runs after every trap, so the
+  # trap must not return: `PartialReport.interrupt/1` halts. `nil` where the OS has no SIGTERM
+  # to trap.
+  defp trap_sigterm(fun) do
+    case System.trap_signal(:sigterm, fun) do
+      {:ok, id} -> id
+      {:error, :not_sup} -> nil
+    end
+  end
+
+  # A SIGTERM before the final reports, in the partial report's process, which halts after it.
+  defp interrupted(results, schema, live, options) do
+    finish_live(live)
+    Outcome.report_interrupted(results, schema, options, "SIGTERM")
   end
 
   # `--check`: the compile-only preflight. Scan + compile the metamutant (with the same
@@ -540,7 +579,11 @@ defmodule Mix.Tasks.Mutare do
   defp run_check(%Project{} = project, %Context{} = context, root, since) do
     context = %{context | defer_site_code: true}
 
-    run_compiled(project, context, root, since, &Runner.check_with_schema/3, %{
+    runner = fn schema, root, run_context, _live ->
+      Runner.check_with_schema(schema, root, run_context)
+    end
+
+    run_compiled(project, context, root, since, runner, %{
       ok: &Info.print_check(&1, project),
       unchanged: fn _schema -> Mix.shell().info(Outcome.unchanged_note(since)) end
     })
@@ -567,7 +610,7 @@ defmodule Mix.Tasks.Mutare do
         finish_live(live)
         on.unchanged.(schema)
       else
-        result = runner.(schema, root, run_context)
+        result = runner.(schema, root, run_context, live)
         finish_live(live)
 
         case result do
