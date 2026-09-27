@@ -46,7 +46,7 @@ defmodule Mutare.Transform.RescueEmit do
         end)
 
       {rescues, whole} = Enum.split_with(claimed, fn {_id, c} -> rescue_candidate?(c) end)
-      default = Meta.strip_delivery(node)
+      default = Meta.Lifecycle.consume_delivery(node)
 
       if length(rescues) >= 2 do
         {rewritten, ctx} = factor(meta, blocks, rescues, binding, ctx)

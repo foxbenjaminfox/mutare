@@ -132,7 +132,7 @@ defmodule Mutare.Transform.PipeEmit do
 
   # The node as the candidates were offered it — with its routes, without its candidates.
   defp original_of([%Candidate.InPlace{original: original} | _], _node), do: original
-  defp original_of(_candidates, node), do: Meta.strip_delivery(node)
+  defp original_of(_candidates, node), do: Meta.Lifecycle.consume_delivery(node)
 
   @doc """
   Which selector of `delivery` `candidate` is delivered in, and its branch there — a retained

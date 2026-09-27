@@ -429,7 +429,7 @@ defmodule Mutare.Site do
   # A remote form can contain a runtime receiver with routed calls of its own. Their lexical
   # environments belong only to analysis, never to the retained report or its identity.
   defp node_form(node) when is_tuple(node),
-    do: node |> elem(0) |> Mutare.Transform.Resolve.forget()
+    do: node |> elem(0) |> Mutare.Transform.Meta.Lifecycle.release_analysis()
 
   defp node_form(_node), do: nil
 

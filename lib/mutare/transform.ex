@@ -520,7 +520,7 @@ defmodule Mutare.Transform do
 
     # Resolution environments are capabilities for analysis, not part of the emitted program.
     # Release their registries and diagnostic sinks before fingerprinting or rendering.
-    {Resolve.forget(transformed), ctx}
+    {Meta.Lifecycle.release_analysis(transformed), ctx}
   end
 
   # The count pass's side channel, read off the annotated tree it already has: which route keys
@@ -1329,10 +1329,10 @@ defmodule Mutare.Transform do
       {:in_place, candidates} ->
         emit_site(current, candidates, ctx)
 
-      # No deliverable candidates. `Meta.strip_delivery` clears any meta left by candidates the
-      # gate dropped (a no-op when there were none), so the node renders clean.
+      # No deliverable candidates. Consume annotations left by candidates the gate dropped
+      # (a no-op when there were none), so the node renders clean.
       :none ->
-        {Meta.strip_delivery(current), ctx}
+        {Meta.Lifecycle.consume_delivery(current), ctx}
     end
   end
 
@@ -1384,7 +1384,9 @@ defmodule Mutare.Transform do
         {layer, {candidate, {:->, [], [[id], ImportWitness.wrap(branch, witness)]}}}
       end)
 
-    PipeEmit.layers(delivery, Meta.strip_delivery(node), claimed, ctx, fn default, live, ctx ->
+    PipeEmit.layers(delivery, Meta.Lifecycle.consume_delivery(node), claimed, ctx, fn default,
+                                                                                      live,
+                                                                                      ctx ->
       {candidates, clauses} = Enum.unzip(live)
       {case_node, ctx} = SelectorEmit.selector_case(default, clauses, ctx)
       {pin_if_needed(case_node, candidates), ctx}

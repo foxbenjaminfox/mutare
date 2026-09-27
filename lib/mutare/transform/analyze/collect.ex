@@ -125,7 +125,7 @@ defmodule Mutare.Transform.Analyze.Collect do
   defp walk({_form, _meta, _args} = node, rev_path, acc) do
     {candidates, node} = Meta.take_candidates(node, :in_place)
     {hosted, node} = Meta.take_candidates(node, :hosted)
-    {form, meta, args} = Meta.strip_delivery(node)
+    {form, meta, args} = Meta.Lifecycle.consume_delivery(node)
 
     {form, acc} = walk(form, [0 | rev_path], acc)
 

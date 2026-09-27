@@ -95,7 +95,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
           {Macro.t(), Ctx.t()}
   def macro_pattern_site(node, candidates, ctx) do
     %Candidate.MacroPattern{export: export} = hd(candidates)
-    baseline = Meta.strip_delivery(node)
+    baseline = Meta.Lifecycle.consume_delivery(node)
 
     binding_site(
       node,
@@ -141,7 +141,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
     case clauses do
       [] ->
-        {Meta.strip_delivery(node), ctx}
+        {Meta.Lifecycle.consume_delivery(node), ctx}
 
       _ ->
         ids = SelectorEmit.ids_from_clauses(clauses)

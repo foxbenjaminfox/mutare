@@ -6,6 +6,10 @@ defmodule Mutare.ResolvePipeRoundtripPropertyTest do
 
       for every module `m`, `resugar(annotate(m))` is `m`, Mutare's own stamps aside.
 
+  Lifecycle transitions must preserve the same spelling: preserving syntax is idempotent,
+  releasing analysis is idempotent, and release commutes with resugaring, including metadata
+  nested in pipe grouping history.
+
   What it catches: a spelling `written/1` does not invert (a stage written without parentheses,
   a structural head as a stage), and any rewrite in `Resolve` that is not the pipe's.
   """
@@ -13,6 +17,7 @@ defmodule Mutare.ResolvePipeRoundtripPropertyTest do
   use PropCheck
 
   alias Mutare.Transform.{MetaKeys, Resolve, WrittenPipe}
+  alias Mutare.Transform.Meta.Lifecycle
   alias Mutare.TransformPropertyGenerators, as: Gen
 
   # Generating a module dominates a case; the other transform soaks' budget.
@@ -31,7 +36,15 @@ defmodule Mutare.ResolvePipeRoundtripPropertyTest do
 
       resolved = Resolve.annotate(parsed)
 
-      (comparable(WrittenPipe.resugar(resolved)) == comparable(parsed))
+      released = Lifecycle.release_analysis(resolved)
+      preserved = Lifecycle.preserve_written(resolved)
+
+      (comparable(WrittenPipe.resugar(resolved)) == comparable(parsed) and
+         comparable(preserved) == comparable(parsed) and
+         Lifecycle.preserve_written(preserved) == preserved and
+         Lifecycle.release_analysis(released) == released and
+         Lifecycle.release_analysis(WrittenPipe.resugar(resolved)) ==
+           WrittenPipe.resugar(released))
       |> when_fail(IO.puts(Macro.to_string(parsed)))
     end
   end

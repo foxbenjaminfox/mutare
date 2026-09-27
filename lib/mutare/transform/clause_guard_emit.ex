@@ -41,7 +41,7 @@ defmodule Mutare.Transform.ClauseGuardEmit do
       end)
 
     {guards, whole} = Enum.split_with(claimed, fn {_id, c} -> clause_guard?(c) end)
-    {default, ctx} = deliver(Meta.strip_delivery(node), guards, ctx)
+    {default, ctx} = deliver(Meta.Lifecycle.consume_delivery(node), guards, ctx)
     select(default, whole, ctx)
   end
 

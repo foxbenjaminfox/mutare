@@ -28,14 +28,15 @@ defmodule Mutare.Transform.Meta do
   # `MetaKeys` accessor — so they are drift-safe and stay there; only the cross-cutting and
   # raw-literal families move here.
   #
+  # Lifecycle transitions live in `Meta.Lifecycle`: invalidating call resolution,
+  # restoring written syntax, consuming delivery, and releasing analysis capabilities.
+  # `strip_delivery/1` remains a compatibility delegate to that policy.
+  #
   # Every function is **total** over a bare literal node (a node with no keyword metadata):
   # readers return the empty/`nil` default, writers return the node unchanged. So a caller walking
   # mixed AST never needs its own shape guard.
 
   alias Mutare.Transform.MetaKeys
-
-  # The full delivery-key list, frozen at compile time for the hot `strip_delivery/1` path.
-  @delivery_keys MetaKeys.delivery()
 
   @typedoc "A logical candidate-delivery kind, mapped to its meta key by `MetaKeys`."
   @type kind :: :in_place | :case | :hosted
@@ -112,10 +113,7 @@ defmodule Mutare.Transform.Meta do
   bare literal.
   """
   @spec strip_delivery(Macro.t()) :: Macro.t()
-  def strip_delivery({form, meta, args}) when is_list(meta),
-    do: {form, Keyword.drop(meta, @delivery_keys), args}
-
-  def strip_delivery(node), do: node
+  defdelegate strip_delivery(node), to: Mutare.Transform.Meta.Lifecycle, as: :consume_delivery
 
   defp delivery_key(:in_place), do: MetaKeys.in_place_key()
   defp delivery_key(:case), do: MetaKeys.case_key()
@@ -221,7 +219,7 @@ defmodule Mutare.Transform.Meta do
   Drop every route stamp from a call's meta — the positions or `:skip` (`routing/1`), the
   displaced declaration (`displaced_routing/1`) and the identity (`routed_call/1`) — leaving
   the retained environment, so the call can be routed again as the call it now is
-  (`Mutare.Transform.Resolve.reroute/1`).
+  (`Mutare.Transform.Resolve.reroute/2`).
   """
   @spec drop_routing(keyword()) :: keyword()
   def drop_routing(meta) do

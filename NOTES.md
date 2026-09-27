@@ -14601,3 +14601,30 @@ The reader tests moved from `binding_escape_emit_test.exs` to `binding_facts_tes
 The compiler oracle and routing regressions call the extracted readers directly.
 The transform differential against the pre-refactor revision is byte-identical over
 3,140 snapshots (metamutants and public site records).
+
+### Annotation lifetimes are explicit transitions (2026-09-27)
+
+`MetaKeys` names annotations and `Meta` reads and writes them; neither said which survive a
+rewrite. `Resolve` consequently owned both a call-invalidation strip list and the recursive
+release of environments, intertwined with pipe spelling. `Meta.Lifecycle` now owns those
+transitions: invalidate one call's resolution (including its remote alias head), restore its
+written shape before resolving it again, preserve an entire withheld syntax region, consume
+one node's delivery annotations, and release retained analysis capabilities throughout a tree.
+`WrittenPipe` still owns the spelling codec. The release still distinguishes node metadata
+from program data, including when a node is itself carried by metadata. Existing `forget/1`
+and `strip_delivery/1` entries delegate; production callers name the lifecycle transition.
+
+`Resolve.Environment.Inputs` groups the semantic scope — aliases, imports, Kernel selector,
+enclosing module, routes and marks. Reuse compares those inputs directly. Diagnostics,
+`on_resolve` and the replacement walk's reuse set belong to `Environment` outside its inputs.
+Retention clears the reuse set while keeping the callback a host's Elixir island needs for
+the originating scan. This preserves the previous policy without an exclusion list in the
+reuse comparison. The pipe round-trip property also checks lifecycle spelling, idempotence,
+and that releasing analysis commutes with resugaring; the resolver regressions continue to
+exercise moved calls, changed directives, and boundaries that keep syntax unclassified.
+
+Validation: the transform differential against `HEAD` kept all 3,141 snapshots identical;
+`mix compile --warnings-as-errors` and `mix check` passed. The full suite passed with
+`--max-cases 8`: 96 doctests, 36 properties, 4,115 tests, zero failures and one skip. The
+initial fast run at the default concurrency timed out waiting for the shared compile lock;
+that test passed in the focused run and in the full run with reduced concurrency.

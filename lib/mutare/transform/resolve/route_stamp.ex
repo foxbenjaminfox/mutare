@@ -13,25 +13,20 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   alias Mutare.Transform.Analyze.CallOptions
   alias Mutare.Transform.{Calls, Imports, Meta, StructuralForms, WrittenPipe}
 
-  @typep diag :: %{warn?: boolean(), file: String.t()}
-
-  # The slice of the resolve pass's env this stamp reads: the known-macro registry and the
-  # diagnostics wiring
-  # (whether advisory warnings print, and the file that labels them) — see
-  # `Mutare.Transform.Resolve.annotate/3`.
-  @typep env :: %{
-           :call_routes => Routes.registry(),
-           :diag => diag(),
-           optional(atom()) => term()
-         }
-
   @doc """
   Stamp a call's meta with known-macro argument routing, when the registry in `env` matches it.
   """
-  @spec stamp(keyword(), Spec.module_key() | nil, atom(), [Macro.t()], Macro.t(), env()) ::
+  @spec stamp(
+          keyword(),
+          Spec.module_key() | nil,
+          atom(),
+          [Macro.t()],
+          Macro.t(),
+          Mutare.Transform.Resolve.Environment.t()
+        ) ::
           keyword()
   def stamp(meta, module_key, fun, args, call_node, env) do
-    %{call_routes: registry, diag: diag} = env
+    %{inputs: %{call_routes: registry}, diag: diag} = env
     arity = length(args)
 
     case Routes.lookup(registry, module_key, fun, arity) do

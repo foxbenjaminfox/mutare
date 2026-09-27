@@ -9,7 +9,7 @@ defmodule Mutare.Transform.MetaKeys do
   #
   #   * `Mutare.Transform.Render` strips **all** of them (`all/0`) just before rendering —
   #     the belt-and-suspenders final scrub.
-  #   * `Mutare.Transform.Meta.strip_delivery/1` strips the **candidate-delivery** subset
+  #   * `Mutare.Transform.Meta.Lifecycle.consume_delivery/1` strips the **candidate-delivery** subset
   #     (`delivery/0`) during emit, once a node's candidates are consumed and before the bare
   #     node is rebuilt.
   #
@@ -108,7 +108,7 @@ defmodule Mutare.Transform.MetaKeys do
     def unquote(name)(), do: unquote(key)
   end
 
-  @doc "The candidate-delivery meta keys — `Mutare.Transform.Meta.strip_delivery/1` drops these during emit."
+  @doc "The candidate-delivery meta keys — `Mutare.Transform.Meta.Lifecycle.consume_delivery/1` drops these during emit."
   @spec delivery() :: [atom()]
   def delivery, do: @delivery
 

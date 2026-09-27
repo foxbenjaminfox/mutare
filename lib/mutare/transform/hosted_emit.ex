@@ -44,7 +44,7 @@ defmodule Mutare.Transform.HostedEmit do
   @spec emit(Macro.t(), [Candidate.Hosted.t()], [Candidate.t()], Ctx.t(), emit_inplace()) ::
           {Macro.t(), Ctx.t()}
   def emit(node, hosted, inplace, ctx, emit_inplace) when is_function(emit_inplace, 3) do
-    base = Meta.strip_delivery(node)
+    base = Meta.Lifecycle.consume_delivery(node)
 
     {spliced, ctx, _woven} =
       Enum.reduce(hosted, {base, ctx, %{}}, fn candidate, {node, ctx, woven} ->

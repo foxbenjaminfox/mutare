@@ -43,7 +43,7 @@ defmodule Mutare.Transform.ReceiveClauseEmit do
         {id, c}
       end)
 
-    deliver(Meta.strip_delivery(node), claimed, ctx)
+    deliver(Meta.Lifecycle.consume_delivery(node), claimed, ctx)
   end
 
   defp deliver(node, [], ctx), do: {node, ctx}
