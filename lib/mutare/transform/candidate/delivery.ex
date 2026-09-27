@@ -348,8 +348,8 @@ defmodule Mutare.Transform.Candidate.Delivery do
        ) do
     range = range(c)
 
-    case attribution.mutated do
-      :drop ->
+    case attribution.operation do
+      :delete ->
         Site.in_place_drop(id, file, range, attribution.original, c.mutator,
           note: note(c),
           variant: variant(c),
@@ -357,8 +357,8 @@ defmodule Mutare.Transform.Candidate.Delivery do
           summary?: summary?
         )
 
-      mutated ->
-        Site.in_place(id, file, range, attribution.original, mutated, c.mutator,
+      :replace ->
+        Site.in_place(id, file, range, attribution.original, attribution.mutated, c.mutator,
           note: note(c),
           variant: variant(c),
           classified: c.classified,

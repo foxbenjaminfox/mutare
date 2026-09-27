@@ -9,6 +9,7 @@ defmodule Mutare.MutationOriginTest do
     defmacro hosted(expression), do: expression
     defmacro plain(expression), do: expression
     defmacro options(pairs), do: pairs
+    defmacro deletable(pairs), do: pairs
   end
 
   defmodule Adapter do
@@ -67,6 +68,32 @@ defmodule Mutare.MutationOriginTest do
     defp replace_argument({form, meta, [_]}, replacement), do: {form, meta, [replacement]}
   end
 
+  defmodule DropAtom do
+    @behaviour Mutare.Mutator
+
+    def name, do: :drop_atom
+    def mutate({:*, _meta, [_left, _right]}), do: [:drop]
+    def mutate(_), do: []
+  end
+
+  defmodule UntaggedDeletion do
+    @behaviour Mutare.Mutator
+
+    def name, do: :untagged_deletion
+    def variants, do: [:replacement]
+    def variant(_, _), do: raise("a deletion has no replacement pair to classify")
+
+    def mutate(node) do
+      case Mutare.Calls.resolved_call_to(node, DSL, :deletable) do
+        {:ok, :deletable, [[kept, dropped]], rebuild} ->
+          [Mutation.new(rebuild.(:deletable, [[kept]]), attribution: Mutation.at_drop(dropped))]
+
+        _ ->
+          []
+      end
+    end
+  end
+
   @mutators [Adapter, {Mutare.Mutators.Arithmetic, as: :math}]
 
   defp source(expression) do
@@ -94,6 +121,39 @@ defmodule Mutare.MutationOriginTest do
 
     assert Enum.map(mutations, &{&1.producer, &1.node, &1.note, &1.variant}) ==
              Analyze.expression_mutations(original, [Mutare.Mutators.Arithmetic])
+  end
+
+  for template <- ["EXPR", "hosted(EXPR)", "hosted(plain(hosted(EXPR)))"] do
+    @template template
+
+    test "the atom :drop remains a replacement through #{template}" do
+      expression = String.replace(@template, "EXPR", "{n * 2, options(first: n, second: 2)}")
+      sites = SourcePatch.assert_patches(source(expression), [Adapter, DropAtom], run: [3])
+
+      assert [replacement] = Enum.filter(sites, &(&1.mutator == :drop_atom))
+      assert replacement.operation == :replace
+      assert replacement.original_code == "n * 2"
+      assert replacement.mutated_code == ":drop"
+
+      assert [%{mutated_code: "", variant: ["drop"]}] =
+               Enum.filter(sites, &(&1.operation == :delete))
+    end
+
+    test "untagged deletions keep their labels and ignores through #{template}" do
+      expression = String.replace(@template, "EXPR", "deletable(first: n, second: 2)")
+      mutators = [Adapter, UntaggedDeletion]
+      [site] = SourcePatch.assert_patches(source(expression), mutators, run: [3])
+
+      assert site.operation == :delete
+      assert site.variant == []
+
+      for {qualifier, ignored?} <- [{":replacement", false}, {"", true}] do
+        src = source(expression <> " # mutare:ignore[untagged_deletion#{qualifier}]")
+        assert %{mutants: [site]} = Mutare.transform_string(src, mutators: mutators)
+        assert site.variant == []
+        assert site.ignored == ignored?
+      end
+    end
   end
 
   for expression <- [

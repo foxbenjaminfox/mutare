@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Mutare.Analyze.collect_expression/3` returns mutations with their original source
   attribution, producer, note and resolved variants. `Mutation.map_node/2` embeds their
   replacements while preserving that metadata; `expression_mutations/3` remains available
-  as the tuple-returning compatibility API.
+  as the tuple-returning compatibility API, which discards attribution. Adapters must use
+  `collect_expression/3` and preserve its mutation metadata to retain origins through relays.
 
 ### Fixed
 
@@ -20,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expression collection. Reports, line selection and ignores retain the original change's
   location even when delivery rebuilds an enclosing call.
 - The source range of infix `not in` includes its left operand.
+- Attribution records replacement or deletion explicitly: a literal `:drop` replacement stays
+  a replacement through collection and nested hosts. Untagged deletions keep no variant labels
+  across those boundaries; only replacements derive labels from `variant/2`.
 
 ## [0.4.1] - 2026-09-26
 

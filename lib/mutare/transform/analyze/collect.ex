@@ -200,12 +200,11 @@ defmodule Mutare.Transform.Analyze.Collect do
   defp mutation(%Candidate.InPlace{} = candidate) do
     attribution = candidate.attribution || Mutation.at(candidate.original, candidate.mutated)
     attribution = %{attribution | range: Delivery.range(candidate), position: candidate.position}
-    {original, mutated} = candidate.classified || {attribution.original, attribution.mutated}
 
     Mutation.new(candidate.mutated,
       producer: candidate.mutator,
       note: candidate.note,
-      variant: resolved_variant(candidate.mutator, original, mutated, candidate.variant),
+      variant: resolved_variant(candidate, attribution),
       attribution: attribution
     )
   end
@@ -230,18 +229,30 @@ defmodule Mutare.Transform.Analyze.Collect do
     do: List.update_at(list, index, &replace_at(&1, rest, replacement))
 
   # The mutant's variant label(s), resolved *now* at the node level — the same
-  # `Dispatch.variant/4` call `Mutare.Site` makes (production-time tag first, else the family's
+  # `Dispatch.variant/3` call `Mutare.Site` makes (production-time tag first, else the family's
   # `variant/2` derivation over the `{original, mutated}` node pair). Resolving here matters:
   # once the host wraps the rebuild under its pin, the fragment-level pair no longer has the
   # shape an operator family's `variant/2` derives from, so a Site-time derivation would come up
   # empty or call a custom derivation with a shape it does not handle. The resolved list rides
-  # the host's `%Mutation{}` as a carried tag, which Site-side `Dispatch.variant/4` takes
+  # the host's `%Mutation{}` as a carried tag, which Site-side `Dispatch.variant/3` takes
   # verbatim. `[]` is carried for an opted-in family whose node-level mutation has no label;
   # `nil` is kept only for families with no variant vocabulary.
-  defp resolved_variant(mutator, original, mutated, carried) do
-    labels = Dispatch.variant(mutator, original, mutated, carried)
+  defp resolved_variant(candidate, attribution) do
+    change =
+      case attribution.operation do
+        :delete ->
+          :delete
 
-    if labels == [] and not Dispatch.opted_in?(mutator.module),
+        :replace ->
+          {original, mutated} =
+            candidate.classified || {attribution.original, attribution.mutated}
+
+          {:replace, original, mutated}
+      end
+
+    labels = Dispatch.variant(candidate.mutator, change, candidate.variant)
+
+    if labels == [] and not Dispatch.opted_in?(candidate.mutator.module),
       do: nil,
       else: labels
   end

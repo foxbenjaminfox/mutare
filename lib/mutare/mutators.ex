@@ -188,7 +188,7 @@ defmodule Mutare.Mutators do
 
   # A module's declared variant labels as a downcased `MapSet`, or `:none` when it does not
   # opt in. "Opted in" is `Mutare.Mutator.Dispatch.opted_in?/1` — it exports `variants/0` (the
-  # vocabulary) — the same predicate `Mutare.Mutator.Dispatch.variant/4` gates recording on, so the
+  # vocabulary) — the same predicate `Mutare.Mutator.Dispatch.variant/3` gates recording on, so the
   # validation side here and the recording side can't disagree (a module with no `variants/0` is
   # `:none`, and a qualifier against it is a clean hard error rather than a silently-unmatched
   # label). How a family *assigns* its labels — a production-time `%Mutare.Mutator.Mutation{}` tag or

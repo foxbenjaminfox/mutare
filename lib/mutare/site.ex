@@ -63,7 +63,7 @@ defmodule Mutare.Site do
     # `zero`), and a qualified `# mutare:ignore[family:label]` filter matches if *any* of these
     # labels equals its token — declared by the mutator, *not* derived from the rendered AST (so
     # `relational:>` names the `>` swap, `return_value:empty` the empty constant). Set by
-    # `Mutare.Mutator.Dispatch.variant/4` — the label the producing mutator tagged on its
+    # `Mutare.Mutator.Dispatch.variant/3` — the label the producing mutator tagged on its
     # `%Mutare.Mutator.Mutation{}`, else derived via `c:Mutare.Mutator.variant/2`.
     variant: [],
     operation: :replace,
@@ -199,32 +199,12 @@ defmodule Mutare.Site do
       clause_node,
       mutator.name,
       :in_place,
-      drop_variant(mutator, clause_node, opts)
+      Keyword.put(
+        opts,
+        :variant,
+        Mutare.Mutator.Dispatch.variant(mutator, :delete, opts[:variant])
+      )
     )
-  end
-
-  # Normalize a *carried* `:variant` label list through the same `Dispatch.variant/4` path a replace
-  # site uses, so a delete site attributed to a family clause (a `Mutation.at_drop/1` — e.g.
-  # `mutare_ecto`'s filter/bound drop) carries its `# mutare:ignore[family:label]` vocabulary just
-  # like the replace path, keyed on the clause line. A delete has no `{original, mutated}` operator
-  # to derive from, so only a carried label is honored (the pair is passed as both, ignored when
-  # carried is present); with no `:variant` opt, or with the delivery layer's explicit
-  # `variant: nil` for an untagged drop, the variant stays `[]`.
-  defp drop_variant(mutator, clause_node, opts) do
-    case Keyword.fetch(opts, :variant) do
-      {:ok, nil} ->
-        Keyword.delete(opts, :variant)
-
-      {:ok, carried} ->
-        Keyword.put(
-          opts,
-          :variant,
-          Mutare.Mutator.Dispatch.variant(mutator, clause_node, clause_node, carried)
-        )
-
-      :error ->
-        opts
-    end
   end
 
   # The shared body of the two delete-site constructors (`clause_drop/4`, `in_place_drop/5`):
@@ -374,7 +354,7 @@ defmodule Mutare.Site do
           |> maybe_render(render?, range)
           |> Parenthesize.in_position(original_node, mutated_node),
         summary: replace_summary(mutator.name, original_node, mutated_node, summary?),
-        variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node)
+        variant: Mutare.Mutator.Dispatch.variant(mutator, {:replace, original_node, mutated_node})
     }
   end
 
@@ -417,7 +397,8 @@ defmodule Mutare.Site do
           |> Parenthesize.in_position(original_node, mutated_node),
         summary: replace_summary(mutator.name, original_node, mutated_node, summary?),
         note: opts[:note],
-        variant: Mutare.Mutator.Dispatch.variant(mutator, classified, classified_as, variant)
+        variant:
+          Mutare.Mutator.Dispatch.variant(mutator, {:replace, classified, classified_as}, variant)
     }
   end
 

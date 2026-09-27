@@ -18,8 +18,10 @@ defmodule Mutare.Mutator.Mutation do
 
     Names the clause a whole-node rewrite should be *reported at*, independent of the node spliced
     into the metamutant. `original` is the clause before the change (its range locates the site and
-    renders the diff's "before"); `mutated` is the clause after — a replacement node for `at/2`, or
-    the atom `:drop` for `at_drop/1` (a removed clause, reported as a delete). Build through `Mutare.Mutator.Mutation.at/2` and `Mutare.Mutator.Mutation.at_drop/1`.
+    renders the diff's "before"). `operation` distinguishes a `:replace`, whose `mutated`
+    is the replacement AST, from a `:delete`, whose `mutated` is unused (`nil`). No AST
+    value denotes deletion: `at(original, :drop)` replaces the original with the atom `:drop`.
+    Build through `Mutare.Mutator.Mutation.at/2` and `Mutare.Mutator.Mutation.at_drop/1`.
 
     Collected mutations also carry the core-resolved `range` and `position`: the source
     footprint and, when different, the location used for line selection and suppression
@@ -27,12 +29,21 @@ defmodule Mutare.Mutator.Mutation do
     when relaying a mutation; adapters need not set them.
     """
 
-    @enforce_keys [:original, :mutated]
-    defstruct [:original, :mutated, :range, :position]
+    @enforce_keys [:operation, :original, :mutated]
+    defstruct [:operation, :original, :mutated, :range, :position]
 
-    @type t :: %__MODULE__{
+    @type t :: replacement() | deletion()
+    @type replacement :: %__MODULE__{
+            operation: :replace,
             original: Macro.t(),
-            mutated: Macro.t() | :drop,
+            mutated: Macro.t(),
+            range: Sourceror.Range.t() | nil,
+            position: keyword() | nil
+          }
+    @type deletion :: %__MODULE__{
+            operation: :delete,
+            original: Macro.t(),
+            mutated: nil,
             range: Sourceror.Range.t() | nil,
             position: keyword() | nil
           }
@@ -157,7 +168,8 @@ defmodule Mutare.Mutator.Mutation do
       iex> %Mutation.Attribution{mutated: :desc} = Mutation.at(:asc, :desc)
   """
   @spec at(Macro.t(), Macro.t()) :: Attribution.t()
-  def at(original, mutated), do: %Attribution{original: original, mutated: mutated}
+  def at(original, mutated),
+    do: %Attribution{operation: :replace, original: original, mutated: mutated}
 
   @doc """
   Builds a report-location override that shows `original` **removed**.
@@ -169,9 +181,9 @@ defmodule Mutare.Mutator.Mutation do
   ## Examples
 
       iex> alias Mutare.Mutator.Mutation
-      iex> Mutation.at_drop(:some_clause).mutated
-      :drop
+      iex> Mutation.at_drop(:some_clause).operation
+      :delete
   """
   @spec at_drop(Macro.t()) :: Attribution.t()
-  def at_drop(original), do: %Attribution{original: original, mutated: :drop}
+  def at_drop(original), do: %Attribution{operation: :delete, original: original, mutated: nil}
 end

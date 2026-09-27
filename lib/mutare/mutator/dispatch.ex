@@ -530,6 +530,8 @@ defmodule Mutare.Mutator.Dispatch do
       module.mutate_call_option_keys?(opts)
   end
 
+  @type change :: :delete | {:replace, Macro.t(), Macro.t()}
+
   @doc """
   The **variant label(s)** recorded for one mutation of `spec`'s module — a deduplicated, downcased
   label list, or `[]` when the family hasn't opted in or this mutation has no label.
@@ -542,7 +544,9 @@ defmodule Mutare.Mutator.Dispatch do
        `Mutare.Mutator.Mutation.tagged/2` (the `%Mutation{}`'s `variant` field), threaded here from
        `mutations/3`. A value family tags here, where the semantic kind is known at construction.
     2. else **`c:Mutare.Mutator.variant/2`** — derived from the `{original, mutated}` pair, when the
-       module exports it. An operator family reads the swapped operator off the node this way.
+       module exports it and the change is a replacement. An operator family reads the swapped
+       operator off the node this way. A deletion has no replacement pair: it honors only carried
+       labels, returning `[]` when untagged. Collection and site construction share this policy.
 
   Both are gated on `opted_in?/1` (the family declared a `c:Mutare.Mutator.variants/0` vocabulary): a
   label is recorded only for a family with a vocabulary to validate it against, keeping this
@@ -553,8 +557,8 @@ defmodule Mutare.Mutator.Dispatch do
   yields `["pred", "zero"]`, and a qualifier naming *either* suppresses it. `carried`/`variant/2`
   may each be `nil`, a single label, or a list — all normalized here through `List.wrap/1`.
   """
-  @spec variant(Spec.t(), Macro.t(), Macro.t(), Mutation.variant()) :: [String.t()]
-  def variant(%Spec{module: module}, original, mutated, carried \\ nil) do
+  @spec variant(Spec.t(), change(), Mutation.variant()) :: [String.t()]
+  def variant(%Spec{module: module}, change, carried \\ nil) do
     cond do
       not opted_in?(module) ->
         []
@@ -562,7 +566,11 @@ defmodule Mutare.Mutator.Dispatch do
       not is_nil(carried) ->
         normalize_labels(carried)
 
+      change == :delete ->
+        []
+
       function_exported?(module, :variant, 2) ->
+        {:replace, original, mutated} = change
         normalize_labels(module.variant(original, mutated))
 
       true ->
@@ -575,7 +583,7 @@ defmodule Mutare.Mutator.Dispatch do
 
   @doc """
   Whether `module` opts into the variant-label system — it exports `c:Mutare.Mutator.variants/0`,
-  declaring the label vocabulary. The *single* definition of "opted in", shared by `variant/4`
+  declaring the label vocabulary. The *single* definition of "opted in", shared by `variant/3`
   (which records a site's label) and `Mutare.Mutators.vocabulary/1` (which validates a
   `[family:label]` qualifier against the declared labels) — so a family exposes a vocabulary
   exactly when its mutations can carry labels. *How* a family assigns those labels (a production-time

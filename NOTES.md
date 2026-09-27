@@ -14628,3 +14628,25 @@ Validation: the transform differential against `HEAD` kept all 3,141 snapshots i
 `--max-cases 8`: 96 doctests, 36 properties, 4,115 tests, zero failures and one skip. The
 initial fast run at the default concurrency timed out waiting for the shared compile lock;
 that test passed in the focused run and in the full run with reduced concurrency.
+
+### Attribution names the operation; deletions carry labels but never derive them (2026-09-27)
+
+Collection gives every logical mutation attribution before rebuilding its carrier. That
+exposed an ambiguity in the old representation: `at(original, :drop)` and `at_drop(original)`
+were identical. A producer returning the bare atom `:drop` executed a replacement, but after
+collection its report deleted the source. `Attribution.operation` now distinguishes replacement
+from deletion independently of the replacement AST; its types describe both alternatives.
+The constructors remain the adapter-facing boundary.
+
+Collection also derived variants for untagged deletions, though direct site construction
+deliberately did not. `Dispatch.variant/3` now takes a tagged replacement pair or `:delete`,
+so both callers share the policy: normalize carried labels, derive only for replacements.
+Collection carries `[]` for an opted-in family's untagged deletion, preserving that decision
+through further relays. The source-patch regressions compare ordinary, hosted and nested
+delivery, with a real deletion beside the `:drop` replacement; an untagged deletion's
+classifier raises if called, and its qualified and family-wide ignores agree on every path.
+
+Validation: loading the original modules in a separate VM makes both collected and nested
+regressions fail for each finding (four failures; direct controls pass). The fixed full suite
+passes with `--max-cases 8`: 96 doctests, 36 properties, 4,142 tests, zero failures and one skip.
+`mix compile --warnings-as-errors` and `mix check` also pass.

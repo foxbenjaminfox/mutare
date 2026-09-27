@@ -45,8 +45,16 @@ defmodule Mutare.AttributionTest do
       assert %Mutation.Attribution{original: :asc, mutated: :desc} = Mutation.at(:asc, :desc)
     end
 
-    test "at_drop/1 marks the mutated side as :drop" do
-      assert %Mutation.Attribution{original: :clause, mutated: :drop} = Mutation.at_drop(:clause)
+    test "at_drop/1 distinguishes deletion from every replacement AST" do
+      deletion = Mutation.at_drop(:clause)
+      assert %Mutation.Attribution{operation: :delete, original: :clause, mutated: nil} = deletion
+
+      for node <- [:drop, nil, {:delete, :clause}] do
+        assert %Mutation.Attribution{operation: :replace, mutated: ^node} =
+                 Mutation.at(:clause, node)
+
+        refute Mutation.at(:clause, node) == deletion
+      end
     end
 
     test "new/2 accepts an :attribution built by the constructors" do
