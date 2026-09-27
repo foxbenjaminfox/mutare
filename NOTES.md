@@ -14580,3 +14580,24 @@ variants for summaries and broad-run ids. `Sandbox.Command.test_argv/1` alone
 serializes paths and test filters, and accepts only runnable selections. Probe
 fallbacks, the declared-dependency app scopes, result labels, and the emitted
 Mix arguments keep their existing meanings.
+
+### Binding facts belong to analysis, not emission (2026-09-27)
+
+`BindingEscapeEmit` used to own the guaranteed-binding reader as well as tuple-export
+emission. The `Bindings` pre-pass and candidate analysis therefore depended on an emitter
+to understand source. `Transform.BindingFacts` now owns the expression-local readers:
+guaranteed escaping bindings, possible writes, unknown routing effects, and referenced
+names. The scope pre-pass, candidate gate and emitters all read those facts from it.
+The guaranteed and possible readers retain separate walks and their different conservative
+approximations; the extraction changes neither routing nor scoping semantics.
+
+`Bindings` still owns scope annotation and now supplies `incoming?/2` and `read_after?/2`.
+Candidate filtering, ordinary selector exports and structural match exports use these same
+queries. The gate still decides which source replacements are admissible before IDs are
+assigned; emission still chooses exports from the live branches after selection. Those
+decisions depend on different candidate sets and remain separate.
+
+The reader tests moved from `binding_escape_emit_test.exs` to `binding_facts_test.exs`.
+The compiler oracle and routing regressions call the extracted readers directly.
+The transform differential against the pre-refactor revision is byte-identical over
+3,140 snapshots (metamutants and public site records).

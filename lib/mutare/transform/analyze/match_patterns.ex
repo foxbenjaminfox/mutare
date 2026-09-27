@@ -14,7 +14,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   #   * a `for` qualifier                                       → `analyze_match_statement/2`
 
   alias Mutare.AST
-  alias Mutare.Transform.{BindingEscapeEmit, Bindings, Calls, Candidate, Meta, NodeRange}
+  alias Mutare.Transform.{BindingFacts, Bindings, Calls, Candidate, Meta, NodeRange}
   alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.Attach
   alias Mutare.Transform.PatternStructure
@@ -394,21 +394,17 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # exports is skipped — `export_with_rhs_chain/2` carries those with their occurrence
   # multiplicity, which this reading does not know.
   defp export_with_scope(export, expression, node) do
-    {bound, conflicts, _uncertain, later} = Meta.bindings(node)
+    scope = Meta.bindings(node)
     existing = export |> export_vars() |> MapSet.new(fn {name, _meta, _ctx} -> name end)
-    escaping = BindingEscapeEmit.expression_bindings(expression)
-
-    incoming? = fn name ->
-      MapSet.member?(bound, name) and not MapSet.member?(conflicts, name)
-    end
-
-    read? = fn name -> later == :all or MapSet.member?(later, name) end
+    escaping = BindingFacts.expression_bindings(expression)
 
     extra =
-      (Bindings.matched_names(expression) ++ escaping)
+      (BindingFacts.matched_names(expression) ++ escaping)
       |> Enum.uniq()
       |> Enum.reject(&MapSet.member?(existing, &1))
-      |> Enum.filter(&(incoming?.(&1) or (&1 in escaping and read?.(&1))))
+      |> Enum.filter(
+        &(Bindings.incoming?(scope, &1) or (&1 in escaping and Bindings.read_after?(scope, &1)))
+      )
       |> Enum.map(&{&1, [], nil})
 
     case extra do
@@ -431,7 +427,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
     pinned = pinned_var_names(raw_lhs)
 
     writes =
-      BindingEscapeEmit.expression_bindings(raw_rhs) ++ Bindings.matched_names(raw_rhs)
+      BindingFacts.expression_bindings(raw_rhs) ++ BindingFacts.matched_names(raw_rhs)
 
     Enum.any?(writes, &MapSet.member?(pinned, &1))
   end

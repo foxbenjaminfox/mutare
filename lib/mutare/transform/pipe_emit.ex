@@ -76,7 +76,7 @@ defmodule Mutare.Transform.PipeEmit do
   # `delivery/2` decides, `branch/3` places and rebinds one candidate's branch, and `layers/5`
   # builds the selector or selectors through the emitter's own builder.
 
-  alias Mutare.Transform.{BindingEscapeEmit, Bindings, Calls, Candidate, Ctx, Meta}
+  alias Mutare.Transform.{BindingFacts, Bindings, Calls, Candidate, Ctx, Meta}
   alias Mutare.Transform.Candidate.Delivery
 
   @typedoc "How one selector treats what its branches share: nothing, exported bindings, or a bound operand."
@@ -196,18 +196,18 @@ defmodule Mutare.Transform.PipeEmit do
 
   # Argument 0's bindings are made after the closure is created and outside it: a stage that
   # reads or rebinds one would see the captured value instead. Such a site is not closed over.
-  # What counts is every name argument 0 *may* write (`Bindings.matched_names/1`: a match at
+  # What counts is every name argument 0 *may* write (`BindingFacts.matched_names/1`: a match at
   # any depth, a declared position, a route that could not be read), not what it is
   # guaranteed to bind — a write under a `:lazy_expression` position is no guaranteed
   # binding, and still happens after the closure captured the name.
   defp separable?(written, {_head, _meta, [_zero | rest]}, candidates) do
-    case Bindings.matched_names(written) do
+    case BindingFacts.matched_names(written) do
       [] ->
         true
 
       names ->
         stages = [rest | Enum.map(candidates, &stage_rest/1)]
-        not Enum.any?(names, &MapSet.member?(Bindings.referenced_names(stages), &1))
+        not Enum.any?(names, &MapSet.member?(BindingFacts.referenced_names(stages), &1))
     end
   end
 
@@ -229,10 +229,10 @@ defmodule Mutare.Transform.PipeEmit do
   defp outer_exports({_head, _meta, [written | _rest]} = original, stage, moved, scope) do
     fresh =
       written
-      |> BindingEscapeEmit.expression_bindings()
+      |> BindingFacts.expression_bindings()
       |> Kernel.++(stage)
       |> Enum.uniq()
-      |> Enum.reject(&incoming?(scope, &1))
+      |> Enum.reject(&Bindings.incoming?(scope, &1))
 
     original
     |> export_names(Enum.map(moved, &Delivery.selector_branch/1), scope, fresh)
@@ -256,20 +256,21 @@ defmodule Mutare.Transform.PipeEmit do
   # reference a name the source binds but the metamutant does not.
   # mutare:ignore-start[operand_swap, call_removal] equivalent — the export tuple is built and matched from this one list, in any order, and a name listed twice matches one value twice
   defp export_names(original, branches, scope, fresh \\ nil) do
-    escaping = BindingEscapeEmit.expression_bindings(original)
+    escaping = BindingFacts.expression_bindings(original)
 
     rebound =
       original
-      |> Bindings.matched_names()
+      |> BindingFacts.matched_names()
       |> Kernel.++(escaping)
       |> Enum.uniq()
-      |> Enum.filter(&incoming?(scope, &1))
+      |> Enum.filter(&Bindings.incoming?(scope, &1))
 
-    fresh = fresh || Enum.reject(escaping, &incoming?(scope, &1))
+    fresh = fresh || Enum.reject(escaping, &Bindings.incoming?(scope, &1))
 
     shared =
-      Enum.reduce(branches, Enum.filter(fresh, &read?(scope, &1)), fn branch, names ->
-        kept = BindingEscapeEmit.expression_bindings(branch)
+      Enum.reduce(branches, Enum.filter(fresh, &Bindings.read_after?(scope, &1)), fn branch,
+                                                                                     names ->
+        kept = BindingFacts.expression_bindings(branch)
         Enum.filter(names, &(&1 in kept))
       end)
 
@@ -277,14 +278,6 @@ defmodule Mutare.Transform.PipeEmit do
   end
 
   # mutare:ignore-end
-
-  # Bound on entry, and no earlier sibling writes it: a branch may name its incoming value.
-  defp incoming?({bound, conflicts, _uncertain, _later}, name),
-    do: MapSet.member?(bound, name) and not MapSet.member?(conflicts, name)
-
-  # Referenced after the node, as far as the scope can tell (`:all` where it cannot).
-  defp read?({_bound, _conflicts, _uncertain, later}, name),
-    do: later == :all or MapSet.member?(later, name)
 
   # The stage with a placeholder for argument 0: what binds after the piped value enters.
   # mutare:ignore[atom, tuple] equivalent — any placeholder that binds nothing does

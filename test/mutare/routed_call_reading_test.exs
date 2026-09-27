@@ -18,7 +18,7 @@ defmodule Mutare.RoutedCallReadingTest do
   import Mutare.Test.SourcePatch, only: [assert_patches: 4]
 
   alias Mutare.CallRouting.Registry
-  alias Mutare.Transform.{BindingEscapeEmit, Bindings, KeywordRouting, Resolve}
+  alias Mutare.Transform.{BindingFacts, KeywordRouting, Resolve}
 
   # `Mutare.Test.QueryDSL.unpack/2` routed through a classifier: the positions
   # `Mutare.Test.UnpackMutator` declares statically, obtained per call.
@@ -144,9 +144,9 @@ defmodule Mutare.RoutedCallReadingTest do
           [ClassifiedUnpack]
         )
 
-      refute Bindings.unknown_routing?(tree)
-      assert :n in Bindings.matched_names(tree)
-      assert BindingEscapeEmit.expression_bindings(tree) == []
+      refute BindingFacts.unknown_routing?(tree)
+      assert :n in BindingFacts.matched_names(tree)
+      assert BindingFacts.expression_bindings(tree) == []
     end
 
     # The contrast: under a skipped call the arguments are ordinary Elixir that runs, and a
@@ -157,7 +157,7 @@ defmodule Mutare.RoutedCallReadingTest do
       tree =
         resolved("div(hd(Mutare.Test.QueryDSL.unpack([n], [8])), 2)", routes, [ClassifiedUnpack])
 
-      assert Bindings.unknown_routing?(tree)
+      assert BindingFacts.unknown_routing?(tree)
     end
   end
 
@@ -184,9 +184,9 @@ defmodule Mutare.RoutedCallReadingTest do
       routes = [{Mutare.Test.QueryDSL, :unpack, 2, [:binding_pattern, :expression]}]
       {head, meta, _args} = resolved("Mutare.Test.QueryDSL.unpack([n], [8])", routes)
 
-      assert BindingEscapeEmit.expression_bindings({head, meta, [[{:n, [], nil}], [8]]}) == [:n]
+      assert BindingFacts.expression_bindings({head, meta, [[{:n, [], nil}], [8]]}) == [:n]
 
-      assert BindingEscapeEmit.expression_bindings({head, meta, [[{:n, [], nil}]]}) == []
+      assert BindingFacts.expression_bindings({head, meta, [[{:n, [], nil}]]}) == []
     end
 
     test "the decoder reads a pair count the stamp no longer fits as no route" do

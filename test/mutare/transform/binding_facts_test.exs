@@ -1,11 +1,11 @@
-defmodule Mutare.Transform.BindingEscapeEmitTest do
+defmodule Mutare.Transform.BindingFactsTest do
   use ExUnit.Case, async: true
 
   alias Mutare.CallRouting.Registry
-  alias Mutare.Transform.{BindingEscapeEmit, Meta, Resolve}
+  alias Mutare.Transform.{BindingFacts, Meta, Resolve}
 
   defp bindings(source),
-    do: source |> Sourceror.parse_string!() |> BindingEscapeEmit.expression_bindings()
+    do: source |> Sourceror.parse_string!() |> BindingFacts.expression_bindings()
 
   for {source, treatment, expected} <- [
         {"[value: x = 1, other: y = 2]", {:keyed, :interior, [value: :expression]}, [:x, :y]},
@@ -40,7 +40,7 @@ defmodule Mutare.Transform.BindingEscapeEmitTest do
 
       for arg <- args do
         node = {:consume, Meta.stamp_routing([], [treatment]), [arg]}
-        assert BindingEscapeEmit.expression_bindings(node) == unquote(expected)
+        assert BindingFacts.expression_bindings(node) == unquote(expected)
       end
     end
   end
@@ -108,15 +108,15 @@ defmodule Mutare.Transform.BindingEscapeEmitTest do
         Foo.bar((a = 1) |> if(do: b = 2))
         """)
 
-      assert BindingEscapeEmit.expression_bindings(call) == [:a, :b]
-      assert BindingEscapeEmit.expression_bindings(Resolve.forget(call)) == [:a]
+      assert BindingFacts.expression_bindings(call) == [:a, :b]
+      assert BindingFacts.expression_bindings(Resolve.forget(call)) == [:a]
     end
 
     test "a directive earlier in a block inside the call" do
       call = skipped("Foo.bar((import Kernel, except: [|>: 2]; (a = 1) |> if(do: b = 2)))")
 
-      assert BindingEscapeEmit.expression_bindings(call) == [:a, :b]
-      assert BindingEscapeEmit.expression_bindings(Resolve.forget(call)) == [:a]
+      assert BindingFacts.expression_bindings(call) == [:a, :b]
+      assert BindingFacts.expression_bindings(Resolve.forget(call)) == [:a]
     end
   end
 end

@@ -4,14 +4,14 @@ defmodule Mutare.BindingsOraclePropertyTest do
   (`Mutare.Test.BindingOracleGenerators`), each reader in the direction it is allowed to
   err (`Mutare.Transform.Bindings`):
 
-    * **Guaranteed bindings** (`BindingEscapeEmit.expression_bindings/1`). For every
+    * **Guaranteed bindings** (`BindingFacts.expression_bindings/1`). For every
       statement and every name, Elixir says whether the statement leaves the name bound: a
       twin of the statement with the name's reads renamed away and the name unbound on entry,
       then `binding()`. Where the statement holds no construct the model reads inexactly on
       purpose — a lazy position whose macro binds as statements, a classifier withheld
       beneath a skip — the two must agree exactly; where it does, the model may miss a
       binding but never claim one, and a binding it misses must be among its possible
-      writes (`Bindings.matched_names/1`).
+      writes (`BindingFacts.matched_names/1`).
     * **Bound at a node** (the stamp's `bound` less `conflicts` and `uncertain`): every name
       the stamp calls readable as incoming is readable there per Elixir — the node
       substituted by a read of the name compiles. A sibling's fresh binding read as a
@@ -31,7 +31,7 @@ defmodule Mutare.BindingsOraclePropertyTest do
   alias Mutare.CallRouting.Registry
   alias Mutare.Test.BindingOracleGenerators, as: Gen
   alias Mutare.Test.Compile
-  alias Mutare.Transform.{BindingEscapeEmit, Bindings, Meta, MetaKeys, Resolve}
+  alias Mutare.Transform.{BindingFacts, Bindings, Meta, MetaKeys, Resolve}
 
   @moduletag :property
   @moduletag timeout: 600_000
@@ -132,9 +132,9 @@ defmodule Mutare.BindingsOraclePropertyTest do
   defp guaranteed_check(module, k, x, statement, resolved) do
     arity = length(Gen.names())
     truth = apply(module, :"rebinds_#{k}_#{x}", List.duplicate(:value, arity))
-    guaranteed = x in BindingEscapeEmit.expression_bindings(resolved)
-    possible = x in Bindings.matched_names(resolved)
-    exact? = not (Gen.inexact?(statement) or Bindings.unknown_routing?(resolved))
+    guaranteed = x in BindingFacts.expression_bindings(resolved)
+    possible = x in BindingFacts.matched_names(resolved)
+    exact? = not (Gen.inexact?(statement) or BindingFacts.unknown_routing?(resolved))
 
     cond do
       exact? and truth != guaranteed ->

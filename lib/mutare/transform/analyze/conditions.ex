@@ -18,7 +18,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Spec
-  alias Mutare.Transform.{Bindings, Candidate, KeywordRouting, Meta, Resolve}
+  alias Mutare.Transform.{BindingFacts, Candidate, KeywordRouting, Meta, Resolve}
   alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.Env
   alias Mutare.Transform.Analyze.Attach
@@ -501,7 +501,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
   @doc false
   def spine_rebinds?(condition) do
     hoists = spine_bindings(condition)
-    written = Enum.map(hoists, &Bindings.matched_names/1)
+    written = Enum.map(hoists, &BindingFacts.matched_names/1)
     names = List.flatten(written)
 
     if length(names) != length(Enum.uniq(names)) do
@@ -531,7 +531,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # is safe only where both programs have bound it. `scope.context` is the resolution context
   # `discretionary_binding?/2` threads, for reading an operator's identity.
   defp rebinding_read({:=, _meta, [lhs, rhs]} = node, seen, %{spine?: true} = scope) do
-    own = node |> Bindings.matched_names() |> MapSet.new()
+    own = node |> BindingFacts.matched_names() |> MapSet.new()
     lifted = %{scope | spine?: false, own: own, lifted: Map.fetch!(scope.hoists, node)}
     {rhs?, _} = rebinding_read(rhs, seen, lifted)
     {lhs?, _} = rebinding_read(lhs, seen, lifted)
@@ -578,7 +578,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
 
   defp rebinding_read({:=, _meta, [lhs, rhs]} = node, seen, scope) do
     {rebinds?, _} = rebinding_group([rhs, lhs], seen, scope)
-    {rebinds?, MapSet.union(seen, MapSet.new(Bindings.matched_names(node)))}
+    {rebinds?, MapSet.union(seen, MapSet.new(BindingFacts.matched_names(node)))}
   end
 
   defp rebinding_read({form, _meta, args} = node, seen, scope) when is_list(args) do

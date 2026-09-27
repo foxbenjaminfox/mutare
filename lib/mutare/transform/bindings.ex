@@ -28,7 +28,7 @@ defmodule Mutare.Transform.Bindings do
   #   * a name an earlier statement — or another position of an enclosing routed macro, whose
   #     positions the macro may run as statements in any order — **may** have bound, without
   #     core being able to say — a match in a position its route reads as no value
-  #     (`lazy(p = 8)`), a call whose route was withheld (`unknown_routing?/1`) — is
+  #     (`lazy(p = 8)`), a call whose route was withheld (`BindingFacts.unknown_routing?/1`) — is
   #     **uncertain**: not bound (an export naming it
   #     as incoming may name nothing), and not fresh either (a branch that traps its rebinding
   #     may hide the write the source lets out). The fresh rule is kept where the two agree —
@@ -54,13 +54,13 @@ defmodule Mutare.Transform.Bindings do
   #
   # `bound` follows Elixir's scoping where it is plain and stays silent where it is not: a
   # definition's head patterns; a block's statements in order, each adding what
-  # `Mutare.Transform.BindingEscapeEmit.expression_bindings/1` says escapes it, so an unrouted
+  # `Mutare.Transform.BindingFacts.expression_bindings/1` says escapes it, so an unrouted
   # call is a function here too — a parenthesized block anywhere is the same sequence; the
   # clauses of `case`/`cond`/`fn`/`receive`/`try`/`with`/`for`, each seeing its own patterns;
   # and a `Kernel` `if`/`unless` condition — the form by its resolved identity, so a
   # qualified `Kernel.if` scopes its branches as the bare one does. Every other name a
   # statement may write
-  # (`matched_names/1`) goes to `uncertain` instead, and a statement's write clears a
+  # (`BindingFacts.matched_names/1`) goes to `uncertain` instead, and a statement's write clears a
   # conflict, or the uncertainty, on the name.
   # The siblings of an expression — a call's callee and arguments, a tuple's or list's
   # elements, an operator's operands, a keyword pair's key and value — each get the entry set
@@ -88,8 +88,7 @@ defmodule Mutare.Transform.Bindings do
   # that binds nothing and has everything after it.
 
   alias Mutare.AST
-  alias Mutare.Transform.{BindingEscapeEmit, Calls, KeywordRouting, Meta, PatternStructure}
-  alias Mutare.Transform.Resolve
+  alias Mutare.Transform.{BindingFacts, Calls, KeywordRouting, Meta, PatternStructure}
 
   @typedoc """
   Names bound on entry, those an earlier sibling writes, those an earlier statement may have
@@ -120,198 +119,18 @@ defmodule Mutare.Transform.Bindings do
   end
 
   @doc """
-  Every name a match anywhere inside `node` may bind — `=` and `<-` patterns, and the
-  positions a route declares binding (`destructure/2`'s `:binding_pattern`, keyed refinements
-  included) — at any depth, whatever scope or treatment encloses them. A superset of what is
-  guaranteed to escape: a name here that is already bound on entry may be rebound by the
-  node, and an export naming it costs at worst an identity; and it is what a sibling *may*
-  write, which a conflict must count even where the write's execution is not certain.
-
-  Inside a skipped call's arguments, which Resolve did not walk, a call's route is read
-  through the environment the skipped call retains (`Resolve.preserved_routing/2`), as
-  `BindingEscapeEmit.expression_bindings/1` reads it: skip withholds mutation, not evaluation.
-  A route there that is a classifier cannot be read; every name the call's arguments mention
-  is then in this list, since a declared position binds nothing its syntax does not name, and
-  `unknown_routing?/1` says the list bounds what the call binds rather than reading it.
-
-  Inside a position a route reads as **syntax** (`:raw`, `:hosted`, a keyword value under
-  either), which Resolve did not walk either, a nested call is that syntax too: a static
-  route it resolves to still names its binding positions, and one that cannot be read
-  contributes every name its arguments mention — but no call there is *unknown*. The
-  enclosing route declared the region syntax, and the guaranteed reader
-  (`BindingEscapeEmit`) vouches for nothing in it; a classifier nested there opens no hole a
-  blanket would close.
+  Whether a selector branch may use the name's incoming value: it was bound on entry,
+  and no earlier sibling writes it. Candidate filtering and export construction share this
+  reading, including for names a branch leaves unchanged.
   """
-  @spec matched_names(Macro.t()) :: [atom()]
-  def matched_names(node) do
-    for {:bound, name} <- matched(node, %{}), uniq: true, do: name
-  end
+  @spec incoming?(stamp(), atom()) :: boolean()
+  def incoming?({bound, conflicts, _uncertain, _later}, name),
+    do: MapSet.member?(bound, name) and not MapSet.member?(conflicts, name)
 
-  @doc """
-  Whether `node` contains a call whose binding effect cannot be read: one inside a skipped
-  call's argument whose route is a `:routing` classifier, which is never invoked in a region
-  it was withheld from (`Resolve.preserved_routing/2`). Such a call may bind names neither
-  reader reports, so a delivery that must export what `node` binds withholds instead
-  (`Candidate.Delivery.gate/2`); a call is read as ordinary only where no route is declared.
-  A classifier nested in a syntax region is not unknown (`matched_names/1`): the region's
-  route already says nothing in it is guaranteed to bind.
-  """
-  @spec unknown_routing?(Macro.t()) :: boolean()
-  def unknown_routing?(node), do: :unknown in matched(node, %{})
-
-  # The walk collects binding facts: `{:bound, name}` for a possible write, `:unknown` for a
-  # call whose declared positions could not be obtained.
-  defp matched({:__block__, _meta, statements}, context) when is_list(statements) do
-    {names, _context} =
-      Enum.map_reduce(statements, context, fn statement, context ->
-        {matched(statement, context), Resolve.advance_context(statement, context)}
-      end)
-
-    List.flatten(names)
-  end
-
-  defp matched({match, _meta, [pattern, value]}, context) when match in [:=, :<-] do
-    bound(PatternStructure.bound_var_names(pattern)) ++
-      matched(pattern, context) ++ matched(value, context)
-  end
-
-  # A surviving pipe is a withheld Kernel stage, read as the call it denotes, or an operator.
-  defp matched({:|>, _meta, _args} = pipe, context) do
-    context = Resolve.context(pipe, context)
-
-    case Resolve.preserved_pipe_call(pipe, context) do
-      nil -> matched_call(pipe, context)
-      call -> matched(call, context)
-    end
-  end
-
-  defp matched({_form, meta, args} = node, context) when is_list(meta) and is_list(args),
-    do: matched_call(node, Resolve.context(node, context))
-
-  defp matched({form, meta, _context}, context) when is_list(meta), do: matched(form, context)
-
-  defp matched({left, right}, context), do: matched(left, context) ++ matched(right, context)
-
-  defp matched(list, context) when is_list(list), do: Enum.flat_map(list, &matched(&1, context))
-
-  defp matched(_leaf, _context), do: []
-
-  # The route is what the arguments mean (`Resolve.effective_routing/2`): a stamp, a
-  # configured skip's displaced declaration, or the static route a call inside a skipped
-  # argument resolves to — `:unknown` where it is a classifier this reader cannot invoke.
-  # The arguments are then descended as the route reads them: a position it declares
-  # syntax is descended as syntax.
-  defp matched_call({form, _meta, args} = node, context) do
-    routing = Resolve.effective_routing(node, context)
-
-    declared_names(args, routing, context) ++
-      matched(form, context) ++ matched_arguments(args, routing, context)
-  end
-
-  # The names a call's route declares its positions bind.
-  defp declared_names(args, routes, _context) when is_list(routes) do
-    args
-    |> Enum.zip(routes)
-    |> Enum.flat_map(fn {arg, treatment} -> declared_position_names(arg, treatment) end)
-  end
-
-  # A route this reader cannot obtain may declare any position binding: every name the
-  # arguments mention is a possible write. In an evaluated region the call's effect is
-  # unknown besides; in a syntax region it is the region's, which vouches for nothing.
-  defp declared_names(args, :unknown, context) do
-    names = bound(MapSet.to_list(referenced_names(args)))
-    if syntax?(context), do: names, else: [:unknown | names]
-  end
-
-  defp declared_names(_args, _routing, _context), do: []
-
-  # A stamped or declared route fits its call by construction (`Resolve.Arguments` checks
-  # a keyword route where it is stamped). The readers only ever meet a source node here.
-  defp matched_arguments(args, routes, context)
-       when is_list(routes) and length(routes) == length(args) do
-    args
-    |> Enum.zip(routes)
-    |> Enum.flat_map(fn {arg, treatment} -> matched_position(arg, treatment, context) end)
-  end
-
-  defp matched_arguments(args, _routing, context), do: matched(args, context)
-
-  defp matched_position(arg, treatment, context) do
-    cond do
-      syntax_treatment?(treatment) -> matched(arg, syntax(context))
-      keyword_treatment?(treatment) -> matched_keyword(arg, treatment, context)
-      true -> matched(arg, context)
-    end
-  end
-
-  defp matched_keyword(arg, treatment, context) do
-    case KeywordRouting.decode(arg, treatment) do
-      {:pairs, pairs, _rewrap} ->
-        Enum.flat_map(pairs, fn {{key, key_treatment}, {value, value_treatment}} ->
-          matched_position(key, key_treatment, context) ++
-            matched_position(value, value_treatment, context)
-        end)
-
-      {:whole, fallback} ->
-        matched_position(arg, fallback, context)
-    end
-  end
-
-  # The treatments Resolve does not walk into (`Resolve.Arguments`): the region is the
-  # macro's syntax, in the stamped form (`{:hosted, hosts}`) or the declared one.
-  defp syntax_treatment?(:raw), do: true
-  defp syntax_treatment?(:hosted), do: true
-  defp syntax_treatment?({:hosted, _hosts}), do: true
-  defp syntax_treatment?(_treatment), do: false
-
-  defp keyword_treatment?({:keyword, _treatments}), do: true
-  defp keyword_treatment?({:keyed, _leading, _refinements}), do: true
-  defp keyword_treatment?(_treatment), do: false
-
-  # The reading context inside a syntax region: what is nested there is syntax all the way
-  # down — a nested call's own value positions were never resolved either.
-  defp syntax(context), do: Map.put(context, :syntax?, true)
-  defp syntax?(context), do: Map.get(context, :syntax?, false)
-
-  defp bound(names), do: Enum.map(names, &{:bound, &1})
-
-  defp declared_position_names(arg, :binding_pattern),
-    do: bound(PatternStructure.bound_var_names(arg))
-
-  defp declared_position_names(arg, {:keyword, _} = treatment),
-    do: declared_keyword_names(arg, treatment)
-
-  defp declared_position_names(arg, {:keyed, _, _} = treatment),
-    do: declared_keyword_names(arg, treatment)
-
-  defp declared_position_names(_arg, _treatment), do: []
-
-  defp declared_keyword_names(arg, treatment) do
-    case KeywordRouting.decode(arg, treatment) do
-      {:pairs, pairs, _rewrap} ->
-        Enum.flat_map(pairs, fn {{key, key_treatment}, {value, value_treatment}} ->
-          declared_position_names(key, key_treatment) ++
-            declared_position_names(value, value_treatment)
-        end)
-
-      {:whole, fallback} ->
-        declared_position_names(arg, fallback)
-    end
-  end
-
-  @doc "Every variable-shaped name anywhere inside `node` — a read, a binding, or a pattern."
-  @spec referenced_names(Macro.t()) :: MapSet.t(atom())
-  def referenced_names(node) do
-    node
-    |> Macro.prewalk(MapSet.new(), fn
-      {name, _meta, context} = node, acc when is_atom(name) and is_atom(context) ->
-        {node, MapSet.put(acc, name)}
-
-      node, acc ->
-        {node, acc}
-    end)
-    |> elem(1)
-  end
+  @doc "Whether the surrounding scope may read this name after the node (`:all` when unknown)."
+  @spec read_after?(stamp(), atom()) :: boolean()
+  def read_after?({_bound, _conflicts, _uncertain, later}, name),
+    do: later == :all or MapSet.member?(later, name)
 
   # --- the scope ----------------------------------------------------------------------------
 
@@ -341,14 +160,14 @@ defmodule Mutare.Transform.Bindings do
   # What a statement leaves for the statements after it: bound what it is guaranteed to
   # bind, uncertain whatever else it may write.
   defp advance(scope, statement),
-    do: scope |> bind(escaping(statement)) |> unsure(matched_names(statement))
+    do: scope |> bind(escaping(statement)) |> unsure(BindingFacts.matched_names(statement))
 
   # --- the walk: `{node, names referenced inside, whether anything inside binds}` ------------
 
   defp walk({:quote, _meta, _args} = node, _scope, _later), do: opaque(node)
 
   defp walk({match, meta, [pattern, value]}, scope, later) when match in [:=, :<-] do
-    pattern_names = referenced_names(pattern)
+    pattern_names = BindingFacts.referenced_names(pattern)
     {value, referenced, _binds?} = walk(value, scope, union(later, pattern_names))
     {{match, stamp(meta, scope, later), [pattern, value]}, union(referenced, pattern_names), true}
   end
@@ -404,7 +223,8 @@ defmodule Mutare.Transform.Bindings do
   defp put_name(referenced, _node), do: referenced
 
   # Not walked; still read for what it references and whether it binds.
-  defp opaque(node), do: {node, referenced_names(node), matched_names(node) != []}
+  defp opaque(node),
+    do: {node, BindingFacts.referenced_names(node), BindingFacts.matched_names(node) != []}
 
   # --- modules and definitions --------------------------------------------------------------
 
@@ -445,7 +265,9 @@ defmodule Mutare.Transform.Bindings do
 
   defp head({:when, meta, [call | guards]}) do
     {call, referenced, binds?} = head(call)
-    {{:when, meta, [call | guards]}, union(referenced, referenced_names(guards)), binds?}
+
+    {{:when, meta, [call | guards]}, union(referenced, BindingFacts.referenced_names(guards)),
+     binds?}
   end
 
   defp head({name, meta, params}) when is_list(params) do
@@ -463,7 +285,7 @@ defmodule Mutare.Transform.Bindings do
 
   defp param({:\\, meta, [var, default]}) do
     {default, referenced, binds?} = walk(default, scope_new(), :all)
-    {{:\\, meta, [var, default]}, union(referenced, referenced_names(var)), binds?}
+    {{:\\, meta, [var, default]}, union(referenced, BindingFacts.referenced_names(var)), binds?}
   end
 
   defp param(param), do: opaque(param)
@@ -539,7 +361,7 @@ defmodule Mutare.Transform.Bindings do
         rest = Enum.drop(clauses, i + 1)
 
         {clause, clause_referenced, clause_binds?} =
-          walk(clause, scope, referenced_names([rest, blocks]))
+          walk(clause, scope, BindingFacts.referenced_names([rest, blocks]))
 
         {[clause | acc], generator_scope(scope, clause), union(referenced, clause_referenced),
          binds? or clause_binds?}
@@ -622,7 +444,7 @@ defmodule Mutare.Transform.Bindings do
   end
 
   defp clause_heads(heads, _kind, _scope, _later),
-    do: {heads, referenced_names(heads), matched_names(heads) != []}
+    do: {heads, BindingFacts.referenced_names(heads), BindingFacts.matched_names(heads) != []}
 
   defp pattern_names({:when, _meta, args}) do
     {patterns, _guard} = Enum.split(args, -1)
@@ -668,7 +490,7 @@ defmodule Mutare.Transform.Bindings do
 
   # A declared binding position (`destructure/2`'s pattern) binds, whatever its syntax.
   defp position(arg, :binding_pattern, _scope, _later),
-    do: {arg, referenced_names(arg), PatternStructure.bound_var_names(arg) != []}
+    do: {arg, BindingFacts.referenced_names(arg), PatternStructure.bound_var_names(arg) != []}
 
   defp position(arg, _treatment, _scope, _later), do: opaque(arg)
 
@@ -695,10 +517,10 @@ defmodule Mutare.Transform.Bindings do
   defp positions(positions, scope, later) do
     writes =
       Enum.map(positions, fn {node, treatment} ->
-        BindingEscapeEmit.argument_bindings(node, treatment) ++ matched_names(node)
+        BindingFacts.argument_bindings(node, treatment) ++ BindingFacts.matched_names(node)
       end)
 
-    all_referenced = referenced_names(Enum.map(positions, &elem(&1, 0)))
+    all_referenced = BindingFacts.referenced_names(Enum.map(positions, &elem(&1, 0)))
 
     positions
     |> Enum.with_index()
@@ -751,10 +573,10 @@ defmodule Mutare.Transform.Bindings do
     end)
   end
 
-  defp escaping(node), do: BindingEscapeEmit.expression_bindings(node)
+  defp escaping(node), do: BindingFacts.expression_bindings(node)
 
   # What `node` may write: what it is guaranteed to bind, and any match anywhere in it.
-  defp possible_writes(node), do: escaping(node) ++ matched_names(node)
+  defp possible_writes(node), do: escaping(node) ++ BindingFacts.matched_names(node)
 
   defp union(:all, _names), do: :all
   defp union(_names, :all), do: :all

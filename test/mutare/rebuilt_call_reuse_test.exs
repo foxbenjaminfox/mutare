@@ -47,7 +47,7 @@ defmodule Mutare.RebuiltCallReuseTest do
   import Mutare.Test.SourcePatch, only: [assert_patches: 4]
 
   alias Mutare.CallRouting.Registry
-  alias Mutare.Transform.{BindingEscapeEmit, Meta, Resolve, WrittenPipe}
+  alias Mutare.Transform.{BindingFacts, Meta, Resolve, WrittenPipe}
 
   defmodule DSL do
     # Splices `value` into the caller; the second argument is syntax the macro discards.
@@ -334,11 +334,11 @@ defmodule Mutare.RebuiltCallReuseTest do
     test "is resolved there for the first time: routed, and read by its route" do
       {_head, _meta, [_first, raw]} = original = keep_call()
       assert Mutare.Calls.routed_treatments(raw) == nil
-      assert BindingEscapeEmit.expression_bindings(raw) == [:p]
+      assert BindingFacts.expression_bindings(raw) == [:p]
 
       rerouted = Resolve.reroute(raw, original)
       assert Mutare.Calls.routed_treatments(rerouted) == [:lazy_expression]
-      assert BindingEscapeEmit.expression_bindings(rerouted) == []
+      assert BindingFacts.expression_bindings(rerouted) == []
     end
 
     test "has its destination's classifier asked, which its raw position never did" do
@@ -379,7 +379,7 @@ defmodule Mutare.RebuiltCallReuseTest do
 
       assert {:ok, :value, _args, _rebuild} = Mutare.Calls.resolved_call_to(call, Discard)
       assert Mutare.Calls.routed_treatments(call) == [:lazy_expression]
-      assert BindingEscapeEmit.expression_bindings(call) == []
+      assert BindingFacts.expression_bindings(call) == []
     end
 
     test "behaves as its patch" do
@@ -410,7 +410,7 @@ defmodule Mutare.RebuiltCallReuseTest do
     test "is resolved again as the pipe it was written, by that operator's route" do
       original = piped_call()
       assert is_list(Meta.written_pipe_meta(original))
-      assert BindingEscapeEmit.expression_bindings(original) == [:p]
+      assert BindingFacts.expression_bindings(original) == [:p]
 
       {:__block__, _meta, statements} =
         rerouted = Resolve.reroute(ShadowPipe.replacement(original, false), original)
@@ -421,7 +421,7 @@ defmodule Mutare.RebuiltCallReuseTest do
                Mutare.Calls.resolved_call_to(call, DiscardPipe)
 
       assert Mutare.Calls.routed_treatments(call) == [:raw, :raw]
-      assert BindingEscapeEmit.expression_bindings(rerouted) == []
+      assert BindingFacts.expression_bindings(rerouted) == []
     end
 
     test "reads as the same pipe through fresh syntax does" do
@@ -436,7 +436,7 @@ defmodule Mutare.RebuiltCallReuseTest do
                Mutare.Calls.resolved_call_to(call, DiscardPipe)
 
       assert Mutare.Calls.routed_treatments(call) == [:raw, :raw]
-      assert BindingEscapeEmit.expression_bindings(rerouted) == []
+      assert BindingFacts.expression_bindings(rerouted) == []
     end
 
     test "behaves as its patch" do
@@ -462,7 +462,7 @@ defmodule Mutare.RebuiltCallReuseTest do
                Mutare.Calls.resolved_call_to(call, DiscardPipe)
 
       assert Mutare.Calls.routed_treatments(call) == [:raw, :raw]
-      assert BindingEscapeEmit.expression_bindings(rerouted) == []
+      assert BindingFacts.expression_bindings(rerouted) == []
 
       # Beneath an unrelated alias it is `Kernel`'s again: flattened, desugared and stamped
       # as the written walk had it, no prefix reused stale. Node ids aside: the continuation's
@@ -506,7 +506,7 @@ defmodule Mutare.RebuiltCallReuseTest do
       assert {:ok, :identity, [_operand], _rebuild} =
                Mutare.Calls.resolved_call_to(call, Function)
 
-      assert BindingEscapeEmit.expression_bindings(call) == [:p]
+      assert BindingFacts.expression_bindings(call) == [:p]
       assert Resolve.forget(call) == Resolve.forget(original)
 
       assert Resolve.forget(WrittenPipe.resugar(call)) ==
@@ -517,7 +517,7 @@ defmodule Mutare.RebuiltCallReuseTest do
   describe "a resolved call a mutant moves beneath a skipped call" do
     test "is returned as written, and read by the environment in force there" do
       original = aliased_call([@skip_identity | @alias_routes])
-      assert BindingEscapeEmit.expression_bindings(original) == [:p]
+      assert BindingFacts.expression_bindings(original) == [:p]
 
       {:__block__, _meta, [_directive, wrapper]} =
         rerouted = Resolve.reroute(ShadowAliasUnderSkip.replacement(original, []), original)
@@ -526,7 +526,7 @@ defmodule Mutare.RebuiltCallReuseTest do
       {_head, _meta, [call]} = wrapper
       assert Meta.routing(elem(call, 1)) == nil
       assert Mutare.Calls.resolved_call_to(call, Eager) == :error
-      assert BindingEscapeEmit.expression_bindings(rerouted) == []
+      assert BindingFacts.expression_bindings(rerouted) == []
     end
 
     test "behaves as its patch" do
@@ -546,7 +546,7 @@ defmodule Mutare.RebuiltCallReuseTest do
     test "control: beneath a skipped call that changes nothing, its writes are still read" do
       original = aliased_call([@skip_identity | @alias_routes])
       wrapped = {{:., [], [Function, :identity]}, [], [original]}
-      assert BindingEscapeEmit.expression_bindings(Resolve.reroute(wrapped, original)) == [:p]
+      assert BindingFacts.expression_bindings(Resolve.reroute(wrapped, original)) == [:p]
     end
 
     test "has no classifier asked beneath the skip, stale or fresh" do
@@ -554,7 +554,7 @@ defmodule Mutare.RebuiltCallReuseTest do
         original = aliased_call([@skip_identity], [ClassifiedDiscard])
         rerouted = Resolve.reroute(ShadowAliasUnderSkip.replacement(original, opts), original)
 
-        assert BindingEscapeEmit.expression_bindings(rerouted) == []
+        assert BindingFacts.expression_bindings(rerouted) == []
         refute_received {ClassifiedDiscard, :classified}
       end
     end
@@ -563,7 +563,7 @@ defmodule Mutare.RebuiltCallReuseTest do
   describe "a desugared pipe a mutant moves beneath a skipped call" do
     test "is returned as the written pipe, and read by the operator in force there" do
       original = resolve("(p = 6) |> Function.identity()", @skipped_pipe_opts[:call_routes])
-      assert BindingEscapeEmit.expression_bindings(original) == [:p]
+      assert BindingFacts.expression_bindings(original) == [:p]
 
       replacement = ShadowPipeUnderSkip.beneath_skip(ShadowPipe.replacement(original, false))
       {:__block__, _meta, statements} = rerouted = Resolve.reroute(replacement, original)
@@ -571,7 +571,7 @@ defmodule Mutare.RebuiltCallReuseTest do
 
       assert {:|>, _pipe_meta, [_left, stage]} = pipe
       assert Meta.routing(elem(stage, 1)) == nil
-      assert BindingEscapeEmit.expression_bindings(rerouted) == []
+      assert BindingFacts.expression_bindings(rerouted) == []
     end
 
     test "behaves as its patch" do

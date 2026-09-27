@@ -90,7 +90,10 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
     and the names read after it, which is what decides a selector's export (a name bound on
     entry, by every branch; a fresh one, by the branches that bind it) and which
     binding-dropping mutants have no compiling patch (`Candidate.Delivery.gate/2` withholds
-    them) — NOTES "What a selector exports is the scope's to say".
+    them) — NOTES "What a selector exports is the scope's to say". `BindingFacts` owns the
+    expression-local binding readers used by that pre-pass, candidate analysis, and emission;
+    `Bindings` owns their surrounding scope and its shared queries — NOTES "Binding facts
+    belong to analysis, not emission".
   - **`Calls` / `Analyze.Captures`** — the single `resolved_call/1` reader every call family uses
     (returns `{module, fun, args, rebuild}`), plus `&Mod.fun/N` capture mutation. `Mutare.Calls`
     is the published facade re-exporting the author-facing readers.

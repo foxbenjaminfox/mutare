@@ -26,7 +26,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
 
   alias Mutare.Mutator.Mutation.Attribution
   alias Mutare.{AST, Site}
-  alias Mutare.Transform.{BindingEscapeEmit, Bindings, Candidate, Meta, NodeRange}
+  alias Mutare.Transform.{BindingFacts, Bindings, Candidate, Meta, NodeRange}
 
   @type node_candidate ::
           Candidate.InPlace.t()
@@ -107,7 +107,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
   route was withheld): exported as incoming it may name nothing, trapped it may hide the
   write the source lets out. And so is every candidate on a node whose own
   binding effect is **unknown**: a call inside a skipped argument whose route is a classifier
-  core did not invoke there (`Bindings.unknown_routing?/1`) may bind names no reader reports,
+  core did not invoke there (`BindingFacts.unknown_routing?/1`) may bind names no reader reports,
   and a selector around it would trap them. The same classifier inside a `:raw` or `:hosted`
   position is not unknown: that region is syntax by its route's declaration, nothing in it
   is vouched for anyway, and its names are possible writes like any match written there.
@@ -130,13 +130,11 @@ defmodule Mutare.Transform.Candidate.Delivery do
   end
 
   defp drop_binding_drops(candidates, node) do
-    {bound, conflicts, uncertain, later} = Meta.bindings(node)
-    escaping = BindingEscapeEmit.expression_bindings(node)
-    read? = fn name -> later == :all or MapSet.member?(later, name) end
-
-    exportable? = fn name ->
-      MapSet.member?(bound, name) and not MapSet.member?(conflicts, name)
-    end
+    scope = Meta.bindings(node)
+    {_bound, conflicts, uncertain, _later} = scope
+    escaping = BindingFacts.expression_bindings(node)
+    read? = &Bindings.read_after?(scope, &1)
+    exportable? = &Bindings.incoming?(scope, &1)
 
     # Exported as incoming, the name may be stale (a conflict) or unbound (uncertain);
     # trapped, it may be the write the source lets out.
@@ -146,13 +144,13 @@ defmodule Mutare.Transform.Candidate.Delivery do
 
     unvouched =
       node
-      |> Bindings.matched_names()
+      |> BindingFacts.matched_names()
       |> Enum.reject(&(&1 in escaping))
       |> Enum.filter(&(unvouchable?.(&1) and read?.(&1)))
 
     needed = Enum.filter(escaping, &(read?.(&1) and not exportable?.(&1)))
 
-    if unvouched != [] or Bindings.unknown_routing?(node),
+    if unvouched != [] or BindingFacts.unknown_routing?(node),
       do: [],
       else: Enum.reject(candidates, &drops_binding?(&1, needed, exportable?))
   end
@@ -167,7 +165,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
          needed,
          exportable?
        ) do
-    required = export |> Bindings.referenced_names() |> Enum.reject(exportable?)
+    required = export |> BindingFacts.referenced_names() |> Enum.reject(exportable?)
     drops_any?(branch, Enum.uniq(needed ++ required))
   end
 
@@ -176,7 +174,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
   defp drops_any?(_branch, []), do: false
 
   defp drops_any?(branch, needed) do
-    kept = BindingEscapeEmit.expression_bindings(branch)
+    kept = BindingFacts.expression_bindings(branch)
     Enum.any?(needed, &(&1 not in kept))
   end
 

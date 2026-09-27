@@ -19,7 +19,7 @@ defmodule Mutare.BindingExportTest do
   import Mutare.Test.SourcePatch, only: [assert_patches: 4]
 
   alias Mutare.CallRouting.Registry
-  alias Mutare.Transform.{BindingEscapeEmit, Bindings, Resolve}
+  alias Mutare.Transform.{BindingFacts, Resolve}
 
   # `Enum.count(xs, p)` → `Enum.any?(xs, p)`: a second family on the same call, one that keeps
   # the binding argument the collection-arity mutant drops.
@@ -1260,16 +1260,16 @@ defmodule Mutare.BindingExportTest do
       direct = resolved("destructure([n], [8])", @both_skipped)
       preserved = resolved("hd(destructure([n], [8]))", @both_skipped)
 
-      assert BindingEscapeEmit.expression_bindings(direct) == [:n]
-      assert BindingEscapeEmit.expression_bindings(preserved) == [:n]
+      assert BindingFacts.expression_bindings(direct) == [:n]
+      assert BindingFacts.expression_bindings(preserved) == [:n]
     end
 
     test "a classifier the skip displaced reads as unknown beneath a wrapper too" do
       routes = [{Kernel, :hd, 1, :skip}, {Mutare.Test.QueryDSL, :unpack, 2, :skip}]
       call = "Mutare.Test.QueryDSL.unpack([n], [8])"
 
-      assert Bindings.unknown_routing?(resolved(call, routes, [ClassifiedUnpack]))
-      assert Bindings.unknown_routing?(resolved("hd(#{call})", routes, [ClassifiedUnpack]))
+      assert BindingFacts.unknown_routing?(resolved(call, routes, [ClassifiedUnpack]))
+      assert BindingFacts.unknown_routing?(resolved("hd(#{call})", routes, [ClassifiedUnpack]))
     end
   end
 
@@ -1327,7 +1327,7 @@ defmodule Mutare.BindingExportTest do
           Mutare.Test.AnyArityUnpackClassifier
         ])
 
-      assert Bindings.unknown_routing?(tree)
+      assert BindingFacts.unknown_routing?(tree)
     end
 
     test "control: the broad declaration unskipped, and an exact one skipped, both deliver" do

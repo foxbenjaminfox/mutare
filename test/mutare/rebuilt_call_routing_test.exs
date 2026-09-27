@@ -40,7 +40,7 @@ defmodule Mutare.RebuiltCallRoutingTest do
   import Mutare.Test.SourcePatch, only: [assert_patches: 4]
 
   alias Mutare.CallRouting.Registry
-  alias Mutare.Transform.{BindingEscapeEmit, Resolve}
+  alias Mutare.Transform.{BindingFacts, Resolve}
 
   defmodule DSL do
     # Splices the expression under `eval:` into the caller; every other option is syntax
@@ -366,11 +366,11 @@ defmodule Mutare.RebuiltCallRoutingTest do
           "alias Elixir.Mutare.RebuiltCallRoutingTest.DSL, as: Local\nLocal.ignored(p = 6)"
         )
 
-      assert BindingEscapeEmit.expression_bindings(replacement) == [:p]
+      assert BindingFacts.expression_bindings(replacement) == [:p]
 
       {:__block__, _meta, [_alias, rerouted]} = Resolve.reroute(replacement, original)
       assert Mutare.Calls.routed_treatments(rerouted) == [:raw]
-      assert BindingEscapeEmit.expression_bindings(rerouted) == []
+      assert BindingFacts.expression_bindings(rerouted) == []
     end
   end
 
@@ -393,11 +393,11 @@ defmodule Mutare.RebuiltCallRoutingTest do
       [{key, value}, raw] = ctx.pairs
       stale = ctx.rebuild.(:value, [[{Keys.rename(key, :quoted), value}, raw]])
 
-      assert BindingEscapeEmit.expression_bindings(stale) == [:p]
+      assert BindingFacts.expression_bindings(stale) == [:p]
 
       rerouted = Resolve.reroute(stale, ctx.node)
       assert Mutare.Calls.routed_treatments(rerouted) == [{:keyword, [:raw, :raw]}]
-      assert BindingEscapeEmit.expression_bindings(rerouted) == []
+      assert BindingFacts.expression_bindings(rerouted) == []
     end
 
     test "a renamed callee takes its own route", ctx do
@@ -408,7 +408,7 @@ defmodule Mutare.RebuiltCallRoutingTest do
       assert %Mutare.CallRouting.Call{name: :ignored} =
                Mutare.Calls.resolved_routed_call(rerouted)
 
-      assert BindingEscapeEmit.expression_bindings(rerouted) == []
+      assert BindingFacts.expression_bindings(rerouted) == []
     end
 
     test "a callee no route matches carries none", ctx do

@@ -176,8 +176,8 @@ defmodule Mutare.Transform.Resolve do
   end
 
   # A read-only route for a call in a preserved region — an argument of a skipped call, which
-  # this pass did not walk — so the binding readers (`Mutare.Transform.BindingEscapeEmit`,
-  # `Mutare.Transform.Bindings`) can read its declared positions: skip withholds mutation and
+  # this pass did not walk — so `Mutare.Transform.BindingFacts`' readers can read its
+  # declared positions: skip withholds mutation and
   # nested routing, not evaluation, and `destructure/2` binds under a skipped wrapper as it
   # does anywhere — skipped itself or not. The call's identity is resolved through the
   # boundary's retained environment, advanced by local directives, and its meaning read from
@@ -186,11 +186,11 @@ defmodule Mutare.Transform.Resolve do
   # region it was withheld from, and its call reads as `:unknown` — not as unrouted: a
   # declared route whose positions were not obtained may bind names the readers cannot see,
   # so an enclosing binding-sensitive delivery withholds rather than assumes
-  # (`Bindings.unknown_routing?/1`, `Candidate.Delivery.gate/2`), and the scope beside and
+  # (`BindingFacts.unknown_routing?/1`, `Candidate.Delivery.gate/2`), and the scope beside and
   # after the call counts every name its arguments mention as a possible write
-  # (`Bindings.matched_names/1`). The same answer serves a call inside a `:raw`/`:hosted`
+  # (`BindingFacts.matched_names/1`). The same answer serves a call inside a `:raw`/`:hosted`
   # position, which this pass did not walk either; there the enclosing route declared the
-  # region syntax, and `Bindings` reads `:unknown` as possible writes alone. Nothing is
+  # region syntax, and `BindingFacts` reads `:unknown` as possible writes alone. Nothing is
   # stamped or rewritten. A stamped call answers from its stamp (`Meta.routing/1`) and never
   # reaches here.
   @doc false

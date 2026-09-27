@@ -234,7 +234,7 @@ defmodule Mutare.Test.BindingOracleGenerators do
   Whether the model may read `statement`'s guaranteed bindings inexactly: it contains a
   macro whose expansion binds as statements what its route declares lazy (`twice/1`,
   `reversed/2`). A withheld classifier is the other inexact case, read from the model
-  (`Mutare.Transform.Bindings.unknown_routing?/1`).
+  (`Mutare.Transform.BindingFacts.unknown_routing?/1`).
   """
   def inexact?(statement) do
     {_, lazy?} =

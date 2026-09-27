@@ -34,7 +34,7 @@ defmodule Mutare.RebuiltCallDeliveryTest do
   import Mutare.Test.SourcePatch, only: [assert_patches: 4]
 
   alias Mutare.CallRouting.Registry
-  alias Mutare.Transform.{BindingEscapeEmit, Resolve}
+  alias Mutare.Transform.{BindingFacts, Resolve}
 
   defmodule DSL do
     def value(value), do: value
@@ -348,7 +348,7 @@ defmodule Mutare.RebuiltCallDeliveryTest do
 
     test "an unchanged call keeps the classification of its written form", %{node: node} do
       assert Mutare.Calls.routed_treatments(node) == [:expression]
-      assert BindingEscapeEmit.expression_bindings(node) == [:p]
+      assert BindingFacts.expression_bindings(node) == [:p]
 
       assert Resolve.reroute(node, node) == node
     end
@@ -357,7 +357,7 @@ defmodule Mutare.RebuiltCallDeliveryTest do
       rerouted = Resolve.reroute(ctx.rebuild.(:identity_twin, ctx.args), ctx.node)
 
       assert Mutare.Calls.routed_treatments(rerouted) == [:expression]
-      assert BindingEscapeEmit.expression_bindings(rerouted) == [:p]
+      assert BindingFacts.expression_bindings(rerouted) == [:p]
     end
 
     # `p` is fresh and read after; the `abs` removal keeps `identity`'s call, pipe and all, so
