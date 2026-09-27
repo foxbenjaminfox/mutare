@@ -152,7 +152,7 @@ defmodule Mix.Tasks.Mutare do
 
   Combine `--since` with CI gates to gate only the code a pull request changed, and `--quiet` to drop the live progress (spinner, phases, per-survivor and `PROGRESS` lines); the final report (and any machine reports) will still be printed. When stderr is not a terminal, the `PROGRESS` lines are what keep a long run from looking silent, so leave them on where a CI system kills jobs that produce no output for a while. A pull request that changes no mutatable line — only tests, docs, or comments — passes, with empty reports written.
 
-      mix mutare --since origin/main --min-score 80 --quiet
+      mix mutare --since origin/master --min-score 80 --quiet
 
   ## Tuning the run
 

@@ -14776,7 +14776,7 @@ The zero-sites abort (`:nothing_to_mutate`) exists to catch a scope the user nam
 wrong — typically an `--only` path typed relative to the caller's directory instead of the
 target. Under `--since` the scope is computed, and "nothing changed that can be mutated" is a
 legitimate outcome: a pull request that touches only tests, docs or comments. Aborting there
-failed every such PR in a CI job gating on `--since origin/main`, and wrote no report, so a
+failed every such PR in a CI job gating on `--since origin/master`, and wrote no report, so a
 step uploading the SARIF file failed too.
 
 The Mix task now short-circuits before the runner when `--since` is set, the scan found no
