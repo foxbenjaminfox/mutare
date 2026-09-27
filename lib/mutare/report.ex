@@ -87,6 +87,69 @@ defmodule Mutare.Report do
   end
 
   @doc """
+  The lines holding mutants no test ran, one line per file, with runs of
+  consecutive lines collapsed into a range. Files keep the order of `results`.
+  Returns `""` when every mutant was covered.
+
+  Listing each uncovered mutant would flood a large run, since a line can hold
+  many; collapsing to lines keeps the section proportional to the untested
+  regions. Only strictly consecutive lines merge: a line with no uncovered
+  mutant between two that have one may be covered or outside the run's scope,
+  so a range never spans it.
+
+      iex> results = [
+      ...>   %Mutare.Result{status: :no_coverage, site: %Mutare.Site{file: "lib/a.ex", line: 13}},
+      ...>   %Mutare.Result{status: :no_coverage, site: %Mutare.Site{file: "lib/a.ex", line: 12}},
+      ...>   %Mutare.Result{status: :killed, site: %Mutare.Site{file: "lib/a.ex", line: 20}},
+      ...>   %Mutare.Result{status: :no_coverage, site: %Mutare.Site{file: "lib/a.ex", line: 30}},
+      ...>   %Mutare.Result{status: :no_coverage, site: %Mutare.Site{file: "lib/b.ex", line: 7}}
+      ...> ]
+      iex> Mutare.Report.no_coverage(results)
+      "no test ran the mutants on:\\n  lib/a.ex:12-13, 30\\n  lib/b.ex:7"
+  """
+  @spec no_coverage([Result.t()]) :: String.t()
+  def no_coverage(results) do
+    case Enum.filter(results, &(&1.status == :no_coverage)) do
+      [] ->
+        ""
+
+      uncovered ->
+        files =
+          uncovered
+          |> Enum.group_by(& &1.site.file, & &1.site.line)
+          |> Map.new(fn {file, lines} -> {file, line_ranges(lines)} end)
+
+        lines =
+          uncovered
+          |> Enum.map(& &1.site.file)
+          |> Enum.uniq()
+          |> Enum.map(&"  #{&1}:#{Map.fetch!(files, &1)}")
+
+        Enum.join(["no test ran the mutants on:" | lines], "\n")
+    end
+  end
+
+  # Sorted, deduplicated lines as `12-13, 30`.
+  defp line_ranges(lines) do
+    lines
+    |> Enum.sort()
+    |> Enum.dedup()
+    |> Enum.chunk_while(
+      nil,
+      fn
+        line, nil -> {:cont, {line, line}}
+        line, {first, last} when line == last + 1 -> {:cont, {first, line}}
+        line, run -> {:cont, run, {line, line}}
+      end,
+      fn run -> {:cont, run, nil} end
+    )
+    |> Enum.map_join(", ", fn
+      {line, line} -> "#{line}"
+      {first, last} -> "#{first}-#{last}"
+    end)
+  end
+
+  @doc """
   One line for an ignored mutant, e.g.
   `lib/x.ex:42  [arithmetic]  IGNORED  — off-by-one is intentional`.
 
@@ -109,6 +172,10 @@ defmodule Mutare.Report do
 
   @doc """
   Render the whole report from results and a `%{file => original_source}` map.
+
+  The report lists each survivor as a diff, then the lines holding mutants no
+  test ran (`no_coverage/1`), then ignored mutants and harness errors, one per
+  line, and ends with the `summary/1` tally.
   """
   @spec render([Result.t()], %{optional(String.t()) => String.t()}) :: String.t()
   def render(results, sources) do
@@ -121,6 +188,7 @@ defmodule Mutare.Report do
 
     [
       survivor_section(survivors, blocks),
+      no_coverage(results),
       ignored_section(results),
       harness_error_section(results),
       summary(results)

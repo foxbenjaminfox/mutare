@@ -14768,3 +14768,20 @@ listing to `.ex` because discovery mutates nothing else — reading an unignored
 would cost time for no site. A whole-file marker in `:only_lines` was considered and rejected:
 listing the lines is exactly what the diff yields once the file is added, so both routes into
 the scope agree, and `:only_lines` keeps one entry shape.
+
+### The human report lists uncovered lines, not uncovered mutants (2026-09-27)
+
+The human report counted `:no_coverage` mutants in its summary but never said where they
+were; only the JSON report did. That left `--max-no-coverage` failing with nothing to act on,
+and under `--since` an uncovered line is the plainest finding there is — code the branch added
+that no test runs. `Report.no_coverage/1` now lists them after the survivors: one line per
+file, its lines collapsed into ranges.
+
+It lists lines, not mutants, because uncovered mutants can outnumber everything else (the
+dogfood run in NOTES "Self-hosting: the coverage helper module clashes with its test stand-in"
+had 76 of 141), and one line can hold several; the
+fix — cover the line — is the same for all of them. A range merges only consecutive lines. A
+gap line with no uncovered mutant may be covered, or outside a `--line`/`--since` scope with no
+results at all, so bridging it would claim lines nobody checked. `--max-survivors` still counts
+survivors only (NOTES "Early stop after N survivors"): listing uncovered lines changes what the report
+shows, not what stops a run.

@@ -581,6 +581,31 @@ defmodule Mutare.ReportTest do
     assert out =~ "lib/x.ex:1  [arithmetic]  IGNORED\nlib/x.ex:2  [arithmetic]  IGNORED"
   end
 
+  test "render/2 lists uncovered lines after the survivors and before the ignored" do
+    uncovered = fn line ->
+      %Result{
+        status: :no_coverage,
+        site: %Site{file: "lib/x.ex", line: line, mutator: :arithmetic}
+      }
+    end
+
+    ignored = %Result{
+      status: :ignored,
+      site: %Site{file: "lib/x.ex", line: 9, mutator: :arithmetic, ignore_reason: nil}
+    }
+
+    results = [%Result{site: site(:>), status: :survived}, uncovered.(4), uncovered.(3), ignored]
+    out = Report.render(results, %{"lib/billing.ex" => @source})
+
+    assert out =~ "no test ran the mutants on:\n  lib/x.ex:3-4\n"
+    assert index(out, "SURVIVED") < index(out, "no test ran")
+    assert index(out, "no test ran") < index(out, "IGNORED")
+  end
+
+  test "render/2 has no uncovered section when every mutant was covered" do
+    refute Report.render([%Result{site: site(:>), status: :killed}], %{}) =~ "no test ran"
+  end
+
   test "render/2 lists harness errors before the summary" do
     error = %Result{
       status: :harness_error,

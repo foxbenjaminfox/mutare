@@ -24,7 +24,7 @@ defmodule Mix.Tasks.Mutare do
     * `killed`      — a test failed on the mutant. Your suite caught the change.
     * `survived`    — every test still passed: no test distinguishes the mutated code from the original. Each survivor is reported as a one-line diff so you can see exactly what slipped through.
     * `timeout`     — the mutant ran past the per-mutant time cap (e.g. it created an infinite loop). Counts as killed. (So does a mutant that exhausts the atom table and crashes the VM.)
-    * `no_coverage` — no test runs that line at all, so nothing could catch it. Excluded from the score; fix it by covering the line.
+    * `no_coverage` — no test runs that line at all, so nothing could catch it. The report lists these lines per file, collapsing consecutive lines into ranges. Excluded from the score; fix it by covering the line.
     * `ignored`     — suppressed by a `# mutare:ignore` comment (below). Excluded.
     * `poisoned`    — the mutated code would not compile, so it was dropped. Excluded. (Rare — the built-in mutators are compile-safe.)
     * `harness_error` — the mutant's test run never reached a pass/fail verdict (an infrastructure hiccup, not a real result). Excluded.
