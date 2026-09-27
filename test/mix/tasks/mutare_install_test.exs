@@ -385,4 +385,111 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     assert Enum.any?(igniter.notices, &(&1 =~ "Mutare.Plug.all() ++ Mutare.Phoenix.all()"))
     assert Enum.any?(igniter.notices, &(&1 =~ "extensions: [Mutare.Phoenix]"))
   end
+
+  # --- agent skill via usage_rules -----------------------------------------
+
+  @usage_rules {:usage_rules, "~> 1.2", only: :dev, runtime: false}
+
+  # A mix.exs whose `project/0` carries `project_extra` (keyword entries, as source) and
+  # whose module body carries `extra_defs`, for the shapes a usage_rules config takes.
+  defp usage_rules_project(project_extra, extra_defs \\ "") do
+    mix_exs = """
+    defmodule Test.MixProject do
+      use Mix.Project
+
+      def project do
+        [app: :test, version: "0.1.0", elixir: "~> 1.17", deps: deps()#{project_extra}]
+      end
+
+      def application, do: [extra_applications: [:logger]]
+
+      defp deps do
+        [#{inspect(@usage_rules)}]
+      end
+    #{extra_defs}
+    end
+    """
+
+    # Formatted, as Igniter writes it back, so an edit that changes nothing leaves the file
+    # byte-identical and `assert_unchanged/2` can tell.
+    formatted = IO.iodata_to_binary([Code.format_string!(mix_exs), "\n"])
+    test_project(files: %{"mix.exs" => formatted})
+  end
+
+  defp mix_exs_content(igniter) do
+    igniter.rewrite |> Rewrite.source!("mix.exs") |> Rewrite.Source.get(:content)
+  end
+
+  defp sync_notice?(igniter), do: Enum.any?(igniter.notices, &(&1 =~ "mix usage_rules.sync"))
+
+  test "without usage_rules, mix.exs gets no usage_rules config" do
+    igniter = project([]) |> install()
+
+    refute mix_exs_content(igniter) =~ "usage_rules"
+    refute sync_notice?(igniter)
+  end
+
+  test "usage_rules with no config: creates the nested key and lists :mutare" do
+    igniter = usage_rules_project("") |> install()
+
+    assert mix_exs_content(igniter) =~
+             ~r/usage_rules:\s*\[\s*skills:\s*\[\s*package_skills:\s*\[:mutare\]\s*\]\s*\]/
+
+    assert sync_notice?(igniter)
+  end
+
+  test "usage_rules with other package skills: appends :mutare and keeps the rest" do
+    igniter =
+      usage_rules_project(
+        ~s(, usage_rules: [file: "AGENTS.md", skills: [package_skills: [:ash]]])
+      )
+      |> install()
+
+    content = mix_exs_content(igniter)
+    assert content =~ ~r/package_skills:\s*\[:ash,\s*:mutare\]/
+    assert content =~ ~s(file: "AGENTS.md")
+    assert sync_notice?(igniter)
+  end
+
+  test "usage_rules already listing :mutare: mix.exs is unchanged" do
+    igniter =
+      usage_rules_project(", usage_rules: [skills: [package_skills: [:mutare]]]") |> install()
+
+    assert_unchanged(igniter, "mix.exs")
+  end
+
+  test "usage_rules config in a private function: :mutare is added there" do
+    igniter =
+      usage_rules_project(
+        ", usage_rules: usage_rules()",
+        "  defp usage_rules, do: [skills: [package_skills: [:ash]]]"
+      )
+      |> install()
+
+    content = mix_exs_content(igniter)
+    assert content =~ "usage_rules: usage_rules()"
+    assert content =~ ~r/package_skills:\s*\[:ash,\s*:mutare\]/
+  end
+
+  test "package_skills that is not a list literal: warns instead of editing" do
+    igniter =
+      usage_rules_project(", usage_rules: [skills: [package_skills: Enum.concat([:ash], [])]]")
+      |> install()
+
+    assert_unchanged(igniter, "mix.exs")
+    assert_has_warning(igniter, &(&1 =~ "not a keyword list the installer can edit"))
+    refute sync_notice?(igniter)
+  end
+
+  test "usage_rules config the installer cannot walk: warns, and the install still applies" do
+    igniter =
+      usage_rules_project(", usage_rules: MyApp.Rules.config()")
+      |> install()
+
+    assert_unchanged(igniter, "mix.exs")
+    assert_has_warning(igniter, &(&1 =~ "not a keyword list the installer can edit"))
+    assert Rewrite.Source.issues(Rewrite.source!(igniter.rewrite, "mix.exs")) == []
+    assert_creates(igniter, ".mutare.exs")
+    refute sync_notice?(igniter)
+  end
 end

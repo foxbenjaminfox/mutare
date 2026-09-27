@@ -25,6 +25,8 @@ if Code.ensure_loaded?(Igniter) do
 
     If you already have a `.mutare.exs`, it is left untouched and the recommended `:mutators` / `:extensions` keys are printed as a notice for you to merge in by hand.
 
+    If the project depends on [usage_rules](https://hexdocs.pm/usage_rules), `:mutare` is added to `usage_rules: [skills: [package_skills: …]]` in `project/0`, so `mix usage_rules.sync` installs the agent skill Mutare ships. The installer does not run the sync itself.
+
     ## Options
 
       * `--repo MyApp.Repo` — the Ecto repo to configure `mutare_ecto` with. When omitted the repo is detected from your project (you are prompted if there is more than one); if none is found a `YourApp.Repo` placeholder is written and a warning tells you to edit it.
@@ -113,6 +115,7 @@ if Code.ensure_loaded?(Igniter) do
       |> add_companion_deps(detected)
       |> fetch_companion_deps()
       |> configure(detected, repo)
+      |> register_agent_skill()
     end
 
     # --- dependencies --------------------------------------------------------
@@ -247,6 +250,78 @@ if Code.ensure_loaded?(Igniter) do
     end
 
     defp warn_missing_repo(igniter, _detected, _repo), do: igniter
+
+    # --- agent skill -----------------------------------------------------------
+
+    # Mutare ships an agent skill (`usage-rules/skills/mutare/` in the package), which
+    # `mix usage_rules.sync` installs for a project listing `:mutare` under
+    # `usage_rules: [skills: [package_skills: …]]` in `project/0`. A project that already
+    # depends on usage_rules gets `:mutare` added there, with any missing keys created;
+    # one that doesn't is left alone, since adopting usage_rules is not Mutare's call.
+    # `update/4` follows `usage_rules: usage_rules()` into the private function. The sync
+    # itself stays the user's to run: it acts on the project's whole usage_rules config,
+    # not just Mutare's entry.
+    defp register_agent_skill(igniter) do
+      if Igniter.Project.Deps.has_dep?(igniter, :usage_rules) do
+        updated =
+          Igniter.Project.MixProject.update(
+            igniter,
+            :project,
+            [:usage_rules, :skills, :package_skills],
+            &add_package_skill/1
+          )
+
+        cond do
+          # A config shape `update/4` cannot walk (`usage_rules: MyApp.Rules.config()`)
+          # comes back as an issue on mix.exs, and an issue aborts the whole install. Listing
+          # the skill is optional, so drop the edit and warn instead.
+          mix_exs_issues(updated) > mix_exs_issues(igniter) ->
+            Igniter.add_warning(igniter, skill_not_listed_warning())
+
+          # `add_package_skill/1` warned: `:mutare` is not listed, so there is nothing to sync.
+          length(updated.warnings) > length(igniter.warnings) ->
+            updated
+
+          true ->
+            Igniter.add_notice(updated, """
+            Mutare's agent skill is listed under usage_rules' `package_skills` in mix.exs.
+            Run `mix usage_rules.sync` to install it.
+            """)
+        end
+      else
+        igniter
+      end
+    end
+
+    # Outside `Igniter.Test`, mix.exs enters the rewrite only when something reads or edits
+    # it, so before the edit it may be absent; an absent source carries no issues.
+    defp mix_exs_issues(igniter) do
+      case Rewrite.source(igniter.rewrite, "mix.exs") do
+        {:ok, source} -> source |> Rewrite.Source.issues() |> length()
+        {:error, _} -> 0
+      end
+    end
+
+    # `nil`: no `package_skills` key yet. Otherwise append unless already present. A value
+    # that is not a list literal (a remote call, say) is left to the user as a warning; the
+    # updater must not return a bare `:error`, which Igniter does not accept from a zipper
+    # update.
+    defp add_package_skill(nil), do: {:ok, {:code, [:mutare]}}
+
+    defp add_package_skill(zipper) do
+      case Igniter.Code.List.append_new_to_list(zipper, :mutare) do
+        {:ok, zipper} -> {:ok, zipper}
+        :error -> {:warning, skill_not_listed_warning()}
+      end
+    end
+
+    defp skill_not_listed_warning do
+      """
+      The usage_rules config in mix.exs is not a keyword list the installer can edit, so
+      :mutare was not added to `usage_rules: [skills: [package_skills: …]]`. Add it by
+      hand, then run `mix usage_rules.sync` to install Mutare's agent skill.
+      """
+    end
 
     # --- mutators expression -------------------------------------------------
 

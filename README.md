@@ -69,7 +69,7 @@ Mutare ships a skill for coding agents that drive it: which scope suits which jo
 usage_rules: [skills: [package_skills: [:mutare]]]
 ```
 
-and run `mix usage_rules.sync`. Without usage_rules, copy `deps/mutare/usage-rules/skills/mutare` into your agent's skills directory (`.claude/skills/` for Claude Code).
+and run `mix usage_rules.sync`; `mix igniter.install mutare` adds that config for you when the project already depends on usage_rules. Without usage_rules, copy `deps/mutare/usage-rules/skills/mutare` into your agent's skills directory (`.claude/skills/` for Claude Code).
 
 ## How it works
 

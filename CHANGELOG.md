@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   triaging survivors. `mix usage_rules.sync` installs it when the project lists `:mutare`
   under `usage_rules: [skills: [package_skills: …]]`; the README shows how to copy it
   by hand instead.
+- `mix igniter.install mutare` adds `:mutare` to `usage_rules: [skills: [package_skills: …]]`
+  in `project/0` when the project depends on usage_rules, creating any missing keys, and
+  warns instead when that config is not a keyword list it can edit.
 - When stderr is not a terminal, live progress writes a `PROGRESS` line with the counts
   and ETA at each tenth of the mutants, and at least every two minutes in every phase
   (the compile included), so a CI system that kills jobs after a stretch without output
