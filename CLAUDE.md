@@ -11,6 +11,8 @@ and that's deliberate — duplicating it here is how four copies drift:
   (deferred work, sharp edges, dead ends). Cross-referenced below as *NOTES "title"*.
 - **How the project thinks** → `PHILOSOPHY.md`.
 - **User-facing overview** → `README.md`.
+- **Guidance for agents *using* Mutare on other projects** → `usage-rules/skills/mutare/`,
+  shipped in the Hex package. Update it when user-visible behaviour it describes changes.
 
 When you find yourself explaining *how a single module works* in this file, stop — that
 belongs in its moduledoc. Keep this navigational.

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The package ships an agent skill, `usage-rules/skills/mutare`, for coding agents that
+  drive Mutare: choosing a scope for the job, running within an agent harness, and
+  triaging survivors. `mix usage_rules.sync` installs it when the project lists `:mutare`
+  under `usage_rules: [skills: [package_skills: …]]`; the README shows how to copy it
+  by hand instead.
 - When stderr is not a terminal, live progress writes a `PROGRESS` line with the counts
   and ETA at each tenth of the mutants, and at least every two minutes in every phase
   (the compile included), so a CI system that kills jobs after a stretch without output

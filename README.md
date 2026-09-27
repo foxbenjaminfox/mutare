@@ -61,6 +61,16 @@ Or add mutare by hand — though if you're using any macro-heavy libraries, like
 
 Then run `mix mutare`.
 
+### Agent skill
+
+Mutare ships a skill for coding agents that drive it: which scope suits which job, how to run it within an agent harness's limits, and how to triage survivors. With [usage_rules](https://hexdocs.pm/usage_rules), add to your `mix.exs` project config
+
+```elixir
+usage_rules: [skills: [package_skills: [:mutare]]]
+```
+
+and run `mix usage_rules.sync`. Without usage_rules, copy `deps/mutare/usage-rules/skills/mutare` into your agent's skills directory (`.claude/skills/` for Claude Code).
+
 ## How it works
 
 1. Transform. Every in-scope source file is rewritten into a *metamutant* that embeds all of its mutants. Mutare transforms the code you write, before macro expansion—so any macros that don't accept arbitrary expressions will probably need their arguments routed `:raw` in your config (see "Routing calls" below).

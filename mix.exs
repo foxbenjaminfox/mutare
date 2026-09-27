@@ -133,8 +133,10 @@ defmodule Mutare.MixProject do
       },
       # Hex's default file set already includes LICENSE*, README*, mix.exs,
       # and lib/; list it explicitly so the bundled demo projects don't slip
-      # into the package while keeping the licence and docs in.
-      files: ["lib", "mix.exs", "README.md", "CHANGELOG.md", "LICENSE"]
+      # into the package while keeping the licence and docs in. `usage-rules/`
+      # carries the agent skill, at the path `mix usage_rules.sync` reads from
+      # a dependency (`usage-rules/skills/<name>/SKILL.md`).
+      files: ["lib", "mix.exs", "README.md", "CHANGELOG.md", "LICENSE", "usage-rules"]
     ]
   end
 

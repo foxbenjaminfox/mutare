@@ -2,7 +2,8 @@
 name: editing-docs
 description: >-
   Use when writing or revising this repo's documentation — CLAUDE.md / AGENTS.md,
-  a module `@moduledoc`, NOTES.md, README.md, or PHILOSOPHY.md. Mutare keeps five
+  a module `@moduledoc`, NOTES.md, README.md, PHILOSOPHY.md, or the shipped agent
+  skill (`usage-rules/skills/mutare/`). Mutare keeps six
   documentation layers with a strict division of labor; put each fact in the right
   layer and don't duplicate across them (that's how CLAUDE.md bloated to 17k words).
   Load before adding architecture/rationale prose or when a doc feels too long.
@@ -10,7 +11,7 @@ description: >-
 
 # Editing Mutare's docs
 
-Five layers, each with one audience and one job. **Pick the layer by audience and
+Six layers, each with one audience and one job. **Pick the layer by audience and
 longevity; never copy the same fact into two.** Duplication is the failure mode —
 it drifts, and the lower-value copy is the one that rots.
 
@@ -21,6 +22,7 @@ it drifts, and the lower-value copy is the one that rots.
 | `NOTES.md` | implementers | the **why**: rationale, deferred work, sharp edges, dead ends. Cross-referenced as `NOTES "title"` | how-it-works mechanics (those go in the moduledoc) |
 | `README.md` | new users | project overview, install, getting started | internals |
 | `PHILOSOPHY.md` | contributors | how the project *thinks* (the design bets) | concrete mechanics |
+| `usage-rules/skills/mutare/` (shipped in the Hex package) | agents **using** Mutare on their own projects | judgement the reference docs lack: which run shape suits which job, running under an agent harness, what survivors mean, and suppression etiquette | option lists (→ `mix help mutare`), swap tables (→ `--explain`), anything about Mutare's internals |
 
 ## Rules
 
