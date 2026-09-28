@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-09-28
+
 ### Added
 
 - `Mutare.CallRouting.Call.resolved_module/2` reads a module name in a routed call's
@@ -30,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   marked `Pending`, so a run that is killed, even by SIGKILL, keeps its results.
 - On SIGTERM, a run writes every report except SARIF from the results so far (untested
   mutants `Pending` in JSON and HTML), says on stderr how far it got, and exits with status 143.
+- The human report lists uncovered lines by file, collapsing consecutive lines into ranges,
+  so a failing `--max-no-coverage` gate points to the code that needs tests.
 
 ### Changed
 
@@ -47,6 +51,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A run stopped by SIGTERM exited with status 0, as if it had succeeded.
+- `--since REF` compares the working tree with the merge base of `REF` and `HEAD`, so
+  commits added to `REF` after the branch forked no longer widen the mutation scope. It
+  also includes untracked, unignored `.ex` files. A shallow clone missing the merge base
+  reports an error with guidance about fetch depth.
+- A `--since` scope with no mutation sites reports "nothing to test", writes empty reports,
+  and passes the gates. Configured paths that do not exist still fail; their check now
+  resolves paths under each mutated umbrella app.
+- Coverage recording follows the private selection key installed by
+  `Mutare.Test.isolate_selector/0`, so concurrent test modules can turn recording on without
+  affecting each other's metamutants.
 
 ## [0.4.2] - 2026-09-27
 
@@ -742,7 +756,8 @@ Initial release.
   any label a mutator declares) to your own functions, with the mutators'
   value-aware reaction: `{MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout}`.
 
-[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/foxbenjaminfox/mutare/compare/v0.3.1...v0.4.0
