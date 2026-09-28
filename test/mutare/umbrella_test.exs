@@ -5,7 +5,9 @@ defmodule Mutare.UmbrellaTest do
   subprocesses, and prove the umbrella loop — copy the whole umbrella, mutate the
   scoped apps, classify, and report survivors with `apps/<app>/...` paths.
   """
-  use ExUnit.Case, async: false
+  # Subprocess-bound: runs beside the in-process tests, one module at a time within its
+  # group (`test_helper.exs` says why there are three).
+  use ExUnit.Case, async: true, group: :subprocess_2
 
   import Mutare.Test.ExUnitSummary, only: [tests_run: 1]
 

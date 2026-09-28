@@ -84,15 +84,12 @@ defmodule Mutare.BindingsOraclePropertyTest do
 
       case Compile.string_result(source, "oracle.ex") do
         {{:ok, _}, diagnostics} ->
-          try do
-            run_check(module) ++
-              guaranteed_checks(module, statements, resolved_statements) ++
-              readable_checks(nodes, resolved_statements) ++
-              later_checks(later_probes, lines, diagnostics)
-          after
-            :code.delete(module)
-            :code.purge(module)
-          end
+          # The module stays loaded: its name is never reused, and unloading holds the code
+          # server while it checks every process (NOTES "The suite runs concurrently").
+          run_check(module) ++
+            guaranteed_checks(module, statements, resolved_statements) ++
+            readable_checks(nodes, resolved_statements) ++
+            later_checks(later_probes, lines, diagnostics)
 
         {{:error, _}, diagnostics} ->
           [{:oracle_module_failed, Compile.messages(diagnostics), source}]
@@ -313,8 +310,6 @@ defmodule Mutare.BindingsOraclePropertyTest do
       module_source_with_lines(inspect(module), [{probe.name, ["a", "b"], probe.body}])
 
     assert {{:ok, _}, diagnostics} = Compile.string_result(source, "oracle_control.ex")
-    :code.delete(module)
-    :code.purge(module)
 
     unused_a =
       for d <- diagnostics, d.message =~ ~s(variable "a" is unused), do: diagnostic_line(d)
@@ -354,8 +349,6 @@ defmodule Mutare.BindingsOraclePropertyTest do
       module_source_with_lines(inspect(module), [{probe.name, ["a", "b"], probe.body}])
 
     assert {{:ok, _}, diagnostics} = Compile.string_result(source, "oracle_copied_control.ex")
-    :code.delete(module)
-    :code.purge(module)
 
     %{body: body_line} = Map.fetch!(lines, probe.name)
     line = body_line + probe.binding_offset

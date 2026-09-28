@@ -7,16 +7,15 @@ defmodule Mutare.PropertyProbeTest do
   separately compiled but textually identical regexes are never `==`, even with equal
   `source`/`opts`. That made `transform_baseline_property_test` (which compares the original and
   the metamutant as two **separate** compiles) spuriously diverge whenever the generator emitted a
-  runtime regex — seed-gated, so it read as flaky on OTP 28 and passed everywhere else. `probe/1`
+  runtime regex — seed-gated, so it read as flaky on OTP 28 and passed everywhere else. `probe/2`
   now reduces every regex to its stable `{:"$regex", source, opts}` identity.
 
   These assert the normalised *shape* directly, so they pin the fix on **every** OTP version
   rather than only reproducing the OTP-28 symptom — a revert fails here on OTP 26 too.
   See NOTES "OTP 28 regex `re_pattern` is a per-compile reference".
   """
-  # Compiles the shared `Prop` fixture name and purges it, exactly like the property tests it
-  # backs; must not overlap them (or each other) — keep serial.
-  use ExUnit.Case, async: false
+  # `PropertyProbe.with_compiled/2` nests each `Prop` under a unique wrapper.
+  use ExUnit.Case, async: true
 
   alias Mutare.PropertyProbe
 
@@ -49,11 +48,11 @@ defmodule Mutare.PropertyProbeTest do
     end
   end
 
-  describe "probe/1 (end to end)" do
+  describe "probe/2 (end to end)" do
     test "a returned regex is normalised — no Regex struct leaks into the outcome" do
       {:ok, outcome} =
-        PropertyProbe.with_compiled(regex_module("ab"), fn ->
-          PropertyProbe.probe({:f, [1]})
+        PropertyProbe.with_compiled(regex_module("ab"), fn module ->
+          PropertyProbe.probe(module, {:f, [1]})
         end)
 
       assert outcome == {:value, {:"$regex", "ab", []}}
@@ -61,9 +60,12 @@ defmodule Mutare.PropertyProbeTest do
 
     test "a regex nested in a returned collection is normalised end to end" do
       {:ok, outcome} =
-        PropertyProbe.with_compiled("defmodule Prop do def f(_a), do: [~r/ab/, :tail] end", fn ->
-          PropertyProbe.probe({:f, [1]})
-        end)
+        PropertyProbe.with_compiled(
+          "defmodule Prop do def f(_a), do: [~r/ab/, :tail] end",
+          fn module ->
+            PropertyProbe.probe(module, {:f, [1]})
+          end
+        )
 
       assert outcome == {:value, [{:"$regex", "ab", []}, :tail]}
     end
@@ -86,15 +88,18 @@ defmodule Mutare.PropertyProbeTest do
 
     test "raise / non-regex tagging is unaffected by normalisation" do
       {:ok, raised} =
-        PropertyProbe.with_compiled("defmodule Prop do def f(_a), do: raise(\"boom\") end", fn ->
-          PropertyProbe.probe({:f, [1]})
-        end)
+        PropertyProbe.with_compiled(
+          "defmodule Prop do def f(_a), do: raise(\"boom\") end",
+          fn module ->
+            PropertyProbe.probe(module, {:f, [1]})
+          end
+        )
 
       assert raised == {:raised, RuntimeError}
 
       {:ok, plain} =
-        PropertyProbe.with_compiled("defmodule Prop do def f(a), do: a end", fn ->
-          PropertyProbe.probe({:f, [:value]})
+        PropertyProbe.with_compiled("defmodule Prop do def f(a), do: a end", fn module ->
+          PropertyProbe.probe(module, {:f, [:value]})
         end)
 
       assert plain == {:value, :value}
@@ -104,10 +109,10 @@ defmodule Mutare.PropertyProbeTest do
   # A `Prop` fixture whose only function returns the given regex source.
   defp regex_module(source), do: "defmodule Prop do def f(_a), do: ~r/#{source}/ end"
 
-  # Compile `source` as its own unit, probe `f/1` at the loaded module, then purge — so each call
-  # is a distinct compilation unit (the condition that makes OTP 28's per-compile #Reference bite).
+  # Compile `source` as its own unit and probe `f/1` at the loaded module — so each call is a
+  # distinct compilation unit (the condition that makes OTP 28's per-compile #Reference bite).
   defp probe_separate_compile(source) do
-    {:ok, outcome} = PropertyProbe.with_compiled(source, fn -> PropertyProbe.probe({:f, [1]}) end)
+    {:ok, outcome} = PropertyProbe.with_compiled(source, &PropertyProbe.probe(&1, {:f, [1]}))
     outcome
   end
 end

@@ -32,25 +32,20 @@ defmodule Mutare.Test.SourcePatch do
 
     for site <- [nil | sites] do
       patched = if site, do: patch(source, site), else: source
-      {reference, compiled} = compile_reference!(patched, site)
+      reference = compile_reference!(patched, site)
+      id = if site, do: site.id, else: 0
 
-      try do
-        id = if site, do: site.id, else: 0
+      for call <- calls do
+        got = Mutare.Test.with_active_mutant(id, fn -> outcome(module, call) end)
+        expected = outcome(reference, call)
 
-        for call <- calls do
-          got = Mutare.Test.with_active_mutant(id, fn -> outcome(module, call) end)
-          expected = outcome(reference, call)
-
-          assert got == expected, """
-          #{describe(site)} diverges from its source patch on #{inspect(call)}:
-            metamutant: #{inspect(got)}
-            patched:    #{inspect(expected)}
-          patched source:
-          #{patched}
-          """
-        end
-      after
-        Enum.each(compiled, &purge/1)
+        assert got == expected, """
+        #{describe(site)} diverges from its source patch on #{inspect(call)}:
+          metamutant: #{inspect(got)}
+          patched:    #{inspect(expected)}
+        patched source:
+        #{patched}
+        """
       end
     end
 
@@ -65,14 +60,17 @@ defmodule Mutare.Test.SourcePatch do
   end
 
   # Nest the patched source in a uniquely named shell, as `compile_metamutant/3` does, and
-  # return the fixture module inside it.
+  # return the fixture module inside it. The modules stay loaded: their names are never
+  # reused, and unloading one (a `:code.delete` and `:code.purge`) holds the VM's single code
+  # server while it checks every process, which under an async suite costs far more than the
+  # few kilobytes it frees (NOTES "The suite runs concurrently").
   defp compile_reference!(patched, site) do
     shell = Module.concat(__MODULE__, :"R#{System.unique_integer([:positive])}")
 
     case Compile.string_result("defmodule #{inspect(shell)} do\n#{patched}\nend") do
       {{:ok, compiled}, _diagnostics} ->
         [module] = for {module, _binary} <- compiled, module != shell, do: module
-        {module, Enum.map(compiled, &elem(&1, 0))}
+        module
 
       {{:error, _exception}, diagnostics} ->
         flunk("""
@@ -96,9 +94,4 @@ defmodule Mutare.Test.SourcePatch do
 
   defp describe(site),
     do: "mutant #{site.id} (#{site.mutator}: #{site.original_code} → #{site.mutated_code})"
-
-  defp purge(module) do
-    :code.delete(module)
-    :code.purge(module)
-  end
 end

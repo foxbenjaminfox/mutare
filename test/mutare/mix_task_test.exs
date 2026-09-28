@@ -874,7 +874,7 @@ defmodule Mix.Tasks.MutareTest do
   @tag timeout: 180_000
   test "end to end against an example: prints survivors, writes a JSON report, and gates on --min-score" do
     sandbox = Project.tmp_dir(:task)
-    out = Path.join(System.tmp_dir!(), "mutare_report_#{System.unique_integer([:positive])}.json")
+    out = Mutare.Test.Project.tmp_dir(:report) <> ".json"
     on_exit(fn -> File.rm_rf!(sandbox) end)
     on_exit(fn -> File.rm(out) end)
 

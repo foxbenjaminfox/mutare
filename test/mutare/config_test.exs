@@ -6,7 +6,7 @@ defmodule Mutare.ConfigTest do
 
   describe "load/1" do
     setup do
-      root = Path.join(System.tmp_dir!(), "mutare_cfg_#{System.unique_integer([:positive])}")
+      root = Mutare.Test.Project.tmp_dir(:cfg)
       File.mkdir_p!(root)
       on_exit(fn -> File.rm_rf!(root) end)
       %{root: root}
@@ -489,7 +489,7 @@ defmodule Mutare.ConfigTest do
   describe "merge/3 with --since" do
     setup do
       repo =
-        Path.join(System.tmp_dir!(), "mutare_cfg_since_#{System.unique_integer([:positive])}")
+        Mutare.Test.Project.tmp_dir(:cfg_since)
 
       File.mkdir_p!(Path.join(repo, "lib"))
       on_exit(fn -> File.rm_rf!(repo) end)

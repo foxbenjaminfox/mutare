@@ -28,7 +28,7 @@ defmodule Mutare.ClauseGuardTest do
     test "a `with` `<-` clause guard" do
       {meta, all} =
         sites("""
-        defmodule M do
+        defmodule ClauseGuardFixture do
           def f(x), do: with(v when v > 0 <- x, do: v, else: (_ -> 0))
         end
         """)
@@ -42,7 +42,7 @@ defmodule Mutare.ClauseGuardTest do
     test "a `with` `else` clause guard, and its inert guard's GuardDrop" do
       {meta, all} =
         sites("""
-        defmodule M do
+        defmodule ClauseGuardFixture do
           def f(x) do
             with {:ok, v} <- x do
               v
@@ -63,7 +63,7 @@ defmodule Mutare.ClauseGuardTest do
     test "a `try` `catch` clause guard (a two-pattern head: swaps, but no GuardDrop)" do
       {meta, all} =
         sites("""
-        defmodule M do
+        defmodule ClauseGuardFixture do
           def f(x) do
             try do
               throw(x)
@@ -86,7 +86,7 @@ defmodule Mutare.ClauseGuardTest do
     test "a `try` `else` clause guard" do
       {meta, all} =
         sites("""
-        defmodule M do
+        defmodule ClauseGuardFixture do
           def f(x) do
             try do
               x
@@ -105,7 +105,7 @@ defmodule Mutare.ClauseGuardTest do
     test "a `for` generator guard and a `reduce:` do-clause guard" do
       {meta, all} =
         sites("""
-        defmodule M do
+        defmodule ClauseGuardFixture do
           def f(xs), do: for(v when v > 0 <- xs, do: v)
 
           def g(xs) do
@@ -125,7 +125,7 @@ defmodule Mutare.ClauseGuardTest do
     test "the patterns beside the guard stay patterns (no literal or structural mutant)" do
       {meta, all} =
         sites("""
-        defmodule M do
+        defmodule ClauseGuardFixture do
           def f(x), do: with({:ok, 1, v} when v > 0 <- x, do: v, else: (_ -> :e))
         end
         """)
@@ -317,7 +317,7 @@ defmodule Mutare.ClauseGuardTest do
       # with no id or site, and the metamutant compiles.
       {meta, all} =
         sites("""
-        defmodule M do
+        defmodule ClauseGuardFixture do
           def f(x \\\\ with(v when v > 0 <- 1, do: v, else: (_ -> 0))), do: x
         end
         """)
@@ -330,7 +330,7 @@ defmodule Mutare.ClauseGuardTest do
   describe "poison attribution" do
     test "a guard alternative's metamutant line maps to exactly its mutant" do
       source = """
-      defmodule M do
+      defmodule ClauseGuardFixture do
         def f(x), do: with(v when v > 0 <- x, do: v, else: (_ -> 0))
       end
       """

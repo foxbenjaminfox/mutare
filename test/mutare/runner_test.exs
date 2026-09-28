@@ -4,7 +4,9 @@ defmodule Mutare.RunnerTest do
   against it with real `mix test` subprocesses, and prove the whole loop:
   compile once, kill/survive classification, and a survivor diff.
   """
-  use ExUnit.Case, async: false
+  # Subprocess-bound: runs beside the in-process tests, one module at a time within its
+  # group (`test_helper.exs` says why there are three).
+  use ExUnit.Case, async: true, group: :subprocess_1
 
   alias Mutare.{Report, Result, Run}
   alias Mutare.Test.Project

@@ -1,20 +1,34 @@
-defmodule Mutare.RuntimeIdPropertyTest do
-  @moduledoc """
-  Property pins for the stable per-file runtime identity a namespaced transform gives its
-  mutants (NOTES "Stable per-file runtime identities"), over generated modules:
+# Property pins for the stable per-file runtime identity a namespaced transform gives its
+# mutants (NOTES "Stable per-file runtime identities"), over generated modules:
+#
+#   * **Skipping subtracts generated code, nothing else.** Poison recovery rebuilds with
+#     `:skip_ids`; the id counter still advances for a skipped id, so for *any* subset of a
+#     file's ids the rebuild records the same sites (a skipped one marked `poisoned`) with the
+#     same `next_id`, and its metamutant's manifest attributes exactly the surviving local ids.
+#   * **Report offsets never enter the metamutant.** A different `:start_id` (an unrelated
+#     file's candidate count moving this file's report range) shifts every report id by the
+#     offset and changes nothing else — not a runtime id, not a byte of generated source —
+#     with or without a skip set (shifted along).
+#
+# Pure: transforms strings and re-parses them; no modules are defined, no selector flipped. Each
+# property is its own async module, so the two run side by side.
+defmodule Mutare.RuntimeIdProperty do
+  @moduledoc false
+  use PropCheck
 
-    * **Skipping subtracts generated code, nothing else.** Poison recovery rebuilds with
-      `:skip_ids`; the id counter still advances for a skipped id, so for *any* subset of a
-      file's ids the rebuild records the same sites (a skipped one marked `poisoned`) with the
-      same `next_id`, and its metamutant's manifest attributes exactly the surviving local ids.
-    * **Report offsets never enter the metamutant.** A different `:start_id` (an unrelated
-      file's candidate count moving this file's report range) shifts every report id by the
-      offset and changes nothing else — not a runtime id, not a byte of generated source —
-      with or without a skip set (shifted along).
-  """
-  # Pure: transforms strings and re-parses them; no modules are defined, no selector flipped.
+  # A random subset of `ids`, as a MapSet.
+  def subset(ids) do
+    let flags <- vector(length(ids), boolean()) do
+      MapSet.new(for {id, true} <- Enum.zip(ids, flags), do: id)
+    end
+  end
+end
+
+defmodule Mutare.RuntimeIdPropertyTest.Skipping do
   use ExUnit.Case, async: true
   use PropCheck
+
+  import Mutare.RuntimeIdProperty
 
   alias Mutare.{Manifest, Transform}
   alias Mutare.TransformPropertyGenerators, as: Gen
@@ -58,6 +72,34 @@ defmodule Mutare.RuntimeIdPropertyTest do
     end
   end
 
+  defp local_id(%{runtime_id: {_file, local}}), do: local
+
+  defp local_ids(report_ids, sites) do
+    MapSet.new(for site <- sites, MapSet.member?(report_ids, site.id), do: local_id(site))
+  end
+
+  defp manifest_ids(metamutant, dispatch_var) do
+    %Manifest{regions: regions} = Manifest.from_source(metamutant, dispatch_var)
+    MapSet.new(Enum.flat_map(regions, & &1.ids))
+  end
+end
+
+defmodule Mutare.RuntimeIdPropertyTest.Offsets do
+  use ExUnit.Case, async: true
+  use PropCheck
+
+  import Mutare.RuntimeIdProperty
+
+  alias Mutare.Transform
+  alias Mutare.TransformPropertyGenerators, as: Gen
+
+  @numtests 100
+  @max_size 16
+  @moduletag timeout: 600_000
+  @moduletag :property
+
+  @opts [file: "lib/b.ex", runtime_namespace: "lib/b.ex"]
+
   property "a report-id offset shifts ids and touches nothing else",
     numtests: @numtests,
     max_size: @max_size do
@@ -84,23 +126,5 @@ defmodule Mutare.RuntimeIdPropertyTest do
             Enum.map(a_sites, &{&1.line, &1.original_code, &1.mutated_code})
       end
     end
-  end
-
-  # A random subset of `ids`, as a MapSet.
-  defp subset(ids) do
-    let flags <- vector(length(ids), boolean()) do
-      MapSet.new(for {id, true} <- Enum.zip(ids, flags), do: id)
-    end
-  end
-
-  defp local_id(%{runtime_id: {_file, local}}), do: local
-
-  defp local_ids(report_ids, sites) do
-    MapSet.new(for site <- sites, MapSet.member?(report_ids, site.id), do: local_id(site))
-  end
-
-  defp manifest_ids(metamutant, dispatch_var) do
-    %Manifest{regions: regions} = Manifest.from_source(metamutant, dispatch_var)
-    MapSet.new(Enum.flat_map(regions, & &1.ids))
   end
 end

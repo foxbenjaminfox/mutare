@@ -3,22 +3,25 @@ defmodule Mutare.PropertyProbe do
   Shared probe / compile / spec scaffolding for the **runtime** property tests —
   `transform_baseline_property_test.exs` (the baseline metamutant ≡ the original) and
   `transform_activation_property_test.exs` (each mutant runs isolated). Both compile the
-  generator's fixed `Prop` fixture and exercise its exported functions; this module owns the
+  generator's `Prop` fixture and exercise its exported functions; this module owns the
   mechanics they share, so a single home derives the probe set and runs it the same way.
 
+  Every compile nests the fixture in a uniquely named wrapper (`with_compiled/2`), so the
+  soaks share no module name and run `async: true`: the callback is handed the module the
+  compile defined (`<wrapper>.Prop`), and every probe names it.
+
   A *probe* is a `{name, args}` pair: an exported `name/arity` paired with an argument row.
-  `specs/1` builds them from the module's public exports crossed with an input pool (the
+  `specs/2` builds them from the module's public exports crossed with an input pool (the
   literals appearing in the module — so literal-matching `case` / head clauses are reached —
-  ahead of a fixed set of common terms). `probe/1` runs one, capturing a normal return *or* a
+  ahead of a fixed set of common terms). `probe/2` runs one, capturing a normal return *or* a
   raise / throw / exit, so two compiled modules (baseline test) or two selector states
   (activation test) compare on identical, total outcomes — the tags keep a returned value from
   ever colliding with a captured failure. Everything is reached via `apply/3` so naming the
   runtime-compiled fixture never trips a compile-time "undefined module" warning.
   """
-  import ExUnit.CaptureIO, only: [with_io: 2]
+  alias Mutare.Test.Compile
 
-  # The generator's fixed module name. Held as an atom so it is only ever reached via `apply/3`
-  # (never a compile-time remote call to a module that does not exist when this module compiles).
+  # The name the generator gives its module, nested under each compile's wrapper.
   @module Prop
 
   # Common terms mixed in with the module's own literals, so atom / boolean / nil clauses (whose
@@ -28,42 +31,33 @@ defmodule Mutare.PropertyProbe do
   # How many distinct input rows to try per exported function.
   @rows_per_function 6
 
-  @doc "The generator's fixed fixture module (`Prop`)."
-  def module, do: @module
-
   @doc """
-  Compile a `source` string, run `fun` against the loaded module, then purge every module it
-  defined so the fixed `Prop` name never clashes across cases. Swallows the (legitimate)
-  redefining / unused / unreachable warnings. Returns `{:ok, fun.()}` or `{:error, exception}`.
-  """
-  def with_compiled(source, fun) do
-    {result, _io} =
-      with_io(:stderr, fn ->
-        try do
-          modules = Code.compile_string(source)
-          value = fun.()
-          Enum.each(modules, fn {module, _binary} -> purge(module) end)
-          {:ok, value}
-        rescue
-          e ->
-            # A failed compile may leave a partial definition behind; clear it best-effort.
-            purge(@module)
-            {:error, e}
-        end
-      end)
+  Compile a `source` string defining `Prop`, nested in a uniquely named wrapper, and run `fun`
+  with the compiled module. Compiler diagnostics (the legitimate unused / unreachable warnings)
+  are captured per process. Returns `{:ok, fun.(module)}` or `{:error, exception}`.
 
-    result
+  The modules stay loaded: their names are never reused, and unloading one holds the VM's
+  single code server while it checks every process (NOTES "The suite runs concurrently").
+  """
+  def with_compiled(source, fun) when is_function(fun, 1) do
+    wrapper = Module.concat(__MODULE__, :"W#{System.unique_integer([:positive])}")
+    module = Module.concat(wrapper, @module)
+
+    case Compile.string_result("defmodule #{inspect(wrapper)} do\n#{source}\nend") do
+      {{:ok, _compiled}, _diagnostics} -> {:ok, fun.(module)}
+      {{:error, exception}, _diagnostics} -> {:error, exception}
+    end
   end
 
   @doc """
-  The probe specs for the **currently compiled** `Prop`: each public `name/arity` (default-arg
-  arities included) crossed with a handful of argument rows from `input_pool/1`. Must be called
-  *inside* `with_compiled/2` — it reflects on the loaded module's exports.
+  The probe specs for `module`, compiled from `module_ast`: each public `name/arity`
+  (default-arg arities included) crossed with a handful of argument rows from `input_pool/1`.
+  Must be called *inside* `with_compiled/2` — it reflects on the loaded module's exports.
   """
-  def specs(module_ast), do: build_specs(exported(@module), input_pool(module_ast))
+  def specs(module, module_ast), do: build_specs(exported(module), input_pool(module_ast))
 
   @doc """
-  Run one `{name, args}` probe, capturing a normal return *or* a raise / throw / exit, so two
+  Run one `{name, args}` probe against `module`, capturing a normal return *or* a raise / throw / exit, so two
   states are compared on identical, total outcomes (the tags keep a returned value from ever
   colliding with a captured failure).
 
@@ -77,8 +71,8 @@ defmodule Mutare.PropertyProbe do
   is immune). Reducing every regex to its stable `{source, opts}` identity makes the comparison
   OTP-version-independent. See NOTES "OTP 28 regex `re_pattern` is a per-compile reference".
   """
-  def probe({name, args}) do
-    {:value, normalize(apply(@module, name, args))}
+  def probe(module, {name, args}) do
+    {:value, normalize(apply(module, name, args))}
   rescue
     error -> {:raised, error.__struct__}
   catch
@@ -87,7 +81,7 @@ defmodule Mutare.PropertyProbe do
 
   @doc """
   Reduce a probed value to a form whose equality is stable across separate compiles, by replacing
-  every `Regex` with its `{source, opts}` identity (see `probe/1` for why). Deep-walked through
+  every `Regex` with its `{source, opts}` identity (see `probe/2` for why). Deep-walked through
   lists / tuples / plain maps so a regex nested in a returned collection is normalised too; other
   structs (`Date`, `DateTime`, …) and scalars pass through untouched.
   """
@@ -140,10 +134,5 @@ defmodule Mutare.PropertyProbe do
       end)
 
     Enum.reverse(acc)
-  end
-
-  defp purge(module) do
-    :code.delete(module)
-    :code.purge(module)
   end
 end

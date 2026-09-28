@@ -5,7 +5,7 @@ defmodule Mutare.PoisonTest do
   alias Mutare.Poison
 
   @poison [mutators: [Mutare.Test.PoisonMutator], file: "lib/p.ex"]
-  @src "defmodule P do\n  def f(a, b), do: a + b\nend\n"
+  @src "defmodule Poisoned do\n  def f(a, b), do: a + b\nend\n"
 
   describe "transform :skip_ids" do
     test "a skipped id is recorded :poisoned with no selector, so it compiles" do
@@ -25,10 +25,10 @@ defmodule Mutare.PoisonTest do
       assert site2.poisoned
       refute meta2 =~ "mutare_unbound_xyz"
       # And it actually compiles now.
-      assert [{P, _}] = Mutare.Test.Compile.string(meta2)
+      assert [{Poisoned, _}] = Mutare.Test.Compile.string(meta2)
     after
-      :code.purge(P)
-      :code.delete(P)
+      :code.purge(Poisoned)
+      :code.delete(Poisoned)
     end
   end
 
@@ -94,14 +94,14 @@ defmodule Mutare.PoisonTest do
       # own line must NOT flag it as poison (the bug that dropped ~110 valid plug mutants).
       warning =
         "    warning: variable \"x\" is unused\n" <>
-          "    └─ lib/p.ex:#{line}:5: P.f/2\n"
+          "    └─ lib/p.ex:#{line}:5: Poisoned.f/2\n"
 
       assert Poison.ids(warning, metamutants, vars) == MapSet.new()
 
       # The same location inside an `error:` diagnostic *is* the poison.
       error =
         "    error: undefined variable \"mutare_unbound_xyz\"\n" <>
-          "    └─ lib/p.ex:#{line}:5: P.f/2\n"
+          "    └─ lib/p.ex:#{line}:5: Poisoned.f/2\n"
 
       assert Poison.ids(error, metamutants, vars) == MapSet.new([site.id])
 

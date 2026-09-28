@@ -4,7 +4,9 @@ defmodule Mutare.Runner.BaselineRunnerTest do
   (`Mutare.Runner.Baseline.classify/1`, unit-tested in baseline_test.exs) driven end to end
   through a real `mix test` in a sandbox.
   """
-  use ExUnit.Case, async: false
+  # Subprocess-bound: runs beside the in-process tests, one module at a time within its
+  # group (`test_helper.exs` says why there are three).
+  use ExUnit.Case, async: true, group: :subprocess_2
 
   alias Mutare.Test.Project
 

@@ -242,7 +242,7 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
     # the executable from the *current* PATH, so prepending the shim dir observes
     # exactly the env `mix/4` assembles — no real mix run needed. Safe to mutate
     # PATH here: this module is `async: false`, and sync tests run serially.
-    base = Path.join(System.tmp_dir!(), "mutare_gate_#{System.unique_integer([:positive])}")
+    base = Mutare.Test.Project.tmp_dir(:gate)
     File.mkdir_p!(base)
     on_exit(fn -> File.rm_rf!(base) end)
 

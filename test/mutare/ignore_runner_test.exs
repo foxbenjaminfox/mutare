@@ -1,6 +1,8 @@
 defmodule Mutare.IgnoreRunnerTest do
   @moduledoc "`# mutare:ignore` end to end: the ignored mutant is never run and stays out of the score."
-  use ExUnit.Case, async: false
+  # Subprocess-bound: runs beside the in-process tests, one module at a time within its
+  # group (`test_helper.exs` says why there are three).
+  use ExUnit.Case, async: true, group: :subprocess_3
 
   alias Mutare.Result
   alias Mutare.Test.Project

@@ -550,10 +550,7 @@ defmodule Mutare.Coverage.HelperTemplateTest do
   describe "dump/1 — serialising the tables to the dump file" do
     setup do
       dump =
-        Path.join(
-          System.tmp_dir!(),
-          "mutare_cov_test_#{System.unique_integer([:positive])}.terms"
-        )
+        Mutare.Test.Project.tmp_dir(:cov_test) <> ".terms"
 
       System.put_env(H.dump_path_env(), dump)
       System.put_env(H.root_env(), File.cwd!())

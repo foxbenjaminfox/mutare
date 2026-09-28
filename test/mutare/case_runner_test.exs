@@ -15,7 +15,9 @@ defmodule Mutare.CaseRunnerTest do
       wrongly scored `:no_coverage`. Coverage now records the ids before matching, and the
       unmatched fallback re-raises the original `CaseClauseError`, so it is covered and killed.
   """
-  use ExUnit.Case, async: false
+  # Subprocess-bound: runs beside the in-process tests, one module at a time within its
+  # group (`test_helper.exs` says why there are three).
+  use ExUnit.Case, async: true, group: :subprocess_3
 
   alias Mutare.Test.Project
 

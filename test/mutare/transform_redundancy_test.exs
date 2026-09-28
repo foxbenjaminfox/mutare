@@ -50,7 +50,7 @@ defmodule Mutare.TransformRedundancyTest do
         %{sites: sites} =
           Mutare.Transform.transform_string_with_sites(
             """
-            defmodule M do
+            defmodule RedundancyFixture do
               def f(s), do: #{unquote(body)}
             end
             """,
@@ -75,7 +75,7 @@ defmodule Mutare.TransformRedundancyTest do
       %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(
           """
-          defmodule M do
+          defmodule RedundancyFixture do
             def f(x), do: {Widget.scale(x, :small), :keep}
           end
           """,
@@ -147,7 +147,7 @@ defmodule Mutare.TransformRedundancyTest do
       def f(_x), do: :no
       """
 
-      module_source = "defmodule M do\n  #{String.trim_trailing(source)}\nend\n"
+      module_source = "defmodule RedundancyFixture do\n  #{String.trim_trailing(source)}\nend\n"
 
       %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(module_source, mutators: @range_guard)
@@ -601,7 +601,7 @@ defmodule Mutare.TransformRedundancyTest do
   # The same, parameterised by the mutator set — for the equivalent-sibling suppression
   # tests, which exercise Logical/List/Conditional combinations.
   defp redundancy_triples(body, mutators) do
-    source = "defmodule M do\n  #{String.trim_trailing(body)}\nend\n"
+    source = "defmodule RedundancyFixture do\n  #{String.trim_trailing(body)}\nend\n"
 
     %{metamutant: meta, sites: sites} =
       Mutare.Transform.transform_string_with_sites(source, mutators: mutators)

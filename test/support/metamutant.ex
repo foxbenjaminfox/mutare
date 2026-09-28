@@ -74,7 +74,9 @@ defmodule Mutare.Test.Metamutant do
   def compile_error_output(meta, message \\ [], file \\ "nofile") do
     stderr =
       ExUnit.CaptureIO.capture_io(:stderr, fn ->
-        assert_raise CompileError, fn -> Code.compile_string(meta, file) end
+        assert_raise CompileError, fn ->
+          Compile.claiming(meta, fn -> Code.compile_string(meta, file) end)
+        end
       end)
 
     for m <- List.wrap(message) do

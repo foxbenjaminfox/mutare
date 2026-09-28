@@ -12,11 +12,17 @@ defmodule Mutare.Test.Project do
 
   @doc """
   A unique, not-yet-created temp path tagged for easy identification in
-  `System.tmp_dir!()` (e.g. `mutare_calc_17`).
+  `System.tmp_dir!()` (e.g. `mutare_calc_48213_17`).
+
+  The OS pid keeps it unique across concurrent `mix test` processes (`--partitions`, or two
+  checkouts), where `System.unique_integer/1` alone restarts in each VM.
   """
   @spec tmp_dir(atom() | String.t()) :: Path.t()
   def tmp_dir(tag) do
-    Path.join(System.tmp_dir!(), "mutare_#{tag}_#{System.unique_integer([:positive])}")
+    Path.join(
+      System.tmp_dir!(),
+      "mutare_#{tag}_#{System.pid()}_#{System.unique_integer([:positive])}"
+    )
   end
 
   @doc """

@@ -9,7 +9,7 @@ defmodule Mutare.ASTRenderTest do
   # `import_deps` it cannot resolve. A formatter file naming an unknown dependency stands
   # in for every way that lookup can fail mid-run.
   test "rendering never consults the working directory's .formatter.exs" do
-    dir = Path.join(System.tmp_dir!(), "mutare_ast_render_#{System.unique_integer([:positive])}")
+    dir = Mutare.Test.Project.tmp_dir(:ast_render)
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
     File.write!(Path.join(dir, ".formatter.exs"), "[import_deps: [:mutare_no_such_dep]]\n")

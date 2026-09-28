@@ -17,7 +17,9 @@ defmodule Mutare.PartitionIntegrationTest do
   the negative case can't be fooled by an ambient `MIX_TEST_PARTITION` in the
   harness's own environment.
   """
-  use ExUnit.Case, async: false
+  # Subprocess-bound: runs beside the in-process tests, one module at a time within its
+  # group (`test_helper.exs` says why there are three).
+  use ExUnit.Case, async: true, group: :subprocess_2
 
   alias Mutare.Result
   alias Mutare.Test.Project

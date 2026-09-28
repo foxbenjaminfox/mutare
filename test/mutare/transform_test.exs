@@ -215,7 +215,7 @@ defmodule Mutare.TransformTest do
 
   test "module-attribute (compile-time) expressions are not mutated" do
     source = """
-    defmodule A do
+    defmodule TransformA do
       @threshold 1 + 2
       def limit, do: @threshold
       def bump(n), do: n + @threshold
@@ -350,7 +350,7 @@ defmodule Mutare.TransformTest do
   end
 
   test "an interpolated atom mutates as a whole; its content <<>> does not collapse" do
-    source = "defmodule A do\n  def f(b), do: :\"a\#{b + 1}c\"\nend\n"
+    source = "defmodule TransformA do\n  def f(b), do: :\"a\#{b + 1}c\"\nend\n"
 
     %{metamutant: meta, sites: sites} =
       Mutare.Transform.transform_string_with_sites(source,
@@ -579,7 +579,7 @@ defmodule Mutare.TransformTest do
     # clauses"), poisoning the single build. `Code.string_to_quoted` would not catch it (the
     # metamutant parses fine), so these assertions compile the metamutant, not just parse it.
     @reduce """
-    defmodule R do
+    defmodule TransformR do
       def sum(counts, pred) do
         for {status, n} <- counts, pred.(status), reduce: 0, do: (acc -> acc + n)
       end

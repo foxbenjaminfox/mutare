@@ -288,7 +288,7 @@ defmodule Mutare.MatchPatternTest do
     test "a repeated binding constrains without a warning when the var is unused later" do
       %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(
-          "defmodule R do\n  def f(t) do\n    {a, a} = t\n    :ok\n  end\nend\n"
+          "defmodule MatchRepeated do\n  def f(t) do\n    {a, a} = t\n    :ok\n  end\nend\n"
         )
 
       # the rewrite must actually fire, else the assertion below is vacuous
@@ -302,7 +302,7 @@ defmodule Mutare.MatchPatternTest do
     test "a bitstring size variable does not warn when unused later" do
       %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(
-          "defmodule S do\n  def f(t) do\n    <<a, b, rest::binary-size(a)>> = t\n    {b, rest}\n  end\nend\n"
+          "defmodule MatchSized do\n  def f(t) do\n    <<a, b, rest::binary-size(a)>> = t\n    {b, rest}\n  end\nend\n"
         )
 
       assert Enum.any?(sites, &(&1.mutator == :pattern_swap))

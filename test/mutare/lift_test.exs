@@ -125,7 +125,7 @@ defmodule Mutare.LiftTest do
     test "lifts an unguarded multi-clause function for clause-drop" do
       %{metamutant: meta, sites: sites} =
         Mutare.Transform.transform_string_with_sites(
-          "defmodule M do\n  def g(0), do: :z\n  def g(_), do: :o\nend\n"
+          "defmodule LiftSample do\n  def g(0), do: :z\n  def g(_), do: :o\nend\n"
         )
 
       assert meta =~ "def g(mutare_arg1) do"
@@ -1092,7 +1092,7 @@ defmodule Mutare.LiftTest do
     test "lifts a default-arg function: defaults ride on the dispatcher, base takes full arity" do
       %{metamutant: defaulted, sites: sites} =
         Mutare.Transform.transform_string_with_sites(
-          "defmodule M do\n  def h(a, b \\\\ 1) when a > b, do: a\nend\n"
+          "defmodule LiftSample do\n  def h(a, b \\\\ 1) when a > b, do: a\nend\n"
         )
 
       # The guard is lifted (it now gets guard/clause mutants it never had before)...
@@ -1107,13 +1107,13 @@ defmodule Mutare.LiftTest do
       assert defaulted =~ ~r/defp #{lifted_name(:h, 2, 1)}\(mutare_active, a, b\)/
       refute defaulted =~ ~r/defp #{lifted_name(:h, 2, 1)}\([^)]*\\\\/
 
-      assert [{M, _}] = Mutare.Test.Compile.string(defaulted)
+      assert [{LiftSample, _}] = Mutare.Test.Compile.string(defaulted)
     end
 
     test "falls back to in-place (no lift) for operator names" do
       %{metamutant: operator} =
         Mutare.Transform.transform_string_with_sites(
-          "defmodule M do\n  def a ~> b when b > 0, do: a\nend\n"
+          "defmodule LiftSample do\n  def a ~> b when b > 0, do: a\nend\n"
         )
 
       refute operator =~ "__mutare"

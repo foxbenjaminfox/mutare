@@ -33,9 +33,9 @@ defmodule Mutare.TransformBaselinePropertyTest do
   is dispatched with `apply/3` so referencing the runtime-compiled `Prop` fixture never trips a
   compile-time "undefined module" warning.
   """
-  # Compiles two modules per case (original + baseline metamutant), purges them, captures :stderr
-  # globally, and flips the global `:persistent_term` selector — must be serial.
-  use ExUnit.Case, async: false
+  # Each compile is nested under a unique wrapper (`PropertyProbe.with_compiled/2`) and the
+  # selector key is private to this module, so it runs beside the other soaks.
+  use ExUnit.Case, async: true
   use PropCheck
 
   alias Mutare.{PropertyProbe, Selector}
@@ -54,9 +54,11 @@ defmodule Mutare.TransformBaselinePropertyTest do
   @moduletag timeout: 600_000
   @moduletag :property
 
+  # Transforms through `Mutare.Transform` itself, so the module's private selection key must be
+  # in force before the first transform (`Mutare.Test`); the metamutant reads that key alone.
   setup do
+    Mutare.Test.isolate_selector()
     Selector.put(Selector.baseline())
-    on_exit(fn -> Selector.put(Selector.baseline()) end)
     :ok
   end
 
@@ -121,19 +123,21 @@ defmodule Mutare.TransformBaselinePropertyTest do
   end
 
   # Compile `source`, derive the probe specs from the module's public exports + the input pool
-  # (extracted from `module_ast`), run every probe at baseline, then purge. Returns
+  # (extracted from `module_ast`), and run every probe at baseline. Returns
   # `{:ok, {specs, outcomes}}` or `{:error, exception}`. The specs are returned so the metamutant
   # is probed with the *identical* calls.
   defp probe_module(source, module_ast) do
-    PropertyProbe.with_compiled(source, fn ->
-      specs = PropertyProbe.specs(module_ast)
-      {specs, Enum.map(specs, &PropertyProbe.probe/1)}
+    PropertyProbe.with_compiled(source, fn module ->
+      specs = PropertyProbe.specs(module, module_ast)
+      {specs, Enum.map(specs, &PropertyProbe.probe(module, &1))}
     end)
   end
 
   # Re-run an already-derived spec list against a freshly compiled `source` (the metamutant).
   defp rerun_module(source, specs) do
-    PropertyProbe.with_compiled(source, fn -> Enum.map(specs, &PropertyProbe.probe/1) end)
+    PropertyProbe.with_compiled(source, fn module ->
+      Enum.map(specs, &PropertyProbe.probe(module, &1))
+    end)
   end
 
   # Surface the seed and offending output on a counterexample, actionable straight from the log

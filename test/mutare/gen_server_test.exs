@@ -14,7 +14,7 @@ defmodule Mutare.GenServerTest do
   defp genserver_mutations(source), do: diffs_for(source, [GS], :genserver)
 
   # Wrap a body of `handle_*` clauses in a `use GenServer` module.
-  defp server(body), do: "defmodule S do\n  use GenServer\n\n#{body}\nend\n"
+  defp server(body), do: "defmodule GenServerFixture do\n  use GenServer\n\n#{body}\nend\n"
 
   describe "the return swap table (gated on @behaviour GenServer)" do
     test "handle_call {:reply, reply, state} drops the reply -> :noreply" do
@@ -173,7 +173,7 @@ defmodule Mutare.GenServerTest do
   describe "scope" do
     test "fires on a directly-declared @behaviour GenServer (not just `use`)" do
       source = """
-      defmodule S do
+      defmodule GenServerFixture do
         @behaviour GenServer
         def handle_call(:g, _f, s), do: {:reply, s, s}
       end
@@ -216,10 +216,10 @@ defmodule Mutare.GenServerTest do
         Mutare.Transform.transform_string_with_sites(source, mutators: [GS])
 
       assert Enum.count(sites, &(&1.mutator == :genserver)) == 5
-      assert [{S, _binary}] = Mutare.Test.Compile.string(metamutant)
+      assert [{GenServerFixture, _binary}] = Mutare.Test.Compile.string(metamutant)
     after
-      :code.purge(S)
-      :code.delete(S)
+      :code.purge(GenServerFixture)
+      :code.delete(GenServerFixture)
     end
   end
 end

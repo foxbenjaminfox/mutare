@@ -10727,6 +10727,10 @@ obvious from the code:
   runtime-flip tests (the rescue/receive emit files' "every mutant matches its source patch"
   loops are 2–5 s each), so moving flips into `*_runtime_test.exs` files would shorten nothing —
   the audit's suggestion to do so was wrong on that point.
+
+  [Superseded 2026-09-28: the runner modules run async in three `:subprocess_N` groups, and the
+  property soaks run async, each `Prop` nested under a unique wrapper and left loaded. "The
+  suite runs concurrently".]
 - **Rendered-shape pins go through one place.** `Metamutant.lifted_pattern/3` and
   `lifted_name/4` derive from `LiftedEmit.base_name/4`, and `selector_tuple/0` is the one
   spelling of the in-place selector head, so a change to either composition moves every
@@ -12725,6 +12729,10 @@ behind real compiles. Four full runs in a row then passed under the same load (8
 **Left alone.** The compile is still one serial resource, and the soaks lean on it hardest;
 unique fixture module names would remove the lock altogether, at the cost of renaming every
 throwaway `defmodule M`. Not needed at these numbers.
+
+[Superseded 2026-09-28: once the property soaks ran async the lock was the ceiling, and it is
+gone — each runtime-compiled name now has one owning test module, and the colliding fixtures
+were renamed. "The suite runs concurrently".]
 
 ### `:skip` reads no spelling `[done]` (2026-09-21)
 
@@ -14834,3 +14842,65 @@ gap line with no uncovered mutant may be covered, or outside a `--line`/`--since
 results at all, so bridging it would claim lines nobody checked. `--max-survivors` still counts
 survivors only (NOTES "Early stop after N survivors"): listing uncovered lines changes what the report
 shows, not what stops a run.
+
+### The suite runs concurrently (2026-09-28)
+
+A plain `mix test` took 21:16 (ExUnit: 1,276 s, 1,116 s of it sync) at about 1.5 cores on a
+16-core machine. Three things kept it serial: the property soaks and the `mix`-driving modules
+were `async: false`, and every in-process compile queued behind one suite-wide lock. It now
+runs in about 9 minutes, sync time down to 100 s. What changed, and the findings that shaped it:
+
+- **A module name has one owner, instead of a lock.** Two concurrent compiles of one name abort
+  the parallel checker, and after that, one test runs or unloads the other's code; the lock only
+  covered the first. `Mutare.Test.Compile.Names` gives each runtime-compiled name to the first
+  ExUnit *module execution* that compiles it, for the rest of the suite run, and refuses any
+  other — so a shared fixture name fails every full run, whichever module compiles second,
+  instead of racing. It sees only compiles made through `Mutare.Test.Compile` (and
+  `Metamutant.compile_error_output/3`); a test calling `Code.compile_string/2` directly must
+  pick a unique name itself, as the few that do already do. The claims are forgotten after each
+  suite run (`ExUnit.after_suite/1`): `--repeat-until-failure` reruns every module in the same
+  VM under a new runner, which would otherwise be refused the names it compiled the last time.
+  Nine short names (`M`, `S`, `R`, `A`, `P`, `K`, `Heads`, `PipedMatch`, `UsesSchema`) were
+  shared across thirteen files and were renamed by file topic. The Mutare.Test wrapper and
+  `SourcePatch`'s shell already made their names unique; `PropertyProbe` now nests the soaks'
+  `Prop` the same way, which is what let those soaks go async.
+- **Long modules were split, because ExUnit parallelizes modules, not tests.** The
+  source-patch soaks' pairwise recipes and examples are spread over shard modules, and each
+  pipe-spelling and runtime-id property is its own module. Tests that looped `assert_patches`
+  over many fixtures became one test per fixture: under load each compile waits its turn at the
+  code server (below), and a loop of dozens outran the 60 s per-test timeout.
+- **Subprocess modules run in three `:subprocess_N` groups.** They spend their time waiting on
+  `mix`, so run serially they idled the machine; run freely they would start dozens of `mix`
+  processes. A group runs one module at a time, beside everything else. The groups are balanced
+  by measured time; a new `*_runner_test` joins the lightest. `timeout_test`, `heap_cap_test`
+  and `compile_timeout_test` stay serial because their verdicts hang on wall-clock timing, and
+  `mix_task_test` for the global `:stderr` device and `Mix.shell`. `coverage_test` was split:
+  its in-process half keeps the named ETS tables and env var, and stays serial; the end-to-end
+  half is `coverage_runner_test`.
+- **The ceiling is now the code server.** Every module load, `:code.delete` and `:code.purge`
+  is a request to one process, and each waits for all schedulers to pass a synchronization
+  point, which is slow on a busy machine. With the suite concurrent, its queue sat at about
+  twenty and the run queue near zero: CPUs idle, waiting on it. Three sources were ours and are
+  gone. The compiler's "redefining module" check runs `:code.ensure_loaded/1`, which for a new
+  name searches the whole code path on disk inside the code server; `test_helper.exs` sets
+  `:ignore_module_conflict`, since the registry already keeps names apart. The registry itself
+  had used `:code.which/1`, the same path search, and now reads the build's modules from the
+  application spec once. And the soak helpers unloaded every fixture (`delete` then `purge`);
+  a purge checks every process for old code — about 7 ms each with 600 idle processes and
+  50 ms with the CPUs busy — so fixtures whose names are never reused now stay loaded, at about
+  8 KB of code each. What remains is inherent to compiling at runtime: each module load, the
+  temporary module Elixir loads and deletes to run a non-trivial module body, and the parallel
+  checker's read of each referenced module's `.beam`. `Mutare.Test.compile_metamutant/3`
+  still purges its modules when a test exits (a published behaviour, left alone), about
+  15 % of the remaining queue.
+- **Fewer concurrent cases is not faster.** At `--max-cases 16` the run took 11:12, not less:
+  the code server bounds throughput, and fewer cases only leaves the subprocess and CPU-bound
+  work less to overlap with.
+- **Measure with a plain `mix test`.** `--slowest` and `--slowest-modules` set `max_cases` to
+  1 (they imply `--trace`), so a timing run with them runs every async module serially — the
+  first "before" figure taken for this work (25:57) was that, not the suite. `mix test` prints
+  `max_cases` in its first line.
+
+`Mutare.Test.Project.tmp_dir/1` (and the tests that built temp paths by hand) now includes the
+OS pid, so two `mix test` processes — `--partitions`, or two checkouts — cannot pick one path;
+`System.unique_integer/1` restarts in every VM.

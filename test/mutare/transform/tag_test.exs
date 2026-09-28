@@ -96,7 +96,7 @@ defmodule Mutare.Transform.TagTest do
   @atom [Mutators.AtomLiteral]
 
   defp transform(body, mutators) do
-    source = "defmodule M do\n  #{String.trim_trailing(body)}\nend\n"
+    source = "defmodule TagFixture do\n  #{String.trim_trailing(body)}\nend\n"
 
     %{metamutant: meta, sites: sites} =
       Mutare.Transform.transform_string_with_sites(source, mutators: mutators)

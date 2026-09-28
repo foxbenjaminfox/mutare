@@ -75,8 +75,8 @@ defmodule Mutare.TransformPropertyGenerators do
   @doc """
   A whole module wrapping a handful of generated functions, so module-planning /
   lifting / dispatcher paths are exercised, not just in-place body selectors. The
-  module name is fixed (`Prop`); a caller that *compiles* the result purges the module
-  between runs (it is parsed, never linked against) so the fixed name doesn't clash.
+  module name is fixed (`Prop`); a caller that *compiles* the result nests it in a
+  uniquely named wrapper (`Mutare.PropertyProbe.with_compiled/2`), so compiles never clash.
   """
   def module_gen do
     let {function_lists, use_part} <- {non_empty(list(function_gen())), use_part_gen()} do

@@ -42,16 +42,19 @@ bench/transform_diff.sh HEAD          # did a refactor move any transform output
 bench/replay_fix.sh /tmp/r <fix-sha>  # would the generated suites have caught that fix's defect?
 ```
 
-`:runner`-tagged tests (`runner_test`, `coverage_test`, `mix_task_test`, `timeout_test`, and every
-`*_runner_test` — `poison_runner_test`, `ignore_runner_test`, …) shell out to real `mix test`
+`:runner`-tagged tests (`runner_test`, `mix_task_test`, `timeout_test`, and every
+`*_runner_test` — `poison_runner_test`, `coverage_runner_test`, …) shell out to real `mix test`
 subprocesses, and live in their own files so the pure tests beside them can stay `async: true`
-(NOTES "Test suite: async-safe compile helpers and the sync split"); `@moduletag :property`
+(NOTES "Test suite: async-safe compile helpers and the sync split"). Most are themselves async,
+one module at a time in each of three `:subprocess_N` groups (`test_helper.exs` says which stay
+sync) — a new one joins the lightest group, NOTES "The suite runs concurrently"; `@moduletag :property`
 tests are PropCheck soaks that render/compile/run streams of generated modules (all under
 `Gen.transform_opts/1`, which carries the call routes the generated routed pipes need). Both
 are slow — exclude them while iterating, run the full suite before committing. `mix run` uses `:dev`, where
 `test/support/*.ex` fixtures (the custom-mutator examples) are **not** compiled — they exist only
-under `MIX_ENV=test`. Test-side helpers live there too: `Mutare.Test.Compile` (warning-swallowing,
-lock-serialized compile — never `capture_io(:stderr, …)` around a compile), `Mutare.Test.Metamutant`
+under `MIX_ENV=test`. Test-side helpers live there too: `Mutare.Test.Compile` (warning-swallowing
+compile — never `capture_io(:stderr, …)` around one — that claims each module name it defines for
+one test module, `Compile.Names`: two modules compiling one fixture name fail every run), `Mutare.Test.Metamutant`
 (assertions and pins over emitted code, plus `family_sites/4` for one family's internal `%Site{}`s),
 `Mutare.Test.SourcePatch` (`assert_patches/4`: every site's source patch must behave as the
 metamutant does under that mutant — the way to test a delivery shape or a range, since string

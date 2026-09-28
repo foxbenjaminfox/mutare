@@ -1,14 +1,15 @@
-defmodule Mutare.PipeSpellingPropertyTest do
-  # `left |> stage(args)` is sugar for `stage(left, args)`, and nothing Mutare does may depend on
-  # which one the user wrote. For a generated chain of stages — routed and eager, routed and lazy,
-  # unrouted — every spelling (each stage piped or direct, independently) must yield the same
-  # mutants, the same behaviour under each, and the same evaluations of the chain's head.
-  use ExUnit.Case, async: false
+# `left |> stage(args)` is sugar for `stage(left, args)`, and nothing Mutare does may depend on
+# which one the user wrote. For a generated chain of stages — routed and eager, routed and lazy,
+# unrouted — every spelling (each stage piped or direct, independently) must yield the same
+# mutants, the same behaviour under each, and the same evaluations of the chain's head.
+#
+# Each property is its own async module, so the three run side by side; they share the chain
+# generator and the observation below.
+defmodule Mutare.PipeSpellingProperty do
+  @moduledoc false
   use PropCheck
 
   import Mutare.Test
-
-  @moduletag :property
 
   # `:numeric` and `:operand_swap` key on a call's arity and move its first operand: the
   # families that once read a pipe stage one argument short, and answered differently for it.
@@ -41,64 +42,10 @@ defmodule Mutare.PipeSpellingPropertyTest do
   ]
   @inputs [0, 3, -2]
 
-  property "a chain means the same however its stages are spelled", numtests: 150 do
-    forall {stages, spelling_a, spelling_b} <- chain() do
-      a = observe(stages, spelling_a)
-      b = observe(stages, spelling_b)
+  def idle_routes, do: @idle_routes
+  def skip_routes, do: @skip_routes
 
-      (a == b)
-      |> when_fail(
-        IO.puts("""
-        #{source(stages, spelling_a)}
-        #{inspect(a, pretty: true)}
-        ---
-        #{source(stages, spelling_b)}
-        #{inspect(b, pretty: true)}
-        """)
-      )
-    end
-  end
-
-  # A route addresses what it names and nothing else: one that declares a function's arguments
-  # the values they already are changes no mutant, however the call is spelled.
-  property "a route that says nothing new changes nothing", numtests: 100 do
-    forall {stages, spelling, _other} <- chain() do
-      unrouted = observe(stages, spelling)
-      routed = observe(stages, spelling, call_routes: @idle_routes)
-
-      (unrouted == routed)
-      |> when_fail(
-        IO.puts("""
-        #{source(stages, spelling)}
-        #{inspect(unrouted, pretty: true)}
-        --- with #{inspect(@idle_routes)}
-        #{inspect(routed, pretty: true)}
-        """)
-      )
-    end
-  end
-
-  # `:skip` is a statement about the call, so it buries what is piped into a skipped stage
-  # exactly as it buries the direct call's first argument.
-  property "a skipped call is skipped however it is spelled", numtests: 100 do
-    forall {stages, spelling_a, spelling_b} <- chain() do
-      a = observe(stages, spelling_a, call_routes: @skip_routes)
-      b = observe(stages, spelling_b, call_routes: @skip_routes)
-
-      (a == b)
-      |> when_fail(
-        IO.puts("""
-        #{source(stages, spelling_a)}
-        #{inspect(a, pretty: true)}
-        --- with #{inspect(@skip_routes)}
-        #{source(stages, spelling_b)}
-        #{inspect(b, pretty: true)}
-        """)
-      )
-    end
-  end
-
-  defp chain do
+  def chain do
     let stages <- non_empty(resize(4, list(stage()))) do
       spelling = vector(length(stages), elements([:piped, :direct]))
       {stages, spelling, spelling}
@@ -115,7 +62,7 @@ defmodule Mutare.PipeSpellingPropertyTest do
   # What a spelling amounts to: per mutator, the multiset of "what this mutant does" — its
   # results and head-evaluation counts over the inputs — beside the baseline's. Ids and source
   # positions differ between spellings by design; behaviour may not.
-  defp observe(stages, spelling, opts \\ []) do
+  def observe(stages, spelling, opts \\ []) do
     {[module], sites} = compile_metamutant(source(stages, spelling), @mutators, opts)
 
     mutants =
@@ -149,7 +96,7 @@ defmodule Mutare.PipeSpellingPropertyTest do
     end
   end
 
-  defp source(stages, spelling) do
+  def source(stages, spelling) do
     """
     defmodule Spelled do
       import Mutare.Test.PipeSyntaxDSL
@@ -181,4 +128,91 @@ defmodule Mutare.PipeSpellingPropertyTest do
   end
 
   defp case_clauses(k), do: "#{k} -> #{k} + 1\nother -> other"
+end
+
+defmodule Mutare.PipeSpellingPropertyTest.Spellings do
+  use ExUnit.Case, async: true
+  use PropCheck
+
+  import Mutare.PipeSpellingProperty
+
+  @moduletag :property
+  @moduletag timeout: 600_000
+
+  property "a chain means the same however its stages are spelled", numtests: 150 do
+    forall {stages, spelling_a, spelling_b} <- chain() do
+      a = observe(stages, spelling_a)
+      b = observe(stages, spelling_b)
+
+      (a == b)
+      |> when_fail(
+        IO.puts("""
+        #{source(stages, spelling_a)}
+        #{inspect(a, pretty: true)}
+        ---
+        #{source(stages, spelling_b)}
+        #{inspect(b, pretty: true)}
+        """)
+      )
+    end
+  end
+end
+
+defmodule Mutare.PipeSpellingPropertyTest.IdleRoutes do
+  use ExUnit.Case, async: true
+  use PropCheck
+
+  import Mutare.PipeSpellingProperty
+
+  @moduletag :property
+  @moduletag timeout: 600_000
+
+  # A route addresses what it names and nothing else: one that declares a function's arguments
+  # the values they already are changes no mutant, however the call is spelled.
+  property "a route that says nothing new changes nothing", numtests: 100 do
+    forall {stages, spelling, _other} <- chain() do
+      unrouted = observe(stages, spelling)
+      routed = observe(stages, spelling, call_routes: idle_routes())
+
+      (unrouted == routed)
+      |> when_fail(
+        IO.puts("""
+        #{source(stages, spelling)}
+        #{inspect(unrouted, pretty: true)}
+        --- with #{inspect(idle_routes())}
+        #{inspect(routed, pretty: true)}
+        """)
+      )
+    end
+  end
+end
+
+defmodule Mutare.PipeSpellingPropertyTest.Skips do
+  use ExUnit.Case, async: true
+  use PropCheck
+
+  import Mutare.PipeSpellingProperty
+
+  @moduletag :property
+  @moduletag timeout: 600_000
+
+  # `:skip` is a statement about the call, so it buries what is piped into a skipped stage
+  # exactly as it buries the direct call's first argument.
+  property "a skipped call is skipped however it is spelled", numtests: 100 do
+    forall {stages, spelling_a, spelling_b} <- chain() do
+      a = observe(stages, spelling_a, call_routes: skip_routes())
+      b = observe(stages, spelling_b, call_routes: skip_routes())
+
+      (a == b)
+      |> when_fail(
+        IO.puts("""
+        #{source(stages, spelling_a)}
+        #{inspect(a, pretty: true)}
+        --- with #{inspect(skip_routes())}
+        #{source(stages, spelling_b)}
+        #{inspect(b, pretty: true)}
+        """)
+      )
+    end
+  end
 end

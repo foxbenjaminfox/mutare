@@ -24,7 +24,9 @@ defmodule Mutare.HarnessTest do
   (id 0) stays green. That exercises the runner's harness path end to end: the
   per-mutant warning, and the abort guard (`:max_harness_error_rate`).
   """
-  use ExUnit.Case, async: false
+  # Subprocess-bound: runs beside the in-process tests, one module at a time within its
+  # group (`test_helper.exs` says why there are three).
+  use ExUnit.Case, async: true, group: :subprocess_2
 
   import ExUnit.CaptureLog
 

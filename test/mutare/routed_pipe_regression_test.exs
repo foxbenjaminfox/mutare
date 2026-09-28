@@ -21,31 +21,33 @@ defmodule Mutare.RoutedPipeRegressionTest do
     end
   end
 
-  test "preserved pipe stages export condition bindings but not branch bindings" do
-    for {operand, binding} <- [
-          {"true |> if(do: (t = 4), else: 0)", "nil"},
-          {"false |> unless(do: (t = 4), else: 0)", "nil"},
-          {"(condition = true) |> if(do: (t = 4), else: 0)", "condition"},
-          {"(t = 10; true |> if(do: (t = 4), else: 0))", "t"},
-          {"4 |> case do value -> t = value end", "nil"},
-          {"true |> (if(do: (t = 4), else: 0) |> abs())", "nil"},
-          {"4 |> max(t = 2)", "t"},
-          {"(import Kernel, except: [|>: 2]; import Mutare.Test.PairPipe; 4 |> (t = 2)) |> elem(0)",
-           "t"}
-        ],
-        mutators <- [[:operand_swap], [:operand_swap, :arithmetic]] do
+  for {operand, binding} <- [
+        {"true |> if(do: (t = 4), else: 0)", "nil"},
+        {"false |> unless(do: (t = 4), else: 0)", "nil"},
+        {"(condition = true) |> if(do: (t = 4), else: 0)", "condition"},
+        {"(t = 10; true |> if(do: (t = 4), else: 0))", "t"},
+        {"4 |> case do value -> t = value end", "nil"},
+        {"true |> (if(do: (t = 4), else: 0) |> abs())", "nil"},
+        {"4 |> max(t = 2)", "t"},
+        {"(import Kernel, except: [|>: 2]; import Mutare.Test.PairPipe; 4 |> (t = 2)) |> elem(0)",
+         "t"}
+      ],
+      mutators <- [[:operand_swap], [:operand_swap, :arithmetic]] do
+    test "preserved pipe stages export condition bindings but not branch bindings: #{operand} under #{inspect(mutators)}" do
       source = """
       defmodule Binding do
         defp identity(x), do: x
         def run do
-          result = identity(#{operand}) |> div(2)
-          {result, #{binding}}
+          result = identity(#{unquote(operand)}) |> div(2)
+          {result, #{unquote(binding)}}
         end
       end
       """
 
       sites =
-        assert_patches(source, mutators, [run: []], call_routes: [{:*, :identity, 1, :skip}])
+        assert_patches(source, unquote(mutators), [run: []],
+          call_routes: [{:*, :identity, 1, :skip}]
+        )
 
       assert Enum.any?(sites, &(&1.mutator == :operand_swap))
     end

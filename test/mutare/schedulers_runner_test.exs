@@ -10,7 +10,9 @@ defmodule Mutare.SchedulersRunnerTest do
   arithmetic under test only at the trimmed count. An untrimmed probe would take the other
   branch, record no coverage for that mutant, and file a killable mutant as `:no_coverage`.
   """
-  use ExUnit.Case, async: false
+  # Subprocess-bound: runs beside the in-process tests, one module at a time within its
+  # group (`test_helper.exs` says why there are three).
+  use ExUnit.Case, async: true, group: :subprocess_3
 
   alias Mutare.Test.Project
 

@@ -1,5 +1,7 @@
 defmodule Mutare.CoverageStartupRunnerTest do
-  use ExUnit.Case, async: false
+  # Subprocess-bound: runs beside the in-process tests, one module at a time within its
+  # group (`test_helper.exs` says why there are three).
+  use ExUnit.Case, async: true, group: :subprocess_3
 
   import ExUnit.CaptureLog, only: [capture_log: 1]
 

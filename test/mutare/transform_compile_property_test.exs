@@ -16,14 +16,12 @@ defmodule Mutare.TransformCompilePropertyTest do
   "generator produced non-compiling input" from "the transform broke a compiling input"
   — so a green property is a real statement about the transform.
 
-  Serial + lower `numtests` than the parse property: each case compiles a BEAM module
-  (and captures the metamutant's legitimate warnings — unreachable clauses from
-  wildcard-broadening, unused bindings), which is both stateful (the code server) and an
-  order of magnitude slower than a parse.
+  Lower `numtests` than the parse property: each case compiles a BEAM module (and captures
+  the metamutant's legitimate warnings — unreachable clauses from wildcard-broadening,
+  unused bindings), an order of magnitude slower than a parse. Each compile nests the
+  generator's `Prop` under a unique wrapper, so the soak runs beside the others.
   """
-  # Compiles and purges the shared `Prop` fixture name, like the other property soaks and
-  # `property_probe_test` — they must not overlap, so keep serial.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   use PropCheck
 
   alias Mutare.TransformPropertyGenerators, as: Gen
@@ -66,22 +64,13 @@ defmodule Mutare.TransformCompilePropertyTest do
     end
   end
 
-  # Compile a source string, swallowing its (legitimate) warnings and purging every
-  # module it defines so the fixed `Prop` name doesn't accumulate or clash across runs.
+  # Compile a source string under a unique wrapper, swallowing its (legitimate) warnings.
   # Returns `:ok` or `{:error, exception}`.
   defp compile_quietly(source) do
-    case Mutare.Test.Compile.string_result(source) do
-      {{:ok, modules}, _diagnostics} ->
-        Enum.each(modules, fn {module, _binary} -> purge(module) end)
-
-      {{:error, e}, _diagnostics} ->
-        {:error, e}
+    case Mutare.PropertyProbe.with_compiled(source, fn _module -> :ok end) do
+      {:ok, :ok} -> :ok
+      {:error, e} -> {:error, e}
     end
-  end
-
-  defp purge(module) do
-    :code.purge(module)
-    :code.delete(module)
   end
 
   defp report_failure(whose, reason, source, metamutant) do

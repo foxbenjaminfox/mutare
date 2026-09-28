@@ -25,9 +25,9 @@ defmodule Mutare.TransformCleanPropertyTest do
   pins that the generator's modules do acquire clean regions, so the property cannot pass
   vacuously.
   """
-  # Compiles two modules per case, purges them, captures :stderr globally, and flips the
-  # global `:persistent_term` selector across every mutant id — must be serial.
-  use ExUnit.Case, async: false
+  # Each compile is nested under a unique wrapper (`PropertyProbe.with_compiled/2`) and the
+  # selector key is private to this module, so it runs beside the other soaks.
+  use ExUnit.Case, async: true
   use PropCheck
 
   alias Mutare.{PropertyProbe, Selector, Transform}
@@ -40,9 +40,11 @@ defmodule Mutare.TransformCleanPropertyTest do
   @moduletag timeout: 600_000
   @moduletag :property
 
+  # Transforms through `Mutare.Transform` itself, so the module's private selection key must be
+  # in force before the first transform (`Mutare.Test`); the metamutant reads that key alone.
   setup do
+    Mutare.Test.isolate_selector()
     Selector.put(Selector.baseline())
-    on_exit(fn -> Selector.put(Selector.baseline()) end)
     :ok
   end
 
@@ -104,13 +106,13 @@ defmodule Mutare.TransformCleanPropertyTest do
   # Compile once, then probe under each selection by flipping the selector. `specs` is derived
   # from the first compile and reused, so both metamutants answer the identical calls.
   defp sweep(metamutant, selections, module_ast, specs) do
-    PropertyProbe.with_compiled(metamutant, fn ->
-      specs = specs || PropertyProbe.specs(module_ast)
+    PropertyProbe.with_compiled(metamutant, fn module ->
+      specs = specs || PropertyProbe.specs(module, module_ast)
 
       outcomes =
         Enum.map(selections, fn selection ->
           Selector.put(selection)
-          Enum.map(specs, &PropertyProbe.probe/1)
+          Enum.map(specs, &PropertyProbe.probe(module, &1))
         end)
 
       Selector.put(Selector.baseline())

@@ -8,17 +8,17 @@ defmodule Mutare.PipeSourcePatchTest do
 
   alias Mutare.Test.{LazyDSL, LazyStageMutator, PipedCallProbe, PipeSyntaxMutator}
 
-  test "parenthesized pipelines resolve complete calls and keep executable source patches" do
-    for body <- [
-          "x |> (abs() |> div(2))",
-          "x |> (abs() |> (div(2) |> rem(3)))",
-          "x |> ((abs() |> div(2)) |> rem(3))",
-          "(x |> (abs() |> div(2))) |> rem(3)",
-          "10 + (x |> (abs() |> div(2)))"
-        ] do
+  for body <- [
+        "x |> (abs() |> div(2))",
+        "x |> (abs() |> (div(2) |> rem(3)))",
+        "x |> ((abs() |> div(2)) |> rem(3))",
+        "(x |> (abs() |> div(2))) |> rem(3)",
+        "10 + (x |> (abs() |> div(2)))"
+      ] do
+    test "parenthesized pipelines resolve complete calls and keep executable source patches: #{body}" do
       source = """
       defmodule Fixture do
-        def run(x), do: #{body}
+        def run(x), do: #{unquote(body)}
       end
       """
 

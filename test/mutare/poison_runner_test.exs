@@ -2,7 +2,9 @@ defmodule Mutare.PoisonRunnerTest do
   @moduledoc "Compile-poisoning end to end: a real `mix test` run drops the offender and proceeds."
   # Every test here spawns `mix` in a sandbox (`:runner`); the pure attribution tests are in
   # poison_test.exs.
-  use ExUnit.Case, async: false
+  # Subprocess-bound: runs beside the in-process tests, one module at a time within its
+  # group (`test_helper.exs` says why there are three).
+  use ExUnit.Case, async: true, group: :subprocess_1
 
   alias Mutare.{Poison, Result}
   alias Mutare.Test.Project

@@ -6,7 +6,7 @@ defmodule Mutare.SandboxTest do
 
   setup do
     base =
-      Path.join(System.tmp_dir!(), "mutare_sandbox_test_#{System.unique_integer([:positive])}")
+      Mutare.Test.Project.tmp_dir(:sandbox_test)
 
     project = Path.join(base, "project")
     marker = Path.join(project, "keep.txt")

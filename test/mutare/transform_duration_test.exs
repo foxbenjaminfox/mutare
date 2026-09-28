@@ -808,7 +808,7 @@ defmodule Mutare.TransformDurationTest do
   end
 
   defp value_triples(body, mutators \\ @value, opts \\ []) do
-    source = "defmodule M do\n  #{String.trim_trailing(body)}\nend\n"
+    source = "defmodule DurationFixture do\n  #{String.trim_trailing(body)}\nend\n"
 
     %{metamutant: meta, sites: sites} =
       Mutare.Transform.transform_string_with_sites(source, [mutators: mutators] ++ opts)

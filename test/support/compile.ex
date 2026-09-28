@@ -14,15 +14,19 @@ defmodule Mutare.Test.Compile do
   `ExUnit.CaptureIO.capture_io(:stderr, …)` it never touches the global
   `:standard_error` device and is safe under `async: true`.
 
-  The compile itself is serialized suite-wide behind a lock (`Mutare.Test.Compile.Lock`): two `async: true` test modules compiling a same-named
-  throwaway fixture (`defmodule M`, …) concurrently would otherwise abort the
-  parallel checker. The lock only spans the brief compile call.
+  Compiles are not serialized. Every module name a compile defines is claimed for the calling
+  test module execution (`Mutare.Test.Compile.Names`), so two `async: true` modules that
+  compile a same-named fixture fail deterministically instead of colliding when they happen
+  to overlap: the top-level `defmodule` names are claimed before compiling, and every module
+  the compile returned after it.
 
   Returns exactly what `Code.compile_string/2` returns (`[{module, binary}]`), so
   it is a drop-in replacement. When you *do* want to assert on a diagnostic, use
   `string_with_diagnostics/2` or capture `:stderr` directly — don't route through
   here.
   """
+
+  alias Mutare.Test.Compile.Names
 
   @doc """
   Compile `source`, suppressing (expected) compiler warnings. Drop-in for
@@ -38,7 +42,7 @@ defmodule Mutare.Test.Compile do
   that wants to inspect them without going through `:stderr`.
   """
   def string_with_diagnostics(source, file \\ "nofile") do
-    locked_compile(fn -> Code.compile_string(source, file) end)
+    claimed_compile(source, fn -> Code.compile_string(source, file) end)
   end
 
   @doc """
@@ -51,7 +55,7 @@ defmodule Mutare.Test.Compile do
   and want to read why, or that turn a failure into a readable flunk.
   """
   def string_result(source, file \\ "nofile") do
-    locked_compile(fn ->
+    claimed_compile(source, fn ->
       try do
         {:ok, Code.compile_string(source, file)}
       rescue
@@ -63,15 +67,47 @@ defmodule Mutare.Test.Compile do
   @doc "The `message` of each diagnostic, in order — for `=~` assertions."
   def messages(diagnostics) when is_list(diagnostics), do: Enum.map(diagnostics, & &1.message)
 
-  # `Code.compile_string/2` registers the module name in the global parallel-checker
-  # table, so two *different* async test modules compiling a same-named throwaway
-  # fixture (`defmodule M`, …) at the same instant make the checker abort with
-  # "cannot compile module M". The throwaway names collide freely across files, so we
-  # serialize the compile step suite-wide — letting the (split) transform test files stay
-  # `async: true` without renaming every fixture. The lock only spans the brief compile
-  # call, is released even if the compile raises, and queues its waiters
-  # (`Mutare.Test.Compile.Lock`, which says why `:global.trans/2` was not enough).
-  defp locked_compile(compile) when is_function(compile, 0) do
-    Mutare.Test.Compile.Lock.with_lock(fn -> Code.with_diagnostics(compile) end)
+  @doc """
+  Run `compile`, a compile of `source` that bypasses this module (a test that needs the
+  compiler's own stderr), under the same name claims as `string/2`.
+  """
+  def claiming(source, compile) when is_binary(source) and is_function(compile, 0) do
+    Names.claim!(top_level_modules(source))
+    result = compile.()
+    Names.claim!(for {module, _binary} <- List.wrap(result), is_atom(module), do: module)
+    result
   end
+
+  defp claimed_compile(source, compile) when is_function(compile, 0) do
+    Names.claim!(top_level_modules(source))
+    {result, diagnostics} = Code.with_diagnostics(compile)
+
+    compiled =
+      case result do
+        {:ok, modules} -> modules
+        {:error, _exception} -> []
+        modules -> modules
+      end
+
+    Names.claim!(for {module, _binary} <- compiled, do: module)
+    {result, diagnostics}
+  end
+
+  # The names of the `defmodule`s at the top of `source`, read before compiling so a collision
+  # is refused before the compiler meets it. A module nested in one of them is prefixed by it,
+  # so these are enough; the modules a compile returns are claimed afterwards regardless. A
+  # source that does not parse claims nothing here (its compile fails anyway).
+  defp top_level_modules(source) do
+    case Code.string_to_quoted(source, emit_warnings: false) do
+      {:ok, {:__block__, _, forms}} -> Enum.flat_map(forms, &defined_module/1)
+      {:ok, form} -> defined_module(form)
+      {:error, _} -> []
+    end
+  end
+
+  defp defined_module({:defmodule, _, [{:__aliases__, _, parts}, _body]})
+       when is_list(parts),
+       do: if(Enum.all?(parts, &is_atom/1), do: [Module.concat(parts)], else: [])
+
+  defp defined_module(_form), do: []
 end

@@ -202,19 +202,19 @@ defmodule Mutare.SuperTest do
       end
     end
 
-    test "grouped bare super stages forward in preserved lifted and clean clauses" do
-      for expression <- [
-            "n |> (super |> abs())",
-            "n |> (super |> (abs() |> div(2)))",
-            "n |> (abs() |> super)",
-            "n |> ((super |> abs()) |> super)"
-          ],
-          treatment <- [:raw, :skip] do
+    for expression <- [
+          "n |> (super |> abs())",
+          "n |> (super |> (abs() |> div(2)))",
+          "n |> (abs() |> super)",
+          "n |> ((super |> abs()) |> super)"
+        ],
+        treatment <- [:raw, :skip] do
+      test "grouped bare super stages forward in preserved lifted and clean clauses: #{expression} under #{treatment}" do
         source = """
         defmodule Child do
           use #{@base_mod}
           defp identity(x), do: x
-          def f(n) when n > 0, do: identity(#{expression})
+          def f(n) when n > 0, do: identity(#{unquote(expression)})
           def f(n), do: {:fallback, n}
           def other(n), do: n > 0
         end
@@ -225,7 +225,7 @@ defmodule Mutare.SuperTest do
             source,
             [:relational],
             [f: [3], f: [0], f: [-3]],
-            call_routes: [{:*, :identity, 1, treatment}]
+            call_routes: [{:*, :identity, 1, unquote(treatment)}]
           )
 
         assert Enum.any?(sites, &(&1.line == 4))

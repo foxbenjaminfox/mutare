@@ -17,7 +17,9 @@ defmodule Mutare.SubprocessLifecycleTest do
   and asserts the compiling BEAM is gone within seconds. POSIX-only mechanics
   (`kill`), like the orphaning it guards against.
   """
-  use ExUnit.Case, async: false
+  # Subprocess-bound: runs beside the in-process tests, one module at a time within its
+  # group (`test_helper.exs` says why there are three).
+  use ExUnit.Case, async: true, group: :subprocess_3
 
   alias Mutare.Schema
   alias Mutare.Sandbox

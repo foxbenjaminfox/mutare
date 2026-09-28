@@ -75,14 +75,14 @@ defmodule Mutare.TransformContextTest do
 
     test "a custom call mutator resolves aliased and imported forms via Transform.Calls" do
       aliased = """
-      defmodule M do
+      defmodule ContextFixture do
         alias String, as: S
         def f(s), do: S.reverse(s)
       end
       """
 
       imported = """
-      defmodule M do
+      defmodule ContextFixture do
         import String
         def f(s), do: reverse(s)
       end
@@ -313,7 +313,7 @@ defmodule Mutare.TransformContextTest do
     end
 
     test "a standalone map literal IS emptied" do
-      source = "defmodule M do\n  def f, do: %{a: 1}\nend\n"
+      source = "defmodule ContextFixture do\n  def f, do: %{a: 1}\nend\n"
 
       %{sites: sites} =
         Mutare.Transform.transform_string_with_sites(source,
@@ -451,7 +451,7 @@ defmodule Mutare.TransformContextTest do
 
     test "`call_option_keys: false` does NOT affect standalone map/keyword-list literal keys" do
       # These aren't call arguments, so the opt leaves them mutating.
-      map = "defmodule M do\n  def f, do: %{timeout: 5}\nend\n"
+      map = "defmodule ContextFixture do\n  def f, do: %{timeout: 5}\nend\n"
       kwl = "defmodule K do\n  def f, do: [timeout: 5]\nend\n"
 
       assert {["atom  timeout: → mutare:"], _} = atom_keys(map, mutators: @kw_off)
@@ -794,7 +794,7 @@ defmodule Mutare.TransformContextTest do
 
       %{metamutant: meta} =
         Mutare.Transform.transform_string_with_sites(
-          "defmodule M do\n  def f(a, b), do: a + b\nend\n"
+          "defmodule ContextFixture do\n  def f(a, b), do: a + b\nend\n"
         )
 
       assert meta =~ "#{helper}.hit("
@@ -927,7 +927,7 @@ defmodule Mutare.TransformContextTest do
 
     test "a comprehension of heads: the generator is inert, every body mutates" do
       source = """
-      defmodule Heads do
+      defmodule ContextHeads do
         for tier <- [:gold, :silver, :bronze] do
           def perks(unquote(tier)), do: length([1, 2, 3])
         end
@@ -1113,7 +1113,7 @@ defmodule Mutare.TransformContextTest do
   # The same, parameterised by the mutator set — for the equivalent-sibling suppression
   # tests, which exercise Logical/List/Conditional combinations.
   defp redundancy_triples(body, mutators) do
-    source = "defmodule M do\n  #{String.trim_trailing(body)}\nend\n"
+    source = "defmodule ContextFixture do\n  #{String.trim_trailing(body)}\nend\n"
 
     %{metamutant: meta, sites: sites} =
       Mutare.Transform.transform_string_with_sites(source, mutators: mutators)

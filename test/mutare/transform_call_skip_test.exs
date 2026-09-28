@@ -302,7 +302,7 @@ defmodule Mutare.TransformCallSkipTest do
 
     test "a skipped module-level block macro is left whole" do
       source = """
-      defmodule UsesSchema do
+      defmodule SkipUsesSchema do
         import Mutare.Test.SchemaDSL
 
         schema do
@@ -409,7 +409,7 @@ defmodule Mutare.TransformCallSkipTest do
       # These heads have specialized resolver clauses (pipe-mode bookkeeping, the live-parts-only
       # quote walk, the `&fun/N` ref shape); each must stamp its head before its own descent.
       source = """
-      defmodule Heads do
+      defmodule SkipHeads do
         def piped(x), do: x |> Enum.take(2)
         def quoted(v), do: quote(do: unquote(v + 1))
       end
@@ -1099,7 +1099,7 @@ defmodule Mutare.TransformCallSkipTest do
 
     defp kw_triples(body, routes, mutators \\ @kw_mutators) do
       %{metamutant: meta, sites: sites} =
-        Mutare.Transform.transform_string_with_sites("defmodule K do\n  #{body}\nend\n",
+        Mutare.Transform.transform_string_with_sites("defmodule SkipK do\n  #{body}\nend\n",
           mutators: mutators,
           call_routes: routes
         )
@@ -1241,7 +1241,7 @@ defmodule Mutare.TransformCallSkipTest do
     # Skipping `Kernel.match?/2` must not free its pattern position for a spliced selector
     # `case` — with the whole call inert, nothing is spliced anywhere.
     test "a skipped macro's piped pattern stays untouched" do
-      for {name, macro} <- [{"PipedMatch", "match?"}, {"PipedDestructure", "destructure"}] do
+      for {name, macro} <- [{"SkipPipedMatch", "match?"}, {"SkipPipedDestructure", "destructure"}] do
         piped = module(name, "  def f(x), do: [1] |> #{macro}(x)")
         direct = module(name, "  def f(x), do: #{macro}([1], x)")
         routes = [{Kernel, String.to_atom(macro), 2, :skip}]

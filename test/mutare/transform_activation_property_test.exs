@@ -33,9 +33,9 @@ defmodule Mutare.TransformActivationPropertyTest do
   the *original* compiled, distinguishing "the transform broke a compiling input" from a
   generator bug.
   """
-  # Compiles a module per case, purges it, captures :stderr globally, and flips the global
-  # `:persistent_term` selector across every mutant id — must be serial.
-  use ExUnit.Case, async: false
+  # Each compile is nested under a unique wrapper (`PropertyProbe.with_compiled/2`) and the
+  # selector key is private to this module, so it runs beside the other soaks.
+  use ExUnit.Case, async: true
   use PropCheck
 
   alias Mutare.{PropertyProbe, Selector}
@@ -54,9 +54,11 @@ defmodule Mutare.TransformActivationPropertyTest do
   @moduletag timeout: 600_000
   @moduletag :property
 
+  # Transforms through `Mutare.Transform` itself, so the module's private selection key must be
+  # in force before the first transform (`Mutare.Test`); the metamutant reads that key alone.
   setup do
+    Mutare.Test.isolate_selector()
     Selector.put(Selector.baseline())
-    on_exit(fn -> Selector.put(Selector.baseline()) end)
     :ok
   end
 
@@ -87,16 +89,16 @@ defmodule Mutare.TransformActivationPropertyTest do
   # each mutant id by flipping the selector (no recompile). Returns `{:ok, {specs, baseline,
   # [{id, outcomes}]}}` or `{:error, exception}` if the metamutant did not compile.
   defp sweep(metamutant, module_ast, ids) do
-    PropertyProbe.with_compiled(metamutant, fn ->
-      specs = PropertyProbe.specs(module_ast)
+    PropertyProbe.with_compiled(metamutant, fn module ->
+      specs = PropertyProbe.specs(module, module_ast)
 
       Selector.put(Selector.baseline())
-      baseline = Enum.map(specs, &PropertyProbe.probe/1)
+      baseline = Enum.map(specs, &PropertyProbe.probe(module, &1))
 
       per_mutant =
         Enum.map(ids, fn id ->
           Selector.put(id)
-          {id, Enum.map(specs, &PropertyProbe.probe/1)}
+          {id, Enum.map(specs, &PropertyProbe.probe(module, &1))}
         end)
 
       Selector.put(Selector.baseline())
@@ -142,7 +144,7 @@ defmodule Mutare.TransformActivationPropertyTest do
   # On a metamutant compile failure, attribute blame: the metamutant must compile (the compile
   # property guards it), so the fault is the transform's unless the *original* did not compile.
   defp blame(source) do
-    case PropertyProbe.with_compiled(source, fn -> :ok end) do
+    case PropertyProbe.with_compiled(source, fn _module -> :ok end) do
       {:ok, _} -> "metamutant did not compile (the transform broke a compiling input)"
       {:error, _} -> "generated input did not compile (generator bug)"
     end

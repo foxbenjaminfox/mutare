@@ -5,7 +5,9 @@ defmodule Mutare.RescueRunnerTest do
   selector records when the `try` is reached), and a test that relies on each type being caught
   kills it.
   """
-  use ExUnit.Case, async: false
+  # Subprocess-bound: runs beside the in-process tests, one module at a time within its
+  # group (`test_helper.exs` says why there are three).
+  use ExUnit.Case, async: true, group: :subprocess_2
 
   alias Mutare.Test.Project
 
