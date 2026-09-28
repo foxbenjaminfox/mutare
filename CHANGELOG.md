@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Mutare.CallRouting.Call.resolved_module/2` reads a module name in a routed call's
+  arguments through the aliases in force at the call site, so a classifier can tell what
+  `from(p in Post, …)` names under `alias MyApp.Post`. `Call.new/5` builds a call with given
+  aliases for tests.
 - The package ships an agent skill, `usage-rules/skills/mutare`, for coding agents that
   drive Mutare: choosing a scope for the job, running within an agent harness, and
   triaging survivors. `mix usage_rules.sync` installs it when the project lists `:mutare`

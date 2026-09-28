@@ -26,7 +26,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
         ) ::
           keyword()
   def stamp(meta, module_key, fun, args, call_node, env) do
-    %{inputs: %{call_routes: registry}, diag: diag} = env
+    %{inputs: %{call_routes: registry, aliases: aliases}, diag: diag} = env
     arity = length(args)
 
     case Routes.lookup(registry, module_key, fun, arity) do
@@ -35,7 +35,14 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
 
       %Entry{spec: spec} = entry ->
         if StructuralForms.applies?(module_key, fun, spec) do
-          stamp_matched(meta, entry, module_key, fun, call_node, arity, registry, diag)
+          stamp_matched(
+            meta,
+            entry,
+            {module_key, fun, arity},
+            call_node,
+            registry,
+            {diag, aliases}
+          )
         else
           # A wildcard route (`{Kernel, :*, :raw}`, `{:*, :if, …}`) whose cascade reached a head
           # its key never named and that cannot carry it: a positional route on a structural form
@@ -58,9 +65,12 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   # already sees it. `module_key` is `nil` only for a name-only (`{:*, name, …}`) match whose
   # module the resolver couldn't see; the reader then returns `{nil, name, arity}`, which a
   # module-matching classifier clause simply skips (its purpose — match by name instead).
-  defp stamp_matched(meta, %Entry{} = entry, module_key, fun, call_node, arity, registry, diag) do
+  #
+  # `site` is the diagnostics and the aliases in force at the call: a classifier reads a module
+  # name in the call's arguments through them (`Mutare.CallRouting.Call.resolved_module/2`).
+  defp stamp_matched(meta, %Entry{} = entry, {module_key, fun, arity}, call_node, registry, site) do
     meta = stamp_identity(Imports.drop_witness(meta), module_key, fun, arity)
-    stamp_spec(meta, entry, put_meta(call_node, meta), arity, registry, diag)
+    stamp_spec(meta, entry, put_meta(call_node, meta), arity, registry, site)
   end
 
   @doc """
@@ -114,9 +124,9 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
          call_node,
          _arity,
          _registry,
-         diag
+         {diag, aliases}
        ) do
-    call = resolved_call!(as_written(call_node), spec)
+    call = %{resolved_call!(as_written(call_node), spec) | alias_env: aliases}
     routes = invoke_router!(router, call, spec)
     routes = validate_routes!(spec, call, routes)
     warn_misshapen_keyword_routes(diag, router, spec, call, routes)
@@ -135,7 +145,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   # and `match?/2`'s as binding nothing whether or not the call mutates. No hosts are attached
   # (nothing is hosted in a skipped call) and no classifier invoked. A skip that shadows
   # nothing, or a declaration whose positions do not apply to this head, stamps the `:skip` alone.
-  defp stamp_spec(meta, %Entry{spec: %Spec{args: :skip}}, _call_node, arity, registry, _diag) do
+  defp stamp_spec(meta, %Entry{spec: %Spec{args: :skip}}, _call_node, arity, registry, _site) do
     meta = Meta.stamp_routing(meta, :skip)
     {module_key, fun, _arity} = Meta.routed_call(meta)
 
@@ -145,7 +155,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
     end
   end
 
-  defp stamp_spec(meta, %Entry{spec: spec} = entry, call_node, arity, _registry, _diag) do
+  defp stamp_spec(meta, %Entry{spec: spec} = entry, call_node, arity, _registry, _site) do
     call = resolved_call!(call_node, spec)
     routes = ArgumentRoutes.new(call, Spec.routing(spec, arity))
     stamp_routes(meta, attach_hosts!(routes, entry))

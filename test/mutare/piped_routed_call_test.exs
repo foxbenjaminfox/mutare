@@ -106,6 +106,72 @@ defmodule Mutare.PipedRoutedCallTest do
     assert_received {:source_written, "E.map(n, & &1)"}
   end
 
+  test "a classifier reads a module name in an argument through the call site's aliases" do
+    defmodule ModuleNameRouter do
+      @behaviour Mutare.CallRouting
+      def call_routes, do: [{Mutare.Test.PipedCallDSL, :stage, 2, :routing}]
+
+      def route_arguments(%Call{arguments: [source, _condition]} = call) do
+        send(self(), {:module_name, Macro.to_string(source), Call.resolved_module(call, source)})
+        Mutare.CallRouting.ArgumentRoutes.new(call, [:raw, :expression])
+      end
+    end
+
+    for {aliases, written, expected} <- [
+          {"alias MyApp.Post", "Post", {:ok, MyApp.Post}},
+          {"alias MyApp.{Post, User}", "User", {:ok, MyApp.User}},
+          {"alias MyApp.Post, as: P", "P", {:ok, MyApp.Post}},
+          {"alias MyApp.Post", "Post.Comment", {:ok, MyApp.Post.Comment}},
+          # `Elixir.` ignores aliases, as the compiler does.
+          {"alias MyApp.Post", "Elixir.Post", {:ok, Post}},
+          {"", "Post", {:ok, Post}},
+          {"", "n", :error}
+        ] do
+      Mutare.Transform.transform_string_with_sites(
+        source("#{aliases}\n    stage(#{written}, x > 1)"),
+        file: "piped_call.ex",
+        mutators: [],
+        extensions: [ModuleNameRouter]
+      )
+
+      assert_received {:module_name, ^written, ^expected}
+    end
+  end
+
+  test "a module name reads through the aliases of its own scope only" do
+    defmodule ScopedModuleNameRouter do
+      @behaviour Mutare.CallRouting
+      def call_routes, do: [{Mutare.Test.PipedCallDSL, :stage, 2, :routing}]
+
+      def route_arguments(%Call{arguments: [source, _condition]} = call) do
+        send(self(), {:scoped_module_name, Call.resolved_module(call, source)})
+        Mutare.CallRouting.ArgumentRoutes.new(call, [:raw, :expression])
+      end
+    end
+
+    source = """
+    defmodule ScopedFixture do
+      import Mutare.Test.PipedCallDSL
+
+      def aliased(x) do
+        alias MyApp.Post
+        stage(Post, x > 1)
+      end
+
+      def unaliased(x), do: stage(Post, x > 1)
+    end
+    """
+
+    Mutare.Transform.transform_string_with_sites(source,
+      file: "scoped.ex",
+      mutators: [],
+      extensions: [ScopedModuleNameRouter]
+    )
+
+    assert_received {:scoped_module_name, {:ok, MyApp.Post}}
+    assert_received {:scoped_module_name, {:ok, Post}}
+  end
+
   test "a routed call nested in an argument reads the same however it was spelled" do
     defmodule NestedReader do
       @behaviour Mutare.Mutator

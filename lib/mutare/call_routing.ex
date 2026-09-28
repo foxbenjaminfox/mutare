@@ -278,7 +278,9 @@ defmodule Mutare.CallRouting do
   `call.arguments` preserve the written syntax at classification. In particular, a pipe
   inside an argument remains a `{:|>, …}` node: the classifier may be deciding whether that
   operator even has Elixir semantics. The enclosing call's module, name and arity are
-  resolved; calls nested inside its arguments are not. Nodes can carry Mutare metadata,
+  resolved; calls nested inside its arguments are not. A module name in an argument is
+  written as the call site's aliases make it, and `Mutare.CallRouting.Call.resolved_module/2`
+  reads it through them (`Post` → `MyApp.Post` under `alias MyApp.Post`). Nodes can carry Mutare metadata,
   so match syntax shapes rather than comparing against hand-built ASTs for equality. A call
   a mutator rebuilt to this macro is classified the same way, its arguments spelled as
   written; the classifier's answer for it governs how the mutant is read and delivered.
