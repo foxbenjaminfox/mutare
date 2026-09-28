@@ -91,7 +91,8 @@ defmodule Mutare.Selector do
   @doc """
   The process-dictionary key under which a process holds a private selection key, read by
   `key/0` ahead of the environment. Set it before transforming a metamutant the process will
-  select in, and in every process that selects (`Mutare.Test.isolate_selector/0`).
+  select in, and in every process that selects (`Mutare.Test.isolate_selector/0`). The
+  coverage readiness key a transform bakes follows it (`Mutare.Coverage.Recorder.track_key/0`).
   """
   @spec process_key() :: atom()
   def process_key, do: @process_key

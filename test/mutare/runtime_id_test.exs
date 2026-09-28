@@ -1,23 +1,15 @@
 defmodule Mutare.RuntimeIdTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
   alias Mutare.{Coverage, Manifest, Metamutant, Poison, RuntimeId, Schema, Selector, Transform}
 
   @moduletag :tmp_dir
 
-  defmodule FixtureCoverage do
-    def hit(ids), do: hit(nil, ids)
-
-    def hit(namespace, ids) do
-      send(self(), {:fixture_coverage, namespace, ids})
-      true
-    end
-  end
-
+  # Transforms and selects outside `Mutare.Test`'s helpers, so the test takes this module
+  # execution's private selection key first.
   setup do
-    active = Selector.active()
-    on_exit(fn -> Selector.put(active) end)
+    Mutare.Test.isolate_selector()
     Selector.put(0)
     :ok
   end
@@ -246,32 +238,6 @@ defmodule Mutare.RuntimeIdTest do
     end
   end
 
-  test "self-hosted fixture emission uses its private helper, leaving outer probe ids untouched" do
-    alias Mutare.Coverage.Recorder
-    saved_env = System.get_env(Recorder.fixture_override_env())
-    saved_track = :persistent_term.get(Recorder.track_key(), false)
-
-    try do
-      System.put_env(Recorder.fixture_override_env(), Atom.to_string(FixtureCoverage))
-      :persistent_term.put(Recorder.track_key(), true)
-
-      for namespace <- [nil, "lib/fixture.ex"] do
-        record = Recorder.record_ast([1, 2], :mutare_active, namespace)
-        assert {true, _} = Code.eval_quoted(record, mutare_active: 0)
-        assert_received {:fixture_coverage, ^namespace, [1, 2]}
-        attr = Recorder.no_warn_attr_ast(namespace) |> Macro.to_string()
-        assert attr =~ inspect(FixtureCoverage)
-        assert Recorder.helper_source() =~ "defmodule :mutare_cov do"
-      end
-    after
-      if saved_env,
-        do: System.put_env(Recorder.fixture_override_env(), saved_env),
-        else: System.delete_env(Recorder.fixture_override_env())
-
-      :persistent_term.put(Recorder.track_key(), saved_track)
-    end
-  end
-
   test "poison translates local ids before combining files, including the macro fallback" do
     {metas, vars, sites} =
       Enum.reduce([{"lib/a.ex", 10}, {"lib/b.ex", 20}], {%{}, %{}, []}, fn {file, start},
@@ -445,5 +411,56 @@ defmodule Mutare.RuntimeIdTest do
       end
     end
     """
+  end
+end
+
+defmodule Mutare.RuntimeIdSelfHostedTest do
+  # Split from `Mutare.RuntimeIdTest` to stay serial: it sets the fixture-helper override
+  # env var, which every transform in the VM reads.
+  use ExUnit.Case, async: false
+
+  alias Mutare.Coverage.Recorder
+
+  defmodule FixtureCoverage do
+    def hit(ids), do: hit(nil, ids)
+
+    def hit(namespace, ids) do
+      send(self(), {:fixture_coverage, namespace, ids})
+      true
+    end
+  end
+
+  test "self-hosted fixture emission uses its private helper, leaving outer probe ids untouched" do
+    saved_env = System.get_env(Recorder.fixture_override_env())
+
+    try do
+      System.put_env(Recorder.fixture_override_env(), Atom.to_string(FixtureCoverage))
+      # This process holds no private selection key, so the record reads the fixture scope's
+      # shared readiness key — the one a self-hosted suite's transforms bake.
+      track_key = Recorder.track_key()
+      assert track_key == Recorder.runtime(:fixture).track_key
+      saved_track = :persistent_term.get(track_key, :unset)
+
+      on_exit(fn ->
+        if saved_track == :unset,
+          do: :persistent_term.erase(track_key),
+          else: :persistent_term.put(track_key, saved_track)
+      end)
+
+      :persistent_term.put(track_key, true)
+
+      for namespace <- [nil, "lib/fixture.ex"] do
+        record = Recorder.record_ast([1, 2], :mutare_active, namespace)
+        assert {true, _} = Code.eval_quoted(record, mutare_active: 0)
+        assert_received {:fixture_coverage, ^namespace, [1, 2]}
+        attr = Recorder.no_warn_attr_ast(namespace) |> Macro.to_string()
+        assert attr =~ inspect(FixtureCoverage)
+        assert Recorder.helper_source() =~ "defmodule :mutare_cov do"
+      end
+    after
+      if saved_env,
+        do: System.put_env(Recorder.fixture_override_env(), saved_env),
+        else: System.delete_env(Recorder.fixture_override_env())
+    end
   end
 end

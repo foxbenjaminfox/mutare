@@ -30,6 +30,12 @@ defmodule Mutare.Coverage.Recorder do
   early target code from calling the helper before it is loadable. The helper
   checks table existence again for direct calls and fixture table replacement.
 
+  A process that selects on a private key (`Mutare.Selector.process_key/0`, which
+  `Mutare.Test.isolate_selector/0` installs) also records under a private readiness
+  key derived from it (`track_key/0`): the two switches have the same scope and are
+  baked into a metamutant together, so an `async: true` test module that turns
+  recording on reaches only its own metamutants.
+
   The compiled `HelperTemplate` uses private fixture tables, process-dictionary
   caches and dump variables. Under self-hosting, the existing helper-name override
   also selects the private recording key for fixture metamutants; generated harness
@@ -140,7 +146,13 @@ defmodule Mutare.Coverage.Recorder do
   @doc """
   The recording-readiness key a *spliced record* reads.
 
-  This one follows `fixture_module/0` rather than taking a scope, because it must
+  A process holding a private selection key (`Mutare.Selector.process_key/0`) gets a
+  private readiness key derived from it, so the test module execution that selects on its
+  own key also turns recording on and off for its own metamutants alone. Only a test holds
+  one; the harness, `Mutare.Schema`'s workers and a sandbox run fall through to the rule
+  below.
+
+  Otherwise this follows `fixture_module/0` rather than taking a scope, because it must
   track whatever the emitter is emitting: a transform run in the harness bakes the
   harness key into the metamutant, and a transform run by the suite-under-test (where
   `fixture_override_env/0` is set) bakes the fixture key into its fixtures. The
@@ -152,6 +164,13 @@ defmodule Mutare.Coverage.Recorder do
   """
   @spec track_key() :: atom()
   def track_key do
+    case Process.get(Mutare.Selector.process_key()) do
+      nil -> scoped_track_key()
+      selector_key -> :"#{selector_key}__track"
+    end
+  end
+
+  defp scoped_track_key do
     if fixture_module() == helper_module(), do: @track_key, else: @fixture_runtime.track_key
   end
 

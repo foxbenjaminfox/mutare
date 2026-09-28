@@ -78,8 +78,12 @@ defmodule Mutare.Coverage.RecorderTest do
     @tag :coverage_tables
     test "reaches the helper only at baseline with tracking on" do
       # The value is the helper's `true` only when both short-circuits pass; `false` marks an
-      # early exit. Under self-hosting, track_key/0 selects the private fixture flag.
+      # early exit. The record reads this module execution's private readiness key, derived
+      # from its private selection key, so flipping it here reaches no other module.
+      Mutare.Test.isolate_selector()
       key = Recorder.track_key()
+      # A process without the selection key (this task) reads the shared key instead.
+      refute key == Task.await(Task.async(&Recorder.track_key/0))
       on_exit(fn -> :persistent_term.erase(key) end)
       record = Recorder.record_ast([1, 2], :mutare_active)
 

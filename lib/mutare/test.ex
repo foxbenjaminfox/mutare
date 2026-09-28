@@ -257,6 +257,10 @@ defmodule Mutare.Test do
   `isolate_selector/1` puts it in the setup context, and
   `Process.put(Mutare.Selector.process_key(), key)` in that process installs it, ahead of
   the walk. Outside ExUnit the process keeps the key in force (`Mutare.Selector.key/0`).
+
+  The key also gives the process a private coverage readiness key
+  (`Mutare.Coverage.Recorder.track_key/0` derives it), so a test module that turns
+  coverage recording on for its metamutants reaches no other module's.
   """
   @spec isolate_selector() :: atom()
   def isolate_selector do

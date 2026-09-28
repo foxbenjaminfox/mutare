@@ -14936,3 +14936,35 @@ What is left of the sync time is the coverage recorder's track flag (`rescue_emi
 `runtime_id`: about 25 s together). The flag is VM-wide, so those modules really are serial;
 making them async means making the flag as private as selection is.
 
+[Superseded 2026-09-28: the flag is now private with selection. "Coverage tracking is private
+with selection".]
+
+### Coverage tracking is private with selection (2026-09-28)
+
+A coverage record reads a readiness flag, `:persistent_term.get(<key>, false)`, whose key
+`Recorder.track_key/0` bakes in at transform time — as the selector's key is. It was one of
+two shared atoms (harness or fixture scope), so every metamutant compiled in the test VM read
+one flag, and seven modules that turn recording on stayed serial, four of them resetting it to
+`false` in `setup` against whoever set it last. `track_key/0` now checks the process for a
+private selection key first (`Selector.process_key/0`) and derives a private readiness key
+from it (`:"<selection key>__track"`). It derives rather than adding a second key because the
+two have the same scope, one module execution, and are baked together in the same process;
+so `isolate_selector/0`, and the documented manual install of a selection key in a
+supervised process, isolate both. Only a test holds a process key; the harness,
+`Schema`'s workers and a sandbox run fall through to the scoped rule, so production emission
+is unchanged.
+
+The seven modules run async. Two also had a stderr reason. `receive_clause_emit` and
+`fn_clause_emit` only swallowed a nested compile's warnings, which `Code.with_diagnostics/1`
+collects per process. `hosted`'s three tests on the misrouted-classifier advisory assert on
+Mutare's own printed warning, one of them its absence, so they moved to a serial
+`Mutare.HostedWarningTest`. `runtime_id`'s self-hosting test sets the fixture-helper override
+env var, which every transform reads, so it moved to a serial `Mutare.RuntimeIdSelfHostedTest`.
+`selector_isolation_test` now lets an async module set the flag once it takes its key, and
+refuses an async write to a scope's shared key (`Recorder.runtime/1`), which no private key
+reaches. The recording tests (`coverage_test`, `helper_template_test`) stay serial for their
+named ETS tables and never take a selection key, so they still enable the shared scope keys
+their fixtures read.
+
+Fast-loop sync time went from 31 s to 4 s; the fast loop from about 120 s to 78 s.
+

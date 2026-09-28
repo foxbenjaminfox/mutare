@@ -13,11 +13,18 @@ defmodule Mutare.HostedTest do
 
   Proven with one compile and runtime switching (`Mutare.Test.HostDSL`/`HostMutator`).
   """
-  # persistent_term is global; the fixture is compiled once for all tests.
-  use ExUnit.Case, async: false
+  # The fixture is compiled once for all tests; each test flips the selector.
+  use ExUnit.Case, async: true
   import Mutare.Test.Metamutant
 
+  alias Mutare.Coverage.Recorder
   alias Mutare.Selector
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does takes
+  # this module execution's private selection key first — and with it a private coverage
+  # tracking key (`Recorder.track_key/0`).
+  setup_all {Mutare.Test, :isolate_selector}
+  setup {Mutare.Test, :isolate_selector}
 
   @source """
   defmodule Mutare.HostedFixture do
@@ -56,7 +63,7 @@ defmodule Mutare.HostedTest do
 
   setup do
     Selector.put(Selector.baseline())
-    on_exit(fn -> Selector.put(Selector.baseline()) end)
+    :persistent_term.put(Recorder.track_key(), false)
     :ok
   end
 
@@ -413,10 +420,7 @@ defmodule Mutare.HostedTest do
 
       [{compiled, _binary}] = compile_observed(Mutare.HostedFixtureObserved, source, CoverageSink)
 
-      track_key = Mutare.Coverage.Recorder.track_key()
-      previous = :persistent_term.get(track_key, false)
-      :persistent_term.put(track_key, true)
-      on_exit(fn -> :persistent_term.put(track_key, previous) end)
+      :persistent_term.put(Recorder.track_key(), true)
 
       assert apply(compiled, :direct, [2]) == [:ok]
       assert_received {:covered, ^direct}
@@ -689,71 +693,6 @@ defmodule Mutare.HostedTest do
           extensions: [Mutare.Test.LongKeywordRoutingExtension]
         )
       end
-    end
-  end
-
-  describe "a :routing classifier routing {:keyword, …} onto a non-keyword argument" do
-    # `set(q, opts)` — the second argument is a variable, so there are no pairs to route. The
-    # shape fallback leaves it raw (never poison), but the classifier *saw* the argument and
-    # still called it keyword — a classifier bug worth naming, so RouteStamp prints an
-    # advisory warning. (A *static* keyword route on the same shape stays silent: a
-    # non-keyword call site is a legitimate alternate macro form there.)
-    @misrouted_source """
-    defmodule Mutare.MisroutedKwFixture do
-      import Mutare.Test.HostDSL
-
-      def assign(q, opts) do
-        set(q, opts)
-      end
-    end
-    """
-
-    test "warns, naming the classifier, and leaves the argument raw" do
-      warning =
-        ExUnit.CaptureIO.capture_io(:stderr, fn ->
-          send(
-            self(),
-            {:transformed,
-             Mutare.Transform.transform_string_with_sites(@misrouted_source,
-               file: "misrouted.ex",
-               mutators: [:string, Mutare.Test.MisroutedKeywordMutator]
-             )}
-          )
-        end)
-
-      assert warning =~ "Mutare.Test.MisroutedKeywordMutator"
-      assert warning =~ "not a literal keyword list"
-      assert warning =~ "misrouted.ex:5"
-
-      # The transform still succeeds; the mis-routed argument is left raw (no selector on it).
-      assert_received {:transformed, %{metamutant: meta}}
-      assert meta =~ ~r/set\(q, opts\)/
-    end
-
-    test "warnings: false suppresses the advisory (the two-phase build's re-run path)" do
-      output =
-        ExUnit.CaptureIO.capture_io(:stderr, fn ->
-          Mutare.Transform.transform_string_with_sites(@misrouted_source,
-            file: "misrouted.ex",
-            warnings: false,
-            mutators: [:string, Mutare.Test.MisroutedKeywordMutator]
-          )
-        end)
-
-      refute output =~ "not a literal keyword list"
-    end
-
-    test "a static keyword route on the same non-keyword shape stays silent" do
-      output =
-        ExUnit.CaptureIO.capture_io(:stderr, fn ->
-          Mutare.Transform.transform_string_with_sites(@misrouted_source,
-            file: "misrouted_static.ex",
-            mutators: [:string],
-            extensions: [Mutare.Test.KeywordInterpolatedRoutingExtension]
-          )
-        end)
-
-      refute output =~ "not a literal keyword list"
     end
   end
 
@@ -1093,6 +1032,81 @@ defmodule Mutare.HostedTest do
                        %{}
                      )
                    end
+    end
+  end
+end
+
+defmodule Mutare.HostedWarningTest do
+  @moduledoc """
+  The advisory `RouteStamp` prints when a `:routing` classifier routes `{:keyword, …}` onto an
+  argument that is not a keyword list. Split from `Mutare.HostedTest` to stay serial: these
+  capture the global `:stderr` device, one of them to assert a warning is absent, which a
+  concurrently running module printing the same warning would break.
+  """
+  use ExUnit.Case, async: false
+
+  describe "a :routing classifier routing {:keyword, …} onto a non-keyword argument" do
+    # `set(q, opts)` — the second argument is a variable, so there are no pairs to route. The
+    # shape fallback leaves it raw (never poison), but the classifier *saw* the argument and
+    # still called it keyword — a classifier bug worth naming, so RouteStamp prints an
+    # advisory warning. (A *static* keyword route on the same shape stays silent: a
+    # non-keyword call site is a legitimate alternate macro form there.)
+    @misrouted_source """
+    defmodule Mutare.MisroutedKwFixture do
+      import Mutare.Test.HostDSL
+
+      def assign(q, opts) do
+        set(q, opts)
+      end
+    end
+    """
+
+    test "warns, naming the classifier, and leaves the argument raw" do
+      warning =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          send(
+            self(),
+            {:transformed,
+             Mutare.Transform.transform_string_with_sites(@misrouted_source,
+               file: "misrouted.ex",
+               mutators: [:string, Mutare.Test.MisroutedKeywordMutator]
+             )}
+          )
+        end)
+
+      assert warning =~ "Mutare.Test.MisroutedKeywordMutator"
+      assert warning =~ "not a literal keyword list"
+      assert warning =~ "misrouted.ex:5"
+
+      # The transform still succeeds; the mis-routed argument is left raw (no selector on it).
+      assert_received {:transformed, %{metamutant: meta}}
+      assert meta =~ ~r/set\(q, opts\)/
+    end
+
+    test "warnings: false suppresses the advisory (the two-phase build's re-run path)" do
+      output =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          Mutare.Transform.transform_string_with_sites(@misrouted_source,
+            file: "misrouted.ex",
+            warnings: false,
+            mutators: [:string, Mutare.Test.MisroutedKeywordMutator]
+          )
+        end)
+
+      refute output =~ "not a literal keyword list"
+    end
+
+    test "a static keyword route on the same non-keyword shape stays silent" do
+      output =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          Mutare.Transform.transform_string_with_sites(@misrouted_source,
+            file: "misrouted_static.ex",
+            mutators: [:string],
+            extensions: [Mutare.Test.KeywordInterpolatedRoutingExtension]
+          )
+        end)
+
+      refute output =~ "not a literal keyword list"
     end
   end
 end

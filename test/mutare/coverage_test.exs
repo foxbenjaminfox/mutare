@@ -213,6 +213,8 @@ defmodule Mutare.CoverageTest do
       # this override, so under dogfooding it cedes `:mutare_cov` to the real helper
       # (whose `dump/1` the probe's `after_suite` needs). See NOTES "Self-hosting:
       # the coverage helper module clashes with its test stand-in".
+      # This process holds no private selection key, so `track_key/0` answers by scope; one
+      # that does gets a key derived from it (`recorder_test.exs`).
       System.delete_env(Recorder.fixture_override_env())
       assert Recorder.fixture_module() == Recorder.helper_module()
       assert Recorder.track_key() == Recorder.runtime(:harness).track_key

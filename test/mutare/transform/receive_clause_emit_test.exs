@@ -1,5 +1,5 @@
 defmodule Mutare.Transform.ReceiveClauseEmitTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   import Mutare.Test.Metamutant
 
   alias Mutare.Coverage.Recorder
@@ -34,15 +34,13 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
   end
 
   setup do
-    previous = :persistent_term.get(Recorder.track_key(), false)
+    # The fixtures below are transformed through `Mutare.Transform` directly, so the module's
+    # private selection key — and the coverage tracking key derived from it — must be in force
+    # before the first one (`Mutare.Test`). Both belong to this module execution alone, so each
+    # test only resets them; tracking starts off.
+    Mutare.Test.isolate_selector()
     Selector.put(Selector.baseline())
     :persistent_term.put(Recorder.track_key(), false)
-
-    on_exit(fn ->
-      Selector.put(Selector.baseline())
-      :persistent_term.put(Recorder.track_key(), previous)
-    end)
-
     :ok
   end
 
@@ -523,7 +521,8 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
       """)
 
     assert length(receives(metamutant)) == 1 + length(sites)
-    ExUnit.CaptureIO.capture_io(:stderr, fn -> apply(module, :build, []) end)
+    # The nested compile's warnings are expected; collected per process, not printed.
+    Code.with_diagnostics(fn -> apply(module, :build, []) end)
 
     on_exit(fn ->
       :code.purge(nested)
@@ -670,12 +669,8 @@ defmodule Mutare.Transform.ReceiveClauseEmitTest do
   defp eval_fun(expression) do
     ast = {:fn, [], [{:->, [], [[], expression]}]}
 
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      {fun, _} = Code.eval_quoted(ast)
-      send(self(), {:reference_fun, fun})
-    end)
-
-    assert_received {:reference_fun, fun}
+    # Evaluation warnings are expected; collected per process, not printed.
+    {{fun, _binding}, _diagnostics} = Code.with_diagnostics(fn -> Code.eval_quoted(ast) end)
     fun
   end
 

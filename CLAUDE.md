@@ -69,10 +69,12 @@ A test that selects a mutant does so on a **selector key private to its module's
 (`Mutare.Test.isolate_selector/0`, taken by every helper before it transforms; under ExUnit a
 process the key cannot be found for raises rather than share the VM-wide one), so it may be
 async — but a module that transforms through `Mutare.Transform` itself must take the key in a
-`setup` first, and one that sets the coverage track flag stays serial; `selector_isolation_test`
-enforces both, and `selector_isolation_execution_test` holds two `:parameterize` executions in
-one selected interval — NOTES "Selection is private to the test module", "Selection is private
-to the module *execution*".
+`setup` first. The coverage track flag follows the same key (`Recorder.track_key/0` derives a
+private one from it), so a module that sets the flag takes the key first too, and never writes
+a scope's shared key (`Recorder.runtime/1`); `selector_isolation_test` enforces all three, and
+`selector_isolation_execution_test` holds two `:parameterize` executions in one selected
+interval — NOTES "Selection is private to the test module", "Selection is private to the
+module *execution*", "Coverage tracking is private with selection".
 
 ## Architecture
 

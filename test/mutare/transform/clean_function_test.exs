@@ -1,7 +1,5 @@
 defmodule Mutare.Transform.CleanFunctionTest do
-  # Serial: the tests set the coverage recorder's track flag, VM-wide state every compiled
-  # metamutant reads (selection itself is on the module's private key).
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   import Mutare.Test.Metamutant
 
   alias Mutare.Coverage.Recorder
@@ -62,15 +60,14 @@ defmodule Mutare.Transform.CleanFunctionTest do
 
   setup do
     # The fixtures below are transformed through `Mutare.Transform` directly, so the module's
-    # private selection key must be in force before the first one (`Mutare.Test`).
+    # private selection key — and the coverage tracking key derived from it — must be in force
+    # before the first one (`Mutare.Test`). Both keys belong to this module execution alone, so each test only resets them; tracking
+    # starts off.
     Mutare.Test.isolate_selector()
-    track = :persistent_term.get(Recorder.track_key(), false)
     Selector.put(0)
     :persistent_term.put(Recorder.track_key(), false)
 
     on_exit(fn ->
-      Selector.put(0)
-      :persistent_term.put(Recorder.track_key(), track)
       :code.purge(@fixture)
       :code.delete(@fixture)
     end)

@@ -6,9 +6,11 @@ defmodule Mutare.SelectorIsolationTest do
   # take it before they transform or select, so a module that only ever transforms through
   # them is safe `async: true`. One that transforms through `Mutare.Transform` itself bakes
   # whatever key is in force at that moment, so it must call `isolate_selector/0` first — in a
-  # `setup`, ahead of the first transform. This enforces that over the suite's own source, and
-  # keeps the coverage recorder's track flag, which stays VM-wide, to serial modules. That
-  # the key is private to a module *execution* — two `:parameterize` instances apart — is
+  # `setup`, ahead of the first transform. This enforces that over the suite's own source. The
+  # coverage recorder's track flag follows the same key (`Recorder.track_key/0` derives a
+  # private readiness key from it), so an async module may set the flag only after taking its
+  # key, and never through a scope's shared key (`Recorder.runtime/1`). That the key is
+  # private to a module *execution* — two `:parameterize` instances apart — is
   # `selector_isolation_execution_test.exs`.
   use ExUnit.Case, async: true
   import Mutare.Test
@@ -18,7 +20,9 @@ defmodule Mutare.SelectorIsolationTest do
   @selecting ~r/\b(with_active_mutant|observe_mutant|Selector\.put)\b/
   @transforming ~r/\bTransform\.transform_string(_with_sites)?\(/
   @isolating ~r/\bisolate_selector\b/
-  @tracking ~r/persistent_term\.put\(\s*(Recorder\.)?track_key\(\)/
+  @writing_terms ~r/persistent_term\.put\(/
+  @tracking ~r/\btrack_key\(\)/
+  @scoped_tracking ~r/\bruntime\(:(fixture|harness)\)\.track_key\b/
 
   test "an async module that transforms itself and selects takes its private key first" do
     offenders =
@@ -31,9 +35,23 @@ defmodule Mutare.SelectorIsolationTest do
     assert offenders == []
   end
 
-  test "no async module sets the coverage track flag" do
+  test "an async module that sets the coverage track flag takes its private key first" do
     offenders =
-      for {file, module, body} <- async_modules(), body =~ @tracking, do: "#{file}: #{module}"
+      for {file, module, body} <- async_modules(),
+          body =~ @writing_terms,
+          body =~ @tracking,
+          not (body =~ @isolating),
+          do: "#{file}: #{module}"
+
+    assert offenders == []
+  end
+
+  test "no async module sets a scope's shared track flag" do
+    offenders =
+      for {file, module, body} <- async_modules(),
+          body =~ @writing_terms,
+          body =~ @scoped_tracking,
+          do: "#{file}: #{module}"
 
     assert offenders == []
   end
