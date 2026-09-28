@@ -14876,7 +14876,12 @@ runs in about 9 minutes, sync time down to 100 s. What changed, and the findings
   and `compile_timeout_test` stay serial because their verdicts hang on wall-clock timing, and
   `mix_task_test` for the global `:stderr` device and `Mix.shell`. `coverage_test` was split:
   its in-process half keeps the named ETS tables and env var, and stays serial; the end-to-end
-  half is `coverage_runner_test`.
+  half is `coverage_runner_test`. To rebalance, time the grouped modules serially — which
+  `--slowest-modules` does, and here that is what is wanted: `mix test <each grouped file>
+  --include runner --slowest-modules 40`. After the split and `interrupt_runner_test` (from
+  master) the groups had drifted to 158 / 91 / 155 s; moving `namespace_runner_test` to
+  group 2 and `case_runner_test`, `ignore_runner_test` and `schedulers_runner_test` to group 1
+  brought them to 138 / 133 / 144 s.
 - **The ceiling is now the code server.** Every module load, `:code.delete` and `:code.purge`
   is a request to one process, and each waits for all schedulers to pass a synchronization
   point, which is slow on a busy machine. With the suite concurrent, its queue sat at about
