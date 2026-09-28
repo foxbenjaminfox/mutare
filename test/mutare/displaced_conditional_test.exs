@@ -1,5 +1,5 @@
 defmodule Mutare.DisplacedConditionalTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   import Mutare.Test
 
   alias Mutare.Test.{LazyConditional, PatternBodyConditional, PatternConditional, SourcePatch}

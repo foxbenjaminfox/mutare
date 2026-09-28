@@ -361,9 +361,8 @@ defmodule Mutare.PipedRoutedCallTest do
 end
 
 defmodule Mutare.PipedRoutedCallRunTest do
-  # Runs compiled metamutants under a selected mutant. `with_active_mutant/2` sets the VM-wide
-  # selector, so these live apart from the pure transform tests above, which stay `async: true`.
-  use ExUnit.Case, async: false
+  # Runs compiled metamutants under a selected mutant.
+  use ExUnit.Case, async: true
   import Mutare.Test
 
   @source """

@@ -4,7 +4,11 @@ defmodule Mutare.OperandSwapTest do
   Keeps the operator, transposes the operands — the complement of the operator-swap
   families (Arithmetic/List). In place in a body, lifted in a guard. On by default.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does
+  # takes this module execution's private selection key first.
+  setup {Mutare.Test, :isolate_selector}
   import Mutare.Test.Metamutant
 
   alias Mutare.Mutators.OperandSwap
@@ -280,7 +284,6 @@ defmodule Mutare.OperandSwapTest do
 
       Mutare.Test.Compile.string(metamutant)
       Selector.put(Selector.baseline())
-      on_exit(fn -> Selector.put(Selector.baseline()) end)
       %{site: site}
     end
 
@@ -304,7 +307,6 @@ defmodule Mutare.OperandSwapTest do
 
       Mutare.Test.Compile.string(metamutant)
       Selector.put(Selector.baseline())
-      on_exit(fn -> Selector.put(Selector.baseline()) end)
       %{site: site}
     end
 
@@ -329,7 +331,6 @@ defmodule Mutare.OperandSwapTest do
       [site] = Enum.filter(sites, &(&1.mutator == :operand_swap))
       Mutare.Test.Compile.string(metamutant)
       Selector.put(Selector.baseline())
-      on_exit(fn -> Selector.put(Selector.baseline()) end)
       %{site: site}
     end
 
@@ -357,7 +358,6 @@ defmodule Mutare.OperandSwapTest do
       [site] = Enum.filter(sites, &(&1.mutator == :operand_swap))
       Mutare.Test.Compile.string(metamutant)
       Selector.put(Selector.baseline())
-      on_exit(fn -> Selector.put(Selector.baseline()) end)
       %{site: site}
     end
 

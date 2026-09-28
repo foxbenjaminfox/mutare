@@ -26,8 +26,13 @@ defmodule Mutare.NegativeFloatTest do
   a `def` head, and a `case` clause — plus a positive head literal mutated *to* a
   negative (the `literal_node?/1` path).
   """
-  # Compiles fixture modules and flips the global `:persistent_term` selector — serial.
-  use ExUnit.Case, async: false
+  # Compiles fixture modules and flips the selector.
+  use ExUnit.Case, async: true
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does
+  # takes this module execution's private selection key first.
+  setup_all {Mutare.Test, :isolate_selector}
+  setup {Mutare.Test, :isolate_selector}
   import Mutare.Test.Metamutant
 
   alias Mutare.Selector
@@ -100,7 +105,6 @@ defmodule Mutare.NegativeFloatTest do
 
   setup do
     Selector.put(Selector.baseline())
-    on_exit(fn -> Selector.put(Selector.baseline()) end)
     :ok
   end
 

@@ -154,8 +154,9 @@ defmodule Mutare.Test do
   `{module, binary}` pairs.
 
   `source` must contain a complete compilation unit such as a `defmodule`. The
-  helper compiles it inside a unique wrapper, captures compiler output, and purges
-  all compiled modules before returning. `opts` is forwarded as in `diffs/3`.
+  helper compiles it inside a unique wrapper and captures compiler output. The
+  compiled modules stay loaded under their unique names, as in `compile_metamutant/3`.
+  `opts` is forwarded as in `diffs/3`.
 
       defmodule MyMutatorTest do
         use ExUnit.Case, async: true
@@ -172,11 +173,7 @@ defmodule Mutare.Test do
   @spec assert_metamutant_compiles(String.t(), [mutator()], keyword()) :: [{module(), binary()}]
   def assert_metamutant_compiles(source, mutators, opts \\ []) do
     metamutant = metamutant_source(source, mutators, opts)
-    {compiled, wrapper} = compile_metamutant_source!(metamutant, true)
-
-    for {module, _binary} <- compiled, do: purge(module)
-    purge(wrapper)
-
+    {compiled, _wrapper} = compile_metamutant_source!(metamutant, true)
     compiled
   end
 
@@ -185,15 +182,21 @@ defmodule Mutare.Test do
 
   By default, compilation occurs inside a uniquely named wrapper module. This
   prevents module-name collisions and keeps ordinary self-references working.
-  Compiled modules are purged when the test process exits.
+  The compiled modules stay loaded after the test, a few kilobytes each: no later
+  compile reuses their names, and unloading a module blocks the VM's single code
+  server while it checks every process for the old code, which slows an `async: true`
+  suite far more than the memory is worth. With `uniquify: false` the modules keep
+  their written names, which a later test may compile again, so they are unloaded
+  when the test exits.
 
   Wrapper nesting can capture references to a real module with the same leading
   namespace, and it cannot resolve a forward reference to a later sibling module.
   Use self-contained fixtures with short module names. When top-level names are
   required, pass `uniquify: false` and manage collisions explicitly.
 
-  Each isolated compilation creates permanent module-name atoms, so this helper is
-  intended for a bounded set of fixtures rather than an unbounded generated test.
+  Each isolated compilation creates permanent module-name atoms and loaded modules,
+  so this helper is intended for a bounded set of fixtures rather than an unbounded
+  generated test.
 
   Options are forwarded to `Mutare.transform_string/2`. `:uniquify` is consumed by
   this helper, and the `mutators` argument overrides any `:mutators` option.
@@ -201,7 +204,7 @@ defmodule Mutare.Test do
   `modules` are the metamutant's own compiled module atoms (the empty wrapper shell excluded), in
   compilation order — typically a single-element list for a single `defmodule`; `mutants` are
   public `Mutare.MutationSite` DTOs, used to resolve a mutant's id from its logical diff
-  (`site_id/2` / `site_by/3`). All compiled modules are purged when the test exits.
+  (`site_id/2` / `site_by/3`).
 
       {[module], mutants} =
         compile_metamutant(
@@ -219,11 +222,11 @@ defmodule Mutare.Test do
 
     result = transform(source, mutators, transform_opts)
 
-    {compiled, wrapper} = compile_metamutant_source!(result.metamutant, isolate?)
+    {compiled, _wrapper} = compile_metamutant_source!(result.metamutant, isolate?)
     modules = for {module, _binary} <- compiled, do: module
-    loaded = if wrapper, do: [wrapper | modules], else: modules
 
-    ExUnit.Callbacks.on_exit(fn -> Enum.each(loaded, &purge/1) end)
+    # Only written names are reused, so only they are unloaded (see the doc above).
+    unless isolate?, do: ExUnit.Callbacks.on_exit(fn -> Enum.each(modules, &purge/1) end)
 
     {modules, result.mutants}
   end
@@ -327,8 +330,8 @@ defmodule Mutare.Test do
   # Compile a rendered metamutant, capturing stderr (a custom mutator's mutant may warn) and
   # asserting it produced at least one module of its own. The shared core of
   # `compile_metamutant/3` and `assert_metamutant_compiles/2`. Returns `{own_modules, wrapper}`,
-  # where `wrapper` is the isolating shell module (`nil` when `isolate?` is false) — the caller
-  # keeps it to purge, but it is never reported as a metamutant module.
+  # where `wrapper` is the isolating shell module (`nil` when `isolate?` is false), never
+  # reported as a metamutant module.
   #
   # Isolation is by *nesting*, not renaming: the metamutant is wrapped in `defmodule <unique> do
   # … end`, so (a) two compiles of one fixture never redefine a single module name through the
@@ -357,10 +360,6 @@ defmodule Mutare.Test do
     own = Enum.reject(compiled, fn {module, _binary} -> module == wrapper end)
 
     if own == [] do
-      # The wrapper shell still loaded, so purge everything that compiled before raising — the
-      # caller never reaches its own purge, and a leaked resident module would otherwise survive.
-      for {module, _binary} <- compiled, do: purge(module)
-
       flunk("metamutant compiled to no modules — is the source a complete `defmodule`?")
     end
 
@@ -369,8 +368,8 @@ defmodule Mutare.Test do
 
   # Unload a compiled module, reclaiming its code: `delete` makes the current code "old", then
   # `purge` frees it. (The reverse order — `purge` then `delete` — leaves the just-compiled code
-  # resident as "old", never reclaimed.) Names are unique per compile, so this only frees memory;
-  # it never has to clear the way for a same-name redefinition.
+  # resident as "old", never reclaimed.) Only `uniquify: false` compiles are unloaded: their
+  # written names may be compiled again by a later test.
   defp purge(module) do
     :code.delete(module)
     :code.purge(module)

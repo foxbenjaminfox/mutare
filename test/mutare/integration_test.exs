@@ -4,8 +4,13 @@ defmodule Mutare.IntegrationTest do
   exactly ONCE, then change behavior purely by flipping the `:persistent_term`
   selector — no recompilation between mutants.
   """
-  # persistent_term is global; the fixture module is compiled once for all tests.
-  use ExUnit.Case, async: false
+  # The fixture module is compiled once for all tests; each test flips the selector.
+  use ExUnit.Case, async: true
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does
+  # takes this module execution's private selection key first.
+  setup_all {Mutare.Test, :isolate_selector}
+  setup {Mutare.Test, :isolate_selector}
 
   # The fixture is compiled at runtime (in setup_all), so it is legitimately
   # undefined at test-compile time.
@@ -46,7 +51,6 @@ defmodule Mutare.IntegrationTest do
 
   setup do
     Selector.put(Selector.baseline())
-    on_exit(fn -> Selector.put(Selector.baseline()) end)
     :ok
   end
 

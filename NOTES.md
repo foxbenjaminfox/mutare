@@ -14891,8 +14891,8 @@ runs in about 9 minutes, sync time down to 100 s. What changed, and the findings
   8 KB of code each. What remains is inherent to compiling at runtime: each module load, the
   temporary module Elixir loads and deletes to run a non-trivial module body, and the parallel
   checker's read of each referenced module's `.beam`. `Mutare.Test.compile_metamutant/3`
-  still purges its modules when a test exits (a published behaviour, left alone), about
-  15 % of the remaining queue.
+  purged its modules when a test exited, about 15 % of the remaining queue; it no longer
+  does (below).
 - **Fewer concurrent cases is not faster.** At `--max-cases 16` the run took 11:12, not less:
   the code server bounds throughput, and fewer cases only leaves the subprocess and CPU-bound
   work less to overlap with.
@@ -14904,3 +14904,35 @@ runs in about 9 minutes, sync time down to 100 s. What changed, and the findings
 `Mutare.Test.Project.tmp_dir/1` (and the tests that built temp paths by hand) now includes the
 OS pid, so two `mix test` processes — `--partitions`, or two checkouts — cannot pick one path;
 `System.unique_integer/1` restarts in every VM.
+
+### `Mutare.Test` leaves its compiles loaded; the fast loop's sync modules (2026-09-28)
+
+`compile_metamutant/3` unloaded its modules when the test exited, and
+`assert_metamutant_compiles/2` before returning. Both compile under a unique wrapper, so the
+unload only freed memory, a few kilobytes a compile, and cost a code-server purge that checks
+every process — the same trade the suite's own helpers had already made the other way ("The
+suite runs concurrently"). Both now leave the modules loaded. A `uniquify: false` compile is
+still unloaded at test exit: its written name is one a later test may compile again. The
+change reaches users' `async: true` suites too, hence a CHANGELOG entry.
+
+Twenty-eight fast-loop modules were `async: false` for "`:persistent_term` is global", which
+stopped being true when selection became private to each module execution ("Selection is
+private to the module *execution*"). They are async now. Those that transform through
+`Mutare.Transform` or call `Selector.put` themselves take the key with
+`setup {Mutare.Test, :isolate_selector}` (and `setup_all`, where the fixture compiles there),
+and their `on_exit(fn -> Selector.put(Selector.baseline()) end)` resets are gone. An `on_exit`
+callback runs in a process of ExUnit's, which never took the key, so under an async module
+that reset wrote the VM-wide default key instead of the module's. Fast-loop sync time went
+from 47 s to 31 s.
+
+Two stay serial for a reason the old comments did not give: `lift_test` and
+`transform_corpus_test` `refute` a lifting warning in `with_log/1`'s output, and an ExUnit
+log capture is a `:logger` handler that receives every process's events. An async module
+transforming alongside may log the same warning. A positive `assert log =~` is safe under
+`async: true`; a `refute` is not.
+
+What is left of the sync time is the coverage recorder's track flag (`rescue_emit`,
+`clean_function`, `receive_clause_emit`, `fn_clause_emit`, `case_clause_emit`, `hosted`,
+`runtime_id`: about 25 s together). The flag is VM-wide, so those modules really are serial;
+making them async means making the flag as private as selection is.
+

@@ -7,7 +7,11 @@ defmodule Mutare.StrictEqualityTest do
   the flip is suppressed under (see `Mutare.TransformRedundancyTest`'s equivalent-sibling
   block).
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does
+  # takes this module execution's private selection key first.
+  setup {Mutare.Test, :isolate_selector}
   import Mutare.Test.Metamutant
 
   alias Mutare.Mutators.StrictEquality
@@ -82,7 +86,6 @@ defmodule Mutare.StrictEqualityTest do
 
       Mutare.Test.Compile.string(metamutant)
       Selector.put(Selector.baseline())
-      on_exit(fn -> Selector.put(Selector.baseline()) end)
       %{site: site}
     end
 
@@ -111,7 +114,6 @@ defmodule Mutare.StrictEqualityTest do
       [site] = Enum.filter(sites, &(&1.mutator == :strict_equality))
       Mutare.Test.Compile.string(metamutant)
       Selector.put(Selector.baseline())
-      on_exit(fn -> Selector.put(Selector.baseline()) end)
       %{site: site}
     end
 

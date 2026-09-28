@@ -8,7 +8,11 @@ defmodule Mutare.ClauseGuardTest do
   discovery, compilation, runtime switching, poison attribution, and the unbound-scope
   refusal.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does
+  # takes this module execution's private selection key first.
+  setup {Mutare.Test, :isolate_selector}
 
   alias Mutare.{Manifest, Selector, Site}
 
@@ -144,7 +148,6 @@ defmodule Mutare.ClauseGuardTest do
   describe "end-to-end: compile once, switch the guard at runtime" do
     setup do
       Selector.put(Selector.baseline())
-      on_exit(fn -> Selector.put(Selector.baseline()) end)
       :ok
     end
 

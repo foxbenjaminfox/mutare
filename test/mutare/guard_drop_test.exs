@@ -6,7 +6,11 @@ defmodule Mutare.GuardDropTest do
   Exercised across all four guarded-clause positions (`def`/`defp` heads, `case`,
   `receive`, `fn`) for discovery, compilation, and runtime behaviour.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does
+  # takes this module execution's private selection key first.
+  setup {Mutare.Test, :isolate_selector}
 
   alias Mutare.{Report, Selector, Site}
 
@@ -203,7 +207,6 @@ defmodule Mutare.GuardDropTest do
   describe "end-to-end: lift, compile once, switch at runtime" do
     setup do
       Selector.put(Selector.baseline())
-      on_exit(fn -> Selector.put(Selector.baseline()) end)
       :ok
     end
 

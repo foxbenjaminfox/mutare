@@ -4,7 +4,12 @@ defmodule Mutare.ReturnValueTest do
   constant. Structural (the transform names the tail), delivered by the in-place
   selector, on by default.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does
+  # takes this module execution's private selection key first.
+  setup_all {Mutare.Test, :isolate_selector}
+  setup {Mutare.Test, :isolate_selector}
   import Mutare.Test.Metamutant
   import Mutare.Test
 
@@ -46,7 +51,6 @@ defmodule Mutare.ReturnValueTest do
 
   setup do
     Selector.put(Selector.baseline())
-    on_exit(fn -> Selector.put(Selector.baseline()) end)
     :ok
   end
 

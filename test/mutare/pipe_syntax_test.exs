@@ -1,5 +1,9 @@
 defmodule Mutare.PipeSyntaxTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does
+  # takes this module execution's private selection key first.
+  setup {Mutare.Test, :isolate_selector}
   import Mutare.Test
 
   @mutator Mutare.Test.PipeSyntaxMutator

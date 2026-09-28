@@ -5,8 +5,11 @@ defmodule Mutare.PipedGuardTest do
   call `Mutare.Transform.WrittenPipe.direct/1` makes of it. Read as written, the stage's
   treatments would land one argument late (`Mutare.Transform.Meta.routing/1` raises instead).
   """
-  # `SourcePatch.assert_patches/4` selects mutants process-globally.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does
+  # takes this module execution's private selection key first.
+  setup {Mutare.Test, :isolate_selector}
 
   # The guard walk (`Mutare.Transform.Tag`) reads code as Elixir just as `Analyze` does, so it
   # owes the stage the same reading: `rem/2`'s position 0 is `n`, not the written `2`.

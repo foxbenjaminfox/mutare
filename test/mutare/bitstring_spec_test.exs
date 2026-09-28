@@ -6,7 +6,11 @@ defmodule Mutare.BitstringSpecTest do
   constructor-only — a spec in a pattern (the decoding side) has no selector to
   host it and is left alone. On by default.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does
+  # takes this module execution's private selection key first.
+  setup {Mutare.Test, :isolate_selector}
 
   alias Mutare.{Selector, Site}
 
@@ -240,7 +244,6 @@ defmodule Mutare.BitstringSpecTest do
 
       Mutare.Test.Compile.string(metamutant)
       Selector.put(Selector.baseline())
-      on_exit(fn -> Selector.put(Selector.baseline()) end)
 
       by_code = Map.new(sites, &{&1.mutated_code, &1.id})
       %{by_code: by_code}

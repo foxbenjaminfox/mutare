@@ -27,8 +27,8 @@ defmodule Mutare.TransformCorpusTest do
   every probe is dispatched with `apply/3` so referencing a runtime-compiled
   fixture never trips a compile-time "undefined module" warning.
   """
-  # Each entry compiles fixtures and flips the global `:persistent_term` selector,
-  # so this file must not race other tests doing the same.
+  # Serial because an entry may `refute_log` a warning, and a log capture receives every
+  # process's events: an async module transforming beside it may log the same warning.
   use ExUnit.Case, async: false
 
   import ExUnit.CaptureLog, only: [with_log: 1]

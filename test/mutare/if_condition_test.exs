@@ -6,7 +6,11 @@ defmodule Mutare.IfConditionTest do
   conditions a value family can't reach (a bare predicate call, `is_*`, a remote
   boolean), leaving the boolean-operator ones to `Conditional`.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does
+  # takes this module execution's private selection key first.
+  setup {Mutare.Test, :isolate_selector}
   import Mutare.Test.Metamutant
 
   alias Mutare.Mutators.{IfCondition, StringCall}
@@ -18,7 +22,6 @@ defmodule Mutare.IfConditionTest do
 
   setup do
     Selector.put(Selector.baseline())
-    on_exit(fn -> Selector.put(Selector.baseline()) end)
     :ok
   end
 

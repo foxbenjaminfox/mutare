@@ -145,7 +145,7 @@ defmodule Mutare.TestTest do
   end
 
   describe "assert_metamutant_compiles/2" do
-    test "passes for a complete module and returns the (purged) compiled modules" do
+    test "passes for a complete module and returns the compiled modules, left loaded" do
       source = "defmodule Mutare.TestTest.Sample do\n  def f(a, b), do: a + b\nend"
 
       compiled = assert_metamutant_compiles(source, [Arithmetic])
@@ -153,8 +153,9 @@ defmodule Mutare.TestTest do
       assert [{module, binary} | _] = compiled
       assert is_atom(module)
       assert is_binary(binary)
-      # Purged on the way out (the wrapper shell too), so nothing leaks.
-      refute :code.is_loaded(module)
+      # Left loaded under its unique wrapper: unloading would cost the code server more than
+      # the module's memory is worth, and no later compile reuses the name.
+      assert :code.is_loaded(module)
     end
 
     test "is callable twice for the same source without a redefinition clash" do
@@ -242,7 +243,7 @@ defmodule Mutare.TestTest do
       # The escape hatch (see the nesting caveat in the module doc): with no wrapper, the
       # metamutant keeps its own top-level name, so `__MODULE__`/struct identity is the written
       # name and a namespaced fixture could reach a real same-prefix sibling. The caller owns
-      # isolation; we use a name that can't collide with a real module and is purged on exit.
+      # isolation; we use a name that can't collide with a real module and is unloaded on exit.
       {[mod], _sites} =
         compile_metamutant(
           "defmodule Mutare.TestTest.Unwrapped do\n  def who, do: __MODULE__\nend",

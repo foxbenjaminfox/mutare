@@ -5,8 +5,7 @@ defmodule Mutare.PipeMacroStageTest do
   # function call's first argument is. A callee that evaluates that operand late,
   # conditionally, or never says so with `:lazy_expression`, and is then handed the expression
   # itself.
-  # `with_active_mutant/2` sets the VM-wide selector, so these cannot run beside other tests.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   import Mutare.Test
 
   alias Mutare.Test.{LazyDSL, LazyStageMutator}

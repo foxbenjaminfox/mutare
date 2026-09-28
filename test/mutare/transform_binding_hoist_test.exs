@@ -1,9 +1,12 @@
 defmodule Mutare.TransformBindingHoistTest do
   # Context routing for a condition that binds a variable escaping into the body:
   # cond-clause pruning and if/unless hoisting (the binding lifted so the decision can be
-  # delivered). Split from transform_test.exs. `async: false` — runtime tests flip the
-  # global selector.
-  use ExUnit.Case, async: false
+  # delivered). Split from transform_test.exs.
+  use ExUnit.Case, async: true
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does
+  # takes this module execution's private selection key first.
+  setup {Mutare.Test, :isolate_selector}
   import Mutare.Test.Metamutant
 
   alias Mutare.Site

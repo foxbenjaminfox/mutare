@@ -7,8 +7,13 @@ defmodule Mutare.MatchPatternTest do
   rebound outside (`{vars} = case rhs do <pat> -> {vars} end`), the pattern hosted in a
   selector. Proven with one compile and runtime switching.
   """
-  # persistent_term is global; the fixture is compiled once for all tests.
-  use ExUnit.Case, async: false
+  # The fixture is compiled once for all tests; each test flips the selector.
+  use ExUnit.Case, async: true
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does
+  # takes this module execution's private selection key first.
+  setup_all {Mutare.Test, :isolate_selector}
+  setup {Mutare.Test, :isolate_selector}
   import Mutare.Test.Metamutant
 
   alias Mutare.{Report, Selector}
@@ -92,7 +97,6 @@ defmodule Mutare.MatchPatternTest do
 
   setup do
     Selector.put(Selector.baseline())
-    on_exit(fn -> Selector.put(Selector.baseline()) end)
     :ok
   end
 

@@ -5,7 +5,9 @@ defmodule Mutare.LiftTest do
   mutant a single guarded clause — proven end to end with one compile and runtime
   switching.
   """
-  # persistent_term is global; the fixture is compiled once for all tests.
+  # The fixture is compiled once for all tests. Serial because some tests `refute` a lifting
+  # warning in `with_log/1`'s output, and a log capture receives every process's events: an
+  # async module transforming beside it may log the same warning.
   use ExUnit.Case, async: false
   import Mutare.Test.Metamutant
 
@@ -1320,7 +1322,11 @@ defmodule Mutare.LiftDefimplTest do
   module `P.T`, and `:skip_lifting` names that module. A displaced `defimpl` (a DSL macro over
   Kernel's) is not a module body and keeps the in-place expression path.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does
+  # takes this module execution's private selection key first.
+  setup {Mutare.Test, :isolate_selector}
 
   import ExUnit.CaptureLog
 
@@ -1362,8 +1368,6 @@ defmodule Mutare.LiftDefimplTest do
 
     compiled = meta |> Mutare.Test.Compile.string() |> Enum.map(&elem(&1, 0))
     assert Mutare.LiftImplProto.Integer in compiled
-
-    on_exit(fn -> Selector.put(Selector.baseline()) end)
 
     Selector.put(Selector.baseline())
     assert Mutare.LiftImplProto.run(5) == 6

@@ -33,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lists the mutants it did not test as `Pending` rather than leaving them out.
 - Reports are written to a temporary file beside their path and renamed into place, so a
   kill mid-write leaves the previous report whole.
+- `Mutare.Test.compile_metamutant/3` and `Mutare.Test.assert_metamutant_compiles/2` leave the
+  modules they compile loaded, instead of unloading them at test exit (or, for
+  `assert_metamutant_compiles/2`, before returning). Their names are unique per compile, and
+  unloading a module stalls the VM's code server while it checks every process, which slowed
+  `async: true` suites far more than the few kilobytes per compile are worth. A
+  `uniquify: false` compile is still unloaded at test exit.
 
 ### Fixed
 

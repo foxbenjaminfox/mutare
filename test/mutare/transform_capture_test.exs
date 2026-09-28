@@ -1,8 +1,12 @@
 defmodule Mutare.TransformCaptureTest do
   # Mutation of `&Mod.fun/N` reference captures (a call *value*): the same call families
   # that match a written call match the capture, via re-capture (rename/removal). Split
-  # from transform_test.exs. `async: false` — a runtime test flips the global selector.
-  use ExUnit.Case, async: false
+  # from transform_test.exs.
+  use ExUnit.Case, async: true
+
+  # Transforms and selects outside `Mutare.Test`'s helpers, so every process that does
+  # takes this module execution's private selection key first.
+  setup {Mutare.Test, :isolate_selector}
   import Mutare.Test.Metamutant
 
   alias Mutare.Site
