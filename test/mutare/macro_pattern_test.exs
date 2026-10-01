@@ -213,7 +213,7 @@ defmodule Mutare.MacroPatternTest do
   test "renders a macro-pattern swap as a focused one-line diff", %{sites: sites} do
     site = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.line == 3))
 
-    assert Report.header(site) == "mac.ex:3  [pattern_swap, in-place]  SURVIVED"
+    assert Report.header(site) == "mac.ex:3:17  [pattern_swap, in-place]  SURVIVED"
 
     assert Report.diff(site, @source) ==
              "-    destructure([x, y], v)\n+    destructure([y, x], v)"

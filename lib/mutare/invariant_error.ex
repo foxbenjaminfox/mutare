@@ -147,7 +147,7 @@ defmodule Mutare.InvariantError do
         do: " `#{one_line(site.original_code)}` → `#{one_line(site.mutated_code)}`",
         else: ""
 
-    "mutant ##{site.id} (#{site.mutator}, #{site.file}:#{site.line})#{code}"
+    "mutant ##{site.id} (#{site.mutator}, #{Site.location(site)})#{code}"
   end
 
   defp subject({local, nil}), do: "id #{local}, which no mutant records"

@@ -1221,7 +1221,7 @@ defmodule Mutare.LiftTest do
     test "the report renders a head-literal mutant as a one-line diff", %{pattern_sites: sites} do
       site = Enum.find(sites, &(&1.original_code == ":go" and &1.kind == :lifted))
 
-      assert Report.header(site) == "pat.ex:5  [atom, lifted]  SURVIVED"
+      assert Report.header(site) == "pat.ex:5:12  [atom, lifted]  SURVIVED"
 
       assert Report.diff(site, @pattern_source) ==
                "-  def kind(:go), do: :going\n+  def kind(:mutare), do: :going"
@@ -1243,7 +1243,7 @@ defmodule Mutare.LiftTest do
   test "report renders a clause-drop mutant as removed lines", %{sites: sites} do
     site = Enum.find(sites, &(&1.mutator == :clause_drop and &1.line == 3))
 
-    assert Report.header(site) == "lift.ex:3  [clause_drop, lifted]  SURVIVED"
+    assert Report.header(site) == "lift.ex:3:3  [clause_drop, lifted]  SURVIVED"
     assert Report.diff(site, @source) == "-  def classify(_), do: :neg"
   end
 

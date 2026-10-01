@@ -650,7 +650,7 @@ defmodule Mix.Tasks.MutareTest do
         end
 
       assert err.message =~ "invariant check failed for lib/a.ex (1 violation)"
-      assert err.message =~ "mutant #1 (stale_token, lib/a.ex:2) `1` → `1` renders identically"
+      assert err.message =~ "mutant #1 (stale_token, lib/a.ex:2:21) `1` → `1` renders identically"
     end
 
     test "--list-ignores renders a bad qualifier as a clean Mix abort, not a raw stacktrace" do

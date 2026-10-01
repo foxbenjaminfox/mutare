@@ -95,7 +95,7 @@ defmodule Mutare.Runner.Hydrate do
         %{site | original_code: original_code, mutated_code: mutated_code}
 
       nil ->
-        raise "deferred diff hydration missed mutant ##{site.id} (#{site.file}:#{site.line}): " <>
+        raise "deferred diff hydration missed mutant ##{site.id} (#{Site.location(site)}): " <>
                 "the report-time transform did not reproduce the scan's mutant id"
     end
   end

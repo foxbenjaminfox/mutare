@@ -79,7 +79,7 @@ defmodule Mutare.RunnerTest do
 
     report = Report.render(run.results, run.schema.sources)
 
-    assert report =~ "lib/calc.ex:3  [relational, in-place]  SURVIVED"
+    assert report =~ "lib/calc.ex:3:23  [relational, in-place]  SURVIVED"
     assert report =~ "-  def gte?(a, b), do: a >= b"
     assert report =~ "+  def gte?(a, b), do: a > b"
     assert report =~ "mutation score: 66.7%  (2 killed, 1 survived, 3 total)"

@@ -88,8 +88,8 @@ you a batch to fix without paying for a full run. After fixing, recheck those li
 
     mix mutare --line lib/billing/invoice.ex:42 --line lib/billing/invoice.ex:57
 
-`--line FILE:LINE` accepts the exact `file:line` prefix the report prints, can be
-repeated, and recompiles only the named files. Finish with an unrestricted run over
+`--line FILE:LINE` accepts the exact `file:line:column` location the report prints
+(scoping its whole line), can be repeated, and recompiles only the named files. Finish with an unrestricted run over
 the module to see where it stands.
 
 ### Surveying a project

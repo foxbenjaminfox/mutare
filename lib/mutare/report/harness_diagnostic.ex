@@ -37,7 +37,7 @@ defmodule Mutare.Report.HarnessDiagnostic do
   """
   @spec line(Result.t()) :: String.t()
   def line(%Result{site: %Site{} = site} = result) do
-    "#{site.file}:#{site.line}: mutant #{site.id} — #{summary(result)}"
+    "#{Site.location(site)}: mutant #{site.id} — #{summary(result)}"
   end
 
   defp exit_status(status) when is_integer(status), do: "exit #{status}"

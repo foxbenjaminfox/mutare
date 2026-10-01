@@ -367,7 +367,7 @@ compiling metamutant once, baseline first…
 
 .S.
 
-lib/calc.ex:3  [relational, in-place]  SURVIVED
+lib/calc.ex:3:23  [relational, in-place]  SURVIVED
 -  def gte?(a, b), do: a >= b
 +  def gte?(a, b), do: a > b
 

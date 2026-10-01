@@ -211,7 +211,7 @@ defmodule Mutare.RescueTypeTest do
         &(&1.mutator == :rescue_type and &1.line == 6 and &1.mutated_code == "e in [RuntimeError]")
       )
 
-    assert Report.header(site) == "rt.ex:6  [rescue_type, in-place]  SURVIVED"
+    assert Report.header(site) == "rt.ex:6:7  [rescue_type, in-place]  SURVIVED"
 
     assert Report.diff(site, @source) ==
              "-      e in [RuntimeError, ArgumentError] -> {:caught, e.__struct__}\n" <>
@@ -249,7 +249,7 @@ defmodule Mutare.RescueTypeTest do
           &(&1.mutator == :rescue_type and &1.line == 28 and &1.mutated_code == "[RuntimeError]")
         )
 
-      assert Report.header(site) == "rt.ex:28  [rescue_type, in-place]  SURVIVED"
+      assert Report.header(site) == "rt.ex:28:7  [rescue_type, in-place]  SURVIVED"
 
       assert Report.diff(site, @source) ==
                "-      [RuntimeError, ArgumentError] -> :bare_caught\n" <>
@@ -292,7 +292,7 @@ defmodule Mutare.RescueTypeTest do
     test "renders a clause-drop as a `-` deletion of the whole branch", %{sites: sites} do
       site = Enum.find(sites, &(&1.id == rescue_drop_site(sites, 36)))
 
-      assert Report.header(site) == "rt.ex:36  [rescue_type, in-place]  SURVIVED"
+      assert Report.header(site) == "rt.ex:36:7  [rescue_type, in-place]  SURVIVED"
 
       assert Report.diff(site, @source) ==
                "-      e in ArgumentError -> {:branch_arg, e.__struct__}"

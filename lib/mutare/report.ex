@@ -19,14 +19,14 @@ defmodule Mutare.Report do
 
   @doc """
   Header line for a surviving mutant, e.g.
-  `lib/x.ex:42  [relational, in-place]  SURVIVED`.
+  `lib/x.ex:42:7  [relational, in-place]  SURVIVED`.
 
   A mutation with a note appends it as a trailing `— note`, matching the ignored
   mutant reason format.
   """
   @spec header(Site.t()) :: String.t()
   def header(%Site{} = site) do
-    "#{site.file}:#{site.line}  [#{site.mutator}, #{kind(site.kind)}]  SURVIVED#{optional_suffix(site.note)}"
+    "#{Site.location(site)}  [#{site.mutator}, #{kind(site.kind)}]  SURVIVED#{optional_suffix(site.note)}"
   end
 
   # The trailing "  — <text>" appended to a SURVIVED/IGNORED line for a Site's note or ignore
@@ -151,14 +151,14 @@ defmodule Mutare.Report do
 
   @doc """
   One line for an ignored mutant, e.g.
-  `lib/x.ex:42  [arithmetic]  IGNORED  — off-by-one is intentional`.
+  `lib/x.ex:42:7  [arithmetic]  IGNORED  — off-by-one is intentional`.
 
   The trailing `— reason` is present only when the directive carried one, so a
   bare `# mutare:ignore` reads as `… IGNORED` with nothing after it.
   """
   @spec ignored(Site.t()) :: String.t()
   def ignored(%Site{} = site) do
-    "#{site.file}:#{site.line}  [#{site.mutator}]  IGNORED#{optional_suffix(site.ignore_reason)}"
+    "#{Site.location(site)}  [#{site.mutator}]  IGNORED#{optional_suffix(site.ignore_reason)}"
   end
 
   @doc """
@@ -166,7 +166,7 @@ defmodule Mutare.Report do
   """
   @spec harness_error(Result.t()) :: String.t()
   def harness_error(%Result{site: %Site{} = site} = result) do
-    "#{site.file}:#{site.line}  [#{site.mutator}]  HARNESS_ERROR  — " <>
+    "#{Site.location(site)}  [#{site.mutator}]  HARNESS_ERROR  — " <>
       HarnessDiagnostic.summary(result)
   end
 

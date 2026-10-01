@@ -375,7 +375,7 @@ defmodule Mutare.MatchPatternTest do
   test "renders a match-pattern swap as a focused one-line diff", %{sites: sites} do
     site = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.line == 3))
 
-    assert Report.header(site) == "mp.ex:3  [pattern_swap, in-place]  SURVIVED"
+    assert Report.header(site) == "mp.ex:3:5  [pattern_swap, in-place]  SURVIVED"
 
     assert Report.diff(site, @source) ==
              "-    {x, y} = point\n+    {y, x} = point"

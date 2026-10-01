@@ -106,7 +106,7 @@ defmodule Mutare.PatternLiftTest do
     test "renders a variable-swap mutant as a one-line diff", %{sites: sites} do
       site = Enum.find(sites, &(&1.mutator == :pattern_swap))
 
-      assert Report.header(site) == "pat.ex:2  [pattern_swap, lifted]  SURVIVED"
+      assert Report.header(site) == "pat.ex:2:7  [pattern_swap, lifted]  SURVIVED"
 
       assert Report.diff(site, @source) ==
                "-  def coord({x, y}), do: {x, y}\n+  def coord({y, x}), do: {x, y}"

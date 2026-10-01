@@ -468,7 +468,7 @@ defmodule Mutare.CLI.Info do
     |> Enum.sort_by(& &1.line)
     |> Enum.each(fn site ->
       ignored = if site.ignored, do: "  [ignored]", else: ""
-      Mix.shell().info("  #{site.line}  #{Site.describe(site)}#{ignored}")
+      Mix.shell().info("  #{Site.position(site)}  #{Site.describe(site)}#{ignored}")
     end)
   end
 end

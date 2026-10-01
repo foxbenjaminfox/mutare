@@ -32,10 +32,10 @@ Everything else here is a consequence of taking that bet seriously.
 
 **The diff is the product; the score is a trend.** The headline mutation score
 is a number to watch over time. But the thing you actually act on is the list of
-*surviving mutants*, each rendered as a one-line diff at `file:line`:
+*surviving mutants*, each rendered as a one-line diff at `file:line:column`:
 
 ```diff
-lib/billing/invoice.ex:42  [relational, in-place]  SURVIVED
+lib/billing/invoice.ex:42:9  [relational, in-place]  SURVIVED
 -     if total >= threshold do
 +     if total > threshold do
 ```

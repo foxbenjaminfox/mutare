@@ -7183,9 +7183,12 @@ A *narrow rerun* knob: `mix mutare --line lib/billing/invoice.ex:42` (repeatable
 or `only_lines:` in `.mutare.exs`) tests only the mutants whose original location is
 that `file:line`, instead of the whole population. The motivating workflow is
 re-checking a single result the report named — you killed (or want to recheck) one
-survivor and don't want to pay for a full run to confirm it. `FILE:LINE` is *exactly*
-the prefix `Mutare.Report.header/1` prints (`lib/x.ex:42  [relational, …]  SURVIVED`),
-so you copy-paste the location straight from the report.
+survivor and don't want to pay for a full run to confirm it. The report prints a
+location as `file:line:column` (`lib/x.ex:42:7  [relational, …]  SURVIVED`), and
+`--line` accepts that form too, so you copy-paste the location straight from the report.
+(The column came later: two mutants on one line can describe themselves identically —
+`{"id", stored["id"]}` with either `"id"` emptied — and without it a killed one and a
+survivor read the same. `Mutare.Site.location/1` is the one formatter.)
 
 Design choices, and why:
 
@@ -7201,8 +7204,10 @@ Design choices, and why:
   (`a + b - c`); `--line` keeps *all* of them. The user asked for a *line*, and the
   report identifies a survivor by `file:line` + diff, not by the internal
   `MUTARE_ACTIVE_MUTANT` id (which isn't user-visible and *shifts* when discovery is
-  narrowed — see below). Column-level scoping would buy little and break the
-  copy-from-report ergonomics.
+  narrowed — see below). A pasted `FILE:LINE:COLUMN` scopes its whole line: the column
+  is there to tell mutants apart when reading, and column-level scoping would buy little
+  for a rerun. A digit-only segment before the last one is read as the line, since no
+  source path ends in one; a path may still contain a colon elsewhere.
 - **Filter applied inside `from_files/4`, file-prune inside `build/2`.** Same split as
   `:max_mutants` vs `:only_files`: the site filter lives in the one `from_files`
   chokepoint so a **poison rebuild** (`Schema.rebuild`, which regenerates the sites)

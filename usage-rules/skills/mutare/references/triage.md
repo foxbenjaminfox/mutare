@@ -1,6 +1,8 @@
 # Triage: what a survivor says, and what kills it
 
-Each survivor in the human report is headed `file:line  [family, delivery]  SURVIVED`.
+Each survivor in the human report is headed `file:line:column  [family, delivery]  SURVIVED`.
+The column tells apart two mutants on one line whose change reads the same, such as
+the two `"id"` literals of `{"id", stored["id"]}` each emptied to `""`.
 The family says which kind of change survived. The delivery (`in-place` or
 `lifted`) records how Mutare embedded the mutant and says nothing about the test
 gap. For a family's exact swap table, run `mix mutare --explain <family>`; this page

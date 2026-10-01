@@ -225,7 +225,7 @@ defmodule Mutare.PatternClauseTest do
   test "renders a case-pattern swap as a focused one-line diff", %{sites: sites} do
     site = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.line == 4))
 
-    assert Report.header(site) == "cl.ex:4  [pattern_swap, in-place]  SURVIVED"
+    assert Report.header(site) == "cl.ex:4:7  [pattern_swap, in-place]  SURVIVED"
 
     assert Report.diff(site, @source) ==
              "-      {x, y} -> x - y\n+      {y, x} -> x - y"

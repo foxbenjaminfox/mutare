@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in place of igniter's default `~> 0.4`, which admits the next 0.x minor, where breaking
   changes land. `mix mutare.install` makes the rewrite, so it also applies to a hand-written
   `~> 0.4` (what this README used to suggest); any other requirement is left alone.
+- Human-readable output names a mutant's location as `file:line:column` rather than
+  `file:line`: survivor headers, ignored and harness-error lines, live progress, and the
+  `--dry-run` listing (`line:column`). Two mutants on one line whose change reads the
+  same — the two `"id"` literals of `{"id", stored["id"]}`, each emptied to `""` — are
+  no longer indistinguishable. `--line` accepts the `FILE:LINE:COLUMN` form and scopes
+  the whole line, so a location pasted from the report still works.
 
 ### Fixed
 

@@ -71,8 +71,27 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([], line: "weird:name.ex:9")[:only_lines] == [{"weird:name.ex", 9}]
     end
 
+    test "--line takes the report's FILE:LINE:COLUMN and scopes the whole line" do
+      assert Config.merge([], line: "lib/billing/invoice.ex:42:7")[:only_lines] ==
+               [{"lib/billing/invoice.ex", 42}]
+
+      assert Config.merge([], line: "weird:name.ex:9:3")[:only_lines] == [{"weird:name.ex", 9}]
+      assert Config.merge([], line: "weird:7:9")[:only_lines] == [{"weird", 7}]
+    end
+
     test "--line rejects a missing or non-integer line number" do
-      for bad <- ["lib/a.ex", "lib/a.ex:", "lib/a.ex:abc", "lib/a.ex:1.5", ":42", "lib/a.ex:0"] do
+      for bad <- [
+            "lib/a.ex",
+            "lib/a.ex:",
+            "lib/a.ex:abc",
+            "lib/a.ex:1.5",
+            ":42",
+            ":42:7",
+            "lib/a.ex:0",
+            "lib/a.ex:0:7",
+            "lib/a.ex:7:0",
+            "lib/a.ex:7:abc"
+          ] do
         assert_raise ArgumentError, ~r/--line expects FILE:LINE/, fn ->
           Config.merge([], line: bad)
         end

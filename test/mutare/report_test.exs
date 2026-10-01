@@ -68,12 +68,30 @@ defmodule Mutare.ReportTest do
                "+    (user_record.enabled and account_settings.active and notification_preferences.email_allowed) or user_record.age > 18"
   end
 
-  test "header/1 reads file:line and mutator metadata" do
-    assert Report.header(site(:>)) == "lib/billing.ex:3  [relational, in-place]  SURVIVED"
+  test "header/1 reads file:line:column and mutator metadata" do
+    assert Report.header(site(:>)) == "lib/billing.ex:3:5  [relational, in-place]  SURVIVED"
+  end
+
+  test "header/1 tells apart mutants a line's repeated text describes identically" do
+    source = """
+    defmodule Evidence do
+      def pair(stored), do: {"id", stored["id"]}
+    end
+    """
+
+    %{sites: sites} = Mutare.Transform.transform_string_with_sites(source, file: "e.ex")
+    emptied = Enum.filter(sites, &(&1.original_code == ~s("id") and &1.mutated_code == ~s("")))
+
+    assert Enum.map(emptied, &Site.describe/1) |> Enum.uniq() |> length() == 1
+
+    assert Enum.map(emptied, &Report.header/1) |> Enum.sort() == [
+             "e.ex:2:26  [string, in-place]  SURVIVED",
+             "e.ex:2:39  [string, in-place]  SURVIVED"
+           ]
   end
 
   test "header/1 labels a lifted mutant as lifted" do
-    assert Report.header(drop_site()) == "m.ex:2  [clause_drop, lifted]  SURVIVED"
+    assert Report.header(drop_site()) == "m.ex:2:3  [clause_drop, lifted]  SURVIVED"
   end
 
   test "diff/2 of a clause-drop shows every line of the clause as a deletion" do
@@ -489,7 +507,7 @@ defmodule Mutare.ReportTest do
 
     out = Report.render(results, sources)
 
-    assert out =~ "lib/billing.ex:3  [relational, in-place]  SURVIVED"
+    assert out =~ "lib/billing.ex:3:5  [relational, in-place]  SURVIVED"
     assert out =~ "-    total >= threshold\n+    total > threshold"
     assert out =~ "mutation score: 50.0%  (1 killed, 1 survived, 2 total)"
   end
@@ -517,7 +535,7 @@ defmodule Mutare.ReportTest do
 
   test "survivor/2 joins the header and diff with a single newline" do
     assert Report.survivor(site(:>), @source) ==
-             "lib/billing.ex:3  [relational, in-place]  SURVIVED\n" <>
+             "lib/billing.ex:3:5  [relational, in-place]  SURVIVED\n" <>
                "-    total >= threshold\n+    total > threshold"
   end
 

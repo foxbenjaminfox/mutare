@@ -442,6 +442,32 @@ defmodule Mutare.Site do
   end
 
   @doc """
+  Returns where a site is, as `file:line:column` — the compiler's diagnostic form, so an
+  editor or terminal can jump to it. The column tells apart two mutants a line's repeated
+  text would otherwise describe identically. A site with no column reads as `file:line`.
+
+      iex> Mutare.Site.location(%Mutare.Site{file: "lib/x.ex", line: 42, column: 7})
+      "lib/x.ex:42:7"
+
+      iex> Mutare.Site.location(%Mutare.Site{file: "lib/x.ex", line: 42})
+      "lib/x.ex:42"
+  """
+  @spec location(t()) :: String.t()
+  def location(%__MODULE__{file: file} = site), do: "#{file}:#{position(site)}"
+
+  @doc """
+  Returns a site's `line:column` within its file, or `line` when it has no column.
+
+      iex> Mutare.Site.position(%Mutare.Site{line: 42, column: 7})
+      "42:7"
+  """
+  @spec position(t()) :: String.t()
+  def position(%__MODULE__{line: line, column: column}) when is_integer(column),
+    do: "#{line}:#{column}"
+
+  def position(%__MODULE__{line: line}), do: "#{line}"
+
+  @doc """
   Returns a one-line description of a site.
 
       iex> Mutare.Site.describe(%Mutare.Site{

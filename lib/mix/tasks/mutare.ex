@@ -119,8 +119,8 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --line lib/billing/invoice.ex:42
                                           # only the mutants on that file:line — a
                                           #   narrow rerun, e.g. to recheck one
-                                          #   survivor (repeatable; FILE:LINE is the
-                                          #   exact prefix shown in the report)
+                                          #   survivor (repeatable; takes the report's
+                                          #   file:line:column too, scoping the line)
       mix mutare --mutators relational,arithmetic   # only some families (see above)
       mix mutare --skip-lifting MyApp.Mod.fun/2
                                           # keep one function in-place; no guard,

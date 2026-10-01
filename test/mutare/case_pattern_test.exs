@@ -220,7 +220,7 @@ defmodule Mutare.CasePatternTest do
   test "renders a case-pattern literal swap as a focused one-line diff", %{sites: sites} do
     site = Enum.find(sites, &(&1.mutator == :integer and &1.line == 4 and &1.mutated_code == "2"))
 
-    assert Report.header(site) == "cp.ex:4  [integer, in-place]  SURVIVED"
+    assert Report.header(site) == "cp.ex:4:7  [integer, in-place]  SURVIVED"
     assert Report.diff(site, @source) == "-      1 -> :one\n+      2 -> :one"
   end
 
@@ -231,7 +231,7 @@ defmodule Mutare.CasePatternTest do
         &(&1.mutator == :relational and &1.line == 5 and &1.mutated_code == "x >= 5")
       )
 
-    assert Report.header(site) == "cp.ex:5  [relational, in-place]  SURVIVED"
+    assert Report.header(site) == "cp.ex:5:14  [relational, in-place]  SURVIVED"
 
     assert Report.diff(site, @source) ==
              "-      x when x > 5 -> :big\n+      x when x >= 5 -> :big"

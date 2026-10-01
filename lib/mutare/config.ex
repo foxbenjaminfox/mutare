@@ -211,7 +211,7 @@ defmodule Mutare.Config do
   end
 
   # `--line FILE:LINE` scopes the run to the mutants on specific `file:line` locations —
-  # a narrow rerun (e.g. to recheck one survivor, whose `file:line` the report prints
+  # a narrow rerun (e.g. to recheck one survivor, whose location the report prints
   # verbatim). It is a **repeatable** flag (parsed `:keep`): each `--line` contributes one
   # `{file, line}` pair, accumulated into `:only_lines`. Absent leaves the key unset (no
   # line filter). `Mutare.Options` then validates the pairs; `Mutare.Schema` applies them.
@@ -222,19 +222,52 @@ defmodule Mutare.Config do
     end
   end
 
-  # `"lib/foo.ex:42"` → `{"lib/foo.ex", 42}`. Split on the *last* colon so a path may
-  # itself contain one; the trailing segment must be a positive integer line number.
-  # Anything else is a usage error, raised as an `ArgumentError` the Mix task surfaces
-  # as a clean failure (it rescues `Config.merge/2`).
+  # `"lib/foo.ex:42"` → `{"lib/foo.ex", 42}`, and so does `"lib/foo.ex:42:7"`: the report
+  # prints a mutant's location as `file:line:column`, and that location pasted back scopes
+  # its whole line. A path may itself contain a colon, so the number segments are read off
+  # the end — one is the line; two are line and column, since no source path ends in a bare
+  # integer. Anything else is a usage error, raised as an `ArgumentError` the Mix task
+  # surfaces as a clean failure (it rescues `Config.merge/2`).
   defp parse_line_spec(spec) do
-    with {file_parts, [line_str]} <- spec |> String.split(":") |> Enum.split(-1),
-         file when file != "" <- Enum.join(file_parts, ":"),
-         {line, ""} when line > 0 <- Integer.parse(line_str) do
+    segments = String.split(spec, ":")
+
+    with {file_parts, line} <- split_position(segments),
+         file when file != "" <- Enum.join(file_parts, ":") do
       {file, line}
     else
       _ ->
         raise ArgumentError,
-              "--line expects FILE:LINE (e.g. lib/foo.ex:42), got: #{inspect(spec)}"
+              "--line expects FILE:LINE or FILE:LINE:COLUMN (e.g. lib/foo.ex:42), " <>
+                "got: #{inspect(spec)}"
+    end
+  end
+
+  # The line number a `--line` spec ends in, with the path segments before it; `:error` when
+  # it ends in none. A digit-only segment before the last one is the line, and the last the
+  # column — no source path ends in such a segment — otherwise the last is the line.
+  defp split_position(segments) do
+    {file_parts, numbers} =
+      case Enum.split(segments, -2) do
+        {[_ | _] = file_parts, [line, column]} ->
+          if line =~ ~r/\A\d+\z/,
+            do: {file_parts, [line, column]},
+            else: {file_parts ++ [line], [column]}
+
+        _ ->
+          Enum.split(segments, -1)
+      end
+
+    case Enum.map(numbers, &positive/1) do
+      [{:ok, line}] -> {file_parts, line}
+      [{:ok, line}, {:ok, _column}] -> {file_parts, line}
+      _ -> :error
+    end
+  end
+
+  defp positive(text) do
+    case Integer.parse(text) do
+      {n, ""} when n > 0 -> {:ok, n}
+      _ -> :error
     end
   end
 

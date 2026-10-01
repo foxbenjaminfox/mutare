@@ -56,7 +56,7 @@ defmodule Mutare.Runner.MutantRun do
       # A failed probe has the explicit :run_all variant. A selective result is total;
       # a missing id contradicts that internal contract rather than expressing uncertainty.
       :error ->
-        raise "selective coverage missed mutant ##{site.id} (#{site.file}:#{site.line})"
+        raise "selective coverage missed mutant ##{site.id} (#{Site.location(site)})"
     end
   end
 
@@ -279,8 +279,8 @@ defmodule Mutare.Runner.MutantRun do
     )
   end
 
-  # The `file:line: mutant id` prefix shared by the warnings above.
-  defp site_ref(%Site{} = site), do: "#{site.file}:#{site.line}: mutant #{site.id}"
+  # The `file:line:column: mutant id` prefix shared by the warnings above.
+  defp site_ref(%Site{} = site), do: "#{Site.location(site)}: mutant #{site.id}"
 
   # Map a run's typed outcome (decoded by `Mutare.Sandbox.Command`, which owns the
   # exit-code contract) onto a result status. A `:harness_error` — the suite never
