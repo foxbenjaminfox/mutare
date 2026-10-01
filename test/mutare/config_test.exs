@@ -71,12 +71,20 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([], line: "weird:name.ex:9")[:only_lines] == [{"weird:name.ex", 9}]
     end
 
-    test "--line takes the report's FILE:LINE:COLUMN and scopes the whole line" do
+    test "--line takes the report's FILE:LINE:COLUMN as a position on the line" do
       assert Config.merge([], line: "lib/billing/invoice.ex:42:7")[:only_lines] ==
-               [{"lib/billing/invoice.ex", 42}]
+               [{"lib/billing/invoice.ex", 42, 7}]
 
-      assert Config.merge([], line: "weird:name.ex:9:3")[:only_lines] == [{"weird:name.ex", 9}]
-      assert Config.merge([], line: "weird:7:9")[:only_lines] == [{"weird", 7}]
+      assert Config.merge([], line: "weird:name.ex:9:3")[:only_lines] ==
+               [{"weird:name.ex", 9, 3}]
+
+      assert Config.merge([], line: "weird:7:9")[:only_lines] == [{"weird", 7, 9}]
+
+      # A non-numeric segment before the last makes the last the line, not a column.
+      assert Config.merge([], line: "weird:x:9")[:only_lines] == [{"weird:x", 9}]
+
+      assert Config.merge([], line: "lib/a.ex:3", line: "lib/a.ex:4:5")[:only_lines] ==
+               [{"lib/a.ex", 3}, {"lib/a.ex", 4, 5}]
     end
 
     test "--line rejects a missing or non-integer line number" do
@@ -554,6 +562,12 @@ defmodule Mutare.ConfigTest do
 
       assert Config.merge([], [since: "HEAD", line: "lib/a.ex:2"], repo)[:only_lines] ==
                MapSet.new([{"lib/a.ex", 2}])
+    end
+
+    test "keeps a FILE:LINE:COLUMN entry whose line changed, column and all", %{repo: repo} do
+      flags = [since: "HEAD", line: "lib/a.ex:2:14", line: "lib/a.ex:3:14"]
+
+      assert Config.merge([], flags, repo)[:only_lines] == MapSet.new([{"lib/a.ex", 2, 14}])
     end
 
     test "narrows a .mutare.exs only_lines: filter the same way", %{repo: repo} do

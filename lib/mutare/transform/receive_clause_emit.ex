@@ -39,7 +39,7 @@ defmodule Mutare.Transform.ReceiveClauseEmit do
     # Claim in discovery order, including whole-node custom offers and any enclosing
     # condition/return candidates. Split only after reserving the original ids.
     {claimed, ctx} =
-      SelectorEmit.claim_items(candidates, ctx, {&Delivery.site/4, &Delivery.line/1}, fn id, c ->
+      SelectorEmit.claim_items(candidates, ctx, Delivery.site_fns(), fn id, c ->
         {id, c}
       end)
 

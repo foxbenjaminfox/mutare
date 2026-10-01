@@ -36,7 +36,7 @@ defmodule Mutare.Transform.ClauseGuardEmit do
       if deliverable?(ctx), do: candidates, else: Enum.reject(candidates, &clause_guard?/1)
 
     {claimed, ctx} =
-      SelectorEmit.claim_items(candidates, ctx, {&Delivery.site/4, &Delivery.line/1}, fn id, c ->
+      SelectorEmit.claim_items(candidates, ctx, Delivery.site_fns(), fn id, c ->
         {id, c}
       end)
 

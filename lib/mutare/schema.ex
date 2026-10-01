@@ -81,7 +81,7 @@ defmodule Mutare.Schema do
   thrown away on every healthy run.
   """
 
-  alias Mutare.{Ignore, Lifting, Options, Site}
+  alias Mutare.{Ignore, Lifting, LineScope, Options, Site}
   alias Mutare.Ignore.Directive
   alias Mutare.Run.Context
   alias Mutare.Transform.{ConfigMatches, CountReport}
@@ -167,8 +167,8 @@ defmodule Mutare.Schema do
     * `:paths` — directories to scan recursively, or individual `.ex` files.
     * `:exclude` — wildcard patterns to drop.
     * `:only_files` — an explicit root-relative file set, such as `--since`.
-    * `:only_lines` — `file:line` filters, such as `--line`; discovery is
-      narrowed to the named files, then `from_files/4` filters the sites.
+    * `:only_lines` — `file:line` and `file:line:column` filters, such as `--line`;
+      discovery is narrowed to the named files, then `from_files/4` filters the sites.
     * `:mutators` — forwarded to `Mutare.Transform`.
     * `:max_mutants` — caps the final schema to the first N sites; see
       `from_files/4`.
@@ -225,7 +225,7 @@ defmodule Mutare.Schema do
   defp restrict(files, _root, nil), do: files
   defp restrict(files, root, only), do: Enum.filter(files, &(relative(&1, root) in only))
 
-  # When `--line FILE:LINE` scopes the run to specific `file:line` sites, only those
+  # When `--line` scopes the run to specific `file:line` sites, only those
   # files need transforming — narrowing discovery to them keeps the metamutant small
   # and the one compile fast (the same "compile only what we run" the `--only <file>`
   # form gives). `nil` (no `--line`) leaves the file set untouched. The per-line site
@@ -233,7 +233,7 @@ defmodule Mutare.Schema do
   defp restrict_to_line_files(files, _root, nil), do: files
 
   defp restrict_to_line_files(files, root, only_lines) do
-    line_files = MapSet.new(only_lines, fn {file, _line} -> file end)
+    line_files = LineScope.files(only_lines)
     Enum.filter(files, &(relative(&1, root) in line_files))
   end
 
@@ -250,7 +250,8 @@ defmodule Mutare.Schema do
   `Mutare.Poison.attribution/4` reports them, whose uninstrumented copy is left out. It
   changes no id and no site.
 
-  `:only_lines` filters the finished sites to the requested `file:line` pairs.
+  `:only_lines` filters the finished sites to the requested `file:line` lines and
+  `file:line:column` positions.
   `:max_mutants` then caps those sites in source order. Both filters are applied
   here so poison recovery can rebuild from the same inputs and still return the
   same visible slice. Every candidate reserves its id, including skipped ids,
@@ -409,13 +410,8 @@ defmodule Mutare.Schema do
   # two passes count identically; `:start_id`/`:skip_ids` are omitted because the count is
   # independent of both (a skipped id still advances the counter).
   defp count_opts(%Options{} = options, rel) do
-    lines =
-      if options.only_lines do
-        for {^rel, line} <- options.only_lines, into: MapSet.new(), do: line
-      end
-
     # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
-    transform_opts(options) ++ [file: rel, selection_lines: lines]
+    transform_opts(options) ++ [file: rel, selection: options.only_lines]
   end
 
   # The mutant count a file contributes to the running `:on_scan` tally (0 for a skipped
@@ -885,17 +881,19 @@ defmodule Mutare.Schema do
   defp limit(%__MODULE__{sites: sites} = schema, max) when is_integer(max) and max > 0,
     do: %{schema | sites: Enum.take(sites, max)}
 
-  # Keep only the sites on an explicitly named `file:line` (`--line`). `nil` keeps
-  # every site. Applied here — inside *every* `from_files/4` — so a poison rebuild
-  # reapplies it, exactly like `limit/2` (`--max-mutants`). The count pass records
-  # matching local ids so emission applies the same selection before rendering.
-  # A site's `{file, line}`
-  # is its recorded original location (`file:line` as the report prints it), so a
-  # filter copied from a survivor header matches.
+  # Keep only the sites on an explicitly named `file:line` or `file:line:column` (`--line`).
+  # `nil` keeps every site. Applied here — inside *every* `from_files/4` — so a poison rebuild
+  # reapplies it, exactly like `limit/2` (`--max-mutants`). The count pass records matching
+  # local ids by the same `LineScope.selects?/4`, so emission applies the same selection
+  # before rendering. A site's line and column are its recorded original location (as the
+  # report prints it), so a filter copied from a survivor header matches.
   defp restrict_lines(%__MODULE__{} = schema, nil), do: schema
 
   defp restrict_lines(%__MODULE__{sites: sites} = schema, only_lines),
-    do: %{schema | sites: Enum.filter(sites, &MapSet.member?(only_lines, {&1.file, &1.line}))}
+    do: %{
+      schema
+      | sites: Enum.filter(sites, &LineScope.selects?(only_lines, &1.file, &1.line, &1.column))
+    }
 
   defp discover(root, paths, exclude) do
     excluded = Enum.flat_map(exclude, &Path.wildcard(Path.join(root, &1)))

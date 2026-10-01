@@ -8,8 +8,8 @@ defmodule Mutare.Transform.CountReport do
   #
   #   * `mutants` — the number of ids the render would claim (`next_id - start_id`, drift-proof
   #     by construction — same claim path, no `Mutare.Site` built).
-  #   * `selected_ids` — under a `:selection_lines` filter, the *local* ids whose site would land
-  #     on a selected line (in claim order), else `nil`.
+  #   * `selected_ids` — under a `:selection` filter, the *local* ids whose site would land
+  #     on a selected line or position (in claim order), else `nil`.
   #   * `matches` — the configured entries this source reached (`Mutare.Transform.ConfigMatches`),
   #     for the ineffective-configuration diagnostic.
   #   * `directives` — the file's `Mutare.Ignore.Directives` container (the directives, the

@@ -224,7 +224,7 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
         assert site.mutated_code == ""
         assert site.variant == ["drop"]
         assert site.range.start[:line] == 2
-        assert site.line == Delivery.line(candidate)
+        assert {site.line, site.column} == Delivery.position(candidate)
         assert site.line == 1
       end
     end

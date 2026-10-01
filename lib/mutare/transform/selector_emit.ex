@@ -14,7 +14,7 @@ defmodule Mutare.Transform.SelectorEmit do
 
   Ignored, unselected, and poison-skipped ids still advance and record a site, but emit no artifact.
 
-  `site_fns` is the `{site_fn, line_fn}` pair `Mutare.Transform.ClaimState` needs: one builds
+  `site_fns` is the `{site_fn, position_fn}` pair `Mutare.Transform.ClaimState` needs: one builds
   the recorded `Mutare.Site`, the other answers only *where* it would be recorded, for the count
   pass's `--line` test (which must not build a `Site` — see `ClaimState`).
   """
@@ -22,7 +22,7 @@ defmodule Mutare.Transform.SelectorEmit do
           [item],
           Ctx.t(),
           {(pos_integer(), item, String.t(), {boolean(), boolean()} -> Site.t()),
-           (item -> pos_integer() | nil)},
+           (item -> {pos_integer(), pos_integer() | nil} | nil)},
           (pos_integer(), item -> artifact)
         ) :: {[artifact], Ctx.t()}
         when item: term(), artifact: term()

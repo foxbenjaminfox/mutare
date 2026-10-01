@@ -29,7 +29,9 @@ defmodule Mutare.Options do
           extensions: [Mutare.Extension.Spec.t()],
           expand_uses: boolean(),
           only_files: MapSet.t() | nil,
-          only_lines: MapSet.t() | nil,
+          only_lines:
+            MapSet.t({String.t(), pos_integer()} | {String.t(), pos_integer(), pos_integer()})
+            | nil,
           test_selection: :tests | :coverage | :full,
           workers: pos_integer(),
           schedulers: pos_integer() | :all,

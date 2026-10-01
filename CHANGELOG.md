@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The JSON report gives each mutant a `position` (`{line, column}`) beside the schema's
+  `location`: where the mutant is keyed, as the human report prints it and `--line`
+  selects it; its line is the one `# mutare:ignore` reads. `location` is the span its `replacement` patches, and the
+  two differ for a mutant that must patch more than it changes — removing a pipe stage
+  rewrites the whole pipe but is positioned at the stage.
+
 ### Changed
 
 - `mix igniter.install mutare` now writes the installed version (`~> 0.4.3`) for `:mutare`
@@ -17,8 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `file:line`: survivor headers, ignored and harness-error lines, live progress, and the
   `--dry-run` listing (`line:column`). Two mutants on one line whose change reads the
   same — the two `"id"` literals of `{"id", stored["id"]}`, each emptied to `""` — are
-  no longer indistinguishable. `--line` accepts the `FILE:LINE:COLUMN` form and scopes
-  the whole line, so a location pasted from the report still works.
+  no longer indistinguishable. `--line` accepts the `FILE:LINE:COLUMN` form, which
+  selects the mutants positioned there, so a location pasted from the report reruns that
+  mutant; `FILE:LINE` still selects the whole line. A column narrows rather than names:
+  nested expressions that start at one character share it (`x + 1 >= y` puts the `+`
+  and the `>=` mutants at the column of `x`).
 
 ### Fixed
 

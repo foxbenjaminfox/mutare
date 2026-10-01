@@ -88,8 +88,9 @@ you a batch to fix without paying for a full run. After fixing, recheck those li
 
     mix mutare --line lib/billing/invoice.ex:42 --line lib/billing/invoice.ex:57
 
-`--line FILE:LINE` accepts the exact `file:line:column` location the report prints
-(scoping its whole line), can be repeated, and recompiles only the named files. Finish with an unrestricted run over
+`--line FILE:LINE` selects a whole line. The exact `file:line:column` the report prints
+selects only the mutants at that position, though nested expressions that start at the
+same character share it. The flag can be repeated, and it recompiles only the named files. Finish with an unrestricted run over
 the module to see where it stands.
 
 ### Surveying a project

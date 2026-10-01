@@ -32,7 +32,7 @@ defmodule Mutare.IgnoreEmissionTest do
     end
     """
 
-    opts = [mutators: [CountedVariant], selection_lines: MapSet.new([2])]
+    opts = [mutators: [CountedVariant], selection: MapSet.new([{"nofile", 2}])]
     assert %{mutants: 1, selected_ids: [1]} = Transform.count_report(source, opts)
     refute_received :variant_called
 

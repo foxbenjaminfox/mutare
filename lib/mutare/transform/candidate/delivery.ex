@@ -242,7 +242,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
   @doc """
   The source range a claimed candidate's `Mutare.Site` records.
 
-  One home for the choice, so `line/1` cannot drift from what `site/4` ends up recording: an
+  One home for the choice, so `position/1` cannot drift from what `site/4` ends up recording: an
   in-place candidate carrying a producing mutator's report-location override is attributed to
   the named clause, everything else to its own offered node.
   """
@@ -252,19 +252,20 @@ defmodule Mutare.Transform.Candidate.Delivery do
   def range(candidate), do: candidate.range
 
   @doc """
-  The line `site/4` would record, without building the `Mutare.Site`.
+  The `{line, column}` `site/4` would record, without building the `Mutare.Site`.
 
   `Mutare.Transform.ClaimState` uses it during the **count** pass to test a candidate against a
   `--line`/`--since` selection. The count sink builds no `Site`: building one would call the
   producing mutator's `c:Mutare.Mutator.variant/2` callback a second time just to check a
-  line number.
+  location.
   """
-  @spec line(Candidate.t()) :: pos_integer() | nil
-  def line(%{report: %Report{position: [_ | _] = position}}), do: position[:line]
+  @spec position(Candidate.t()) :: {pos_integer(), pos_integer() | nil} | nil
+  def position(%{report: %Report{position: [_ | _] = position}}),
+    do: {position[:line], position[:column]}
 
-  def line(candidate) do
+  def position(candidate) do
     case range(candidate) do
-      %{start: start} -> start[:line]
+      %{start: start} -> {start[:line], start[:column]}
       _ -> nil
     end
   end
@@ -282,6 +283,15 @@ defmodule Mutare.Transform.Candidate.Delivery do
     {_route, site_kind, _branch_field} = profile(candidate)
     build_site(site_kind, id, candidate, file, flags)
   end
+
+  @doc """
+  The `{site/4, position/1}` pair `Mutare.Transform.SelectorEmit.claim_items/4` takes for
+  claiming candidates.
+  """
+  @spec site_fns() ::
+          {(pos_integer(), Candidate.t(), String.t(), {boolean(), boolean()} -> Site.t()),
+           (Candidate.t() -> {pos_integer(), pos_integer() | nil} | nil)}
+  def site_fns, do: {&site/4, &position/1}
 
   @doc """
   A candidate's delivery route: a node-local `t:node_route/0`, or `:lifted` / `:hosted` for the

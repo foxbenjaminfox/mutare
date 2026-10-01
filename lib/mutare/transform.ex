@@ -389,8 +389,7 @@ defmodule Mutare.Transform do
 
     %CountReport{
       mutants: ClaimState.total(ctx.claim),
-      selected_ids:
-        if(ctx.claim.selection_lines, do: Enum.reverse(ctx.claim.selected_ids), else: nil),
+      selected_ids: if(ctx.claim.selection, do: Enum.reverse(ctx.claim.selected_ids), else: nil),
       matches: ctx.matches,
       directives: ctx.config.ignore_directives,
       degraded_uses: ctx.degraded_uses
@@ -598,7 +597,7 @@ defmodule Mutare.Transform do
       scope: %Scope{analysis_env: analysis_env(config, MapSet.new())},
       claim: %ClaimState{
         sink: Keyword.get(opts, :sink, :render),
-        selection_lines: Keyword.get(opts, :selection_lines),
+        selection: Keyword.get(opts, :selection),
         next_id: Keyword.get(opts, :start_id, 1)
       }
     }
@@ -1142,7 +1141,7 @@ defmodule Mutare.Transform do
       SelectorEmit.claim_items(
         FunctionPlan.candidates(plan),
         ctx,
-        {&Delivery.site/4, &Delivery.line/1},
+        Delivery.site_fns(),
         fn id, candidate ->
           variant =
             plan |> FunctionPlan.variant(candidate) |> own_clause_unless_built_in(plan, candidate)
@@ -1376,8 +1375,7 @@ defmodule Mutare.Transform do
     # around the closure instead. `Mutare.Transform.SelectorDelivery` decides and places; every other
     # node is one selector.
     {claimed, ctx} =
-      SelectorEmit.claim_items(candidates, ctx, {&Delivery.site/4, &Delivery.line/1}, fn id,
-                                                                                         candidate ->
+      SelectorEmit.claim_items(candidates, ctx, Delivery.site_fns(), fn id, candidate ->
         {id, candidate}
       end)
 

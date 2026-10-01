@@ -13,7 +13,7 @@ defmodule Mutare.Config do
   translations in `merge/2`).
   """
 
-  alias Mutare.{Changes, Lifting}
+  alias Mutare.{Changes, Lifting, LineScope}
   alias Mutare.Options.Registry
 
   @doc "Load `.mutare.exs` from `root`, or `[]` when it is absent."
@@ -42,7 +42,7 @@ defmodule Mutare.Config do
   The recognised flags and what they mean are documented for users in the
   `Mix.Tasks.Mutare` moduledoc — this is the translation layer, so it records only the
   mappings that aren't a 1:1 rename: a repeatable `--only` accumulates into `:paths`
-  (each a directory or single `.ex` file, in order), `--line FILE:LINE` into
+  (each a directory or single `.ex` file, in order), `--line FILE:LINE[:COLUMN]` into
   `:only_lines`, which `--since REF` then narrows to the lines changed versus that git
   ref (intersecting an explicit `--line` or file filter rather than replacing it),
   `--skip-lifting Module.fun/arity` into `:skip_lifting`, `--skip-call
@@ -210,11 +210,12 @@ defmodule Mutare.Config do
     Enum.find([:builtins | Mutare.Mutators.families()], &(Atom.to_string(&1) == name))
   end
 
-  # `--line FILE:LINE` scopes the run to the mutants on specific `file:line` locations —
-  # a narrow rerun (e.g. to recheck one survivor, whose location the report prints
-  # verbatim). It is a **repeatable** flag (parsed `:keep`): each `--line` contributes one
-  # `{file, line}` pair, accumulated into `:only_lines`. Absent leaves the key unset (no
-  # line filter). `Mutare.Options` then validates the pairs; `Mutare.Schema` applies them.
+  # `--line FILE:LINE[:COLUMN]` scopes the run to the mutants on specific `file:line` or
+  # `file:line:column` locations — a narrow rerun (e.g. to recheck one survivor, whose
+  # location the report prints verbatim). It is a **repeatable** flag (parsed `:keep`): each
+  # `--line` contributes one `{file, line}` or `{file, line, column}` entry, accumulated into
+  # `:only_lines`. Absent leaves the key unset (no line filter). `Mutare.Options` then
+  # validates the entries; `Mutare.Schema` applies them.
   defp parse_lines(flags) do
     case Keyword.get_values(flags, :line) do
       [] -> nil
@@ -222,18 +223,22 @@ defmodule Mutare.Config do
     end
   end
 
-  # `"lib/foo.ex:42"` → `{"lib/foo.ex", 42}`, and so does `"lib/foo.ex:42:7"`: the report
-  # prints a mutant's location as `file:line:column`, and that location pasted back scopes
-  # its whole line. A path may itself contain a colon, so the number segments are read off
-  # the end — one is the line; two are line and column, since no source path ends in a bare
-  # integer. Anything else is a usage error, raised as an `ArgumentError` the Mix task
-  # surfaces as a clean failure (it rescues `Config.merge/2`).
+  # `"lib/foo.ex:42"` → `{"lib/foo.ex", 42}`, the whole line; `"lib/foo.ex:42:7"` →
+  # `{"lib/foo.ex", 42, 7}`, the mutants keyed at that position — the report prints a mutant's
+  # location as `file:line:column`, so that location pasted back selects it. A path may itself
+  # contain a colon, so the number segments are read off the end — one is the line; two are
+  # line and column, since no source path ends in a bare integer. Anything else is a usage
+  # error, raised as an `ArgumentError` the Mix task surfaces as a clean failure (it rescues
+  # `Config.merge/2`).
   defp parse_line_spec(spec) do
     segments = String.split(spec, ":")
 
-    with {file_parts, line} <- split_position(segments),
+    with {file_parts, position} <- split_position(segments),
          file when file != "" <- Enum.join(file_parts, ":") do
-      {file, line}
+      case position do
+        {line, column} -> {file, line, column}
+        line -> {file, line}
+      end
     else
       _ ->
         raise ArgumentError,
@@ -242,9 +247,10 @@ defmodule Mutare.Config do
     end
   end
 
-  # The line number a `--line` spec ends in, with the path segments before it; `:error` when
-  # it ends in none. A digit-only segment before the last one is the line, and the last the
-  # column — no source path ends in such a segment — otherwise the last is the line.
+  # The line number a `--line` spec ends in — or its `{line, column}`, when it ends in both —
+  # with the path segments before it; `:error` when it ends in none. A digit-only segment
+  # before the last one is the line, and the last the column — no source path ends in such a
+  # segment — otherwise the last is the line.
   defp split_position(segments) do
     {file_parts, numbers} =
       case Enum.split(segments, -2) do
@@ -259,7 +265,7 @@ defmodule Mutare.Config do
 
     case Enum.map(numbers, &positive/1) do
       [{:ok, line}] -> {file_parts, line}
-      [{:ok, line}, {:ok, _column}] -> {file_parts, line}
+      [{:ok, line}, {:ok, column}] -> {file_parts, {line, column}}
       _ -> :error
     end
   end
@@ -274,10 +280,10 @@ defmodule Mutare.Config do
   # `--since <ref>` restricts mutation to the lines changed versus that git ref — the same
   # `:only_lines` site filter `--line` uses — so a one-line edit to a large module mutates
   # only that line, not the whole file. An `:only_lines` filter already present (a `--line`,
-  # or the file's) is *narrowed* by intersection rather than replaced, after the registry's
-  # own validation of it, so a malformed entry fails with the registry's message rather than
-  # a `MapSet` crash here. A ref git can't resolve is a usage error, raised as an
-  # `ArgumentError` like the other flag mistakes.
+  # or the file's) is *narrowed* rather than replaced: it keeps the entries on a changed line,
+  # a `file:line:column` one included. The registry validates it first, so a malformed entry
+  # fails with the registry's message rather than a crash here. A ref git can't resolve is a
+  # usage error, raised as an `ArgumentError` like the other flag mistakes.
   defp scope_to_changes(config, flags, root) do
     case flags[:since] do
       nil ->
@@ -289,7 +295,7 @@ defmodule Mutare.Config do
             only_lines =
               case Registry.validate!(:only_lines, config[:only_lines]) do
                 nil -> changed
-                requested -> MapSet.intersection(requested, changed)
+                requested -> LineScope.within_lines(requested, changed)
               end
 
             Keyword.put(config, :only_lines, only_lines)

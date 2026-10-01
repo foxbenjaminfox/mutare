@@ -64,13 +64,10 @@ defmodule Mutare.Transform.HostedEmit do
   # (the earlier host's selector, if any, stays where its splice put it).
   defp weave_target(node, %Candidate.Hosted{} = cand, prior, ctx) do
     # Each logical replacement already carries its validated report attribution.
-    # Claiming through Delivery keeps suppression and line selection identical to
-    # ordinary replacements; only the branch wrapping and splice are host-specific.
-    carriers = Enum.map(cand.mutants, &{cand, &1})
-
+    # Claiming through Delivery keeps suppression, position and deletion handling identical
+    # to ordinary replacements; only the branch wrapping and splice are host-specific.
     {clauses, ctx} =
-      SelectorEmit.claim_items(carriers, ctx, {&hosted_site/4, &hosted_line/1}, fn id,
-                                                                                   {_cand, result} ->
+      SelectorEmit.claim_items(cand.mutants, ctx, Delivery.site_fns(), fn id, result ->
         {:->, [], [[id], cand.wrap.(result.mutated)]}
       end)
 
@@ -124,11 +121,4 @@ defmodule Mutare.Transform.HostedEmit do
   # selector (`extend/4`) instead of reverting to the raw original and erasing the earlier ids.
   defp target_key(%Candidate.Hosted{range: report_range, original: original}),
     do: {NodeRange.get(original) || report_range, original}
-
-  # Report each logical mutation through the same attribution, line and deletion
-  # handling as an ordinary replacement. The target's wrap/splice affects delivery only.
-  defp hosted_line({_target, mutation}), do: Delivery.line(mutation)
-
-  defp hosted_site(id, {_target, mutation}, file, flags),
-    do: Delivery.site(id, mutation, file, flags)
 end

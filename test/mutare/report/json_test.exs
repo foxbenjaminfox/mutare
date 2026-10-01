@@ -80,6 +80,53 @@ defmodule Mutare.Report.JsonTest do
              "start" => %{"line" => 3, "column" => 5},
              "end" => %{"line" => 3, "column" => 11}
            }
+
+    assert mutant["position"] == %{"line" => 3, "column" => 5}
+  end
+
+  test "position is where the mutant is keyed; location is the span its replacement patches" do
+    # Removing the middle stage rewrites the whole pipe, so its patch starts at `xs` (line 3);
+    # the mutant is keyed at the removed stage call (5:8), as the human report prints it.
+    source = """
+    defmodule Chain do
+      def run(xs) do
+        xs
+        |> Enum.map(&(&1 * 2))
+        |> Enum.uniq()
+      end
+    end
+    """
+
+    [removal] =
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "lib/a.ex",
+        mutators: [Mutare.Mutators.CallRemoval]
+      ).sites
+
+    [mutant] =
+      decode([%Result{site: removal, status: :survived}], %{"lib/a.ex" => source})["files"][
+        "lib/a.ex"
+      ]["mutants"]
+
+    assert mutant["location"]["start"] == %{"line" => 3, "column" => 5}
+    assert mutant["position"] == %{"line" => 5, "column" => 8}
+    assert Mutare.Site.location(removal) == "lib/a.ex:5:8"
+  end
+
+  test "position omits a missing column, and is absent with no line" do
+    [with_line] =
+      decode([%{result(:survived) | site: %{site(1, []) | column: nil}}])["files"]["lib/a.ex"][
+        "mutants"
+      ]
+
+    assert with_line["position"] == %{"line" => 3}
+
+    [bare] =
+      decode([%{result(:survived) | site: %{site(1, []) | line: nil, column: nil}}])["files"][
+        "lib/a.ex"
+      ]["mutants"]
+
+    refute Map.has_key?(bare, "position")
   end
 
   test "maps every Mutare status onto the schema's MutantStatus vocabulary" do

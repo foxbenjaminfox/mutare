@@ -665,6 +665,11 @@ defmodule Mutare.OptionsTest do
       assert Options.new(only_lines: [{"lib/a.ex", 42}]).only_lines == set
     end
 
+    test "accepts {file, line, column} entries beside {file, line} ones" do
+      entries = [{"lib/a.ex", 42}, {"lib/a.ex", 43, 7}]
+      assert Options.new(only_lines: entries).only_lines == MapSet.new(entries)
+    end
+
     test "rejects a non-list/non-MapSet shape" do
       assert_raise ArgumentError, ~r/:only_lines must be a MapSet/, fn ->
         Options.new(only_lines: "lib/a.ex:42")
@@ -672,7 +677,19 @@ defmodule Mutare.OptionsTest do
     end
 
     test "rejects entries that are not {path, positive integer}" do
-      for bad <- [{"lib/a.ex", 0}, {"lib/a.ex", -1}, {"lib/a.ex", "42"}, {42, 1}, {"", 1}, :nope] do
+      for bad <- [
+            {"lib/a.ex", 0},
+            {"lib/a.ex", -1},
+            {"lib/a.ex", "42"},
+            {42, 1},
+            {"", 1},
+            :nope,
+            {"lib/a.ex", 1, 0},
+            {"lib/a.ex", 0, 1},
+            {"lib/a.ex", 1, "7"},
+            {"", 1, 1},
+            {"lib/a.ex", 1, 2, 3}
+          ] do
         assert_raise ArgumentError, ~r/:only_lines entries must be/, fn ->
           Options.new(only_lines: [bad])
         end
@@ -681,8 +698,9 @@ defmodule Mutare.OptionsTest do
 
     test "entry errors state both path and line requirements in order" do
       assert_raise ArgumentError,
-                   ":only_lines entries must be {file, line} with a non-empty path string and a " <>
-                     "positive integer line, got: {\"lib/a.ex\", 0}",
+                   ":only_lines entries must be {file, line} or {file, line, column} with a " <>
+                     "non-empty path string and a positive integer line and column, got: " <>
+                     "{\"lib/a.ex\", 0}",
                    fn ->
                      Options.new(only_lines: [{"lib/a.ex", 0}])
                    end

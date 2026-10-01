@@ -335,6 +335,57 @@ defmodule Mutare.SchemaTest do
     assert Schema.build(root, mutators: mutators, only_lines: select.(3)).sites == []
   end
 
+  test "a file:line:column entry keeps the mutants keyed at that position, and emits only them",
+       %{root: root} do
+    # Line 2: `x + 1` and the whole comparison both start at column 20; `y - 2` at 29.
+    write(
+      root,
+      "lib/a.ex",
+      "defmodule A do\n  def f(x, y), do: x + 1 >= y - 2\n  def g(a), do: a * 3\nend\n"
+    )
+
+    scoped = fn entries ->
+      schema = Schema.build(root, mutators: @probe, only_lines: MapSet.new(entries))
+      assert emitted_ids(schema) == Enum.map(schema.sites, & &1.id)
+      Enum.map(schema.sites, &{&1.line, &1.column, &1.mutated_code})
+    end
+
+    assert scoped.([{"lib/a.ex", 2, 29}]) == [{2, 29, "y + 2"}]
+
+    assert scoped.([{"lib/a.ex", 2, 20}]) == [
+             {2, 20, "x - 1"},
+             {2, 20, "x + 1 > y - 2"},
+             {2, 20, "x + 1 <= y - 2"}
+           ]
+
+    # A whole line and a position combine as a union; a column nothing is keyed at selects nothing.
+    assert scoped.([{"lib/a.ex", 2, 29}, {"lib/a.ex", 3}]) == [{2, 29, "y + 2"}, {3, 17, "a / 3"}]
+    assert scoped.([{"lib/a.ex", 2, 21}]) == []
+  end
+
+  test "a file:line:column entry selects a whole-pipe mutant at its stage, not its patch start",
+       %{root: root} do
+    write(root, "lib/a.ex", """
+    defmodule StageLine do
+      def f(xs, ys) do
+        xs
+        |> Enum.uniq()
+        |> Kernel.--(ys)
+      end
+    end
+    """)
+
+    mutators = [Mutare.Mutators.OperandSwap, Mutare.Mutators.CallRemoval]
+    select = fn line, column -> MapSet.new([{"lib/a.ex", line, column}]) end
+
+    at_stage = Schema.build(root, mutators: mutators, only_lines: select.(5, 8))
+
+    assert [%{mutator: :operand_swap, range: %{start: [line: 3, column: 5]}}] = at_stage.sites
+    assert emitted_ids(at_stage) == Enum.map(at_stage.sites, & &1.id)
+
+    assert Schema.build(root, mutators: mutators, only_lines: select.(3, 5)).sites == []
+  end
+
   test "withheld lifted functions collapse while selected siblings retain their selectors",
        %{root: root} do
     write(root, "lib/a.ex", """
@@ -419,6 +470,42 @@ defmodule Mutare.SchemaTest do
     assert focused.sites == Enum.filter(full.sites, &(&1.line == 6))
     assert emitted_ids(focused) == [id]
     refute focused.metamutants["lib/a.ex"] =~ "where: :mutated"
+  end
+
+  test "position selection follows a custom mutation's attribution rather than its carrier node",
+       %{root: root} do
+    write(root, "lib/a.ex", """
+    defmodule FocusedAttributedPosition do
+      import Mutare.Test.QueryDSL
+      def run(y) do
+        query(
+          where: 1 == y,
+          select: 2
+        )
+      end
+    end
+    """)
+
+    mutators = [Mutare.Test.AttributedQueryMutator]
+    full = Schema.build(root, mutators: mutators)
+
+    focused = fn line, column ->
+      schema =
+        Schema.build(root,
+          mutators: mutators,
+          only_lines: MapSet.new([{"lib/a.ex", line, column}])
+        )
+
+      assert emitted_ids(schema) == Enum.map(schema.sites, & &1.id)
+      schema.sites
+    end
+
+    # Each mutant is keyed at its attributed clause (`5:14`, `6:7`), not at the `query(` (`4:5`)
+    # whose rewrite the metamutant splices.
+    assert [%{line: 5, column: 14, operation: :replace}] = where = focused.(5, 14)
+    assert [%{line: 6, column: 7, operation: :delete}] = select = focused.(6, 7)
+    assert where ++ select == full.sites
+    assert focused.(4, 5) == []
   end
 
   test "hosted fragments keep selected ids and an exact poison hole", %{root: root} do

@@ -7186,6 +7186,7 @@ re-checking a single result the report named — you killed (or want to recheck)
 survivor and don't want to pay for a full run to confirm it. The report prints a
 location as `file:line:column` (`lib/x.ex:42:7  [relational, …]  SURVIVED`), and
 `--line` accepts that form too, so you copy-paste the location straight from the report.
+`FILE:LINE` selects the line; `FILE:LINE:COLUMN` selects the mutants positioned there.
 (The column came later: two mutants on one line can describe themselves identically —
 `{"id", stored["id"]}` with either `"id"` emptied — and without it a killed one and a
 survivor read the same. `Mutare.Site.location/1` is the one formatter.)
@@ -7204,10 +7205,21 @@ Design choices, and why:
   (`a + b - c`); `--line` keeps *all* of them. The user asked for a *line*, and the
   report identifies a survivor by `file:line` + diff, not by the internal
   `MUTARE_ACTIVE_MUTANT` id (which isn't user-visible and *shifts* when discovery is
-  narrowed — see below). A pasted `FILE:LINE:COLUMN` scopes its whole line: the column
-  is there to tell mutants apart when reading, and column-level scoping would buy little
-  for a rerun. A digit-only segment before the last one is read as the line, since no
-  source path ends in one; a path may still contain a colon elsewhere.
+  narrowed — see below). A digit-only segment before the last one is read as the line,
+  since no source path ends in one; a path may still contain a colon elsewhere.
+- **A column selects a position, which narrows a line without naming a mutant.** At
+  first a pasted `FILE:LINE:COLUMN` scoped its whole line, on the reasoning that column
+  scoping buys little for a rerun. It was reversed because a location pasted from the
+  report is expected to select what it names, and ignoring its column was a papercut.
+  The column is the Site's `column`: its position, where the human report keys it, and
+  whose line is the one `# mutare:ignore` reads. That is not where its patch starts — a whole-pipe mutant is positioned at
+  its stage (*"A pipe stage is the call it is sugar for"*, its "whole-pipe site" paragraph).
+  Nested nodes that begin at one character share a position (`x + 1 >= y` puts the `+` and the `>=` mutants at `x`'s
+  column), so a column narrows the line rather than naming one mutant; only a mutant
+  identity would name one, and the ids shift (below). `Mutare.LineScope` is the one reading
+  of an entry. The count pass (`ClaimState`, through `Delivery.position/1`) and
+  `Schema.restrict_lines/2` both match through `LineScope.selects?/4`, so the ids emitted
+  are exactly the sites kept. `--since` keeps an explicit position whose line changed.
 - **Filter applied inside `from_files/4`, file-prune inside `build/2`.** Same split as
   `:max_mutants` vs `:only_files`: the site filter lives in the one `from_files`
   chokepoint so a **poison rebuild** (`Schema.rebuild`, which regenerates the sites)
@@ -7219,13 +7231,41 @@ Design choices, and why:
   files). The ids are an internal runtime switch, never the user's handle on a mutant,
   so the shift is invisible. (Within a *full* run the ids are globally-unique/stable;
   `--line` is explicitly a different, narrower run.)
-- **`Mutare.Config` parses `FILE:LINE`, `Mutare.Options` validates the pairs.** The
-  split is on the *last* colon (a path may contain one), the trailing segment must be a
+- **`Mutare.Config` parses `FILE:LINE[:COLUMN]`, `Mutare.Options` validates the entries.**
+  The number segments are read off the end (a path may contain a colon), each must be a
   positive integer, and a malformed value raises an `ArgumentError` the Mix task
   surfaces as a clean failure (it rescues `Config.merge/2`) — `--line lib/foo.ex` with
   no line errors at the edge rather than silently matching nothing. A line with no
   mutants scopes to zero sites and hits the existing `:nothing_to_mutate` fast path
   (before any compile/subprocess).
+
+### SARIF locates a whole-pipe mutant at its patch, not its position `[deferred]`
+
+A Site has two locations, and they answer different questions. Its **position**
+(`line`/`column`, `Mutare.Site.position/1`) is where the mutant *is*: what the human report
+prints and what `--line` selects by, and its line is the one `# mutare:ignore` reads. Its **range** is the span its
+`mutated_code` replaces. They differ only where a replacement must cover more than it
+changes: a whole-pipe mutant positioned at its stage (*"A pipe stage is the call it is sugar
+for"*, its "whole-pipe site" paragraph), or an attribution that sets a `position`.
+
+The JSON report carries both: the schema's `location` is the range, because the
+mutation-testing-elements viewer splices `replacement` over it, and Mutare's `position`
+field is the position. SARIF still emits the **range** as the result's `region`, though a
+region answers "where is this finding", the position's question. So a code-scanning
+annotation for a removed middle stage sits on the pipe's first line. A `# mutare:ignore`
+placed there suppresses nothing (the dogfooding bug that motivated keying at the stage),
+and a `--line FILE:LINE:COLUMN` copied from the annotation selects nothing.
+
+The fix is to emit the position as the region, but a region is a span and a Site records
+only the stage's start, not its end. Two candidates:
+
+- **`startLine`/`startColumn` only.** SARIF then reads the region as running to the end of
+  that line. No new state, and enough for an annotation.
+- **Record the stage's own span on the `Site`** beside its position, and emit that. More
+  exact, at the cost of another field every constructor and attribution must carry.
+
+A region that runs from the position to the range's end is not a candidate: removing a
+middle stage would highlight every later stage too.
 
 ## Dogfooding findings (M1)
 

@@ -4,6 +4,8 @@ defmodule Mutare.Report.Json do
 
   This is the lossless machine format: every mutant (not just survivors) is emitted, keyed by file, with its location and status. A mutant the run has no result for — a report written before the run finished, or after it stopped early — is emitted as `Pending`, so a partial report never reads as a complete one. Mutare's `Mutare.Result` statuses map exactly onto the schema's `MutantStatus` vocabulary (see `status/1`), so the report drops straight into the existing ecosystem — `Mutare.Report.Html` embeds this same document into the report web component, and it can be uploaded to the Stryker dashboard unchanged.
 
+  Two fields locate a mutant. The schema's `location` is the source span its `replacement` text replaces. Mutare adds `position`, a `{line, column}` point: where the mutant *is*, the location the human report prints and `--line` selects by. Its line is the one `# mutare:ignore` reads. Usually `position` is where `location` starts. A mutant whose replacement must cover more text than it changes is the exception: removing a pipe stage, for instance, rewrites the whole pipe but is positioned at the stage.
+
   Emitted by `mix mutare --report json` or `mix mutare --report json:path.json`.
   """
 
@@ -92,7 +94,15 @@ defmodule Mutare.Report.Json do
       replacement: site.mutated_code || "",
       location: location(site.range)
     }
+    |> put_present(:position, position(site))
   end
+
+  # Mutare's addition to the schema's `MutantResult`, beside `testSelection`: the Site's own
+  # `line:column` (`Mutare.Site.position/1`), not the start of the patched span `location`
+  # holds — see the moduledoc.
+  defp position(%Site{line: nil}), do: nil
+  defp position(%Site{line: line, column: nil}), do: %{line: line}
+  defp position(%Site{line: line, column: column}), do: %{line: line, column: column}
 
   # Mutare's addition to the schema's `MutantResult` (the schema permits extra
   # properties; the report web component ignores them): which tests the mutant's run

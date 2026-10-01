@@ -137,19 +137,21 @@ defmodule Mutare.Options.Registry do
           ":only_files must be a MapSet, a list of paths, or nil, got: #{inspect(other)}"
   end
 
-  # `:only_lines` (the `--line FILE:LINE` filter) scopes the *run* to the mutants on
-  # specific `file:line` locations — a narrow rerun, e.g. to recheck one survivor the
-  # report named. A `MapSet`/list of `{file, line}` pairs, normalised to a `MapSet`;
-  # `nil` means no line filter. The `file` is a root-relative path (as shown in the
-  # report) and `line` a positive integer, validated per entry so a bad pair fails at
-  # the edge rather than silently matching nothing deep in `Mutare.Schema`.
+  # `:only_lines` (the `--line` filter) scopes the *run* to the mutants on specific
+  # `file:line` or `file:line:column` locations — a narrow rerun, e.g. to recheck one
+  # survivor the report named. A `MapSet`/list of `{file, line}` and `{file, line, column}`
+  # entries (`Mutare.LineScope`), normalised to a `MapSet`; `nil` means no line filter.
+  # The `file` is a root-relative path (as shown in the report) and `line`/`column` positive
+  # integers, validated per entry so a bad one fails at the edge rather than silently
+  # matching nothing deep in `Mutare.Schema`.
   defp validate_only_lines!(nil), do: nil
   defp validate_only_lines!(%MapSet{} = set), do: validate_line_entries!(set)
   defp validate_only_lines!(list) when is_list(list), do: validate_line_entries!(MapSet.new(list))
 
   defp validate_only_lines!(other) do
     raise ArgumentError,
-          ":only_lines must be a MapSet, a list of {file, line} tuples, or nil, got: #{inspect(other)}"
+          ":only_lines must be a MapSet, a list of {file, line} or {file, line, column} " <>
+            "tuples, or nil, got: #{inspect(other)}"
   end
 
   defp validate_line_entries!(set) do
@@ -157,10 +159,16 @@ defmodule Mutare.Options.Registry do
       {file, line} when is_binary(file) and file != "" and is_integer(line) and line > 0 ->
         :ok
 
+      {file, line, column}
+      when is_binary(file) and file != "" and is_integer(line) and line > 0 and
+             is_integer(column) and column > 0 ->
+        :ok
+
       bad ->
         raise ArgumentError,
-              ":only_lines entries must be {file, line} with a non-empty path string and a " <>
-                "positive integer line, got: #{inspect(bad)}"
+              ":only_lines entries must be {file, line} or {file, line, column} with a " <>
+                "non-empty path string and a positive integer line and column, got: " <>
+                inspect(bad)
     end)
 
     set

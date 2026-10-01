@@ -40,8 +40,7 @@ defmodule Mutare.Transform.RescueEmit do
          true <- Enum.any?(candidates, &rescue_candidate?/1),
          {:ok, binding} <- shared_binding(blocks) do
       {claimed, ctx} =
-        SelectorEmit.claim_items(candidates, ctx, {&Delivery.site/4, &Delivery.line/1}, fn id,
-                                                                                           c ->
+        SelectorEmit.claim_items(candidates, ctx, Delivery.site_fns(), fn id, c ->
           {id, c}
         end)
 

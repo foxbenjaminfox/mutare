@@ -134,8 +134,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   defp binding_site(node, export, candidates, ctx, mutant_body, catch_all)
        when is_function(mutant_body, 1) and is_function(catch_all, 2) do
     {clauses, ctx} =
-      SelectorEmit.claim_items(candidates, ctx, {&Delivery.site/4, &Delivery.line/1}, fn id,
-                                                                                         candidate ->
+      SelectorEmit.claim_items(candidates, ctx, Delivery.site_fns(), fn id, candidate ->
         {:->, [], [[id], mutant_body.(candidate)]}
       end)
 

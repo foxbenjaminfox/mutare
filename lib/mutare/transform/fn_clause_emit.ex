@@ -37,7 +37,7 @@ defmodule Mutare.Transform.FnClauseEmit do
     # Preserve the original interleaving: whole-node offers, then clause mutations,
     # then any return/condition candidates an enclosing construct appended to this fn.
     {claimed, ctx} =
-      SelectorEmit.claim_items(candidates, ctx, {&Delivery.site/4, &Delivery.line/1}, fn id, c ->
+      SelectorEmit.claim_items(candidates, ctx, Delivery.site_fns(), fn id, c ->
         {id, c}
       end)
 

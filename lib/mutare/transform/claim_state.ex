@@ -11,8 +11,8 @@ defmodule Mutare.Transform.ClaimState do
   #     to the report and the lazily-built manifest. Retained only by the `:render` sink.
   #   * `count` — a running mutant tally, the `:count` sink's cheap stand-in for `length(sites)`.
   #   * `emitted` — the artifacts actually delivered into the tree.
-  #   * `selection_lines` / `selected_ids` — under a `--line` selection, the lines asked for and
-  #     the local ids whose site lands on one (`collect_selected_id/4`).
+  #   * `selection` / `selected_ids` — under a `--line` selection, the `Mutare.LineScope` asked
+  #     for and the local ids whose site it selects (`collect_selected_id/5`).
   #
   # (The count pass's diagnostic facts — which `:skip_lifting`/route/mark entries the source
   # reached, and its degraded `use`s — are not claim state; they live on `Mutare.Transform.Ctx`'s
@@ -29,15 +29,15 @@ defmodule Mutare.Transform.ClaimState do
   #     `Site` is built and retained. Ignored sites keep their reason and emit no artifact.
   #     Statically unselected ids also emit no artifact;
   #     their diagnostic sites stay unpoisoned and carry no rendered diff text.
-  #     The `{site_fn, line_fn}` pair a caller passes covers both needs: `site_fn` builds the
-  #     recorded `Site`, `line_fn` answers *where* it would be recorded without building one.
+  #     The `{site_fn, position_fn}` pair a caller passes covers both needs: `site_fn` builds the
+  #     recorded `Site`, `position_fn` answers *where* it would be recorded without building one.
   #   * `:count` — advance the id and bump `count` only. No `Site` is built (so the per-mutant
   #     `Sourceror` render in `Mutare.Site` is skipped) and none is retained, but the live
   #     artifact is still emitted, so the metamutant tree stays well-formed and the *set* of
   #     downstream claims is identical to a render. The count is therefore drift-proof by
   #     construction — it comes from the same claim path, just without the site cost (see
   #     `Mutare.Schema`'s two-phase build and NOTES "Scan is transform-bound"). With a line
-  #     filter, `line_fn` alone decides which local ids match, so this sink still builds no
+  #     filter, `position_fn` alone decides which local ids match, so this sink still builds no
   #     `Site` — and never invokes a producing mutator's `variant/2` for a position it is only
   #     locating.
   #
@@ -58,7 +58,7 @@ defmodule Mutare.Transform.ClaimState do
           sites: [Site.t()],
           count: non_neg_integer(),
           emitted: non_neg_integer(),
-          selection_lines: MapSet.t(pos_integer()) | nil,
+          selection: Mutare.LineScope.t() | nil,
           selected_ids: [pos_integer()]
         }
 
@@ -71,7 +71,7 @@ defmodule Mutare.Transform.ClaimState do
             # parsed original — nothing to render, and `Mutare.Transform` hands back the source
             # bytes instead. Distinct from `count`, which tallies every *reserved* id.
             emitted: 0,
-            selection_lines: nil,
+            selection: nil,
             selected_ids: []
 
   @doc """
@@ -97,7 +97,7 @@ defmodule Mutare.Transform.ClaimState do
           {atom(), non_neg_integer()} | nil,
           item,
           {(pos_integer(), item, String.t(), {boolean(), boolean()} -> Site.t()),
-           (item -> pos_integer() | nil)},
+           (item -> {pos_integer(), pos_integer() | nil} | nil)},
           (pos_integer(), item -> artifact)
         ) :: {[artifact], t()}
         when item: term(), artifact: term()
@@ -106,11 +106,11 @@ defmodule Mutare.Transform.ClaimState do
         config,
         _block_macro,
         item,
-        {_site_fn, line_fn},
+        {_site_fn, position_fn},
         artifact_fn
       ) do
     id = claim.next_id
-    claim = collect_selected_id(claim, id, item, line_fn)
+    claim = collect_selected_id(claim, config, id, item, position_fn)
 
     {[artifact_fn.(local_id(config, id), item)],
      %{claim | next_id: id + 1, count: claim.count + 1, emitted: claim.emitted + 1}}
@@ -121,7 +121,7 @@ defmodule Mutare.Transform.ClaimState do
         %Config{} = config,
         block_macro,
         item,
-        {site_fn, _line_fn},
+        {site_fn, _position_fn},
         artifact_fn
       ) do
     id = claim.next_id
@@ -183,17 +183,24 @@ defmodule Mutare.Transform.ClaimState do
   def total(%__MODULE__{sink: :count, count: count}), do: count
   def total(%__MODULE__{sites: sites}), do: length(sites)
 
-  # Line selection reads the location the render pass will record — including a custom
-  # mutator's attribution override — through `line_fn` (`Mutare.Transform.Candidate.Delivery`'s
-  # `line/1`), never by building a `Site`: the count sink builds none by design, and a `Site`
-  # would run the producing mutator's `variant/2` callback for a mere line test. Only local ids
+  # Selection reads the location the render pass will record — including a custom
+  # mutator's attribution override — through `position_fn` (`Mutare.Transform.Candidate.Delivery`'s
+  # `position/1`), never by building a `Site`: the count sink builds none by design, and a `Site`
+  # would run the producing mutator's `variant/2` callback for a mere location test. Only local ids
   # are retained. An unrestricted count keeps the tally-only path and reads no location at all.
-  defp collect_selected_id(%{selection_lines: nil} = claim, _id, _item, _line_fn), do: claim
+  defp collect_selected_id(%{selection: nil} = claim, _config, _id, _item, _position_fn),
+    do: claim
 
-  defp collect_selected_id(claim, id, item, line_fn) do
-    if MapSet.member?(claim.selection_lines, line_fn.(item)),
-      do: %{claim | selected_ids: [id | claim.selected_ids]},
-      else: claim
+  defp collect_selected_id(claim, config, id, item, position_fn) do
+    case position_fn.(item) do
+      {line, column} ->
+        if Mutare.LineScope.selects?(claim.selection, config.file, line, column),
+          do: %{claim | selected_ids: [id | claim.selected_ids]},
+          else: claim
+
+      nil ->
+        claim
+    end
   end
 
   # A poison-skipped id records its site, flagged, and delivers nothing.
