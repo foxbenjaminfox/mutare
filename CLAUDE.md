@@ -185,7 +185,10 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   lifecycle ASTs. Run mode initializes in project prefixes, recording starts in test helpers;
   `HelperTemplate.runtime/1` isolates fixture capture from the outer probe. The `{module, name}` label is kept at both file (module→file) and test-case (the
   runnable `name`) granularity; `setup_all`/`on_exit`-covered ids can't be pinned to a runnable
-  test, so `:tests` runs their whole file.
+  test, so `:tests` runs their whole file. A process no lineage links to a test (a browser
+  test's request) can declare its owner (`Mutare.CoverageAttribution.attribute_to/1`), from
+  hooks an extension installs in the probe only — NOTES "A process no lineage links to a test
+  can declare its owner".
 - **`Mutare.Poison`** (+ `Hint`) — on a failed compile, maps the error's `file:line` to mutant
   id(s), drops them via `:skip_ids`, and rebuilds (bounded). When line attribution maps nothing
   (an *inline* DSL macro like `Ecto.Query.from/2` that rejects the spliced selector, where the
@@ -212,8 +215,8 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   ordered registry + resolver); `Mutare.Mutator.Spec` (the resolved unit of "a mutator to run");
   `Mutare.CallRouting` + its internal registry (call routes: skip a call outright, or route its
   arguments — static and shape-aware; functions and macros alike);
-  `Mutare.UseExpansion` (a `use` override); `Mutare.Extension` (the non-mutating `:extensions`
-  boundary); `Mutare.Analyze` (the expression-collect facade a host uses to sub-contract Elixir
+  `Mutare.UseExpansion` (a `use` override); `Mutare.CoverageAttribution` (probe-time hooks
+  that name a process's test); `Mutare.Extension` (the non-mutating `:extensions` boundary); `Mutare.Analyze` (the expression-collect facade a host uses to sub-contract Elixir
   islands inside its fragment back to core's generation). See "Extending it".
 
 The built-in mutator families are **all on by default**. Don't catalogue them here — the
@@ -398,10 +401,13 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 `test/support/invariant_fixtures.ex` holds one fixture per way a mutator or host breaks them.
 
 An **extension** is a non-mutating module implementing `Mutare.CallRouting`,
-`Mutare.UseExpansion`, or both. It has no `name/0`, never appears in a report, and is listed under
-`:extensions`; enabled mutators are inspected for routing capabilities separately. The motivating
-case is Gettext; see `test/support/extension_fixtures.ex` and NOTES "Extension `use`-expansion
-override".
+`Mutare.UseExpansion`, `Mutare.CoverageAttribution`, or several. It has no `name/0`, never appears
+in a report, and is listed under `:extensions`; enabled mutators are inspected for routing
+capabilities separately. The motivating cases are Gettext (NOTES "Extension `use`-expansion
+override") and phoenix_ecto's browser tests (NOTES "A process no lineage links to a test can
+declare its owner"); see `test/support/extension_fixtures.ex`. An attribution extension runs in
+the *target's* test VM, not Mutare's: `Recorder.attribution_ast/1` writes the call into the
+probe's test helper, so its options must be plain data (`Extension.validate!/1` checks).
 
 The contract details (notes, `:as` renaming, the call-routing vocabulary — `:skip` for a whole
 call; `:expression`/`:lazy_expression`/`:raw`/`:interior`/`:pattern`/`:binding_pattern`/keyed `[key: …]` refinements

@@ -432,6 +432,72 @@ defmodule Mutare.CoverageRunnerTest do
       assert Enum.all?(run.results, &(tests_run(&1.output) == 1))
     end
 
+    test "a coverage-attribution extension's declarations narrow selection to the owner's test" do
+      # The fixture project has no Mutare dependency, so it defines the extension module itself
+      # (in its test helper, which runs before Mutare's call to it), and its "request" writes
+      # the key `Mutare.CoverageAttribution.attribute_to/1` writes (`coverage_attribution_test.exs`
+      # pins that). Mutare's own VM validates the `test/support` module of the same name.
+      anchor_key = inspect(Recorder.runtime(:harness).anchor_key)
+
+      %{project: project, sandbox: sandbox} =
+        Project.build(:attribution_cov, %{
+          "lib/page.ex" => "defmodule Page do\n  def render(x), do: x + 1\nend\n",
+          "test/test_helper.exs" => """
+          defmodule Mutare.Test.AttributionExtension do
+            def attach_attribution(opts) do
+              :persistent_term.put(:fixture_attribution, opts)
+              :ok
+            end
+          end
+
+          ExUnit.start()
+          """,
+          # The line runs only in a bare spawn — no label, `$callers` or `$ancestors` link to the
+          # test, like a web request's process — which declares as its owner an unlinked Agent the
+          # test started (the shape of a SQL sandbox owner), but only once the extension has been
+          # attached with its options. Without the declaration the id is unlabeled and runs the
+          # whole suite.
+          "test/browser_test.exs" => """
+          defmodule BrowserTest do
+            use ExUnit.Case, async: true
+
+            test "renders through a request process" do
+              test_pid = self()
+              {:ok, owner} = Agent.start(fn -> :ok end)
+
+              spawn(fn ->
+                if :persistent_term.get(:fixture_attribution, nil) == [declare: true] do
+                  Process.put(#{anchor_key}, owner)
+                end
+
+                send(test_pid, {:rendered, Page.render(5)})
+              end)
+
+              assert_receive {:rendered, 6}
+            end
+          end
+          """,
+          "test/idle_test.exs" => """
+          defmodule IdleTest do
+            use ExUnit.Case
+            test "unrelated", do: assert(true)
+          end
+          """
+        })
+
+      assert {:ok, run} =
+               Mutare.run(project,
+                 sandbox: sandbox,
+                 mutators: @probe,
+                 extensions: [{Mutare.Test.AttributionExtension, [declare: true]}]
+               )
+
+      assert run.results != []
+      assert Enum.all?(run.results, &(&1.status == :killed))
+      # Narrowed to the covering test, where an unlabeled id would run the whole suite.
+      assert Enum.all?(run.results, &(&1.selection == :tests))
+    end
+
     test "a late hit after a caller-attributing process exits forces whole-suite selection" do
       %{project: project, sandbox: sandbox} =
         Project.build(:late_dead_caller_cov, %{

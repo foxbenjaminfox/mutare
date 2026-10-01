@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   selects it; its line is the one `# mutare:ignore` reads. `location` is the span its `replacement` patches, and the
   two differ for a mutant that must patch more than it changes — removing a pipe stage
   rewrites the whole pipe but is positioned at the stage.
+- Coverage-attribution extensions. An extension implementing the new
+  `Mutare.CoverageAttribution` behaviour is called in the coverage probe's test VM, and only
+  there, to install hooks that call `Mutare.CoverageAttribution.attribute_to/1`. That call
+  names the process a process works for when nothing links it to a test — a web server's
+  request process in a browser-driven test, say — so the mutants it reaches run that
+  process's test instead of the whole suite.
+- `mix igniter.install mutare` adds `mutare_phoenix_ecto` for a project depending on
+  `phoenix_ecto`, and lists `Mutare.Phoenix.Ecto` under `:extensions`. It attributes each
+  request and LiveView carrying the SQL sandbox metadata of a browser-driven test to that
+  test, with no change to the endpoint or LiveViews.
 
 ### Changed
 
@@ -35,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Without igniter, `mix mutare.install` suggested adding `{:mutare, "~> 0.1", …}`; it now
   suggests the requirement for the installed version.
+- A process label that names no ExUnit test module, such as the one ecto_sql 3.14 gives
+  a SQL sandbox owner, is no longer taken for a test's. Coverage recorded under one was
+  dropped where it should have run the whole suite, so a mutant also covered by a real
+  test ran only that test's file, and was reported as a survivor if only a test in
+  another file would have killed it.
 
 ## [0.4.3] - 2026-09-28
 

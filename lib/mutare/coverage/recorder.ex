@@ -18,8 +18,9 @@ defmodule Mutare.Coverage.Recorder do
     * Lifecycle ASTs — `mode_ast/1` initializes probe mode in the `mix.exs`
       prefix, before target project/config/application code. `tables_ast/1`
       creates tables and enables recording before user `test_helper.exs` code.
-      `after_suite_ast/0` registers the dump after the helper starts ExUnit. Both
-      scoped ASTs take `:harness` or `:fixture` explicitly — there is no default,
+      `attribution_ast/1` calls the coverage-attribution extensions after the
+      user's helper, and `after_suite_ast/0` registers the dump after the helper
+      starts ExUnit. Both scoped ASTs take `:harness` or `:fixture` explicitly — there is no default,
       because a bootstrap's scope is a property of where it is written, not of the
       environment of the process that rendered it.
 
@@ -35,6 +36,14 @@ defmodule Mutare.Coverage.Recorder do
   key derived from it (`track_key/0`): the two switches have the same scope and are
   baked into a metamutant together, so an `async: true` test module that turns
   recording on reaches only its own metamutants.
+
+  A process with no lineage link to a test — a web server's request process in a
+  browser-driven test — can declare the pid it works for under the descriptor's
+  `anchor_key` (`Mutare.CoverageAttribution.attribute_to/1` writes the harness key,
+  typically from hooks an extension installs through `attribution_ast/1`). The
+  helper resolves that pid as the declaring process would resolve itself, before
+  `$callers` and `$ancestors`, and guards its memo with the declaration, so a
+  process re-declared for another test is attributed afresh.
 
   The compiled `HelperTemplate` uses private fixture tables, process-dictionary
   caches and dump variables. Under self-hosting, the existing helper-name override
@@ -476,6 +485,38 @@ defmodule Mutare.Coverage.Recorder do
         end
 
         :persistent_term.put(unquote(runtime.track_key), true)
+      end
+    end
+  end
+
+  @doc """
+  Attach each coverage-attribution extension's hooks in the probe's test VM.
+
+  `attachments` pairs each extension module exporting
+  `c:Mutare.CoverageAttribution.attach_attribution/1` with its options, in
+  `:extensions` order. Appended after the target's test helper, where the project's
+  applications and whatever the helper starts are running, and gated on probe mode,
+  so no other run calls an extension. An empty list renders nothing.
+
+  Each call must return `:ok`; anything else, or a raise, fails the probe run, as
+  `c:Mutare.CoverageAttribution.attach_attribution/1` documents.
+  """
+  @spec attribution_ast([{module(), keyword()}]) :: Macro.t() | nil
+  def attribution_ast([]), do: nil
+
+  def attribution_ast(attachments) when is_list(attachments) do
+    mode_key = @harness_runtime.mode_key
+
+    calls =
+      for {module, opts} <- attachments do
+        quote do
+          :ok = unquote(module).attach_attribution(unquote(Macro.escape(opts)))
+        end
+      end
+
+    quote do
+      if :persistent_term.get(unquote(mode_key), false) do
+        (unquote_splicing(calls))
       end
     end
   end

@@ -190,7 +190,7 @@ defmodule Mutare.Sandbox do
     # names the `mix.exs` files whose inference override actually landed — which only the
     # rewrite itself knows, and which `Seed.app_build/6` needs below. `declined` pairs each
     # other `mix.exs` with the rewrite's reason.
-    {overrides, wrapped, declined} = override_files(root, schema, project)
+    {overrides, wrapped, declined} = override_files(root, schema, project, options)
     declined = log_declined(declined)
 
     if options.keep_sandbox do
@@ -394,8 +394,33 @@ defmodule Mutare.Sandbox do
   # Wrap the user's test helper with the selector/timeout bootstrap and the
   # coverage probe (split around `ExUnit.start/0`; see the constants above). Shared
   # by both the fresh and keep paths so the rendered helper can't drift.
-  defp helper_contents(user_source) do
-    @bootstrap <> "\n" <> @coverage_setup <> "\n" <> user_source <> "\n" <> @coverage_after_suite
+  defp helper_contents(user_source, attribution) do
+    @bootstrap <>
+      "\n" <>
+      @coverage_setup <>
+      "\n" <> user_source <> "\n" <> attribution <> @coverage_after_suite
+  end
+
+  # The probe-gated calls to each coverage-attribution extension
+  # (`Mutare.CoverageAttribution`), after the user's helper so the applications and
+  # whatever the helper starts are running; empty when no extension attributes.
+  defp attribution_source(%Options{extensions: extensions}) do
+    attachments =
+      for %{module: module, opts: opts} <- extensions,
+          Mutare.Reflection.exports?(module, :attach_attribution, 1),
+          do: {module, opts}
+
+    case Recorder.attribution_ast(attachments) do
+      nil ->
+        ""
+
+      ast ->
+        """
+        # ---- injected by Mutare: coverage attribution (inert unless probing) -------
+        #{Macro.to_string(ast)}
+        # ---------------------------------------------------------------------------
+        """
+    end
   end
 
   # The files Mutare generates rather than copies, keyed by sandbox-relative path (the same
@@ -410,11 +435,11 @@ defmodule Mutare.Sandbox do
   # `wrapped`, never against the list we tried: a file we failed to wrap compiles with
   # inference on, and telling its manifest otherwise both leaves the pathology in place and
   # invents a cache-key mismatch that cold-compiles the app.
-  defp override_files(root, %Schema{metamutants: metamutants}, project) do
+  defp override_files(root, %Schema{metamutants: metamutants}, project, options) do
     overrides =
       metamutants
       |> Map.merge(coverage_helper_files(root, project))
-      |> Map.merge(helper_files(root, project))
+      |> Map.merge(helper_files(root, project, attribution_source(options)))
       |> Map.merge(config_files(root))
       |> Map.merge(RuntimeConfig.files(root, @excluded))
       |> Map.merge(project_files(root, project))
@@ -522,7 +547,7 @@ defmodule Mutare.Sandbox do
     )
   end
 
-  defp helper_files(root, project) do
+  defp helper_files(root, project, attribution) do
     Map.new(helper_rels(root, project), fn rel ->
       user_helper =
         case File.read(Path.join(root, rel)) do
@@ -530,7 +555,7 @@ defmodule Mutare.Sandbox do
           _ -> @default_helper
         end
 
-      {rel, helper_contents(user_helper)}
+      {rel, helper_contents(user_helper, attribution)}
     end)
   end
 end

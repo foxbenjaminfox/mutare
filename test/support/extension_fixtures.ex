@@ -393,3 +393,16 @@ defmodule Mutare.Test.UndeclaredMutatorWithRoutes do
   def mutate(_node), do: :skip
   def call_routes, do: []
 end
+
+defmodule Mutare.Test.AttributionExtension do
+  @moduledoc """
+  A coverage-attribution-only extension (`Mutare.CoverageAttribution`), with neither routes nor
+  a `use` expansion. In Mutare's own VM it only has to be recognised and validated; the runner
+  test that drives it gives the fixture project its own definition of this module, since the
+  probe's test VM is the fixture's.
+  """
+  @behaviour Mutare.CoverageAttribution
+
+  @impl Mutare.CoverageAttribution
+  def attach_attribution(_opts), do: :ok
+end

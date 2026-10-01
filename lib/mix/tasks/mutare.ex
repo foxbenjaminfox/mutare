@@ -315,8 +315,8 @@ defmodule Mix.Tasks.Mutare do
         # keep specific functions in-place when lifted function names are observable;
         # entries are {Module, function_name_atom_or_string, arity}
         skip_lifting: [],
-        # non-mutating source-understanding modules implementing
-        # Mutare.CallRouting, Mutare.UseExpansion, or both
+        # non-mutating modules implementing Mutare.CallRouting, Mutare.UseExpansion
+        # (both source understanding), or Mutare.CoverageAttribution (test selection)
         extensions: [],
         # expand `use` to surface the import/alias it injects (--no-expand-uses)
         expand_uses: true,

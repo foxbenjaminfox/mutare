@@ -46,6 +46,7 @@ defmodule Mutare.Coverage.HelperTemplate do
     wholefile_table: :mutare_cov_wholefile,
     seen_key: :mutare_cov_seen,
     label_key: :mutare_cov_label,
+    anchor_key: :mutare_cov_anchor,
     dump_path_env: "MUTARE_COV_DUMP",
     root_env: "MUTARE_COV_ROOT",
     dump_file: "mutare_cov.terms"
@@ -68,6 +69,7 @@ defmodule Mutare.Coverage.HelperTemplate do
   @wholefile_table @runtime.wholefile_table
   @seen_key @runtime.seen_key
   @label_key @runtime.label_key
+  @anchor_key @runtime.anchor_key
   @dump_path_env @runtime.dump_path_env
   @root_env @runtime.root_env
   @dump_file @runtime.dump_file
@@ -345,12 +347,12 @@ defmodule Mutare.Coverage.HelperTemplate do
   defp unqualify(id), do: {nil, id}
 
   # The owning test's `{module, name}` label, used to attribute coverage to a test *file*. Resolved
-  # for the process that ran the line (`self()`), and — failing that — for each process in its
-  # caller chain, by `label_of/1`. Two signals back it:
+  # for the process that ran the line (`self()`), and — failing that — for the processes it acts
+  # for (`recovered_label/2`), by `label_of/1`. Two signals back it:
   #
-  #   1. a `$process_label` (`proc_label/1`) — ExUnit's runner labels the test process directly on
-  #      **Elixir 1.19+**, and a `Task` records its `$callers` chain, so a task started from a test
-  #      belongs to that test;
+  #   1. a `$process_label` (`proc_label/1`) naming an ExUnit case (`exunit_label/1`) — ExUnit's
+  #      runner labels the test process directly on **Elixir 1.19+**, and a `Task` records its
+  #      `$callers` chain, so a task started from a test belongs to that test;
   #   2. an ExUnit test / `setup_all` frame on the process's current stack (`stacktrace_label/1`) —
   #      the only signal on **Elixir 1.18**, whose runner does *not* label the test process
   #      (`Process.set_label` was added to it in 1.19): a direct test then has no label and no
@@ -372,87 +374,185 @@ defmodule Mutare.Coverage.HelperTemplate do
   #     (`Process.get/1`, ~free) — `Process.set_label/1` stores the label under `:"$process_label"`
   #     on every Elixir/OTP combination we support, so no `Process.info(self(), :dictionary)`
   #     full-copy is needed. A reusable process that relabels itself between tests/requests is
-  #     always seen (stale attribution is worse than the read cost).
-  #   * The **recovery** tiers (own-stack ExUnit frames; the `$callers`/`$ancestors` walk) do
-  #     stacktrace builds and cross-process `Process.info` reads — a signal round-trip per pid.
-  #     Paying that per hit livelocked real probes: a LiveView suite's render/diff loops run in
+  #     always seen (stale attribution is worse than the read cost). Checking that it names an
+  #     ExUnit case is one export-table lookup.
+  #   * The **recovery** tiers (own-stack ExUnit frames; the anchor, `$callers` and `$ancestors`
+  #     walk) do stacktrace builds and cross-process `Process.info` reads — a signal round-trip per
+  #     pid. Paying that per hit livelocked real probes: a LiveView suite's render/diff loops run in
   #     unlabeled channel processes, and per-hit ancestor walks turned a ~2-minute suite into an
   #     unbounded crawl (the probe looked hung). So the recovery *result* is memoized in the
   #     process dictionary and revalidated per hit with cheap local reads only; it is recomputed
-  #     when the `$callers` chain changes (a reused worker serving a new caller) or when the
-  #     witness pid that produced the label dies — a long-lived Task outliving its spawning test
-  #     must degrade to unlabeled (whole suite) so selection stays conservative.
+  #     when the `$callers` chain or the anchor changes (a reused worker serving a new caller, a
+  #     keep-alive connection re-anchored by its next request) or when the witness pid that
+  #     produced the label dies — a long-lived Task outliving its spawning test must degrade to
+  #     unlabeled (whole suite) so selection stays conservative.
   defp label do
-    case Process.get(:"$process_label") do
-      {mod, _name} = label when is_atom(mod) -> label
-      _ -> recovery_label()
+    case exunit_label(Process.get(:"$process_label")) do
+      nil -> recovery_label()
+      label -> label
     end
   end
 
-  # The memoized recovery: `{callers, witness, label}` under `@label_key`, where `witness` is the
-  # pid whose label/stack produced `label` (`self()` for an own-stack recovery). Valid while the
-  # `$callers` chain is unchanged and the witness is alive; `{callers, nil, nil}` memoizes "no
-  # attribution" (the unlabeled bucket) under the same `$callers` guard — a later hit with a new
-  # caller re-resolves, and the per-hit own-label read above already catches a self relabel.
+  # A `$process_label` names a test only when its module is an ExUnit case: every `use ExUnit.Case`
+  # module exports `__ex_unit__/0` (on every supported Elixir), and ExUnit labels a test process
+  # `{case, name}`. Anything else may label a process with a two-tuple too — ecto_sql's
+  # `start_owner!/2` labels its owner `{:sql_sandbox_owner, %{started_by: pid}}` — and such a
+  # label maps to no test file, so taking it would drop the hit at dump time (`source_file/1`)
+  # instead of leaving it to the tiers below, and ultimately to the unlabeled bucket. A mutant also
+  # attributed to a real test would then run only that test: a false survivor. A test module is
+  # loaded while its tests run, so `function_exported?/3` (which never loads) sees it.
+  defp exunit_label({mod, _name} = label) when is_atom(mod) do
+    if function_exported?(mod, :__ex_unit__, 0), do: label
+  end
+
+  defp exunit_label(_label), do: nil
+
+  # The memoized recovery: `{callers, anchor, witness, label}` under `@label_key`, where `witness`
+  # is the pid whose label/stack produced `label` (`self()` for an own-stack recovery). Valid while
+  # the `$callers` chain and the anchor are unchanged and the witness is alive; `{callers, anchor,
+  # nil, nil}` memoizes "no attribution" (the unlabeled bucket) under the same guard — a later hit
+  # with a new caller or anchor re-resolves, and the per-hit own-label read above already catches a
+  # self relabel.
   defp recovery_label do
     callers = Process.get(:"$callers")
+    anchor = Process.get(@anchor_key)
 
     case Process.get(@label_key) do
-      {^callers, nil, nil} -> nil
-      {^callers, witness, label} when is_pid(witness) -> validate(witness, label, callers)
-      _ -> recover(callers)
+      {^callers, ^anchor, nil, nil} ->
+        nil
+
+      {^callers, ^anchor, witness, label} when is_pid(witness) ->
+        validate(witness, label, callers, anchor)
+
+      _ ->
+        recover(callers, anchor)
     end
   end
 
-  defp validate(witness, label, callers) do
-    if Process.alive?(witness), do: label, else: recover(callers)
+  defp validate(witness, label, callers, anchor) do
+    if Process.alive?(witness), do: label, else: recover(callers, anchor)
   end
 
-  defp recover(callers) do
+  defp recover(callers, anchor) do
     {witness, label} =
       case stacktrace_label(self()) do
         {mod, _name} = label when is_atom(mod) -> {self(), label}
-        _ -> recovered_label()
+        _ -> recovered_label(callers, anchor)
       end
 
-    Process.put(@label_key, {callers, witness, label})
+    Process.put(@label_key, {callers, anchor, witness, label})
     label
   end
 
   # `pid`'s owning `{module, name}`: its `$process_label`, else an ExUnit frame on its current stack
   # (so attribution works on Elixir 1.18, which leaves test processes unlabeled — see `label/0`).
   defp label_of(pid) do
-    case proc_label(pid) do
+    case exunit_label(proc_label(pid)) do
       {mod, _name} = labeled when is_atom(mod) -> labeled
       _ -> stacktrace_label(pid)
     end
   end
 
-  defp recovered_label do
-    # `$callers` (set by `Task`) then `$ancestors`: walk to the first ancestor we can attribute a
-    # `{module, name}` to, returning it with the pid that witnessed it (for the memo's liveness
-    # check). The test pid sits at the tail of the chain even for nested tasks, so a labeled (or
-    # stack-recoverable) owner is found if one exists. Local pids only: `Process.info/2` (and the
-    # memo's `Process.alive?/1`) raise on a remote pid, and a cross-node caller can't map to a
-    # local test file anyway.
-    callers = Process.get(:"$callers", []) ++ Process.get(:"$ancestors", [])
+  # The processes this one acts for, walked to the first we can attribute a `{module, name}` to,
+  # which is returned with the pid that witnessed it (for the memo's liveness check):
+  #
+  #   * the **anchor** first — a pid some code declared this process to be working for
+  #     (`Mutare.CoverageAttribution.attribute_to/1`, under `@anchor_key`): a link no
+  #     process-lineage key records, such as a web request's to the test driving the browser
+  #     that sent it;
+  #   * then `$callers` (set by `Task`) and `$ancestors`. The test pid sits at the tail of the
+  #     chain even for nested tasks, so a labeled (or stack-recoverable) owner is found if one
+  #     exists.
+  #
+  # An anchor stands for the process that declared it, so it is resolved as that process would
+  # resolve itself: its own label or stack, then *its* anchor, `$callers` and `$ancestors`. That is
+  # how an anchor on a sandbox owner reaches the test — ecto_sql's `start_owner!/2` owner is an
+  # `Agent` whose `$ancestors` begins with the test. A lineage pid's `$callers` and `$ancestors`
+  # are already in ours, so of its links only its anchor is followed: a `Task` spawned by an
+  # anchored request process reaches the test through the request's anchor. Each pid is visited
+  # once, so anchors that name each other end the walk.
+  #
+  # Local pids only: `Process.info/2` (and the memo's `Process.alive?/1`) raise on a remote pid,
+  # and a cross-node caller can't map to a local test file anyway.
+  defp recovered_label(callers, anchor) do
+    links =
+      anchor_links(anchor) ++ List.wrap(callers) ++ Process.get(:"$ancestors", [])
 
-    Enum.find_value(callers, {nil, nil}, fn
-      pid when is_pid(pid) and node(pid) == node() ->
-        case label_of(pid) do
-          {mod, _name} = label when is_atom(mod) -> {pid, label}
-          _ -> nil
-        end
+    case walk(links, %{self() => true}) do
+      {{_witness, _label} = found, _visited} -> found
+      {nil, _visited} -> {nil, nil}
+    end
+  end
+
+  defp walk([pid | rest], visited) when is_pid(pid) and node(pid) == node() do
+    case visited do
+      %{^pid => true} ->
+        walk(rest, visited)
 
       _ ->
-        nil
-    end)
+        visited = Map.put(visited, pid, true)
+
+        case label_of(pid) do
+          {mod, _name} = label when is_atom(mod) ->
+            {{pid, label}, visited}
+
+          _ ->
+            case walk(anchor_links(dictionary_value(pid, @anchor_key)), visited) do
+              {nil, visited} -> walk(rest, visited)
+              found -> found
+            end
+        end
+    end
+  end
+
+  defp walk([_not_local_pid | rest], visited), do: walk(rest, visited)
+  defp walk([], visited), do: {nil, visited}
+
+  # An anchor and the links it is resolved through, or none for an absent (or remote) anchor.
+  defp anchor_links(anchor) when is_pid(anchor) and node(anchor) == node() do
+    [anchor | List.wrap(dictionary_value(anchor, :"$callers"))] ++
+      List.wrap(dictionary_value(anchor, :"$ancestors"))
+  end
+
+  defp anchor_links(_anchor), do: []
+
+  # One key of a local `pid`'s process dictionary, or `nil` (absent, or the process is dead). OTP
+  # 26.2 added the keyed `{:dictionary, key}` item; before it, the whole dictionary is copied. The
+  # compiling VM is the one that runs this, so the probe below settles which form it supports.
+  @keyed_dictionary_info (try do
+                            _ = :erlang.process_info(self(), {:dictionary, :"$ancestors"})
+                            true
+                          rescue
+                            ArgumentError -> false
+                          end)
+
+  if @keyed_dictionary_info do
+    defp dictionary_value(pid, key) do
+      case Process.info(pid, {:dictionary, key}) do
+        {{:dictionary, ^key}, :undefined} -> nil
+        {{:dictionary, ^key}, value} -> value
+        nil -> nil
+      end
+    end
+  else
+    defp dictionary_value(pid, key) do
+      case Process.info(pid, :dictionary) do
+        {:dictionary, dict} ->
+          case List.keyfind(dict, key, 0) do
+            {^key, value} -> value
+            nil -> nil
+          end
+
+        nil ->
+          nil
+      end
+    end
   end
 
   # The `$process_label` of `pid` (an ancestor's — `label/0` reads our own straight from the
   # process dictionary), OTP-tolerant and the single home for the version check. On OTP 27+
   # `:proc_lib.get_label/1` reads it directly (cross-process too); on OTP 26 and earlier the label
-  # lives in the process dictionary, which `Process.info(pid, :dictionary)` exposes
+  # lives in the process dictionary, which `dictionary_value/2` reads cross-process
   # (`Process.get/1` would only read our own). `apply/3`, not a direct call, so a static reference
   # to the OTP 27-only function doesn't warn "undefined" on OTP 26 and earlier. Best-effort — a
   # dead pid yields `nil`, never a crash.
@@ -464,10 +564,7 @@ defmodule Mutare.Coverage.HelperTemplate do
         _, _ -> nil
       end
     else
-      case Process.info(pid, :dictionary) do
-        {:dictionary, dict} -> Keyword.get(dict, :"$process_label")
-        _ -> nil
-      end
+      dictionary_value(pid, :"$process_label")
     end
   end
 

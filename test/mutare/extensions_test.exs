@@ -8,6 +8,7 @@ defmodule Mutare.ExtensionsTest do
   alias Mutare.UseExpansion.Dispatch
 
   alias Mutare.Test.{
+    AttributionExtension,
     BehaviourExtension,
     BlockDirectiveExtension,
     ContextExtension,
@@ -37,6 +38,10 @@ defmodule Mutare.ExtensionsTest do
       assert Extension.extension?(StaticRoutingExtension)
     end
 
+    test "a coverage-attribution-only extension is an extension" do
+      assert Extension.extension?(AttributionExtension)
+    end
+
     test "a module exporting neither extension callback is not an extension" do
       refute Extension.extension?(Mutare.Mutators.Arithmetic)
       refute Extension.extension?(Enum)
@@ -59,6 +64,28 @@ defmodule Mutare.ExtensionsTest do
       refute Extension.extension?(:not_a_module)
       refute Extension.extension?("Elixir.Nope")
       refute Extension.extension?(nil)
+    end
+  end
+
+  describe "validate!/1 — coverage-attribution options" do
+    test "plain-data options for attach_attribution/1 are accepted as given" do
+      opts = [header: "x-test", depth: {1, 2.5, [nil, true]}, by: %{"key" => [:a | :b]}]
+
+      assert [%Extension.Spec{module: AttributionExtension, opts: ^opts}] =
+               Extension.validate!([{AttributionExtension, opts}])
+    end
+
+    test "options that cannot be written into the probe's helper are refused" do
+      for opt <- [self(), make_ref(), fn -> :ok end, %{nested: [{:pid, self()}]}] do
+        assert_raise ArgumentError, ~r/must be plain data/, fn ->
+          Extension.validate!([{AttributionExtension, [value: opt]}])
+        end
+      end
+    end
+
+    test "an extension without attach_attribution/1 takes any options, as before" do
+      assert [%Extension.Spec{}] =
+               Extension.validate!([{GettextLikeExtension, [ref: make_ref()]}])
     end
   end
 

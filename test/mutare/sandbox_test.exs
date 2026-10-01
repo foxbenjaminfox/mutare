@@ -266,6 +266,38 @@ defmodule Mutare.SandboxTest do
     refute File.exists?(Path.join(sandbox, "test/test_helper.exs"))
   end
 
+  test "calls a coverage-attribution extension after the user's helper, only when one is enabled",
+       context do
+    File.mkdir_p!(Path.join(context.project, "test"))
+    File.write!(Path.join(context.project, "test/test_helper.exs"), "UserHelper.start()\n")
+    attributing = Path.join(context.base, "attributing")
+    plain = Path.join(context.base, "plain")
+
+    Sandbox.prepare(context.project, context.schema,
+      sandbox: attributing,
+      extensions: [
+        {Mutare.Test.AttributionExtension, [header: "x-test"]},
+        Mutare.Test.GettextLikeExtension
+      ]
+    )
+
+    Sandbox.prepare(context.project, context.schema,
+      sandbox: plain,
+      extensions: [Mutare.Test.GettextLikeExtension]
+    )
+
+    helper = File.read!(Path.join(attributing, "test/test_helper.exs"))
+    call = ~s[:ok = Mutare.Test.AttributionExtension.attach_attribution(header: "x-test")]
+    [{user, _}] = :binary.matches(helper, "UserHelper.start()")
+    [{attach, _}] = :binary.matches(helper, call)
+    [{dump, _}] = :binary.matches(helper, "injected by Mutare: coverage dump")
+    assert user < attach and attach < dump
+    # Only the extension that exports `attach_attribution/1` is called.
+    refute helper =~ "GettextLikeExtension"
+
+    refute File.read!(Path.join(plain, "test/test_helper.exs")) =~ "coverage attribution"
+  end
+
   test "steps the generated support app aside from a real app at its name" do
     %{umbrella: umbrella, sandbox: sandbox} =
       Umbrella.build(:support_name_taken, %{

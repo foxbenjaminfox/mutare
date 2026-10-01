@@ -153,7 +153,7 @@ the cooldown, so it's one bypass per package, not a habit.
 
 The companion packages (`mutare_plug`, `mutare_phoenix`, `mutare_phoenix_live_view`,
 `mutare_ecto`, `mutare_oban`, `mutare_decimal`, `mutare_swoosh`, `mutare_phoenix_swoosh`,
-`mutare_gettext`) are **deliberately uncoupled** from the core. Releasing `mutare`
+`mutare_gettext`, `mutare_phoenix_ecto`) are **deliberately uncoupled** from the core. Releasing `mutare`
 does **not** require touching or re-releasing them:
 
 - The installer adds them with an open requirement (`@companion_requirement
@@ -176,7 +176,7 @@ own schedule; when a core *fix* is what a companion needs, the companion raises 
 - **Order.** `mutare_phoenix` depends on `mutare_plug`, `mutare_phoenix_live_view` on
   `mutare_phoenix`, and `mutare_phoenix_swoosh` on `mutare_swoosh` — a downstream
   package can't resolve (or publish) until its upstream is on Hex. `ecto`, `oban`,
-  `decimal`, `gettext` depend only on core.
+  `decimal`, `gettext`, `phoenix_ecto` depend only on core.
 - **A cooldown bypass** if the core it needs is under the configured cooldown
   limit (see above.)
 

@@ -6,7 +6,7 @@ if Code.ensure_loaded?(Igniter) do
 
         mix igniter.install mutare
 
-    Adds `:mutare` to your `:dev`/`:test` dependencies (`runtime: false`), then looks at what your project already depends on and wires up the matching companion packages — so a Plug/Phoenix/Ecto/Oban/Decimal/Swoosh/Gettext app gets framework-aware mutants without any manual configuration:
+    Adds `:mutare` to your `:dev`/`:test` dependencies (`runtime: false`), then looks at what your project already depends on and wires up the matching companion packages — so a Plug/Phoenix/Ecto/Oban/Decimal/Swoosh/Gettext app gets framework-aware mutants, and a Phoenix app with browser-driven tests gets per-test selection for them, without any manual configuration:
 
     | Detected dependency                               | Package added              | Wired into                                                             |
     | ------------------------------------------------- | -------------------------- | ---------------------------------------------------------------------- |
@@ -19,9 +19,10 @@ if Code.ensure_loaded?(Igniter) do
     | `:swoosh` / `:phoenix_swoosh`                     | `mutare_swoosh`            | `:mutators` — `Mutare.Swoosh.all/0`                                    |
     | `:phoenix_swoosh`                                 | `mutare_phoenix_swoosh`    | `:mutators` — `Mutare.Phoenix.Swoosh.all/0`                            |
     | `:gettext`                                        | `mutare_gettext`           | `:extensions` — `Mutare.Gettext`                                       |
+    | `:phoenix_ecto`                                   | `mutare_phoenix_ecto`      | `:extensions` — `Mutare.Phoenix.Ecto`                                  |
 
 
-    Each detected package is added as a `:dev`/`:test` dependency and wired into a generated `.mutare.exs`: a mutator package extends the `:mutators` list (alongside the `:builtins` group token, which keeps Mutare's own families on), while a non-mutating extension like `mutare_gettext` — which defines how the built-in mutators handle a library's compile-time syntax — joins the `:extensions` list. `mutare_phoenix` does both: its families join `:mutators`, and its front module — a `Mutare.CallRouting` extension that keeps Phoenix's compile-time macros (the router DSL, `~H`) out of the mutation set — joins `:extensions`. Nothing detected? You still get a starter `.mutare.exs` and a ready-to-run `mix mutare`.
+    Each detected package is added as a `:dev`/`:test` dependency and wired into a generated `.mutare.exs`: a mutator package extends the `:mutators` list (alongside the `:builtins` group token, which keeps Mutare's own families on), while a non-mutating extension joins the `:extensions` list: `mutare_gettext` defines how the built-in mutators handle a library's compile-time syntax, and `mutare_phoenix_ecto` tells the coverage probe which test sent each request a browser-driven test makes, from the SQL sandbox metadata phoenix_ecto already reads. `mutare_phoenix` does both: its families join `:mutators`, and its front module — a `Mutare.CallRouting` extension that keeps Phoenix's compile-time macros (the router DSL, `~H`) out of the mutation set — joins `:extensions`. Nothing detected? You still get a starter `.mutare.exs` and a ready-to-run `mix mutare`.
 
     If you already have a `.mutare.exs`, it is left untouched and the recommended `:mutators` / `:extensions` keys are printed as a notice for you to merge in by hand.
 
@@ -85,6 +86,11 @@ if Code.ensure_loaded?(Igniter) do
         # any library that calls it) declares `:gettext` directly, so a declared-dep
         # check is enough.
         gettext: Deps.has_dep?(igniter, :gettext),
+        # phoenix_ecto's SQL sandbox plug is how a browser-driven test's requests reach the
+        # test's database connection; `mutare_phoenix_ecto` reads the same metadata to attribute
+        # those requests' coverage to the test. An extension, not a mutator: it joins
+        # `:extensions` (below). A project using the plug declares `:phoenix_ecto` directly.
+        phoenix_ecto: Deps.has_dep?(igniter, :phoenix_ecto),
         # Oban contributes mutator families (`Mutare.Oban.all/0`). `mutare_oban` gates on
         # both the OSS `Oban.Worker` and the Pro `Oban.Pro.Worker` behaviour; a Pro-only
         # app may declare just `:oban_pro`, so check either signal.
@@ -396,7 +402,11 @@ if Code.ensure_loaded?(Igniter) do
     # `calls` shape in `mutators_expr/2` so a future extension is a one-line addition.
     defp extensions_expr(detected) do
       modules =
-        [{detected.phoenix, "Mutare.Phoenix"}, {detected.gettext, "Mutare.Gettext"}]
+        [
+          {detected.phoenix, "Mutare.Phoenix"},
+          {detected.gettext, "Mutare.Gettext"},
+          {detected.phoenix_ecto, "Mutare.Phoenix.Ecto"}
+        ]
         |> Enum.filter(&elem(&1, 0))
         |> Enum.map(&elem(&1, 1))
 
@@ -411,9 +421,10 @@ if Code.ensure_loaded?(Igniter) do
           detected.oban or detected.decimal or detected.swoosh or detected.phoenix_swoosh
 
     # Whether any detected dependency contributes a non-mutating extension (and so an
-    # `:extensions` key): Gettext, and Phoenix — a mutator package whose front module is
-    # *also* a `Mutare.CallRouting` extension.
-    defp extension_package?(detected), do: detected.phoenix or detected.gettext
+    # `:extensions` key): Gettext, phoenix_ecto, and Phoenix — a mutator package whose front
+    # module is *also* a `Mutare.CallRouting` extension.
+    defp extension_package?(detected),
+      do: detected.phoenix or detected.gettext or detected.phoenix_ecto
 
     # --- generated file bodies -----------------------------------------------
 
@@ -430,9 +441,10 @@ if Code.ensure_loaded?(Igniter) do
       # `:builtins` token keeps Mutare's own families on alongside any you add; drop a
       # family you don't want, or silence individual sites with `# mutare:ignore[family]`.
       #
-      # `:extensions` lists non-mutating extensions that teach Mutare a library's
+      # `:extensions` lists non-mutating extensions. Some teach Mutare a library's
       # compile-time vocabulary (e.g. Gettext, or Phoenix's router DSL and `~H`) so the
-      # built-in mutators land on it.
+      # built-in mutators land on it; others tell the coverage probe which test a process
+      # works for (e.g. a browser-driven test's requests, through Phoenix.Ecto's sandbox).
       #{list}
       """
     end

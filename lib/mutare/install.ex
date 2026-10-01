@@ -25,7 +25,8 @@ defmodule Mutare.Install do
     decimal: :mutare_decimal,
     swoosh: :mutare_swoosh,
     phoenix_swoosh: :mutare_phoenix_swoosh,
-    gettext: :mutare_gettext
+    gettext: :mutare_gettext,
+    phoenix_ecto: :mutare_phoenix_ecto
   ]
 
   @doc "This build's version."

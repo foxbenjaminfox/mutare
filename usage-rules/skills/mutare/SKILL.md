@@ -44,8 +44,11 @@ poisoned builds, harness errors, slow runs).
 3. **Each mutant runs only the test cases that executed it.** If code runs in a
    process no test can be traced to (an application-supervised GenServer, a bare
    `spawn`), its mutants fall back to the whole suite: still correct, but slow.
-   `--per-file` widens selection to whole covering files, `--full` to the whole
-   suite.
+   A browser-driven test's requests are such processes unless an extension says
+   which test sent them: `mutare_phoenix_ecto` does, for Phoenix with the Ecto SQL
+   sandbox, once listed under `:extensions` (`Mutare.CoverageAttribution` is the
+   behaviour for writing another). `--per-file` widens selection to whole covering
+   files, `--full` to the whole suite.
 4. **Mutare mutates the source as written, before macro expansion.** Macros whose
    arguments are not ordinary runtime code (query DSLs, schema definitions) need
    those arguments *routed*. The companion packages (`mutare_ecto`,

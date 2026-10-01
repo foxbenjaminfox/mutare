@@ -95,7 +95,11 @@ A harness error is a run that reached no verdict. It is excluded from the score,
   traced to runs the whole suite. After the coverage probe, a `↺` line says how many
   mutants will. `--verbose` tags each one's line `(whole suite)`, and the JSON marks
   it `testSelection: "suite"`. Application-supervised processes are
-  the usual source. Narrowing the scope with `--only` helps; `--per-file` does not.
+  the usual source, and so are browser-driven tests (Wallaby, Playwright): their
+  requests run in server processes. In a Phoenix project using the Ecto SQL sandbox,
+  listing `Mutare.Phoenix.Ecto` (from `mutare_phoenix_ecto`) under `:extensions`
+  attributes each request to the test that sent it. Narrowing the scope with `--only`
+  helps; `--per-file` does not.
 - **Timeouts.** The per-mutant cap defaults to 3 × the baseline's duration, and each
   timeout is confirmed by an uncontended re-run before it counts as a kill. With many
   timeouts, that confirmation dominates. A tighter `--timeout` (in ms) shortens both,

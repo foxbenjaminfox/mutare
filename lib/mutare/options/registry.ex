@@ -112,13 +112,15 @@ defmodule Mutare.Options.Registry do
   defp validate_argument_marks!(entries), do: Mutare.Mutator.validate_argument_marks!(entries)
 
   # `:extensions` (default `[]`) lists non-mutating modules implementing `Mutare.CallRouting`,
-  # `Mutare.UseExpansion`, or both, e.g. a Gettext integration. Each entry is a bare module or a
-  # `{module, opts}` pair (opts delivered to `expand_use/3`'s context), resolved to a
+  # `Mutare.UseExpansion`, `Mutare.CoverageAttribution`, or several, e.g. a Gettext integration.
+  # Each entry is a bare module or a `{module, opts}` pair (opts delivered to `expand_use/3`'s
+  # context and to `attach_attribution/1`), resolved to a
   # `Mutare.Extension.Spec`; the module must be a loaded extension. Resolution is by reflection (a
   # module *is* on the Mutare process path, unlike a `:call_routes` module which is only
   # named). `Mutare.Extension.validate!/1` is the single home for the check — shared with
   # `Mutare.Transform`, so a non-extension fails loudly on either entry path. Extensions are not
-  # mutators — they make the built-in mutators' work land, never produce mutations themselves.
+  # mutators — they make the built-in mutators' work land, or the coverage probe's attribution,
+  # never produce mutations themselves.
   # An explicit `nil` (like `:call_routes`) means "none", coerced to `[]` rather than raising.
   defp validate_extensions!(nil), do: []
   defp validate_extensions!(extensions), do: Mutare.Extension.validate!(extensions)

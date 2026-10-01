@@ -15018,3 +15018,91 @@ their fixtures read.
 
 Fast-loop sync time went from 31 s to 4 s; the fast loop from about 120 s to 78 s.
 
+
+### A process no lineage links to a test can declare its owner (2026-09-30)
+
+A browser-driven test (Wallaby, Hound, Playwright) sends requests that a web server's process
+serves. That process has no `$process_label`, no `$callers` and no `$ancestors` link to the
+test, so every hit in it went to the unlabeled bucket, and every mutant only such tests cover
+ran the whole suite. Phoenix.Ecto's SQL sandbox plug already carries the missing link: the test
+encodes its sandbox owner's pid into the request (the user agent by default), and the plug
+decodes it in the request process to allow that process into the owner's connection.
+
+Core takes the link without naming any library. `Mutare.CoverageAttribution.attribute_to/1`
+puts a pid under a process-dictionary key of the helper's runtime descriptor (`anchor_key`), and
+the helper's recovery walk visits it before `$callers` and `$ancestors`. What calls it is an
+extension implementing `Mutare.CoverageAttribution`: core writes a probe-gated call to its
+`attach_attribution/1` into the sandbox's test helper, after the user's helper, and the
+extension attaches whatever makes the declarations. For Phoenix that is `mutare_phoenix_ecto`,
+whose `:telemetry` handlers decode the metadata phoenix_ecto's plug read
+(`conn.assigns.phoenix_ecto_sandbox`) at `[:phoenix, :endpoint, :start]` and
+`[:phoenix, :router_dispatch, :start]`, and a connected LiveView's `connect_info` at
+`[:phoenix, :live_view, :mount, :start]`.
+
+Choices, each the one with the fewest assumptions:
+
+- **Telemetry, attached by an extension, not a plug in the user's endpoint.** The first cut
+  (unreleased) was a `sandbox:` module for phoenix_ecto's plug plus a plug wrapping it: it
+  needed the endpoint, the LiveView `on_mount` hook and every channel edited, ran in every
+  plain `mix test`, and could not be installed by igniter. Events Phoenix, LiveView and Bandit
+  already emit run in the process doing the work, before the application's code there, so
+  reading the same metadata from them needs one `.mutare.exs` line, which the installer
+  writes. It also stops depending on Ecto: what is attributed is "this request carried the
+  test's metadata", the same fact the allowance rests on.
+- **Only in the probe.** The attach call sits inside the probe-mode gate, so the baseline,
+  every mutant run and a plain `mix test` attach nothing. The options are written into the
+  helper as source, which is why `Extension.validate!/1` refuses options that are not plain
+  data for an extension exporting `attach_attribution/1`. A failing attach fails the probe,
+  which degrades to running every mutant against the whole suite — loud, and never a false
+  narrowing.
+- **A private key, not `$callers`.** Mox's private mode, `Req.Test` and the SQL sandbox itself
+  read `$callers`; putting the owner there would change what the suite does under Mutare, and
+  in the probe alone would change what the probe covers.
+- **A pid, not a label.** The writer knows the owner's pid, not its test. A pid can also be
+  checked for liveness: the memo's witness is the test found through it, so once that test
+  exits, the process's later hits go unlabeled again.
+- **Resolved as the declaring process would resolve itself.** The owner is usually
+  ecto_sql's `start_owner!/2` `Agent`, not the test, so the anchor's own label, stack, anchor,
+  `$callers` and `$ancestors` are walked. A lineage pid's `$callers` and `$ancestors` are
+  already in ours, so only its anchor is followed: a `Task` a request spawns reaches the test
+  through the request's anchor. Each pid is visited once, which ends a cycle of anchors.
+- **Set until replaced, and part of the memo's guard.** A declaration has no expiry of its
+  own: core cannot see where a process's work changes hands, so the writer declares at each
+  start and withdraws (`nil`) where no owner is known. A memo guarded by `$callers` alone kept
+  the first owner's test across a re-declaration. Bandit serves a keep-alive connection's
+  requests in one process, and by default clears its process dictionary between them
+  (`clear_process_dict`), which drops the declaration and the memo together; with that off,
+  the companion's `[:bandit, :request, :start]` handler withdraws before the endpoint runs, so
+  the plugs ahead of `Plug.Telemetry` do not run under the previous request's owner.
+- **A nested LiveView falls back to its parent.** A browser's websocket shares one
+  `connect_info` across every LiveView joined over it, but `Phoenix.LiveViewTest` gives a
+  nested one an empty map, so the handler declares `parent_pid` when `connect_info` names no
+  owner. Only connected mounts are handled: a nested LiveView in a dead render may have no
+  `connect_info`, where `get_connect_info/2` raises — and `:telemetry` detaches a handler that
+  raises, which would end attribution for the rest of the probe.
+- **An inherited anchor is read once.** A process resolved through a lineage pid's anchor
+  memoizes what that anchor said at its first hit, guarded by its own `$callers` and anchor
+  only, so if the parent is re-anchored, the child keeps the earlier test until that test
+  exits. Re-reading the parent's anchor per hit is not more correct: what the child works
+  for was fixed when it was spawned, which neither reading recovers, and the SQL sandbox
+  resolves a `$callers` allowance per query, so the child's writes land in whichever owner
+  the parent holds then. It would also cost a cross-process read per hit in every such
+  child — LiveView's `assign_async`/`start_async` tasks among them, since the LiveView
+  process is anchored — the cost that once livelocked the probe. The window needs a child
+  still running after its parent has moved on to another test's request, while the earlier
+  test is alive.
+
+Left alone: a test in shared sandbox mode sends no owner, so its requests stay unlabeled.
+Attributing through the shared owner would pin a background process's hits to whichever test
+happens to be running — a false narrowing, where the unlabeled bucket is only slow. Channel
+processes stay unlabeled too: no event fires in one before `join/3`.
+
+Building this turned up a latent bug in the label check. `label/0` and `label_of/1` took any
+`{atom, _}` process label for a test's, and `start_owner!/2` labels its owner
+`{:sql_sandbox_owner, %{started_by: pid}}` (ecto_sql 3.14), as an application may label its own
+processes. Such a label mapped to no test file, so `dump/1` dropped the hit where it should have
+gone unlabeled. A mutant a real test also covered then ran only that test's file — the
+non-test name also put the id in the whole-file set, so `:tests` did not narrow it further —
+and survived if only a test in another file would have killed it. A label now counts
+only when its module exports `__ex_unit__/0`, as every `use ExUnit.Case` module does
+(`exunit_label/1`), and otherwise the lower tiers run.

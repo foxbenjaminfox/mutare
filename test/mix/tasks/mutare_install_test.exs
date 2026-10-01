@@ -316,6 +316,28 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     assert content =~ "extensions: [Mutare.Phoenix, Mutare.Gettext]"
   end
 
+  test "phoenix_ecto: adds mutare_phoenix_ecto under :extensions beside mutare_ecto" do
+    igniter = project([{:phoenix_ecto, "~> 4.6"}]) |> install()
+
+    assert Deps.has_dep?(igniter, :mutare_phoenix_ecto)
+    assert Deps.has_dep?(igniter, :mutare_ecto)
+
+    assert {:ok, declaration} = Deps.get_dep(igniter, :mutare_phoenix_ecto)
+    assert declaration =~ "only: [:dev, :test]"
+
+    content = config(igniter)
+    assert content =~ "extensions: [Mutare.Phoenix.Ecto]"
+    assert content =~ "{Mutare.Ecto, repo: "
+  end
+
+  test "a full Phoenix app lists every extension, in registry order" do
+    igniter =
+      project([{:phoenix, "~> 1.7"}, {:gettext, "~> 0.26"}, {:phoenix_ecto, "~> 4.6"}])
+      |> install()
+
+    assert config(igniter) =~ "extensions: [Mutare.Phoenix, Mutare.Gettext, Mutare.Phoenix.Ecto]"
+  end
+
   test "gettext dep is dev/test-only and runtime: false" do
     igniter = project([{:gettext, "~> 0.26"}]) |> install()
 
@@ -380,7 +402,8 @@ defmodule Mix.Tasks.Mutare.InstallTest do
       {:oban, "~> 2.18"},
       {:decimal, "~> 2.1"},
       {:phoenix_swoosh, "~> 1.2"},
-      {:gettext, "~> 0.26"}
+      {:gettext, "~> 0.26"},
+      {:phoenix_ecto, "~> 4.6"}
     ]
 
     igniter = project(frameworks) |> install(["--repo", "MyApp.Repo"])

@@ -1,3 +1,17 @@
+# Stand-ins for ExUnit case modules, for the labels these tests set by hand: the helper takes a
+# `$process_label` as a test's only when its module exports `__ex_unit__/0`, as every
+# `use ExUnit.Case` module does.
+for name <-
+      ~w(DocMod FakeAttrMod GainedCallerMod GroupMod GroupRelabelMod GroupWitnessMod PerTestMod PropMod RecoveredMod RecoveredThenDeadMod RelabelFirstMod RelabelSecondMod ReusedFirstMod ReusedSecondMod SharedMod AnchorMod ReanchorFirstMod ReanchorSecondMod)a do
+  # Bound first: `defmodule <remote-call>` is rejected ("invalid module name").
+  mod = Module.concat(Mutare.Coverage.HelperTemplateTest.Cases, name)
+
+  defmodule mod do
+    @moduledoc false
+    def __ex_unit__, do: nil
+  end
+end
+
 # A run-time stand-in for an ExUnit-*compiled* test module, for the `on_exit` recovery tests: a
 # `:"test …"`-named function (the shape ExUnit's `test` macro generates) that *returns* the closure
 # a test body would register with `on_exit`. The closure's frame is therefore named
@@ -64,6 +78,29 @@ defmodule Mutare.Coverage.HelperTemplateTest do
 
   alias Mutare.Coverage.HelperTemplate, as: H
   alias Mutare.Coverage.HelperTemplateTest.{DeepFixture, OnExitFixture}
+
+  alias Mutare.Coverage.HelperTemplateTest.Cases.{
+    AnchorMod,
+    DocMod,
+    FakeAttrMod,
+    GainedCallerMod,
+    GroupMod,
+    GroupRelabelMod,
+    GroupWitnessMod,
+    PerTestMod,
+    PropMod,
+    ReanchorFirstMod,
+    ReanchorSecondMod,
+    RecoveredMod,
+    RecoveredThenDeadMod,
+    RelabelFirstMod,
+    RelabelSecondMod,
+    ReusedFirstMod,
+    ReusedSecondMod,
+    SharedMod
+  }
+
+  @anchor_key H.runtime(:fixture).anchor_key
 
   # Tables are created once and owned by the (module-lifetime) setup_all process, so they
   # survive across every test. `hit([777])` here runs *inside* `__ex_unit__/2`, exercising the
@@ -547,6 +584,219 @@ defmodule Mutare.Coverage.HelperTemplateTest do
     end
   end
 
+  describe "hit — a label that names no ExUnit case" do
+    test "a label naming a real ExUnit case is a test label", %{test: name} do
+      # The other tests label processes with stand-in modules, so this is the one that fails if
+      # ExUnit stops exporting what `exunit_label/1` checks for. The bare spawn has no test frame
+      # and no lineage, so no lower tier could attribute the hit in its place.
+      run_in(fn -> H.hit([1403]) end, label: {__MODULE__, name})
+
+      assert :ets.lookup(H.test_table(), {__MODULE__, name, 1403}) ==
+               [{{__MODULE__, name, 1403}}]
+
+      assert :ets.lookup(H.unlabeled_table(), 1403) == []
+    end
+
+    test "an own two-tuple label of a non-test module is not a test label" do
+      # ecto_sql's `start_owner!/2` labels its owner this way. Taken as a label, the id would be
+      # attributed to a module with no test file and dropped at dump time instead of going to the
+      # unlabeled bucket.
+      run_in(fn -> H.hit([1401]) end, label: {:sql_sandbox_owner, %{started_by: self()}})
+
+      assert :ets.lookup(H.unlabeled_table(), 1401) == [{1401}]
+      refute Enum.any?(:ets.tab2list(H.attr_table()), fn {{_mod, id}} -> id == 1401 end)
+      assert :ets.lookup(H.wholefile_table(), 1401) == []
+    end
+
+    test "a caller labeled by a non-test module is passed over for the next one" do
+      bystander = labeled_holder({:worker_pool, :worker})
+      holder = labeled_holder({RecoveredMod, :"test beyond the bystander"})
+
+      in_worker(fn ->
+        Process.put(:"$callers", [bystander, holder])
+        H.hit([1402])
+      end)
+
+      assert :ets.lookup(H.test_table(), {RecoveredMod, :"test beyond the bystander", 1402}) ==
+               [{{RecoveredMod, :"test beyond the bystander", 1402}}]
+
+      refute Enum.any?(:ets.tab2list(H.attr_table()), fn {{mod, id}} ->
+               id == 1402 and mod == :worker_pool
+             end)
+    end
+  end
+
+  describe "hit — a declared owner (the anchor)" do
+    test "an anchored process is attributed to the owner's test" do
+      owner = labeled_holder({AnchorMod, :"test drives a browser"})
+
+      in_worker(fn ->
+        Process.put(@anchor_key, owner)
+        H.hit([1501])
+      end)
+
+      assert :ets.lookup(H.test_table(), {AnchorMod, :"test drives a browser", 1501}) ==
+               [{{AnchorMod, :"test drives a browser", 1501}}]
+
+      assert :ets.lookup(H.unlabeled_table(), 1501) == []
+    end
+
+    test "an owner is resolved through its own ancestry, as a sandbox owner is" do
+      # The shape of ecto_sql's `start_owner!/2`: an unlinked `Agent` started by the test, with a
+      # label naming no test. Its `$ancestors` begins with the test process.
+      test_pid = self()
+
+      {:ok, owner} =
+        Agent.start(fn -> Process.set_label({:sql_sandbox_owner, %{started_by: test_pid}}) end)
+
+      on_exit(fn -> Process.exit(owner, :kill) end)
+
+      in_worker(fn ->
+        Process.put(@anchor_key, owner)
+        H.hit([1502])
+      end)
+
+      assert Enum.any?(:ets.tab2list(H.test_table()), &match?({{__MODULE__, _name, 1502}}, &1))
+      assert :ets.lookup(H.unlabeled_table(), 1502) == []
+    end
+
+    test "a process spawned by an anchored one resolves through the anchor" do
+      owner = labeled_holder({AnchorMod, :"test spawns from a request"})
+
+      in_worker(fn ->
+        Process.put(@anchor_key, owner)
+        Task.async(fn -> H.hit([1503]) end) |> Task.await()
+      end)
+
+      assert :ets.lookup(H.test_table(), {AnchorMod, :"test spawns from a request", 1503}) ==
+               [{{AnchorMod, :"test spawns from a request", 1503}}]
+
+      assert :ets.lookup(H.unlabeled_table(), 1503) == []
+    end
+
+    test "re-anchoring a process switches its attribution while both owners live" do
+      # A keep-alive connection serving a second test's request: the memo is guarded by the
+      # anchor, so the first owner's attribution is not kept.
+      first = labeled_holder({ReanchorFirstMod, :"test first request"})
+      second = labeled_holder({ReanchorSecondMod, :"test second request"})
+
+      in_worker(fn ->
+        Process.put(@anchor_key, first)
+        H.hit([1504, 1506])
+        Process.put(@anchor_key, second)
+        H.hit([1505, 1506])
+      end)
+
+      assert :ets.lookup(H.attr_table(), {ReanchorFirstMod, 1504}) == [{{ReanchorFirstMod, 1504}}]
+
+      assert :ets.lookup(H.attr_table(), {ReanchorSecondMod, 1505}) == [
+               {{ReanchorSecondMod, 1505}}
+             ]
+
+      assert :ets.lookup(H.attr_table(), {ReanchorSecondMod, 1506}) == [
+               {{ReanchorSecondMod, 1506}}
+             ]
+
+      assert :ets.lookup(H.attr_table(), {ReanchorFirstMod, 1505}) == []
+    end
+
+    test "withdrawing the anchor makes the process unlabeled while the owner lives" do
+      # A keep-alive connection's request that carries no owner: the anchor is withdrawn
+      # (`attribute_to(nil)` deletes the key), and the memo guarded by it is not kept.
+      owner = labeled_holder({AnchorMod, :"test before the withdrawal"})
+
+      in_worker(fn ->
+        Process.put(@anchor_key, owner)
+        H.hit([1512])
+        Process.delete(@anchor_key)
+        H.hit([1512, 1513])
+      end)
+
+      assert :ets.lookup(H.test_table(), {AnchorMod, :"test before the withdrawal", 1512}) ==
+               [{{AnchorMod, :"test before the withdrawal", 1512}}]
+
+      assert :ets.lookup(H.unlabeled_table(), 1512) == [{1512}]
+      assert :ets.lookup(H.unlabeled_table(), 1513) == [{1513}]
+      assert Process.alive?(owner)
+    end
+
+    test "an anchored process becomes unlabeled once the owner's test exits" do
+      parent = self()
+      owner = labeled_holder({AnchorMod, :"test exits first"})
+      owner_ref = Process.monitor(owner)
+
+      {worker, worker_ref} =
+        spawn_monitor(fn ->
+          Process.put(@anchor_key, owner)
+          H.hit([1507])
+          send(parent, :first_recorded)
+
+          receive do
+            :owner_exited -> H.hit([1507, 1508])
+          end
+        end)
+
+      assert_receive :first_recorded
+      assert :ets.lookup(H.unlabeled_table(), 1507) == []
+      Process.exit(owner, :kill)
+      assert_receive {:DOWN, ^owner_ref, :process, ^owner, _}
+      send(worker, :owner_exited)
+      assert_receive {:DOWN, ^worker_ref, :process, ^worker, :normal}
+
+      assert :ets.lookup(H.unlabeled_table(), 1507) == [{1507}]
+      assert :ets.lookup(H.unlabeled_table(), 1508) == [{1508}]
+    end
+
+    test "an anchor to a dead or remote pid, or a cycle of anchors, attributes nothing" do
+      dead = spawn(fn -> :ok end)
+      dead_ref = Process.monitor(dead)
+      assert_receive {:DOWN, ^dead_ref, :process, ^dead, _}
+
+      in_worker(fn ->
+        Process.put(@anchor_key, dead)
+        H.hit([1509])
+      end)
+
+      in_worker(fn ->
+        Process.put(@anchor_key, remote_pid(self()))
+        H.hit([1510])
+      end)
+
+      parent = self()
+
+      a =
+        spawn(fn ->
+          receive do
+            {:anchor, pid} -> Process.put(@anchor_key, pid)
+          end
+
+          send(parent, :anchored)
+          Process.sleep(:infinity)
+        end)
+
+      b =
+        spawn(fn ->
+          Process.put(@anchor_key, a)
+          send(parent, :anchored)
+          Process.sleep(:infinity)
+        end)
+
+      send(a, {:anchor, b})
+      assert_receive :anchored
+      assert_receive :anchored
+      on_exit(fn -> Enum.each([a, b], &Process.exit(&1, :kill)) end)
+
+      in_worker(fn ->
+        Process.put(@anchor_key, a)
+        H.hit([1511])
+      end)
+
+      for id <- 1509..1511 do
+        assert :ets.lookup(H.unlabeled_table(), id) == [{id}]
+      end
+    end
+  end
+
   describe "dump/1 — serialising the tables to the dump file" do
     setup do
       dump =
@@ -644,6 +894,26 @@ defmodule Mutare.Coverage.HelperTemplateTest do
     )
 
     assert_received {:reported, false}
+  end
+
+  # Run `fun` in a fresh, unlabeled process and wait for it to finish.
+  defp in_worker(fun) do
+    {pid, ref} = spawn_monitor(fun)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
+  end
+
+  # A pid of another node, built by rewriting a local pid's external term format: the helper never
+  # sends to it or reads it, so no such node need exist. The node atom is encoded as
+  # SMALL_ATOM_UTF8_EXT (119) by default from OTP 26, as ATOM_EXT (100, two-byte length) before.
+  defp remote_pid(pid) do
+    rest =
+      case :erlang.term_to_binary(pid) do
+        <<131, 88, 119, len, _node::binary-size(len), rest::binary>> -> rest
+        <<131, 88, 100, len::16, _node::binary-size(len), rest::binary>> -> rest
+      end
+
+    node = "nowhere@nohost"
+    :erlang.binary_to_term(<<131, 88, 119, byte_size(node), node::binary, rest::binary>>)
   end
 
   # A live, labeled process to stand in a worker's `$callers` chain; killed on test exit.

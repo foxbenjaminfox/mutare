@@ -32,9 +32,10 @@ It inspects your dependencies and, for each framework it finds, adds the matchin
 | `:swoosh` / `:phoenix_swoosh`                     | `mutare_swoosh`            | `:mutators` — `Mutare.Swoosh.all/0`                                    |
 | `:phoenix_swoosh`                                 | `mutare_phoenix_swoosh`    | `:mutators` — `Mutare.Phoenix.Swoosh.all/0`                            |
 | `:gettext`                                        | `mutare_gettext`           | `:extensions` — `Mutare.Gettext`                                       |
+| `:phoenix_ecto`                                   | `mutare_phoenix_ecto`      | `:extensions` — `Mutare.Phoenix.Ecto`                                  |
 
 
-A mutator package extends the `:mutators` list; a non-mutating extension like `mutare_gettext` (which defines how the built-in mutators handle a library's compile-time syntax) joins the `:extensions` list; `mutare_phoenix` does both, since its front module also routes Phoenix's compile-time macros. The Ecto repo is detected automatically (pass `--repo MyApp.Repo` to override). If you already have a `.mutare.exs`, it is left untouched and the recommended keys are printed for you to merge in.
+A mutator package extends the `:mutators` list, and a non-mutating extension joins the `:extensions` list: `mutare_gettext` defines how the built-in mutators handle a library's compile-time syntax, and `mutare_phoenix_ecto` runs the mutants a browser-driven test's requests reach against only that test, from the SQL sandbox metadata they carry. `mutare_phoenix` does both, since its front module also routes Phoenix's compile-time macros. The Ecto repo is detected automatically (pass `--repo MyApp.Repo` to override). If you already have a `.mutare.exs`, it is left untouched and the recommended keys are printed for you to merge in.
 
 You can install igniter globally, with `mix archive.install hex igniter_new`, or add it to your project's `mix.exs`:
 
@@ -58,6 +59,7 @@ Or add mutare by hand — though if you're using any macro-heavy libraries, like
 # {:mutare_swoosh, ">= 0.0.0", only: [:dev, :test], runtime: false}
 # {:mutare_phoenix_swoosh, ">= 0.0.0", only: [:dev, :test], runtime: false}
 # {:mutare_gettext, ">= 0.0.0", only: [:dev, :test], runtime: false}
+# {:mutare_phoenix_ecto, ">= 0.0.0", only: [:dev, :test], runtime: false}
 ```
 
 Then run `mix mutare`.

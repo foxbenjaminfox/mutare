@@ -23,7 +23,9 @@ defmodule Mutare.Coverage do
       recoverable test label *at all* — a bare spawn, a `setup`-registered `on_exit`
       closure, or the rare `setup_all` whose work happened off-stack in a `Task` it
       spawned (an `on_exit` registered in a test body *is* recovered, via its
-      closure frame in ExUnit's per-test runner process). An id here
+      closure frame in ExUnit's per-test runner process, and a process that declared
+      its owner with `Mutare.CoverageAttribution.attribute_to/1` is attributed to that
+      owner's test). An id here
       was covered, but cannot be attributed to a specific test, so the caller runs the
       **whole suite** for it — even if `:by_file` *also* attributes it to some file,
       since that partial attribution would otherwise mask the unlabeled coverage and
