@@ -57,6 +57,12 @@ Run these on a clean `master` with nothing uncommitted. `origin` is GitHub
 
 2. **Bump `@version`** in `mix.exs` (the `@version "X.Y.Z"` line). That is the only
    code change a **patch** release needs — `source_ref` follows automatically.
+   **Also regenerate the README's install snippet** in the same commit: `mix check`
+   (the pre-commit hook and CI) fails until `README.md` contains
+   `Mutare.Install.readme_snippet/0` verbatim, and its error prints the snippet to
+   paste. On 0.x every release moves the snippet, patches included; the rule and its
+   reasons are `Mutare.Install.requirement/1`'s. The installer reads the same module,
+   so it needs no edit.
 
 3. **Update `CHANGELOG.md`** (Keep a Changelog format):
    - Rename the `## [Unreleased]` heading to `## [X.Y.Z] - YYYY-MM-DD` (today's date).
@@ -151,13 +157,12 @@ The companion packages (`mutare_plug`, `mutare_phoenix`, `mutare_phoenix_live_vi
 does **not** require touching or re-releasing them:
 
 - The installer adds them with an open requirement (`@companion_requirement
-  ">= 0.0.0"` in `lib/mix/tasks/mutare.install.ex`), so `mix deps.get` resolves
+  ">= 0.0.0"` in `lib/mutare/install.ex`), so `mix deps.get` resolves
   whatever companion version is current and compatible. Nothing to bump here on a
   Mutare release.
-- The README's install section names the companions but does not pin them, so it
-  needs no edit either. (Its `{:mutare, "~> 0.x", …}` snippet is Mutare's *own*
-  version — update that to the new `~>` window on a minor/major, as you would any
-  install doc; that's not companion coupling.)
+- The README's install snippet lists the companions with the same open requirement
+  (both read `Mutare.Install`), so it needs no edit either. (Its `{:mutare, …}` line
+  is Mutare's *own* version, regenerated in step 2; that's not companion coupling.)
 
 What makes this safe is the **contract**, owned on the companion side: each
 companion's own `mix.exs` declares the range of `mutare` it supports, and Mutare

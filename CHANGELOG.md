@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `mix igniter.install mutare` now writes the installed version (`~> 0.4.3`) for `:mutare`
+  in place of igniter's default `~> 0.4`, which admits the next 0.x minor, where breaking
+  changes land. `mix mutare.install` makes the rewrite, so it also applies to a hand-written
+  `~> 0.4` (what this README used to suggest); any other requirement is left alone.
+
+### Fixed
+
+- Without igniter, `mix mutare.install` suggested adding `{:mutare, "~> 0.1", …}`; it now
+  suggests the requirement for the installed version.
+
 ## [0.4.3] - 2026-09-28
 
 ### Added

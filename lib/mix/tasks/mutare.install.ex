@@ -33,14 +33,10 @@ if Code.ensure_loaded?(Igniter) do
     """
     use Igniter.Mix.Task
 
-    @example "mix igniter.install mutare"
+    alias Igniter.Project.Deps
+    alias Mutare.Install
 
-    # Companion packages release independently of Mutare, so the installer adds
-    # them with an open requirement: `mix deps.get` then resolves whatever version
-    # is current and compatible (each companion pins the Mutare versions it
-    # supports in its own mix.exs). This keeps the two uncoupled — a Mutare release
-    # never has to re-pin or re-release the companions in lockstep.
-    @companion_requirement ">= 0.0.0"
+    @example "mix igniter.install mutare"
 
     @impl Igniter.Mix.Task
     def info(_argv, _composing_task) do
@@ -68,50 +64,50 @@ if Code.ensure_loaded?(Igniter) do
         plug:
           Enum.any?(
             [:plug, :bandit, :plug_cowboy, :phoenix],
-            &Igniter.Project.Deps.has_dep?(igniter, &1)
+            &Deps.has_dep?(igniter, &1)
           ),
         # Phoenix layers the controller surface on Plug; `mutare_phoenix` layers on
         # `mutare_plug` the same way (and arrives alongside it above). Its front module is
         # also a `Mutare.CallRouting` extension, so it joins `:extensions` (below) to keep
         # Phoenix's compile-time macros (router DSL, `~H`) from poisoning the build.
-        phoenix: Igniter.Project.Deps.has_dep?(igniter, :phoenix),
-        live_view: Igniter.Project.Deps.has_dep?(igniter, :phoenix_live_view),
+        phoenix: Deps.has_dep?(igniter, :phoenix),
+        phoenix_live_view: Deps.has_dep?(igniter, :phoenix_live_view),
         # A DB-backed app declares one of these in mix.exs (and pulls `:ecto` in
         # transitively); `has_dep?` only sees *declared* deps, so check each candidate
         # signal rather than the resolved tree.
         ecto:
           Enum.any?(
             [:ecto_sql, :phoenix_ecto, :ecto],
-            &Igniter.Project.Deps.has_dep?(igniter, &1)
+            &Deps.has_dep?(igniter, &1)
           ),
         # Gettext is wired up as an extension, not a mutator family: it joins `:extensions`
         # (below), not `:mutators`. A Gettext-using app (every default Phoenix app, plus
         # any library that calls it) declares `:gettext` directly, so a declared-dep
         # check is enough.
-        gettext: Igniter.Project.Deps.has_dep?(igniter, :gettext),
+        gettext: Deps.has_dep?(igniter, :gettext),
         # Oban contributes mutator families (`Mutare.Oban.all/0`). `mutare_oban` gates on
         # both the OSS `Oban.Worker` and the Pro `Oban.Pro.Worker` behaviour; a Pro-only
         # app may declare just `:oban_pro`, so check either signal.
-        oban: Enum.any?([:oban, :oban_pro], &Igniter.Project.Deps.has_dep?(igniter, &1)),
+        oban: Enum.any?([:oban, :oban_pro], &Deps.has_dep?(igniter, &1)),
         # Decimal contributes mutator families (`Mutare.Decimal.all/0`) for Decimal
         # arithmetic/comparison calls. Unlike Ecto, decimal-using packages normally
         # declare `:decimal` directly, so a declared-dep check is the right signal.
-        decimal: Igniter.Project.Deps.has_dep?(igniter, :decimal),
+        decimal: Deps.has_dep?(igniter, :decimal),
         # Swoosh contributes mutator families (`Mutare.Swoosh.all/0`) for email
         # construction/delivery calls. A `phoenix_swoosh` app builds its emails through
         # `Swoosh.Email` too, and `has_dep?` only sees *declared* deps — a project may
         # declare just `:phoenix_swoosh` and pull `:swoosh` in transitively — so either
         # signal wires up `mutare_swoosh`.
-        swoosh:
-          Enum.any?([:swoosh, :phoenix_swoosh], &Igniter.Project.Deps.has_dep?(igniter, &1)),
+        swoosh: Enum.any?([:swoosh, :phoenix_swoosh], &Deps.has_dep?(igniter, &1)),
         # phoenix_swoosh layers template rendering on Swoosh; `mutare_phoenix_swoosh`
         # layers on `mutare_swoosh` the same way (and arrives alongside it above).
-        phoenix_swoosh: Igniter.Project.Deps.has_dep?(igniter, :phoenix_swoosh)
+        phoenix_swoosh: Deps.has_dep?(igniter, :phoenix_swoosh)
       }
 
       {igniter, repo} = resolve_repo(igniter, detected.ecto)
 
       igniter
+      |> narrow_mutare_requirement()
       |> add_companion_deps(detected)
       |> fetch_companion_deps()
       |> configure(detected, repo)
@@ -141,17 +137,50 @@ if Code.ensure_loaded?(Igniter) do
       end
     end
 
+    # `mix igniter.install mutare` adds `:mutare` itself before this task runs, with
+    # igniter's general requirement for the version it fetched (`~> 0.4` for 0.4.3) —
+    # which on 0.x admits the next, possibly breaking, minor. Narrow exactly that line to
+    # the requirement Mutare suggests (`Mutare.Install.requirement/0`, `~> 0.4.3`). Any other
+    # requirement, or options that aren't plain literals, are the user's and stay.
+    defp narrow_mutare_requirement(igniter) do
+      general = Igniter.Util.Version.version_string_to_general_requirement!(Install.version())
+
+      with true <- narrows?(general),
+           {:ok, declaration} when is_binary(declaration) <- Deps.get_dep(igniter, :mutare),
+           {:ok, dep} <- narrowed_dep(declaration, general) do
+        Deps.add_dep(igniter, dep, on_exists: :overwrite, yes?: true)
+      else
+        _ -> igniter
+      end
+    end
+
+    # Whether Mutare's requirement is strictly narrower than igniter's, so replacing it
+    # never widens what the user gets. For a release it is, unless the two agree (`~> 1.0`
+    # for 1.0.0). For a pre-release igniter already names the full version
+    # (`~> 1.2.0-rc.1`), which Mutare's matches on 0.x and widens from 1.0 (`~> 1.2-rc.1`).
+    defp narrows?(general) do
+      Version.parse!(Install.version()).pre == [] and general != Install.requirement()
+    end
+
+    defp narrowed_dep(declaration, general) do
+      case Code.string_to_quoted(declaration) do
+        {:ok, {:mutare, ^general}} ->
+          {:ok, {:mutare, Install.requirement()}}
+
+        {:ok, {:{}, _, [:mutare, ^general, opts]}} ->
+          if Macro.quoted_literal?(opts) and Keyword.keyword?(opts),
+            do: {:ok, {:mutare, Install.requirement(), opts}},
+            else: :error
+
+        _ ->
+          :error
+      end
+    end
+
     defp add_companion_deps(igniter, detected) do
-      igniter
-      |> maybe_add_dep(detected.plug, :mutare_plug)
-      |> maybe_add_dep(detected.phoenix, :mutare_phoenix)
-      |> maybe_add_dep(detected.live_view, :mutare_phoenix_live_view)
-      |> maybe_add_dep(detected.ecto, :mutare_ecto)
-      |> maybe_add_dep(detected.oban, :mutare_oban)
-      |> maybe_add_dep(detected.decimal, :mutare_decimal)
-      |> maybe_add_dep(detected.swoosh, :mutare_swoosh)
-      |> maybe_add_dep(detected.phoenix_swoosh, :mutare_phoenix_swoosh)
-      |> maybe_add_dep(detected.gettext, :mutare_gettext)
+      Enum.reduce(Install.companions(), igniter, fn {framework, package}, igniter ->
+        maybe_add_dep(igniter, Map.fetch!(detected, framework), package)
+      end)
     end
 
     defp maybe_add_dep(igniter, false, _name), do: igniter
@@ -167,12 +196,12 @@ if Code.ensure_loaded?(Igniter) do
       # `mix test`, whether or not the app's own code references it — so `:mutare` must be
       # reachable in `:test` for *this* package to compile there, regardless of whether the
       # user ever writes a custom mutator themselves.
-      if Igniter.Project.Deps.has_dep?(igniter, name) do
+      if Deps.has_dep?(igniter, name) do
         igniter
       else
-        Igniter.Project.Deps.add_dep(
+        Deps.add_dep(
           igniter,
-          {name, @companion_requirement, only: [:dev, :test], runtime: false}
+          {name, Install.companion_requirement(), only: [:dev, :test], runtime: false}
         )
       end
     end
@@ -262,7 +291,7 @@ if Code.ensure_loaded?(Igniter) do
     # itself stays the user's to run: it acts on the project's whole usage_rules config,
     # not just Mutare's entry.
     defp register_agent_skill(igniter) do
-      if Igniter.Project.Deps.has_dep?(igniter, :usage_rules) do
+      if Deps.has_dep?(igniter, :usage_rules) do
         updated =
           Igniter.Project.MixProject.update(
             igniter,
@@ -348,7 +377,7 @@ if Code.ensure_loaded?(Igniter) do
         [
           {detected.plug, "Mutare.Plug.all()"},
           {detected.phoenix, "Mutare.Phoenix.all()"},
-          {detected.live_view, "Mutare.Phoenix.LiveView.all()"},
+          {detected.phoenix_live_view, "Mutare.Phoenix.LiveView.all()"},
           {detected.oban, "Mutare.Oban.all()"},
           {detected.decimal, "Mutare.Decimal.all()"},
           {detected.swoosh, "Mutare.Swoosh.all()"},
@@ -378,7 +407,7 @@ if Code.ensure_loaded?(Igniter) do
     # `:mutators` key). Gettext is an extension, not a mutator, so it is excluded here.
     defp mutator_package?(detected),
       do:
-        detected.plug or detected.phoenix or detected.live_view or detected.ecto or
+        detected.plug or detected.phoenix or detected.phoenix_live_view or detected.ecto or
           detected.oban or detected.decimal or detected.swoosh or detected.phoenix_swoosh
 
     # Whether any detected dependency contributes a non-mutating extension (and so an
@@ -442,7 +471,7 @@ else
 
       Or add Mutare to your deps by hand (in `:dev`/`:test`):
 
-          {:mutare, "~> 0.1", only: [:dev, :test], runtime: false}
+          #{Mutare.Install.dep_line(:mutare, Mutare.Install.requirement())}
       """)
     end
   end

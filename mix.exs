@@ -242,7 +242,23 @@ defmodule Mutare.MixProject do
 
   defp aliases do
     [
-      check: ["format --check-formatted", "credo", "dialyzer"]
+      check: ["format --check-formatted", "credo", &check_install_snippet/1, "dialyzer"]
     ]
+  end
+
+  # The README's by-hand install snippet must be the one `Mutare.Install` renders for
+  # this version, so the release commit that bumps `@version` (or a change to the
+  # companion list) can't leave it behind. Part of `check`, so the pre-commit hook and
+  # CI both hold it.
+  defp check_install_snippet(_args) do
+    Mix.Task.run("compile")
+    snippet = Mutare.Install.readme_snippet()
+
+    unless File.read!("README.md") =~ snippet do
+      Mix.raise(
+        "README.md's install snippet is out of date. It must contain, verbatim:\n\n" <>
+          snippet
+      )
+    end
   end
 end

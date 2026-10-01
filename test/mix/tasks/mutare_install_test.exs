@@ -372,6 +372,70 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     assert declaration =~ "runtime: false"
   end
 
+  test "every companion package is added when its framework is detected" do
+    frameworks = [
+      {:phoenix, "~> 1.7"},
+      {:phoenix_live_view, "~> 1.0"},
+      {:ecto_sql, "~> 3.12"},
+      {:oban, "~> 2.18"},
+      {:decimal, "~> 2.1"},
+      {:phoenix_swoosh, "~> 1.2"},
+      {:gettext, "~> 0.26"}
+    ]
+
+    igniter = project(frameworks) |> install(["--repo", "MyApp.Repo"])
+
+    for {_framework, package} <- Mutare.Install.companions() do
+      assert Deps.has_dep?(igniter, package), "#{package} was not added"
+    end
+  end
+
+  # --- the :mutare line igniter wrote --------------------------------------
+
+  # What `mix igniter.install mutare` writes for this build: igniter's general requirement.
+  defp igniter_written_mutare do
+    general =
+      Igniter.Util.Version.version_string_to_general_requirement!(Mutare.Install.version())
+
+    {:mutare, general, only: [:dev, :test], runtime: false}
+  end
+
+  test "narrows igniter's general :mutare requirement to the suggested one" do
+    {_, general, _} = mutare = igniter_written_mutare()
+    # On 0.x they differ; were they equal the narrowing would have nothing to show.
+    assert general != Mutare.Install.requirement()
+
+    igniter = project([mutare]) |> install()
+
+    assert {:ok, declaration} = Deps.get_dep(igniter, :mutare)
+    assert declaration =~ ~s({:mutare, "#{Mutare.Install.requirement()}")
+    assert declaration =~ "only: [:dev, :test]"
+    assert declaration =~ "runtime: false"
+  end
+
+  test "leaves any other :mutare requirement alone" do
+    igniter = project([{:mutare, "== 0.4.1", only: :test}]) |> install()
+
+    assert {:ok, declaration} = Deps.get_dep(igniter, :mutare)
+    assert declaration =~ ~s({:mutare, "== 0.4.1")
+  end
+
+  test "leaves igniter's requirement alone when the options aren't literals" do
+    {_, general, _} = igniter_written_mutare()
+
+    igniter =
+      test_project(
+        files: %{
+          "mix.exs" =>
+            mix_exs([]) |> String.replace("[]", ~s([{:mutare, "#{general}", only: @envs}]))
+        }
+      )
+      |> install()
+
+    assert {:ok, declaration} = Deps.get_dep(igniter, :mutare)
+    assert declaration =~ ~s("#{general}")
+  end
+
   # --- existing config is preserved ----------------------------------------
 
   test "existing .mutare.exs is left untouched; mutators are surfaced as a notice" do
