@@ -510,7 +510,10 @@ defmodule Mutare.Coverage.Recorder do
     calls =
       for {module, opts} <- attachments do
         quote do
-          :ok = unquote(module).attach_attribution(unquote(Macro.escape(opts)))
+          :ok =
+            unquote(attribution_literal(module)).attach_attribution(
+              unquote(attribution_literal(opts))
+            )
         end
       end
 
@@ -519,6 +522,21 @@ defmodule Mutare.Coverage.Recorder do
         (unquote_splicing(calls))
       end
     end
+  end
+
+  # Macro.to_string/1 renders module atoms as relative aliases. These literals
+  # must survive being rendered and parsed under the target helper's aliases,
+  # including module atoms nested in extension options.
+  defp attribution_literal(value) do
+    value
+    |> Macro.escape()
+    |> Macro.postwalk(fn
+      atom when is_atom(atom) ->
+        if Macro.classify_atom(atom) == :alias, do: {:__aliases__, [], [atom]}, else: atom
+
+      node ->
+        node
+    end)
   end
 
   @doc """

@@ -4,6 +4,11 @@ defmodule Mutare.CoverageAttributionTest do
   alias Mutare.CoverageAttribution
   alias Mutare.Coverage.Recorder
 
+  def attach_attribution(opts) do
+    send(self(), {:attached, opts})
+    :ok
+  end
+
   describe "attribute_to/1" do
     test "declares the owner under the key the written helper reads, and withdraws it" do
       # The written `:mutare_cov` helper reads the harness descriptor's key; the runner test
@@ -33,10 +38,30 @@ defmodule Mutare.CoverageAttributionTest do
       assert rendered =~ "if :persistent_term.get(#{mode_key}, false) do"
 
       assert rendered =~
-               ~s[:ok = First.attach_attribution(header: "x-test", nested: %{depth: {1, 2.5}})]
+               ~s[:ok = Elixir.First.attach_attribution(header: "x-test", nested: %{depth: {1, 2.5}})]
 
-      assert rendered =~ "\n  :ok = Second.attach_attribution([])"
+      assert rendered =~ "\n  :ok = Elixir.Second.attach_attribution([])"
       assert :binary.match(rendered, "First.") < :binary.match(rendered, "Second.")
+    end
+
+    test "rendered callbacks and nested option atoms retain their values under helper aliases" do
+      opts = [
+        module: Repo,
+        nested: %{Repo => {Repo.Nested, [Repo, :"Elixir.not-an-alias", :erlang, nil]}},
+        text: "Repo"
+      ]
+
+      # Exercise the calls without changing the VM-wide harness probe flag.
+      {:if, _, [_gate, [do: calls]]} = Recorder.attribution_ast([{__MODULE__, opts}])
+
+      source = """
+      alias MyApp.Repo, warn: false
+      alias MyApp.Mutare, warn: false
+      #{Macro.to_string(calls)}
+      """
+
+      assert {:ok, _} = Code.eval_string(source)
+      assert_received {:attached, ^opts}
     end
   end
 end

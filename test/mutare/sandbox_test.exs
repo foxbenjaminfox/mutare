@@ -287,7 +287,7 @@ defmodule Mutare.SandboxTest do
     )
 
     helper = File.read!(Path.join(attributing, "test/test_helper.exs"))
-    call = ~s[:ok = Mutare.Test.AttributionExtension.attach_attribution(header: "x-test")]
+    call = ~s[:ok = Elixir.Mutare.Test.AttributionExtension.attach_attribution(header: "x-test")]
     [{user, _}] = :binary.matches(helper, "UserHelper.start()")
     [{attach, _}] = :binary.matches(helper, call)
     [{dump, _}] = :binary.matches(helper, "injected by Mutare: coverage dump")
