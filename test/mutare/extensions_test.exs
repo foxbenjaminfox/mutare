@@ -75,6 +75,25 @@ defmodule Mutare.ExtensionsTest do
                Extension.validate!([{AttributionExtension, opts}])
     end
 
+    test "plain-data structs are accepted and round-trip through source" do
+      for value <- [%URI{scheme: "https", host: "example.com"}, ~D[2026-10-02], MapSet.new([:a])] do
+        opts = [nested: %{value: value}]
+
+        assert [%Extension.Spec{module: AttributionExtension, opts: ^opts}] =
+                 Extension.validate!([{AttributionExtension, opts}])
+
+        assert {^opts, []} = opts |> Macro.escape() |> Macro.to_string() |> Code.eval_string()
+      end
+    end
+
+    test "struct fields must be plain data even when their enumerable contents are" do
+      for value <- [%URI{host: self()}, Stream.map([{:key, :value}], &Function.identity/1)] do
+        assert_raise ArgumentError, ~r/must be plain data/, fn ->
+          Extension.validate!([{AttributionExtension, [value: value]}])
+        end
+      end
+    end
+
     test "options that cannot be written into the probe's helper are refused" do
       for opt <- [self(), make_ref(), fn -> :ok end, %{nested: [{:pid, self()}]}] do
         assert_raise ArgumentError, ~r/must be plain data/, fn ->

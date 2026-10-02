@@ -91,8 +91,9 @@ defmodule Mutare.Extension do
   defp plain_data?(list) when is_list(list), do: plain_list?(list)
   defp plain_data?(tuple) when is_tuple(tuple), do: tuple |> Tuple.to_list() |> plain_list?()
 
-  defp plain_data?(map) when is_map(map),
-    do: Enum.all?(map, fn {key, value} -> plain_data?(key) and plain_data?(value) end)
+  defp plain_data?(map) when is_map(map) do
+    Enum.all?(Map.to_list(map), fn {key, value} -> plain_data?(key) and plain_data?(value) end)
+  end
 
   defp plain_data?(_other), do: false
 
