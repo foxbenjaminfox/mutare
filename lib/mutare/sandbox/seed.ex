@@ -174,7 +174,7 @@ defmodule Mutare.Sandbox.Seed do
   def app_build(
         root,
         sandbox,
-        %Schema{metamutants: metamutants, sources: sources},
+        %Schema{metamutants: metamutants, sources: sources} = schema,
         %Options{},
         project,
         wrapped
@@ -183,6 +183,10 @@ defmodule Mutare.Sandbox.Seed do
     # They need neither forced recompilation nor a completeness check. If the
     # original is unknown, retain the conservative beam-deletion requirement.
     metamutants = Map.reject(metamutants, fn {rel, source} -> sources[rel] == source end)
+    # A zero-site or statically unselected file is also overwritten from the snapshot.
+    # If the checkout changed since capture, its current beam cannot stand in for those
+    # older bytes. Treat that file like a metamutant for the seed's deletion proof.
+    metamutants = Map.merge(changed_since_capture(schema, root), metamutants)
     mix_env = Invocation.mix_env()
     src_lib = Path.join([root, "_build", mix_env, "lib"])
     dst_lib = Path.join([sandbox, "_build", mix_env, "lib"])
@@ -227,6 +231,15 @@ defmodule Mutare.Sandbox.Seed do
     else
       %{outcome: :skipped}
     end
+  end
+
+  defp changed_since_capture(%Schema{snapshot: nil}, _root), do: %{}
+
+  defp changed_since_capture(%Schema{} = schema, root) do
+    for {rel, file} <- Schema.source_records(schema),
+        File.read(Path.join(root, rel)) != {:ok, file.source},
+        into: %{},
+        do: {rel, file.source}
   end
 
   # Seed one app: copy its build in, delete every metamutant beam (matched against the

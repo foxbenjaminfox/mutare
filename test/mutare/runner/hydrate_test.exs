@@ -89,6 +89,40 @@ defmodule Mutare.Runner.HydrateTest do
     assert result.site.mutated_code == nil
   end
 
+  test "recovery preserves deferred rendering and hydrates from the original snapshot", %{
+    root: root
+  } do
+    File.write!(Path.join(root, "lib/a.ex"), """
+    defmodule A do
+      def f(x), do: x + 1
+      def g(y), do: y - 2
+      def h(z), do: z * 3
+    end
+    """)
+
+    context =
+      Run.Context.new(
+        mutators: @probe,
+        defer_site_code: true,
+        only_lines: MapSet.new([{"lib/a.ex", 3}, {"lib/a.ex", 4}]),
+        max_mutants: 2
+      )
+
+    schema = Schema.build(root, context)
+    [poisoned, survivor] = schema.sites
+    assert poisoned.id == 2
+    assert survivor.id == 3
+    eager = Schema.build(root, mutators: @probe).sites |> Enum.find(&(&1.id == survivor.id))
+    File.rm_rf!(root)
+
+    rebuilt = Schema.rebuild(schema, MapSet.new([poisoned.id]))
+    assert Enum.all?(rebuilt.sites, &is_nil(&1.original_code))
+    hydrate = Hydrate.maybe_new(rebuilt, context)
+    result = Hydrate.result(hydrate, %Result{site: List.last(rebuilt.sites), status: :survived})
+    assert result.site.original_code == eager.original_code
+    assert result.site.mutated_code == eager.mutated_code
+  end
+
   test "a missing id fails explicitly instead of reporting an empty diff",
        %{schema: schema, hydrate: hydrate} do
     # The re-render is deterministic, so a real scan can't miss; force one by

@@ -43,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Poison recovery rebuilds from the scan's captured sources and count facts. Editing
+  or deleting a source file during compilation no longer changes the mutations named
+  by IDs already marked as poisoned. Deferred diffs keep using the same snapshot.
 - Without igniter, `mix mutare.install` suggested adding `{:mutare, "~> 0.1", …}`; it now
   suggests the requirement for the installed version.
 - A process label that names no ExUnit test module, such as the one ecto_sql 3.14 gives

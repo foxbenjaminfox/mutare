@@ -11,7 +11,7 @@ defmodule Mutare.Poison do
   We map each error's `file:line` to the mutant id(s) whose *generated code*
   spans that line, via a `Mutare.Manifest` built on demand from the file's
   rendered metamutant and the dispatch variable its generated code reads
-  (`Mutare.Schema`'s `:metamutants` and `:dispatch_vars`; see
+  (paired in `Mutare.Schema`'s per-file snapshot; see
   `Manifest.ids_at_line/2`). Only *error* diagnostics are
   scanned, never warnings: compiler output also includes warnings caused by mutations
   (each with a footer in the same `file:line` format), and mistaking those for
@@ -59,7 +59,7 @@ defmodule Mutare.Poison do
   dropped, degrading to "mapped nothing" rather than crashing a run mid-recovery.
   """
 
-  alias Mutare.Manifest
+  alias Mutare.{Manifest, RuntimeId, Schema}
   alias Mutare.Poison.Hint
   alias Mutare.Sandbox.Command.Output
 
@@ -78,13 +78,32 @@ defmodule Mutare.Poison do
   """
   @type macro_matches :: [{{String.t(), atom()}, MapSet.t()}]
 
-  # One manifest per file, built on first need and reused for the rest of a round. `nil`
-  # marks a file not in the metamutant map (a dependency, an untracked location), so a
-  # repeated stray reference isn't re-resolved either.
+  # Both the schema and standalone-transform APIs supply a paired source/variable
+  # lookup. A missing file is an untracked location, never a default dispatch variable.
+  @typep source_lookup :: (String.t() -> {String.t(), atom()} | nil)
+
+  # One manifest per file, built on first need and reused for the rest of a round.
+  # `nil` caches an untracked location too.
   @typep manifests :: %{optional(String.t()) => Manifest.t() | nil}
 
   @typedoc "A clean region, by its file and the id interval its guard carries."
   @type clean_region :: {String.t(), Manifest.clean_range()}
+
+  @doc "Attribute a compile failure using the schema's captured rendered files and runtime IDs."
+  @spec attribution(String.t(), Schema.t()) ::
+          %{line: MapSet.t(), macro: macro_matches(), clean: MapSet.t(clean_region())}
+  def attribution(compile_output, %Schema{} = schema) do
+    files = Schema.rendered_files(schema)
+
+    lookup = fn file ->
+      case Map.fetch(files, file) do
+        {:ok, rendered} -> {rendered.metamutant, rendered.dispatch_var}
+        :error -> nil
+      end
+    end
+
+    attribute(compile_output, lookup, RuntimeId.file_index(schema.sites))
+  end
 
   @doc """
   Every attribution of one failed compile — `%{line: ids, macro: matches, clean: regions}`:
@@ -99,11 +118,12 @@ defmodule Mutare.Poison do
   @spec attribution(String.t(), metamutants(), dispatch_vars(), map() | nil) ::
           %{line: MapSet.t(), macro: macro_matches(), clean: MapSet.t(clean_region())}
   def attribution(compile_output, metamutants, dispatch_vars, report_ids \\ nil) do
-    {line, clean, manifests} =
-      line_attribution(compile_output, metamutants, dispatch_vars, report_ids, %{})
+    attribute(compile_output, source_lookup(metamutants, dispatch_vars), report_ids)
+  end
 
-    {macro, _manifests} =
-      macro_attribution(compile_output, metamutants, dispatch_vars, report_ids, manifests)
+  defp attribute(compile_output, lookup, report_ids) do
+    {line, clean, manifests} = line_attribution(compile_output, lookup, report_ids, %{})
+    {macro, _manifests} = macro_attribution(compile_output, lookup, report_ids, manifests)
 
     %{line: line, macro: macro, clean: clean}
   end
@@ -142,16 +162,21 @@ defmodule Mutare.Poison do
   @spec macro_poison(String.t(), metamutants(), dispatch_vars(), map() | nil) :: macro_matches()
   def macro_poison(compile_output, metamutants, dispatch_vars, report_ids \\ nil) do
     {matches, _manifests} =
-      macro_attribution(compile_output, metamutants, dispatch_vars, report_ids, %{})
+      macro_attribution(
+        compile_output,
+        source_lookup(metamutants, dispatch_vars),
+        report_ids,
+        %{}
+      )
 
     matches
   end
 
   # Each culprit's name looked up in its own call-site file's manifest (built once, memoized in
   # `manifests`), ids unioned per macro; macros kept in first-seen order.
-  @spec macro_attribution(String.t(), metamutants(), dispatch_vars(), map() | nil, manifests()) ::
+  @spec macro_attribution(String.t(), source_lookup(), map() | nil, manifests()) ::
           {macro_matches(), manifests()}
-  defp macro_attribution(output, metamutants, dispatch_vars, report_ids, manifests) do
+  defp macro_attribution(output, lookup, report_ids, manifests) do
     culprits = Hint.culprits(output)
 
     {ids_by_macro, manifests} =
@@ -160,7 +185,7 @@ defmodule Mutare.Poison do
           acc
 
         {{_module, fun} = macro, {file, line}}, {ids_by_macro, manifests} ->
-          {manifest, manifests} = manifest_for(file, metamutants, dispatch_vars, manifests)
+          {manifest, manifests} = manifest_for(file, lookup, manifests)
 
           ids =
             if in_clean_copy?(manifest, line),
@@ -210,21 +235,21 @@ defmodule Mutare.Poison do
   @spec ids(String.t(), metamutants(), dispatch_vars(), map() | nil) :: MapSet.t()
   def ids(compile_output, metamutants, dispatch_vars, report_ids \\ nil) do
     {ids, _clean, _manifests} =
-      line_attribution(compile_output, metamutants, dispatch_vars, report_ids, %{})
+      line_attribution(compile_output, source_lookup(metamutants, dispatch_vars), report_ids, %{})
 
     ids
   end
 
   # Each error location's blame (`Manifest.blame_at_line/2`): report ids, and clean regions
   # as `{file, range}`.
-  @spec line_attribution(String.t(), metamutants(), dispatch_vars(), map() | nil, manifests()) ::
+  @spec line_attribution(String.t(), source_lookup(), map() | nil, manifests()) ::
           {MapSet.t(), MapSet.t(clean_region()), manifests()}
-  defp line_attribution(output, metamutants, dispatch_vars, report_ids, manifests) do
+  defp line_attribution(output, lookup, report_ids, manifests) do
     {blamed, manifests} =
       output
       |> error_locations()
       |> Enum.flat_map_reduce(manifests, fn {file, line}, manifests ->
-        case manifest_for(file, metamutants, dispatch_vars, manifests) do
+        case manifest_for(file, lookup, manifests) do
           {nil, manifests} ->
             {[], manifests}
 
@@ -259,19 +284,30 @@ defmodule Mutare.Poison do
     end)
   end
 
+  # Compatibility for standalone transforms supplying the two public maps. Schema
+  # callers already have these paired in their captured file records.
+  defp source_lookup(metamutants, dispatch_vars) do
+    fn file ->
+      case Map.fetch(metamutants, file) do
+        {:ok, source} -> {source, Map.fetch!(dispatch_vars, file)}
+        :error -> nil
+      end
+    end
+  end
+
   # The manifest for `file`, built once from its stored metamutant source and dispatch
   # variable and memoized in `cache`. A `nil` (file not in the map) is cached too, so a
   # stray error line in an untracked file isn't re-resolved.
-  defp manifest_for(file, metamutants, dispatch_vars, cache) do
+  defp manifest_for(file, lookup, cache) do
     case cache do
       %{^file => manifest} ->
         {manifest, cache}
 
       _ ->
         manifest =
-          case Map.fetch(metamutants, file) do
-            {:ok, source} -> Manifest.from_source(source, Map.fetch!(dispatch_vars, file))
-            :error -> nil
+          case lookup.(file) do
+            {source, var} -> Manifest.from_source(source, var)
+            nil -> nil
           end
 
         # This branch only runs when `file` is absent from `cache` (the sibling clause above

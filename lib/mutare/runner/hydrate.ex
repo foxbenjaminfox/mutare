@@ -16,7 +16,7 @@ defmodule Mutare.Runner.Hydrate do
   # rendering up front instead, so this module is bypassed for them.)
   #
   # Re-derivation is a per-file re-render (`Mutare.Transform.render_sites/2`) at the file's
-  # original `:start_id` — read from `schema.start_ids`, the origin the scan recorded *before*
+  # original `:start_id` — read from its source snapshot, the origin the scan recorded *before*
   # `:only_lines`/`:max_mutants` narrowed `schema.sites` — **memoised once per file** (an
   # `Agent`): the pipeline is deterministic for one source, so the re-rendered ids and code
   # line up with the schema's exactly. Building sites without code never changed any
@@ -31,13 +31,12 @@ defmodule Mutare.Runner.Hydrate do
   alias Mutare.{Options, Result, Schema, Site, Transform}
   alias Mutare.Result.Status
 
-  @enforce_keys [:options, :sources, :starts, :cache]
+  @enforce_keys [:options, :files, :cache]
   defstruct @enforce_keys
 
   @opaque t :: %__MODULE__{
             options: Options.t(),
-            sources: %{optional(String.t()) => String.t()},
-            starts: %{optional(String.t()) => pos_integer()},
+            files: %{optional(String.t()) => Mutare.Schema.Source.t()},
             cache: pid()
           }
 
@@ -50,13 +49,12 @@ defmodule Mutare.Runner.Hydrate do
   @spec maybe_new(Schema.t(), Mutare.Run.Context.t()) :: t() | nil
   def maybe_new(_schema, %{defer_site_code: false}), do: nil
 
-  def maybe_new(%Schema{} = schema, %{defer_site_code: true, options: options}) do
+  def maybe_new(%Schema{} = schema, %{defer_site_code: true}) do
     {:ok, cache} = Agent.start_link(fn -> %{} end)
 
     %__MODULE__{
-      options: options,
-      sources: schema.sources,
-      starts: schema.start_ids,
+      options: schema.snapshot.context.options,
+      files: Schema.source_records(schema),
       cache: cache
     }
   end
@@ -115,8 +113,7 @@ defmodule Mutare.Runner.Hydrate do
   end
 
   defp render_file_codes(%__MODULE__{} = h, file) do
-    source = Map.fetch!(h.sources, file)
-    start_id = Map.fetch!(h.starts, file)
+    %{source: source, rendered: %{start_id: start_id}} = Map.fetch!(h.files, file)
     opts = Schema.render_opts(h.options, file, start_id)
 
     source

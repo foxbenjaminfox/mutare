@@ -15106,3 +15106,36 @@ non-test name also put the id in the whole-file set, so `:tests` did not narrow 
 and survived if only a test in another file would have killed it. A label now counts
 only when its module exports `__ex_unit__/0`, as every `use ExUnit.Case` module does
 (`exunit_label/1`), and otherwise the lower tiers run.
+
+### A schema owns the sources its IDs name (2026-10-02)
+
+Recovery kept the original file list but read those files again. Editing `x + 1` to
+`x * 2` between the scan and a poison rebuild made skipped ID 1 refer to `x * 2 → x / 2`
+instead of `x + 1 → x - 1`; a changed count could redirect later files' IDs too.
+
+`Schema.Source` now keeps a file's captured bytes, count report (or parse error), and
+rendered output together. `Schema.Snapshot` retains those records in scan order and
+the original build options/rendering choices, without hooks, project discovery state
+or ASTs. `Schema.rebuild/3` renders that snapshot with new poison skips; it neither
+reads nor counts the checkout again. The render checks its count against the original
+scan. The older root/options entry verifies that transform and selection inputs still
+match, then delegates. A changed configuration requires a new build.
+
+The public source/metamutant/origin/dispatch-variable maps remain derived compatibility
+views. Hydration reads a file's source and origin together; poison attribution reads its
+rendered source and dispatch variable together, preserving lazy manifest construction.
+Rebuilds also preserve deferred rendering, which the old runner lost when it forwarded
+only `context.options`.
+
+Sandbox preparation overlays every captured file, including zero-site and unparseable
+ones: a later edit, deletion, or repair does not change the scanned program. App-build
+seeding forces recompilation of captured files whose checkout bytes have changed, even
+when they have no emitted mutants, so a newer beam cannot stand in for the snapshot.
+This is a snapshot of scanned sources, not an atomic snapshot of the entire project:
+tests, configuration and dependencies still come from sandbox preparation. Mutators and
+extension resolution must still be deterministic for the captured inputs.
+
+Regressions cover edits that change earlier files' counts, deletion of the checkout,
+multiple recovery rounds, skipped/zero-site files, no repeated count callbacks,
+deferred hydration under line/cap selection, both sandbox materialization modes,
+seeded-beam invalidation and deletion of the original source during real poison recovery.

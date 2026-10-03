@@ -435,9 +435,10 @@ defmodule Mutare.Sandbox do
   # `wrapped`, never against the list we tried: a file we failed to wrap compiles with
   # inference on, and telling its manifest otherwise both leaves the pathology in place and
   # invents a cache-key mismatch that cold-compiles the app.
-  defp override_files(root, %Schema{metamutants: metamutants}, project, options) do
+  defp override_files(root, %Schema{} = schema, project, options) do
     overrides =
-      metamutants
+      schema
+      |> Schema.materialized_sources()
       |> Map.merge(coverage_helper_files(root, project))
       |> Map.merge(helper_files(root, project, attribution_source(options)))
       |> Map.merge(config_files(root))

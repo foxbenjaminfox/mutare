@@ -161,7 +161,20 @@ defmodule Mutare.PoisonRunnerTest do
         })
 
       mutators = [Mutare.Test.PoisonMutator, Mutare.Mutators.Relational]
-      assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: mutators)
+      # Recovery must keep the source and ID assignment of the failed compile,
+      # even when the checkout is edited while that compile is running.
+      source = File.read!(Path.join(project, "lib/p.ex"))
+
+      on_phase = fn
+        {:poison_round, _} -> File.rm!(Path.join(project, "lib/p.ex"))
+        _ -> :ok
+      end
+
+      assert {:ok, run} =
+               Mutare.run(project, sandbox: sandbox, mutators: mutators, on_phase: on_phase)
+
+      refute File.exists?(Path.join(project, "lib/p.ex"))
+      assert run.schema.sources["lib/p.ex"] == source
 
       # add/2's `+` mutates to an unbound var → poison → dropped, not aborted.
       assert [%Result{site: %{original_form: :+}, status: :poisoned}] =

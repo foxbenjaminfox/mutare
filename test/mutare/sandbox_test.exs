@@ -788,6 +788,45 @@ defmodule Mutare.SandboxTest do
   end
 
   describe "app build seeding" do
+    test "captured zero-site source replaces a later edit and invalidates its seeded beam",
+         context do
+      project = context.project
+      put_app_beam(project, "myapp", "lib/foo.ex", "SnapshotFoo#{uniq()}")
+      put_app_beam(project, "myapp", "lib/bar.ex", "SnapshotBar#{uniq()}")
+      put_app_manifest(project, "myapp", [Path.expand(project)])
+      schema = Schema.build(project, mutators: [:arithmetic])
+      assert schema.sites == []
+      assert schema.metamutants == %{}
+      original = schema.sources["lib/foo.ex"]
+      File.write!(abs(project, "lib/foo.ex"), String.replace(original, "do: 1", "do: 2"))
+      sandbox = Path.join(context.base, "sandbox")
+
+      assert %{outcome: :seeded, reused: 1, recompiled: 1} =
+               capture_seed(project, schema, sandbox: sandbox)
+
+      assert File.read!(abs(sandbox, "lib/foo.ex")) == original
+      app_build = Path.join(sandbox, "_build/test/lib/myapp")
+      refute Enum.any?(beams(app_build), &(&1 =~ "SnapshotFoo"))
+      assert Enum.any?(beams(app_build), &(&1 =~ "SnapshotBar"))
+    end
+
+    test "both sandbox modes materialize captured zero-site and skipped files", context do
+      project = context.project
+      File.mkdir_p!(abs(project, "lib"))
+      File.write!(abs(project, "lib/empty.ex"), "defmodule Empty do\nend\n")
+      File.write!(abs(project, "lib/bad.ex"), "defmodule Bad do\n")
+      schema = Schema.build(project, mutators: [:arithmetic])
+      File.rm!(abs(project, "lib/empty.ex"))
+      File.write!(abs(project, "lib/bad.ex"), "defmodule Bad do\nend\n")
+
+      for keep? <- [false, true] do
+        sandbox = Path.join(context.base, "sandbox_#{keep?}")
+        Sandbox.prepare(project, schema, sandbox: sandbox, keep_sandbox: keep?)
+        assert File.read!(abs(sandbox, "lib/empty.ex")) == "defmodule Empty do\nend\n"
+        assert File.read!(abs(sandbox, "lib/bad.ex")) == "defmodule Bad do\n"
+      end
+    end
+
     test "keeps beams for metamutant entries identical to their original source", context do
       project = context.project
       put_app_beam(project, "myapp", "lib/foo.ex", "Foo#{uniq()}")

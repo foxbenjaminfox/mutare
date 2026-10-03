@@ -123,12 +123,7 @@ defmodule Mutare.Runner.Compile do
     # Both attributions of this round's failure from one `Poison` pass (one manifest per
     # implicated file): the line-attributed ids, and the macro-expansion fallback's matches.
     %{line: raw, macro: macro_matches, clean: clean} =
-      Poison.attribution(
-        output,
-        schema.metamutants,
-        schema.dispatch_vars,
-        Mutare.RuntimeId.file_index(schema.sites)
-      )
+      Poison.attribution(output, schema)
 
     # The line-implicated ids, then evidence-based escalation for an unknown module-level
     # block macro: a block is dropped *wholesale* only once a *second, distinct* poison
@@ -178,9 +173,8 @@ defmodule Mutare.Runner.Compile do
 
     # Drop the poisoning mutants and rebuild. Ids are stable across rebuilds (the transform
     # advances its counter for skipped ids), so accumulated `skip_ids` keep referring to the
-    # same mutations. Rebuild against the *same* files this schema covers (not a fresh
-    # discovery), so a restricted schema (`from_files/4`, `:only_files`, `:exclude`) can't
-    # silently expand. Forward the original options so `:mutators` survive.
+    # same mutations. Rebuild from its source snapshot, so edits to the checkout cannot
+    # change the mutations these IDs name. The snapshot owns the original build options.
     recovery = %{
       recovery
       | rounds: recovery.rounds + 1,
@@ -195,14 +189,7 @@ defmodule Mutare.Runner.Compile do
   # Rebuild the schema without the accumulated `skip_ids` and `skip_regions`, rematerialise it into the same
   # sandbox, and go round again — the tail both recovery kinds share.
   defp rebuild_and_recompile(context, sandbox, schema, recovery) do
-    schema =
-      Schema.rebuild(
-        schema,
-        root(context),
-        context.options,
-        recovery.skip_ids,
-        recovery.skip_regions
-      )
+    schema = Schema.rebuild(schema, recovery.skip_ids, recovery.skip_regions)
 
     Sandbox.rematerialize(sandbox, schema)
     compile_with_recovery(context, sandbox, schema, recovery)

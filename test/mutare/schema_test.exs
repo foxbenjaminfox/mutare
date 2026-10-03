@@ -3,6 +3,21 @@ defmodule Mutare.SchemaTest do
 
   alias Mutare.Schema
 
+  defmodule ObservedMutator do
+    @behaviour Mutare.Mutator
+
+    @impl true
+    def name, do: :observed
+
+    @impl true
+    def mutate({:+, meta, [left, right]}, %{opts: opts}) do
+      send(Keyword.fetch!(opts, :observer), :offered)
+      [{:-, meta, [left, right]}]
+    end
+
+    def mutate(_node, _context), do: :skip
+  end
+
   defmodule DriftingMutator do
     @behaviour Mutare.Mutator
 
@@ -161,7 +176,7 @@ defmodule Mutare.SchemaTest do
     assert Enum.map(schema.sites, & &1.id) == [1, 2]
   end
 
-  test "rebuild re-scans silently (drops any :on_scan hook)", %{root: root} do
+  test "rebuild never fires a scan hook", %{root: root} do
     write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
 
     test_pid = self()
@@ -175,6 +190,75 @@ defmodule Mutare.SchemaTest do
     )
 
     refute_received {:scan, _}
+  end
+
+  test "recovery keeps captured sources, order and IDs across edits and deletions", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/b.ex", "defmodule B do\n  def f(x), do: x - 2\nend\n")
+    write(root, "lib/empty.ex", "defmodule Empty do\n  def f, do: :ok\nend\n")
+    write(root, "lib/bad.ex", "defmodule Bad do\n")
+    files = Enum.map(["b", "empty", "bad", "a"], &Path.join(root, "lib/#{&1}.ex"))
+    schema = Schema.from_files(files, root, mutators: @probe)
+    [first, second] = schema.sites
+
+    # A changed count in the first file would shift every following report ID.
+    write(root, "lib/b.ex", "defmodule B do\n  def f(x), do: x * 2 + 3\nend\n")
+    write(root, "lib/empty.ex", "defmodule Empty do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/bad.ex", "defmodule Bad do\n  def f(x), do: x + 1\nend\n")
+    File.rm!(Path.join(root, "lib/a.ex"))
+
+    rebuilt = Schema.rebuild(schema, root, [mutators: @probe], MapSet.new([first.id]))
+    assert rebuilt.files == schema.files
+    assert rebuilt.sources == schema.sources
+    assert rebuilt.skipped == schema.skipped
+    assert rebuilt.start_ids == schema.start_ids
+    assert rebuilt.dispatch_vars == schema.dispatch_vars
+    assert rebuilt.sites == [%{first | poisoned: true}, second]
+    assert rebuilt.metamutants[first.file] == schema.sources[first.file]
+    assert rebuilt.metamutants[second.file] == schema.metamutants[second.file]
+
+    # Subsequent recovery needs neither the checkout nor a second count pass.
+    File.rm_rf!(root)
+    emptied = Schema.rebuild(rebuilt, MapSet.new([first.id, second.id]))
+    assert emptied.sources == schema.sources
+    assert emptied.skipped == schema.skipped
+    assert emptied.sites == Enum.map(schema.sites, &%{&1 | poisoned: true})
+    assert Schema.materialized_sources(emptied)["lib/bad.ex"] == "defmodule Bad do\n"
+  end
+
+  test "rebuild rejects changed transform or selection inputs", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    schema = Schema.build(root, mutators: @probe)
+
+    for opts <- [[mutators: [:integer]], [mutators: @probe, max_mutants: 1]] do
+      assert_raise ArgumentError, ~r/snapshot's transform and selection options/, fn ->
+        Schema.rebuild(schema, root, opts, MapSet.new())
+      end
+    end
+  end
+
+  test "recovery reuses count facts and retains no progress hooks", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    observer = self()
+
+    schema =
+      Schema.build(root,
+        mutators: [{ObservedMutator, observer: observer}],
+        on_scan: &send(observer, {:scan, &1})
+      )
+
+    assert_received :offered
+    assert_received :offered
+    assert_received {:scan, _}
+    refute_received :offered
+    assert schema.snapshot.context.on_scan == nil
+
+    [site] = schema.sites
+    rebuilt = Schema.rebuild(schema, MapSet.new([site.id]))
+    assert_received :offered
+    refute_received :offered
+    refute_received {:scan, _}
+    assert hd(rebuilt.snapshot.files).outcome == hd(schema.snapshot.files).outcome
   end
 
   test ":max_mutants caps the schema to the first N sites (in source order)", %{root: root} do

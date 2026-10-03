@@ -10,6 +10,22 @@ defmodule Mutare.Schema do
   parse (transform or render) is a bug in this tool, not bad input, and is left
   to crash: see `render_one/4`.
 
+  ## Source snapshot
+
+  The initial count workers capture each file's bytes and count facts in an ordered
+  per-file record. Rendering adds its ID origin, metamutant and dispatch variable to
+  that same record. The snapshot also retains the original build configuration and
+  rendering choices, without progress hooks or ASTs. `rebuild/3` reuses it: recovery
+  neither reads the checkout nor repeats the count pass. Edits, deletions and repairs
+  of skipped files during a run therefore cannot change what an existing ID names.
+
+  Hydration and poison attribution read these records directly. The public `files`,
+  `sources`, `metamutants`, `start_ids`, and `dispatch_vars` fields remain compatibility
+  views derived together at assembly. `sources` still contains parsed files only;
+  the snapshot also keeps unparseable files for consistent sandbox materialization.
+  This captures scanned source files, not the entire project's tests, configuration
+  or dependencies; those are copied when the sandbox is prepared.
+
   ## Two-phase build (`from_files/4`)
 
   Report ids reserve contiguous ranges in file order — file *i*'s `:start_id`
@@ -64,9 +80,10 @@ defmodule Mutare.Schema do
   original type and stacktrace, in the parent — so a tool bug still surfaces
   faithfully across the process hop, not as an opaque `Task` exit.
 
-  Each sited file's `:start_id` is recorded under `:start_ids` — the origin of the
+  Each sited file's `:start_id` is recorded with its rendered output (and exposed
+  under `:start_ids`) — the origin of the
   file's id range *before* `:only_lines`/`:max_mutants` narrow `:sites`. A
-  report-time re-render (`render_opts/3`) reads it from there, never from the
+  report-time re-render (`render_opts/3`) reads it from that record, never from the
   visible sites: under `--line` the smallest surviving id is not the file's first
   mutant, and a re-render started from it would hand every id another site's code.
 
@@ -86,19 +103,8 @@ defmodule Mutare.Schema do
   alias Mutare.Run.Context
   alias Mutare.Transform.{ConfigMatches, CountReport}
 
-  # One file's phase-1 outcome (`count_one/3`): its root-relative path, its source (`nil` when it
-  # failed to parse), and either the count pass's `Mutare.Transform.CountReport` or the parser
-  # error that made it a skipped file.
-  defmodule Counted do
-    @moduledoc false
-    @type t :: %__MODULE__{
-            rel: String.t(),
-            source: String.t() | nil,
-            outcome: {:ok, CountReport.t()} | {:error, Exception.t()}
-          }
-    @enforce_keys [:rel, :source, :outcome]
-    defstruct [:rel, :source, :outcome]
-  end
+  alias Mutare.Schema.{Snapshot, Source}
+  alias Mutare.Schema.Source.Rendered
 
   # One phase-2 render job (`render_jobs/2`): a sited file with its globally-unique `start_id`
   # and reserved `count`, plus the report ids it may emit selectors for — `nil` for the whole
@@ -129,6 +135,7 @@ defmodule Mutare.Schema do
         }
 
   @type t :: %__MODULE__{
+          snapshot: Snapshot.t() | nil,
           files: [String.t()],
           sites: [Site.t()],
           metamutants: %{optional(String.t()) => String.t()},
@@ -144,7 +151,8 @@ defmodule Mutare.Schema do
           degraded_uses: [degraded_use()]
         }
 
-  defstruct files: [],
+  defstruct snapshot: nil,
+            files: [],
             sites: [],
             metamutants: %{},
             sources: %{},
@@ -286,10 +294,6 @@ defmodule Mutare.Schema do
     # By *relative* path, so `lib/a.ex` and `./lib/a.ex` count as one.
     files = Enum.uniq_by(files, &relative(&1, root))
 
-    # Record the ordered, root-relative input list so the schema can be rebuilt
-    # against exactly these files (see `rebuild/4`) without re-discovering.
-    rel_files = Enum.map(files, &relative(&1, root))
-
     # Phase 1 — count (parallel, heap-isolated per worker): read each file and count its
     # mutants without rendering, firing `:on_scan` per file with the running mutant tally
     # as results stream back in input order (the live-progress contract
@@ -298,14 +302,20 @@ defmodule Mutare.Schema do
     # mutator) is re-raised faithfully.
     counted = count_files(files, root, options, Context.hook(context, :on_scan))
 
+    render_snapshot(Snapshot.new(counted, context), skip_ids, skip_regions)
+  end
+
+  defp render_snapshot(%Snapshot{files: counted, context: context}, skip_ids, skip_regions) do
+    options = context.options
+
     # Phase 2 — render (parallel, heap-isolated per worker): prefix-sum the counts so
     # each sited file knows its `:start_id` up front, then emit + render it. A failure
     # here is a tool bug (the file already parsed in phase 1) — re-raised faithfully.
     jobs = render_jobs(counted, options.max_mutants)
     rendered = render_files(jobs, context, skip_ids, skip_regions)
 
-    rel_files
-    |> assemble(counted, rendered)
+    counted
+    |> assemble(rendered, context)
     |> finalize()
     |> detect_directive_diagnostics(counted)
     |> detect_ineffective_config(counted, options)
@@ -316,15 +326,25 @@ defmodule Mutare.Schema do
   end
 
   @doc """
-  Rebuild a schema from the same file list it was built with.
+  Rebuild from the schema's captured source and build inputs, adding poison skips.
 
-  This is the poison-recovery entry point. It does not rediscover files, because
-  rediscovery could lose restrictions from `from_files/4`, `:only_files`,
-  `:exclude`, or `:only_lines`. Reusing the recorded file list keeps the run's
-  scope and mutant ids stable while adding the new `skip_ids` and `skip_regions`.
+  No files are read or counted again. File order, source bytes, count facts, static
+  selection and rendering choices belong to the snapshot, so editing or deleting
+  project files cannot redirect an existing mutant ID during recovery. Render workers
+  still check their counts against the original scan, and emit no repeated advisories.
+  """
+  @spec rebuild(t(), MapSet.t(), MapSet.t(Mutare.Poison.clean_region())) :: t()
+  def rebuild(schema, skip_ids, skip_regions \\ MapSet.new())
 
-  Pass the same options used for the original schema so mutator and extension
-  configuration stays unchanged.
+  def rebuild(%__MODULE__{snapshot: %Snapshot{} = snapshot}, skip_ids, skip_regions),
+    do: render_snapshot(snapshot, skip_ids, skip_regions)
+
+  @doc """
+  Compatibility entry for callers supplying the original root and options.
+
+  The root is no longer read. Transform and selection options must match the
+  snapshot; changing them requires a new build. Rendering choices and hooks remain
+  those of the snapshot (which retains no hooks).
   """
   @spec rebuild(
           t(),
@@ -333,15 +353,60 @@ defmodule Mutare.Schema do
           MapSet.t(),
           MapSet.t(Mutare.Poison.clean_region())
         ) :: t()
-  def rebuild(%__MODULE__{files: files}, root, opts, skip_ids, skip_regions \\ MapSet.new()) do
-    # Poison recovery re-scans silently: drop any `:on_scan` hook so the live
-    # reporter isn't yanked back to a scan display in the middle of a run.
-    context = %{Context.new(opts) | on_scan: nil}
+  def rebuild(schema, root, opts, skip_ids, skip_regions \\ MapSet.new())
 
-    files
-    |> Enum.map(&Path.join(root, &1))
-    |> from_files(root, context, skip_ids, skip_regions)
+  def rebuild(
+        %__MODULE__{snapshot: %Snapshot{context: original}} = schema,
+        _root,
+        opts,
+        skip_ids,
+        skip_regions
+      ) do
+    options = Context.new(opts).options
+
+    unless rebuild_inputs(options) == rebuild_inputs(original.options) do
+      raise ArgumentError,
+            "rebuild requires the snapshot's transform and selection options; build a new schema to change them"
+    end
+
+    rebuild(schema, skip_ids, skip_regions)
   end
+
+  defp rebuild_inputs(options),
+    do: {transform_opts(options), options.only_lines, options.max_mutants}
+
+  @doc false
+  @spec source_records(t()) :: %{optional(String.t()) => Source.t()}
+  def source_records(%__MODULE__{snapshot: %Snapshot{files: files}}),
+    do: Map.new(files, &{&1.rel, &1})
+
+  @doc false
+  @spec rendered_files(t()) :: %{optional(String.t()) => Rendered.t()}
+  def rendered_files(%__MODULE__{snapshot: %Snapshot{files: files}}),
+    do:
+      for(
+        %Source{rel: rel, rendered: %Rendered{} = rendered} <- files,
+        into: %{},
+        do: {rel, rendered}
+      )
+
+  @doc false
+  @spec materialized_sources(t()) :: %{optional(String.t()) => String.t()}
+  def materialized_sources(%__MODULE__{snapshot: %Snapshot{files: files}}) do
+    Map.new(files, fn
+      %Source{rel: rel, rendered: %Rendered{metamutant: source}} -> {rel, source}
+      %Source{rel: rel, source: source} -> {rel, source}
+    end)
+  end
+
+  # Hand-built schemas remain supported by the sandbox's public API. A scanned
+  # schema always takes the snapshot branch, including its zero-site/skipped files.
+  def materialized_sources(%__MODULE__{
+        snapshot: nil,
+        sources: sources,
+        metamutants: metamutants
+      }),
+      do: Map.merge(sources, metamutants)
 
   @doc "Total number of mutants in the schema."
   @spec count(t()) :: non_neg_integer()
@@ -352,7 +417,7 @@ defmodule Mutare.Schema do
   # === phase 1: count ========================================================
 
   # Read and count every file's mutants in parallel throwaway workers (`count_one/3`),
-  # yielding one `%Counted{}` per file in **input order**. As each file's
+  # yielding one `%Source{}` per file in **input order**. As each file's
   # result streams back it fires `:on_scan` with the running mutant tally — so live
   # progress flows *during* the (potentially long) count phase rather than in a burst
   # after it. The heavy short-lived ASTs each `count_string/2` builds die with their
@@ -369,8 +434,7 @@ defmodule Mutare.Schema do
         done = done + 1
         found = found + mutants_found(counted)
 
-        # A no-op unless an `:on_scan` hook is set (cleared by `rebuild/4`, so
-        # poison-recovery re-scans stay silent).
+        # Recovery never enters this pass; only the initial scan fires these hooks.
         on_scan.(%{done: done, total: total, found: found})
         {counted, {done, found}}
       end)
@@ -392,18 +456,20 @@ defmodule Mutare.Schema do
 
     try do
       source = File.read!(file)
-      report = Mutare.Transform.count_report(source, count_opts(options, rel))
-      %Counted{rel: rel, source: source, outcome: {:ok, report}}
+      %Source{rel: rel, source: source, outcome: count_source(source, options, rel)}
     rescue
-      error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
-        %Counted{rel: rel, source: nil, outcome: {:error, error}}
-
       other ->
         {:raise, other, __STACKTRACE__}
     catch
       kind, reason ->
         {:exit, kind, reason, __STACKTRACE__}
     end
+  end
+
+  defp count_source(source, options, rel) do
+    {:ok, Mutare.Transform.count_report(source, count_opts(options, rel))}
+  rescue
+    error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] -> {:error, error}
   end
 
   # Count opts forward the same transform config as a render (`transform_opts/1`) so the
@@ -416,8 +482,8 @@ defmodule Mutare.Schema do
 
   # The mutant count a file contributes to the running `:on_scan` tally (0 for a skipped
   # file), summed per file as `count_files/4` consumes the stream.
-  defp mutants_found(%Counted{outcome: {:ok, %CountReport{mutants: n}}}), do: n
-  defp mutants_found(%Counted{outcome: {:error, _reason}}), do: 0
+  defp mutants_found(%Source{outcome: {:ok, %CountReport{mutants: n}}}), do: n
+  defp mutants_found(%Source{outcome: {:error, _reason}}), do: 0
 
   # === phase 2: render =======================================================
 
@@ -428,7 +494,7 @@ defmodule Mutare.Schema do
   defp render_jobs(counted, max_mutants) do
     {jobs, _state} =
       Enum.flat_map_reduce(counted, {1, max_mutants}, fn
-        %Counted{outcome: {:ok, %CountReport{mutants: count} = report}} = file,
+        %Source{outcome: {:ok, %CountReport{mutants: count} = report}} = file,
         {next_id, remaining}
         when count > 0 ->
           {emit_ids, remaining} = select_ids(report.selected_ids, count, next_id, remaining)
@@ -443,7 +509,7 @@ defmodule Mutare.Schema do
 
           {[job], {next_id + count, remaining}}
 
-        %Counted{}, state ->
+        %Source{}, state ->
           {[], state}
       end)
 
@@ -464,9 +530,8 @@ defmodule Mutare.Schema do
   end
 
   # Emit + render every sited file in parallel throwaway workers (`render_one/4`),
-  # returning `%{rel => {start_id, metamutant, sites, dispatch_var}}` — the `start_id` and
-  # the metamutant's dispatch variable ride along so `assemble/3` can record them under
-  # `:start_ids`/`:dispatch_vars`. The dominant `Sourceror.to_string` heap dies with each
+  # returning `%{rel => {Rendered.t(), sites}}`. The ID origin and dispatch variable
+  # stay paired with the rendered source. The dominant `Sourceror.to_string` heap dies with each
   # worker. A tool bug captured by a worker is re-raised here.
   defp render_files(jobs, %Context{} = context, skip_ids, skip_regions) do
     # Each file's dropped regions, by the interval alone: within a file that is the identity.
@@ -478,9 +543,7 @@ defmodule Mutare.Schema do
       render_one(job, context, skip_ids, MapSet.new(Map.get(regions_by_file, job.rel, [])))
     end)
     |> Enum.map(&reraise_if_raised/1)
-    |> Map.new(fn {:rendered, rel, start_id, meta, sites, var} ->
-      {rel, {start_id, meta, sites, var}}
-    end)
+    |> Map.new(fn {rel, output, sites} -> {rel, {output, sites}} end)
   end
 
   # Render one job's file at its assigned `:start_id`. The file already parsed in phase 1, so any
@@ -519,7 +582,7 @@ defmodule Mutare.Schema do
         Mutare.Transform.transform_string_with_sites(job.source, opts)
 
       verify_count!(job.rel, next_id - job.start_id, job.count)
-      {:rendered, job.rel, job.start_id, meta, sites, var}
+      {job.rel, %Rendered{start_id: job.start_id, metamutant: meta, dispatch_var: var}, sites}
     rescue
       other -> {:raise, other, __STACKTRACE__}
     catch
@@ -612,27 +675,35 @@ defmodule Mutare.Schema do
   # We store the rendered metamutant (and the name its generated code reads) but no precomputed
   # manifest — that's read only on a failed compile, so `Mutare.Poison` re-derives it lazily
   # (see `Mutare.Poison.ids/4`).
-  defp assemble(rel_files, counted, rendered) do
-    Enum.reduce(counted, %__MODULE__{files: rel_files}, fn
-      %Counted{rel: rel, source: source, outcome: {:ok, %CountReport{mutants: 0}}}, schema ->
-        # mutare:ignore[map_keyword] equivalent — dedup'd input → each rel put once (see above)
-        %{schema | sources: Map.put(schema.sources, rel, source)}
+  defp assemble(counted, rendered, context) do
+    # The public maps are compatibility views derived alongside the canonical file
+    # records. A sited file must have an output; a missing render is an internal error.
+    {files, schema} =
+      Enum.map_reduce(counted, %__MODULE__{}, fn
+        %Source{rel: rel, source: source, outcome: {:ok, %CountReport{mutants: 0}}} = file,
+        schema ->
+          {%{file | rendered: nil}, %{schema | sources: Map.put(schema.sources, rel, source)}}
 
-      %Counted{rel: rel, source: source, outcome: {:ok, _report}}, schema ->
-        {start_id, meta, sites, var} = Map.fetch!(rendered, rel)
+        %Source{rel: rel, source: source, outcome: {:ok, _report}} = file, schema ->
+          {%Rendered{} = output, sites} = Map.fetch!(rendered, rel)
+          file = %{file | rendered: output}
 
-        %{
-          schema
-          | sites: Enum.reverse(sites, schema.sites),
-            metamutants: Map.put(schema.metamutants, rel, meta),
-            sources: Map.put(schema.sources, rel, source),
-            start_ids: Map.put(schema.start_ids, rel, start_id),
-            dispatch_vars: Map.put(schema.dispatch_vars, rel, var)
-        }
+          schema = %{
+            schema
+            | sites: Enum.reverse(sites, schema.sites),
+              metamutants: Map.put(schema.metamutants, rel, output.metamutant),
+              sources: Map.put(schema.sources, rel, source),
+              start_ids: Map.put(schema.start_ids, rel, output.start_id),
+              dispatch_vars: Map.put(schema.dispatch_vars, rel, output.dispatch_var)
+          }
 
-      %Counted{rel: rel, outcome: {:error, reason}}, schema ->
-        %{schema | skipped: [{rel, reason} | schema.skipped]}
-    end)
+          {file, schema}
+
+        %Source{rel: rel, outcome: {:error, reason}} = file, schema ->
+          {%{file | rendered: nil}, %{schema | skipped: [{rel, reason} | schema.skipped]}}
+      end)
+
+    %{schema | snapshot: Snapshot.new(files, context), files: Enum.map(files, & &1.rel)}
   end
 
   # === shared worker plumbing ================================================
@@ -761,7 +832,7 @@ defmodule Mutare.Schema do
     sites_by_file = Enum.group_by(sites, & &1.file)
 
     diagnostics =
-      for %Counted{rel: file, outcome: {:ok, %CountReport{directives: directives}}} <- counted,
+      for %Source{rel: file, outcome: {:ok, %CountReport{directives: directives}}} <- counted,
           not Ignore.Directives.empty?(directives),
           do: {file, file_diagnostics(directives, Map.get(sites_by_file, file, []))}
 
@@ -848,10 +919,10 @@ defmodule Mutare.Schema do
   # The configured entries reached anywhere in the scan: every parsed file's matches, unioned.
   defp union_matches(counted) do
     Enum.reduce(counted, %ConfigMatches{}, fn
-      %Counted{outcome: {:ok, %CountReport{matches: matches}}}, acc ->
+      %Source{outcome: {:ok, %CountReport{matches: matches}}}, acc ->
         ConfigMatches.union(acc, matches)
 
-      %Counted{outcome: {:error, _reason}}, acc ->
+      %Source{outcome: {:error, _reason}}, acc ->
         acc
     end)
   end
@@ -863,7 +934,7 @@ defmodule Mutare.Schema do
   # `expand_uses: false`: nothing was expanded, so nothing degraded.
   defp record_degraded_uses(%__MODULE__{} = schema, counted) do
     degraded =
-      for %Counted{rel: rel, outcome: {:ok, %CountReport{degraded_uses: uses}}} <- counted,
+      for %Source{rel: rel, outcome: {:ok, %CountReport{degraded_uses: uses}}} <- counted,
           entry <- uses,
           do: Map.put(entry, :file, rel)
 

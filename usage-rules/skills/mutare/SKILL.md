@@ -40,7 +40,9 @@ poisoned builds, harness errors, slow runs).
    `$TMPDIR/mutare_sandbox_<hash of the project path>`, and the next run re-copies
    only the files that changed, so a re-run after adding a test recompiles nothing.
    The project is the source of truth: never edit files in the sandbox. The copy
-   happens when a run starts, so edits made during a run reach only the next one.
+   happens before compilation. Scanned source files are captured during the scan and
+   reused through compile-poison recovery; edits to those files after capture reach
+   only the next run. Tests and configuration are copied when the sandbox is prepared.
 3. **Each mutant runs only the test cases that executed it.** If code runs in a
    process no test can be traced to (an application-supervised GenServer, a bare
    `spawn`), its mutants fall back to the whole suite: still correct, but slow.
