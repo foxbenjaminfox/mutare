@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An `--exclude` (or `exclude:`) entry naming a directory excluded nothing, since only a
+  file the glob matched itself was dropped; `--exclude lib/legacy` now excludes every file
+  under `lib/legacy`, as `--only lib/legacy` includes them.
 - A `defimpl P do … end` written inside a module, with no `for:`, implements `P` for that
   module, as the compiler infers it. Mutare now does the same: a `use` in its body is
   expanded, `:skip_lifting` names its functions under `P.Module`, and `__MODULE__` in a

@@ -972,9 +972,14 @@ defmodule Mutare.Schema do
     paths
     |> Enum.flat_map(&expand(root, &1))
     |> Enum.uniq()
-    |> Enum.reject(&(&1 in excluded))
+    |> Enum.reject(&excluded?(&1, excluded))
     |> Enum.sort()
   end
+
+  # An `:exclude` glob drops each file it matches and everything under each directory it
+  # matches, so `lib/legacy` excludes what `--only lib/legacy` would include.
+  defp excluded?(file, excluded),
+    do: Enum.any?(excluded, &(file == &1 or String.starts_with?(file, &1 <> "/")))
 
   # A `:paths` entry (`--only`) is either a directory to scan recursively for
   # `.ex` sources or a single `.ex` file (a glob in either position is honoured

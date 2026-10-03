@@ -683,6 +683,17 @@ defmodule Mutare.SchemaTest do
     assert Schema.count(schema) == 1
   end
 
+  test ":exclude drops everything under a directory it names", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/legacy/b.ex", "defmodule B do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/legacy/old/c.ex", "defmodule C do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/legacy_too.ex", "defmodule D do\n  def f(x), do: x + 1\nend\n")
+
+    schema = Schema.build(root, exclude: ["lib/legacy"], mutators: @probe)
+
+    assert Map.keys(schema.sources) == ["lib/a.ex", "lib/legacy_too.ex"]
+  end
+
   test ":only_files restricts to the given root-relative paths (e.g. --since)", %{root: root} do
     write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
     write(root, "lib/b.ex", "defmodule B do\n  def g(x), do: x + 1\nend\n")
