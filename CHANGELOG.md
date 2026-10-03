@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-03
+
 ### Added
 
 - The JSON report gives each mutant a `position` (`{line, column}`) beside the schema's
@@ -27,8 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `mix igniter.install mutare` now writes the installed version (`~> 0.4.3`) for `:mutare`
-  in place of igniter's default `~> 0.4`, which admits the next 0.x minor, where breaking
+- `mix igniter.install mutare` now writes the installed version (`~> 0.5.0`) for `:mutare`
+  in place of igniter's default `~> 0.5`, which admits the next 0.x minor, where breaking
   changes land. `mix mutare.install` makes the rewrite, so it also applies to a hand-written
   `~> 0.4` (what this README used to suggest); any other requirement is left alone.
 - Human-readable output names a mutant's location as `file:line:column` rather than
@@ -807,7 +809,8 @@ Initial release.
   any label a mutator declares) to your own functions, with the mutators'
   value-aware reaction: `{MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout}`.
 
-[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.0...v0.4.1
