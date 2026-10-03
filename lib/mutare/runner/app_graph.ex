@@ -86,9 +86,9 @@ defmodule Mutare.Runner.AppGraph do
   safe but slow.
   """
   @spec read(Project.t(), Path.t()) :: {:ok, forward()} | :error
-  def read(%Project{umbrella?: true, apps: apps}, sandbox) do
+  def read(%Project{umbrella?: true, apps: apps, copy_root: root}, sandbox) do
     names = Enum.map(apps, & &1.app)
-    {output, status} = Invocation.mix(sandbox, @args, Selector.baseline())
+    {output, status} = Invocation.mix(sandbox, @args, Selector.baseline(), project_root: root)
 
     if Exit.success?(status) do
       case parse(output, names) do

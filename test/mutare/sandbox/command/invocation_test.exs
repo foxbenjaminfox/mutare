@@ -17,6 +17,7 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
     assert Invocation.timeout_env() == "MUTARE_TIMEOUT"
     assert Invocation.compile_timeout_env() == "MUTARE_COMPILE_TIMEOUT"
     assert Invocation.owner_watch_env() == "MUTARE_OWNER_WATCH"
+    assert Invocation.project_root_env() == "MUTARE_PROJECT_ROOT"
   end
 
   describe "environment/2 (the one env builder every sandbox mix goes through)" do
@@ -32,6 +33,9 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
       # invocation, so an inherited value must never leak into one that didn't ask.
       assert {Invocation.timeout_env(), nil} in env
       assert {Invocation.compile_timeout_env(), nil} in env
+      # So does an absent project root: Mutare's own suite runs under Mutare, and the
+      # outer run's root must not reach a fixture's sandbox as if it were the fixture's.
+      assert {Invocation.project_root_env(), nil} in env
       assert {Invocation.owner_watch_env(), "1"} in env
       assert Mutare.Selector.env_var() in keys(env)
       assert Mutare.Selector.namespace_env() in keys(env)
@@ -58,6 +62,8 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
       assert extra.(max_heap_mb: 64) == Invocation.emulator_flags_env(max_heap_mb: 64)
       assert extra.(schedulers: 4) == Invocation.emulator_flags_env(schedulers: 4)
       assert extra.(schedulers: :all) == []
+      assert extra.(project_root: "/src/app") == [{Invocation.project_root_env(), "/src/app"}]
+      assert extra.(project_root: ".") == [{Invocation.project_root_env(), File.cwd!()}]
       assert extra.(partition: [{"MIX_TEST_PARTITION", "3"}]) == [{"MIX_TEST_PARTITION", "3"}]
     end
 
@@ -107,6 +113,7 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
       assert Invocation.owner_watch_env() in names
       assert "ELIXIR_ERL_OPTIONS" in names
       assert "ERL_COMPILER_OPTIONS" in names
+      assert Invocation.project_root_env() in names
       assert names == Enum.uniq(names)
       refute "MIX_TEST_PARTITION" in names
     end

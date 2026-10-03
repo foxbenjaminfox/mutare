@@ -276,6 +276,16 @@ defmodule Mix.Tasks.Mutare do
 
   You must pre-create and migrate the `--workers` partitioned databases (just as is required by `mix test --partitions`). The pool recycles ids across the run, so `--workers 4` needs four databases, not one per mutant; the baseline and coverage probe use partition `1`.
 
+  Mutare runs the suite in a copy of the project under the system temp directory, without `.git`. A config that names its database after the checkout — one database per git worktree, derived from the path or the branch — would name it after the copy instead. Every sandbox `mix` has `MUTARE_PROJECT_ROOT` set to the absolute path of the directory it copies (the umbrella root, for an umbrella), so derive the name from that when it is set:
+
+      # config/test.exs
+      root = System.get_env("MUTARE_PROJECT_ROOT") || Path.expand("..", __DIR__)
+
+      config :my_app, MyApp.Repo,
+        database: "my_app_test_\#{worktree_tag(root)}\#{System.get_env("MIX_TEST_PARTITION")}"
+
+  where `worktree_tag/1` is whatever the project already derives from a checkout path (`git -C root …` for the branch). With `--partition-db`, each worktree then needs its own `--workers` databases.
+
   ## Sandbox and build cache
 
       mix mutare --sandbox /tmp/mut       # put the sandbox at a path of your choosing (inspect it, or cache it on CI)

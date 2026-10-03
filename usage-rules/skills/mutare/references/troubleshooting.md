@@ -75,6 +75,11 @@ A harness error is a run that reached no verdict. It is excluded from the score,
 - **Workers share a database.** Use `--partition-db` with one pre-created, migrated
   database per worker ("Database isolation across workers" in `mix help mutare`), or
   run `--workers 1`.
+- **Config derives a name from the checkout.** The sandbox is a copy under the
+  system temp directory with no `.git`, so a database named from the project's path
+  or git branch (one per worktree, say) comes out wrong or fails to resolve. Read
+  `MUTARE_PROJECT_ROOT`, the original project's absolute path, when it is set
+  (same section of `mix help mutare`).
 - **The kept sandbox has gone bad.** `--no-keep-sandbox`.
 
 ## Suspicious survivors

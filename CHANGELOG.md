@@ -54,6 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Every sandbox `mix` has `MUTARE_PROJECT_ROOT` set to the absolute path of the project
+  it copies. A config that derives something from where the project lives — a test
+  database per git worktree, named from the checkout's path or branch — can read it
+  instead of the sandbox's own path, which lies under the system temp directory and has
+  no `.git`.
 - The JSON report gives each mutant a `position` (`{line, column}`) beside the schema's
   `location`: where the mutant is keyed, as the human report prints it and `--line`
   selects it; its line is the one `# mutare:ignore` reads. `location` is the span its `replacement` patches, and the

@@ -4616,6 +4616,38 @@ removes the `Command` ↔ `Invocation` cycle: the watcher ASTs embedded the code
 back into `Command`, while `Command.timed_test` called `Invocation.timed_mix`. Both now
 read the leaf.
 
+### The sandbox names the project it copies (`MUTARE_PROJECT_ROOT`) `[done]`
+
+The motivating setup: a project with one test database per git worktree, its name derived
+in `config/test.exs` from the checkout's path or branch. Under Mutare that derivation
+runs in the sandbox, a copy under the system temp dir with no `.git` (`Mutare.Sandbox`
+excludes it), so it names the copy's database or fails outright, and two worktrees
+running Mutare at once can land on the same one.
+
+The first idea was a `--partition-suffix` (a fixed string added to the per-worker
+partition value). It only helps a project that keeps the worktree tag *in*
+`MIX_TEST_PARTITION`, which Mutare overwrites. A tag in its own environment variable
+already reaches every sandbox `mix` (`System.cmd` merges `:env` over Mutare's own
+environment), and a tag derived from the path or git can't be repaired by anything
+appended after it: the base name in front is already wrong. Mutare can't make the copy
+look like the checkout either: the path is the sandbox's, and `.git` stays out of the
+copy. In a worktree `.git` is a file naming the real repository, so restoring it would
+point git in the sandbox at the user's own index and refs. So the one thing Mutare can
+contribute is the fact only it knows: where the original lives. `Invocation.environment/2` emits it from the
+`:project_root` run option, which every runner phase passes (the one compile
+included, since `mix compile` evaluates config; `AppGraph`'s `mix eval` too). Each
+project needs a one-time config change to read it, and no value Mutare could pass
+would avoid that.
+
+It is `copy_root`, expanded, not the mutated app's dir: the sandbox's root is a copy
+of exactly that directory, so a config resolves sandbox-relative paths against it the
+same way for an umbrella and a single project. An absent option *clears* the variable
+rather than omitting it, like the caps: Mutare's own suite runs under Mutare, and an
+inherited outer root reaching a fixture's sandbox would name the wrong project.
+`project_root_runner_test` is the end-to-end oracle: its fixture config raises unless
+the variable is the fixture's own path, so a phase that missed it fails the compile or
+false-kills the surviving mutant.
+
 ### Kill detection stops at the first failure (`--max-failures 1`) `[done]`
 A mutant is killed the moment *any* test fails — the verdict is killed-vs-survived,
 not *which* test — so `Mutare.Sandbox.Command.timed_test/4` forces `--max-failures 1`

@@ -8,6 +8,7 @@ defmodule Mutare.Runner.MutantRunTest do
     ctx = %RunCtx{
       options: Options.new([]),
       sandbox: "unused",
+      project_root: "unused",
       selection: {:selective, %{}},
       cap: 1000,
       scopes: %{},

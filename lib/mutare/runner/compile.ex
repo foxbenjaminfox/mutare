@@ -95,7 +95,12 @@ defmodule Mutare.Runner.Compile do
     # `System.fetch_env!("MIX_TEST_PARTITION")`) must see it *here* too — before
     # the baseline/probe that also set it — or the compile fails. Sequential like
     # those, so the fixed partition (`1`) suffices.
-    case compile(sandbox, Partitions.entry(options.partition_env, 1), options.compile_timeout) do
+    case compile(
+           sandbox,
+           root(context),
+           Partitions.entry(options.partition_env, 1),
+           options.compile_timeout
+         ) do
       :ok ->
         {:ok, schema, sandbox, recovery}
 
@@ -389,18 +394,20 @@ defmodule Mutare.Runner.Compile do
   # `:compile` run option, the verify pass off via `compile_args/0` — free compile
   # wins, applied only here since per-mutant runs never recompile the lib).
   # `partition` is the fixed partition entry (or `[]`), so a config read at
-  # compile time finds a valid partition — see `compile_with_recovery/4`.
+  # compile time finds a valid partition — see `compile_with_recovery/4`; `project_root`
+  # reaches that config for the same reason (`Invocation.project_root_env/0`).
   #
   # `:compile_timeout` arms the config-hosted wall-clock watcher
   # (`Invocation.compile_watcher_ast/0`) via the `:compile_cap` run option: the
   # compile halts *itself* with the timeout exit past the cap, which we read here as
   # `:compile_timed_out` — never fed to poison recovery (there is no error to
   # attribute, and a rebuild cannot make an oversized compile faster).
-  defp compile(sandbox, partition, compile_timeout) do
+  defp compile(sandbox, project_root, partition, compile_timeout) do
     {output, status} =
       Invocation.mix(sandbox, ["compile" | CompilerOptions.compile_args()], Selector.baseline(),
         compile: true,
         compile_cap: compile_timeout,
+        project_root: project_root,
         partition: partition
       )
 

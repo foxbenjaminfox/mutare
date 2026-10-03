@@ -9,7 +9,8 @@ defmodule Mutare.Sandbox.Command.Invocation do
   set; the rest of a run's environment comes from named **run options**
   (`t:run_opts/0`) — an optional wall-clock `:cap` (a mutation can turn a
   terminating loop infinite), the compile's own cap and compiler switches, the
-  coverage probe's capture vars, the heap cap, and the per-worker partition entry.
+  coverage probe's capture vars, the heap cap, the original project's root
+  (`project_root_env/0`), and the per-worker partition entry.
 
   This module implements run invocation: the environment it
   runs under (`environment/2`, the one builder every sandbox `mix` goes through;
@@ -56,6 +57,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
   @timeout_env "MUTARE_TIMEOUT"
   @compile_timeout_env "MUTARE_COMPILE_TIMEOUT"
   @owner_watch_env "MUTARE_OWNER_WATCH"
+  @project_root_env "MUTARE_PROJECT_ROOT"
   @erl_options_env "ELIXIR_ERL_OPTIONS"
   @mix_env "test"
 
@@ -97,6 +99,21 @@ defmodule Mutare.Sandbox.Command.Invocation do
   @spec owner_watch_env() :: String.t()
   def owner_watch_env, do: @owner_watch_env
 
+  @doc """
+  Env var naming the absolute path of the directory the sandbox is a copy of
+  (`Mutare.Project`'s `copy_root`: the umbrella root, or the single project's root).
+
+  The sandbox lives under the system temp dir and carries no `.git`, so a target
+  config that derives something from where it lives — a per-worktree test database
+  named from the checkout's path or branch — reads the sandbox instead of the
+  checkout. This is the target's way back: `System.get_env("MUTARE_PROJECT_ROOT")`,
+  falling back to its usual derivation outside Mutare. The runner sets it (the
+  `:project_root` run option) on every sandbox `mix` it spawns, the one compile
+  included, since `mix compile` evaluates the target's config too.
+  """
+  @spec project_root_env() :: String.t()
+  def project_root_env, do: @project_root_env
+
   @typedoc """
   The named run options every sandbox `mix` is invoked with. Each one maps to the
   environment entries `environment/2` emits for it:
@@ -112,11 +129,13 @@ defmodule Mutare.Sandbox.Command.Invocation do
     * `:max_heap_mb` (MB, or `nil`) — the per-process heap cap (`emulator_flags_env/1`).
     * `:schedulers` (a count, `:all`, or `nil`) — the run's scheduler threads
       (`emulator_flags_env/1`).
+    * `:project_root` (a path, or `nil`) — the directory the sandbox is a copy of,
+      expanded to an absolute path (`project_root_env/0`).
     * `:partition` (`[{name, id}]` or `[]`) — the user-named partition entry
       (`Mutare.Runner.Partitions.entry/2`), appended last.
 
-  Every option is optional. An absent `:cap`, `:compile_cap` or `:coverage` clears
-  its variables explicitly rather than emitting nothing, so a value inherited from
+  Every option is optional. An absent `:cap`, `:compile_cap`, `:coverage` or
+  `:project_root` clears its variables explicitly rather than emitting nothing, so a value inherited from
   Mutare's own environment cannot enable a watcher or probe omitted from this invocation's
   options. The remaining absent options emit nothing.
   """
@@ -127,6 +146,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
           coverage: {Path.t(), Path.t()} | nil,
           max_heap_mb: pos_integer() | nil,
           schedulers: pos_integer() | :all | nil,
+          project_root: Path.t() | nil,
           partition: [{String.t(), String.t()}]
         ]
 
@@ -186,6 +206,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
       compile_env(opts[:compile]) ++
       coverage_env(opts[:coverage]) ++
       emulator_flags_env(opts) ++
+      project_root_entry(opts[:project_root]) ++
       Keyword.get(opts, :partition, [])
   end
 
@@ -210,6 +231,12 @@ defmodule Mutare.Sandbox.Command.Invocation do
   defp coverage_env({dump, root}) when is_binary(dump) and is_binary(root),
     do: [{Recorder.env_var(), "1"}, {Recorder.dump_path_env(), dump}, {Recorder.root_env(), root}]
 
+  # Cleared when absent, like the caps: Mutare's own suite runs under Mutare, so an
+  # inherited `MUTARE_PROJECT_ROOT` would otherwise name the outer project to a fixture's
+  # sandbox. Expanded here, so a relative `copy_root` (`"."`) reaches the target absolute.
+  defp project_root_entry(nil), do: [{@project_root_env, nil}]
+  defp project_root_entry(root) when is_binary(root), do: [{@project_root_env, Path.expand(root)}]
+
   # Every run option armed with a representative value: the environment this builds
   # names every variable Mutare can set, and nothing else.
   @every_option [
@@ -218,7 +245,8 @@ defmodule Mutare.Sandbox.Command.Invocation do
     compile: true,
     coverage: {"mutare_coverage.dump", "."},
     max_heap_mb: 1,
-    schedulers: 1
+    schedulers: 1,
+    project_root: "."
   ]
 
   @doc """

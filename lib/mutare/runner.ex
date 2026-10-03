@@ -292,10 +292,12 @@ defmodule Mutare.Runner do
       # cap the mutants get validates up front that the suite itself fits under it — a
       # too-small cap fails the baseline loudly instead of minting false kills mid-run. (The
       # one metamutant compile is deliberately *not* capped — see
-      # `Invocation.emulator_flags_env/1`.)
+      # `Invocation.emulator_flags_env/1`.) Every run, like the compile, names the
+      # directory the sandbox copies (`Invocation.project_root_env/0`).
       fixed_opts = [
         partition: Partitions.entry(options.partition_env, 1),
-        max_heap_mb: options.max_heap_mb
+        max_heap_mb: options.max_heap_mb,
+        project_root: context.project.copy_root
       ]
 
       # Both also take the mutants' `:schedulers` trim. The baseline then checks the suite is
@@ -357,6 +359,7 @@ defmodule Mutare.Runner do
         ctx = %RunCtx{
           options: options,
           sandbox: sandbox,
+          project_root: context.project.copy_root,
           selection: selection,
           cap: cap,
           scopes: scopes,
@@ -391,8 +394,9 @@ defmodule Mutare.Runner do
   end
 
   # The coverage probe, announced and run after a green baseline under the fixed (pre-pool)
-  # run options `opts` (partition + heap cap) plus its own `cap`. Returns the per-mutant test
-  # selection; `run_mutants/4` fires its `{:coverage_done, …}` once the umbrella scopes are in.
+  # run options `opts` (partition, heap cap, schedulers, project root) plus its own `cap`.
+  # Returns the per-mutant test selection; `run_mutants/4` fires its `{:coverage_done, …}`
+  # once the umbrella scopes are in.
   defp probe_coverage(schema, sandbox, %Context{} = context, cap, opts) do
     options = context.options
     on_phase = Context.hook(context, :on_phase)

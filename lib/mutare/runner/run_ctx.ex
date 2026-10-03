@@ -10,6 +10,8 @@ defmodule Mutare.Runner.RunCtx do
   #
   #   * `options` — the run's validated `Mutare.Options`.
   #   * `sandbox` — the compiled sandbox every `mix test` runs in.
+  #   * `project_root` — the directory the sandbox is a copy of, handed to every run
+  #     (`Mutare.Sandbox.Command.Invocation.project_root_env/0`).
   #   * `selection` — the coverage probe's test selection (`Mutare.Runner.CoverageProbe.run/4`).
   #   * `cap` — the per-mutant wall-clock cap in ms.
   #   * `scopes` — the umbrella narrowing map (`Mutare.Project.app_test_scopes/3`), `%{}` otherwise.
@@ -26,6 +28,7 @@ defmodule Mutare.Runner.RunCtx do
   @type t :: %__MODULE__{
           options: Options.t(),
           sandbox: Path.t(),
+          project_root: Path.t(),
           selection: Mutare.Runner.CoverageProbe.selection(),
           cap: pos_integer(),
           scopes: %{optional(atom()) => [String.t()]},
@@ -40,6 +43,7 @@ defmodule Mutare.Runner.RunCtx do
   @enforce_keys [
     :options,
     :sandbox,
+    :project_root,
     :selection,
     :cap,
     :scopes,

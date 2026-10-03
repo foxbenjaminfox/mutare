@@ -146,6 +146,7 @@ defmodule Mutare.Runner.MutantRun do
         cap: ctx.cap,
         max_heap_mb: ctx.options.max_heap_mb,
         schedulers: ctx.options.schedulers,
+        project_root: ctx.project_root,
         partition: partition
       )
 
