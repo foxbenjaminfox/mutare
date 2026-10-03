@@ -293,6 +293,17 @@ defmodule Mutare.PartitionCheckRunnerTest do
         assert broken == []
         refute log =~ "kills may be false"
         refute File.exists?(Path.join(project, "attempts-1"))
+
+        # A confirmation that reaches no verdict leaves its partition unchecked, and says so.
+        if outcome == :harness_error do
+          for partition <- [2, 3] do
+            assert log =~
+                     "could not check partition #{partition}'s kills: the tests that killed " <>
+                       "mutant #{partition} ("
+          end
+        else
+          refute log =~ "could not check"
+        end
       end
     end
   end

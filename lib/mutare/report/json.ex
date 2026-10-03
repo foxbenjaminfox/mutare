@@ -11,7 +11,7 @@ defmodule Mutare.Report.Json do
   Emitted by `mix mutare --report json` or `mix mutare --report json:path.json`.
   """
 
-  alias Mutare.{Report, Result, Site}
+  alias Mutare.{Result, Site}
   alias Mutare.Report.HarnessDiagnostic
   alias Mutare.Result.Status
   alias Mutare.Run.BrokenPartition
@@ -136,7 +136,7 @@ defmodule Mutare.Report.Json do
 
   defp false_kill_reason(%BrokenPartition{partition: partition} = broken) do
     "This kill may be false: on partition #{partition}, where it ran, with no mutant " <>
-      "active, #{Report.rerun_failure(broken)}"
+      "active, #{BrokenPartition.rerun_failure(broken)}"
   end
 
   # Every real `Site` carries a range; this default only guards the typespec's

@@ -178,17 +178,8 @@ defmodule Mutare.Report do
   """
   @spec broken_partition(BrokenPartition.t()) :: String.t()
   def broken_partition(%BrokenPartition{partition: partition} = broken) do
-    "partition #{partition}  BROKEN  — with no mutant active, #{rerun_failure(broken)}"
-  end
-
-  @doc """
-  How a broken partition's rerun failed, as a clause (`Mutare.Run.BrokenPartition.what_failed/2`),
-  then the explaining output line if any.
-  """
-  @spec rerun_failure(BrokenPartition.t()) :: String.t()
-  def rerun_failure(%BrokenPartition{mutant: mutant, reason: reason} = broken) do
-    what = BrokenPartition.what_failed(broken, "mutant #{mutant}")
-    if reason, do: "#{what}: #{reason}", else: what
+    "partition #{partition}  BROKEN  — with no mutant active, " <>
+      BrokenPartition.rerun_failure(broken)
   end
 
   @doc """

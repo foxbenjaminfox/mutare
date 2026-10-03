@@ -79,11 +79,14 @@ A harness error is a run that reached no verdict. It is excluded from the score,
   partition variable selects) is likely missing or unmigrated, so its runs failed for
   reasons unrelated to the mutants and were counted as kills; the warning's last line
   shows how its tests failed with no mutant active. Fix it and rerun; the score from
-  this run is inflated, which is why `--min-score` fails with "cannot be checked
-  against the required minimum". If the suite is flaky, a flake can trigger this too;
+  this run is inflated, which is why a `--min-score` the score clears fails anyway, with
+  "cannot be checked against the required minimum". If the suite is flaky, a flake can trigger this too;
   `--kill-runs 2` makes the check (like every kill) require a repeat. With timeout
   confirmation enabled (the default), a timed-out check is repeated on its original
   partition without competing checks before the partition can be blamed.
+- **"could not check partition N's kills".** A rerun of that partition's check reached
+  no verdict (an infrastructure failure, as a harness error is), so its kills are
+  unchecked: the run says nothing either way about that partition.
 - **"... fail there and on partition 1 too".** The tests that killed that mutant fail
   with no mutant active when run as Mutare selects them, without the rest of the suite
   — they rely on another test file, or are flaky. Their kills may be false on every

@@ -4692,10 +4692,16 @@ A failing rerun is not yet a broken partition, because a failed check now fails 
   rerun fails on partition k, the same tests run mutant-off on partition 1. If they pass
   there, partition k is broken; if they fail too, they fail on their own, and the warning
   says so instead — their kills may be false on any partition, which is a different
-  problem from a partition's and fails no gate. A control that reaches no verdict leaves
-  the check inconclusive, with a warning and nothing recorded. The controls run one at a
+  problem from a partition's and fails no gate. The controls run one at a
   time: several partitions' checks sharing partition 1 at once would share its database,
   the contention partitions exist to avoid. They cost runs only on the failing path.
+
+A rerun, confirmation or control that reaches no verdict (a harness error, a boot
+failure, an OOM kill) leaves its partition unchecked: a warning says so ("could not check
+partition N's kills"), and nothing is recorded, so no report or gate hears of it. Such a
+run is evidence about the infrastructure, not the partition, and recording it would fail
+`--min-score` on a harness blip. The first version dropped a no-verdict rerun silently,
+which read as "partition checked, fine".
 
 It ignores `--time-budget`, including its confirmations, unlike the mutant stream's
 timeout confirmations: it launches no mutant. Each sequential confirmation and control
@@ -4737,7 +4743,8 @@ SARIF holds survivors only, so what it is missing is the survivors among those k
 
 Of the gates, only `--min-score` reads the kill count, so only it fails, and whatever the
 score: a score that clears the bar on false kills proves nothing, and one that misses it
-would only get worse. The other gates count statuses a broken partition doesn't produce.
+would only get worse. The latter fails with the ordinary "below the required minimum",
+which is still true; only a score that clears the bar gets "cannot be checked". The other gates count statuses a broken partition doesn't produce.
 Without a gate the run still exits 0, as it does for any score.
 
 ### Kill detection stops at the first failure (`--max-failures 1`) `[done]`

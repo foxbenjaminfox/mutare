@@ -9,7 +9,7 @@ defmodule Mutare.Report.Sarif do
   Emitted by `mix mutare --report sarif` or `mix mutare --report sarif:path.sarif`.
   """
 
-  alias Mutare.{Report, Result, Site}
+  alias Mutare.{Result, Site}
   alias Mutare.Run.BrokenPartition
 
   @schema "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json"
@@ -64,7 +64,7 @@ defmodule Mutare.Report.Sarif do
       "message" => %{
         "text" =>
           "Partition #{partition}'s kills may be false: with no mutant active, " <>
-            "#{Report.rerun_failure(broken)}. Some of the #{kills} mutants killed there " <>
+            "#{BrokenPartition.rerun_failure(broken)}. Some of the #{kills} mutants killed there " <>
             "may be survivors missing from these results."
       }
     }

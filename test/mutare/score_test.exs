@@ -233,7 +233,7 @@ defmodule Mutare.ScoreTest do
     end
 
     test "no score failure when the score meets the minimum" do
-      # A passing gate must produce nothing: the `unless passes_gate?(...)` guard has to
+      # A passing gate must produce nothing: the `passes_gate?(...)` check has to
       # actually consult the score, not unconditionally emit a failure.
       assert Score.gate_failures([%Result{status: :killed}], min_score: 50) == []
     end
@@ -258,6 +258,16 @@ defmodule Mutare.ScoreTest do
                )
 
       assert failure =~ "on partitions 2, 3, which each failed"
+    end
+
+    test "with a broken partition, a score below the minimum fails as it stands" do
+      # False kills only raise the score, so the comparison that failed is still sound.
+      broken = [%BrokenPartition{partition: 2, mutant: 7, failure: :tests_failed, reason: nil}]
+      results = [%Result{status: :killed}, %Result{status: :survived}]
+
+      assert Score.gate_failures(results, [min_score: 60], broken) == [
+               "mutation score 50.0% is below the required minimum of 60.0%"
+             ]
     end
 
     test "an enabled fail-on flag with zero such mutants raises no failure" do

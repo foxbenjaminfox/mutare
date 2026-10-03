@@ -44,6 +44,17 @@ defmodule Mutare.Run.BrokenPartition do
     do: "the tests that killed #{mutant} failed"
 
   @doc """
+  How the rerun failed, as a clause naming the kill by its id (`what_failed/2`), then the
+  explaining output line if any, e.g.
+  `the tests that killed mutant 12 failed: ** (RuntimeError) no database`.
+  """
+  @spec rerun_failure(t()) :: String.t()
+  def rerun_failure(%__MODULE__{mutant: mutant, reason: reason} = broken) do
+    what = what_failed(broken, "mutant #{mutant}")
+    if reason, do: "#{what}: #{reason}", else: what
+  end
+
+  @doc """
   How many of `results` are kills on `broken`'s partition: the kills that may be false.
   """
   @spec kills(t(), [Result.t()]) :: non_neg_integer()

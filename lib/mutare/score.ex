@@ -78,7 +78,9 @@ defmodule Mutare.Score do
     * `:fail_on_harness_error` — fail if any mutant is `:harness_error`
 
   `broken_partitions` are `Mutare.Run`'s: partitions whose kills may be false. The score
-  counts them, so with any present a `:min_score` gate fails whatever the score.
+  counts them, so with any present a `:min_score` gate fails whatever the score: below the
+  minimum as usual, since false kills only raise it, and otherwise because the score may
+  clear the minimum only on those kills.
   """
   @spec gate_failures([Result.t()], keyword() | map(), [Mutare.Run.BrokenPartition.t()]) ::
           [String.t()]
@@ -160,7 +162,22 @@ defmodule Mutare.Score do
 
   defp score_gate_failure(_results, nil, _broken_partitions), do: nil
 
-  defp score_gate_failure(results, min_score, [_ | _] = broken_partitions) do
+  # A broken partition's false kills can only raise the score, so a score below the minimum
+  # fails as it stands; only one that clears it is in doubt.
+  defp score_gate_failure(results, min_score, broken_partitions) do
+    cond do
+      not passes_gate?(results, min_score) ->
+        "mutation score #{percent(score(results))}% is below the required minimum of #{percent(min_score)}%"
+
+      broken_partitions != [] ->
+        unchecked_score_failure(results, min_score, broken_partitions)
+
+      true ->
+        nil
+    end
+  end
+
+  defp unchecked_score_failure(results, min_score, broken_partitions) do
     partitions =
       case Enum.map(broken_partitions, & &1.partition) do
         [one] -> "partition #{one}, which"
@@ -170,12 +187,6 @@ defmodule Mutare.Score do
     "mutation score #{percent(score(results))}% cannot be checked against the required " <>
       "minimum of #{percent(min_score)}%: it counts the kills on #{partitions} failed " <>
       "the tests with no mutant active, so some of those kills may be false"
-  end
-
-  defp score_gate_failure(results, min_score, []) do
-    unless passes_gate?(results, min_score) do
-      "mutation score #{percent(score(results))}% is below the required minimum of #{percent(min_score)}%"
-    end
   end
 
   # Equivalent mutant: dropping this clause changes nothing. A nil `max` then reaches the

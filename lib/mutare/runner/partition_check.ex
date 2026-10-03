@@ -20,7 +20,8 @@ defmodule Mutare.Runner.PartitionCheck do
   # killed that mutant, not the mutation. If it fails too, the tests fail with no mutant
   # wherever they run — they rely on tests outside their selection, or are flaky — so the
   # kills they made may be false on any partition, and the warning says that instead. A
-  # rerun or control that reaches no verdict says only that the check could not finish.
+  # rerun, confirmation or control that reaches no verdict warns only that the partition
+  # could not be checked, and records nothing.
   # Verdicts are left as recorded: the warning names the partition so the user can repair
   # it and rerun. NOTES "A partition's kills are checked by rerunning one with no mutant".
 
@@ -77,25 +78,42 @@ defmodule Mutare.Runner.PartitionCheck do
     |> Enum.map(fn {_partition, kills} -> Enum.min_by(kills, & &1.duration_ms) end)
   end
 
-  # The kill's tests, rerun on its own partition with no mutant: `[{kill, selection,
-  # rerun}]` when they fail there, else `[]`.
+  # The kill's tests, rerun on its own partition with no mutant.
   defp rerun(%RunCtx{} = ctx, %Result{site: site, partition: partition} = kill) do
     selection = MutantRun.selection(ctx, site)
-    rerun = MutantRun.unmutated(ctx, selection, partition)
-
-    if MutantRun.kill_outcome?(rerun.outcome), do: [{kill, selection, rerun}], else: []
+    failed_on_partition(kill, selection, MutantRun.unmutated(ctx, selection, partition))
   end
 
   defp confirm_timeout(
          %RunCtx{options: %{confirm_timeouts: true}} = ctx,
          {%Result{partition: partition} = kill, selection, %{outcome: :timeout}}
        ) do
-    confirmed = MutantRun.unmutated(ctx, selection, partition)
-
-    if MutantRun.kill_outcome?(confirmed.outcome), do: [{kill, selection, confirmed}], else: []
+    failed_on_partition(kill, selection, MutantRun.unmutated(ctx, selection, partition))
   end
 
   defp confirm_timeout(_ctx, failed), do: [failed]
+
+  # `[{kill, selection, rerun}]` when the rerun on the kill's partition failed; `[]` when it
+  # passed, or when it reached no verdict, which leaves that partition unchecked.
+  defp failed_on_partition(%Result{site: site, partition: partition} = kill, selection, rerun) do
+    cond do
+      MutantRun.kill_outcome?(rerun.outcome) ->
+        [{kill, selection, rerun}]
+
+      rerun.outcome == :passed ->
+        []
+
+      true ->
+        warn_unchecked(
+          partition,
+          "the tests that killed #{mutant(site)} reached no verdict there with no mutant " <>
+            "active (#{rerun.outcome})",
+          rerun
+        )
+
+        []
+    end
+  end
 
   defp control(%RunCtx{} = ctx, {%Result{site: site, partition: partition}, selection, rerun}) do
     control = MutantRun.unmutated(ctx, selection, @baseline_partition)
@@ -117,7 +135,14 @@ defmodule Mutare.Runner.PartitionCheck do
         []
 
       true ->
-        warn_inconclusive(site, partition, control)
+        warn_unchecked(
+          partition,
+          "with no mutant active, the tests that killed #{mutant(site)} fail there, but on " <>
+            "partition #{@baseline_partition} they reached no verdict (#{control.outcome}), " <>
+            "so Mutare could not tell whether partition #{partition} is to blame",
+          control
+        )
+
         []
     end
   end
@@ -153,12 +178,12 @@ defmodule Mutare.Runner.PartitionCheck do
     )
   end
 
-  defp warn_inconclusive(%Site{} = site, partition, control) do
+  # A check that could not finish: `partition`'s kills stand unchecked, and nothing is
+  # recorded, so no report or gate hears of it. `run` is the attempt that reached no verdict.
+  defp warn_unchecked(partition, why, run) do
     Logger.warning(
-      "partition #{partition}'s kills may be false. With no mutant active, the tests " <>
-        "that killed #{mutant(site)} fail there, but on partition #{@baseline_partition} " <>
-        "they reached no verdict (#{control.outcome}), so Mutare could not tell whether " <>
-        "partition #{partition} is to blame."
+      "could not check partition #{partition}'s kills: #{why}." <>
+        ended_with(Output.salient_line(run.output))
     )
   end
 
