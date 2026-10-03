@@ -407,11 +407,30 @@ defmodule Mutare.Transform.LiftedEmit do
   # closure as its second parameter; this clause's body is rewritten to call `super` through it.
   # A clause whose own body has no `super` still takes the (shared) parameter but ignores it — a
   # bare `_` (`super_param/2`).
+  #
+  # The active id is likewise a bare `_` in a clause that never reads it: an original clause
+  # no mutant excludes, whose body holds no selector (its source clause has no mutants of its
+  # own, or they are ignored or filtered out). Named there, it is an unused variable, and the
+  # target's one compile warns — or fails, under `warnings_as_errors`.
   defp lifted_clause(%Group{} = group, clause_meta, call_meta, args, guard, body) do
     {body, super_params} = super_param(body, group.super_var)
-    call = {group.base, call_meta, [Recorder.catch_all_pattern(group.var) | super_params] ++ args}
+    call = {group.base, call_meta, [active_param(group.var, guard, body) | super_params] ++ args}
     head = if guard, do: {:when, [], [call, guard]}, else: call
     {:defp, clause_meta, [head | body]}
+  end
+
+  defp active_param(var, guard, body) do
+    if reads_var?(guard, var) or reads_var?(body, var),
+      do: Recorder.catch_all_pattern(var),
+      else: {:_, [], nil}
+  end
+
+  # The active var is salted against the file's own identifiers (`Config.active_var`), so any
+  # occurrence is generated and reads the parameter.
+  defp reads_var?(ast, var) do
+    ast
+    |> Macro.prewalker()
+    |> Enum.any?(&match?({^var, _meta, context} when is_atom(context), &1))
   end
 
   # The super-closure parameter for one base clause, plus its rewritten body. `nil` (super-free

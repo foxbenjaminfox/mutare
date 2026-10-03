@@ -43,6 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A function whose clauses Mutare lifts (to mutate a guard, a head pattern, or the clause
+  list) no longer compiles with `warning: variable "mutare_active" is unused` when one of
+  its clauses has no mutants of its own. In a project that sets `warnings_as_errors` in
+  `elixirc_options`, that warning failed the compile.
 - Poison recovery rebuilds from the scan's captured sources and count facts. Editing
   or deleting a source file during compilation no longer changes the mutations named
   by IDs already marked as poisoned. Deferred diffs keep using the same snapshot.

@@ -240,6 +240,36 @@ defmodule Mutare.LiftTest do
       Selector.put(Selector.baseline())
     end
 
+    test "a lifted clause that never reads the active id takes it as `_`, without a warning" do
+      # Only the first clause has mutants, so the second is an original clause with no
+      # exclusion and no selector: nothing in it reads the active id.
+      source = """
+      defmodule Mutare.UnreadActiveFixture do
+        def f(n) when n > 0, do: n
+        def f(n), do: {:fallback, n}
+      end
+      """
+
+      %{metamutant: meta, sites: sites} =
+        Mutare.Transform.transform_string_with_sites(source,
+          file: "ua.ex",
+          mutators: [Mutare.Mutators.Relational]
+        )
+
+      assert meta =~ ~r/defp __mutare_f_1_g1\(\s*_,\s*n\s*\) do/
+      {[{Mutare.UnreadActiveFixture, _}], warnings} = compile_with_warnings(meta)
+      assert warnings == ""
+
+      assert apply(Mutare.UnreadActiveFixture, :f, [0]) == {:fallback, 0}
+      widen = Enum.find(sites, &(&1.original_form == :> and &1.mutated_form == :>=))
+      assert widen, "expected a `>` → `>=` guard mutant"
+      Selector.put(widen.id)
+      assert apply(Mutare.UnreadActiveFixture, :f, [0]) == 0
+      assert apply(Mutare.UnreadActiveFixture, :f, [-1]) == {:fallback, -1}
+    after
+      Selector.put(Selector.baseline())
+    end
+
     test "does not lift a function whose clauses are split by another definition" do
       source = """
       defmodule Mutare.NonConsecutiveLiftFixture do
