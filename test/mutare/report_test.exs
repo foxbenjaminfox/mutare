@@ -512,6 +512,16 @@ defmodule Mutare.ReportTest do
     assert out =~ "mutation score: 50.0%  (1 killed, 1 survived, 2 total)"
   end
 
+  test "render/3 sets a scoped run's flags beside its score" do
+    sources = %{"lib/billing.ex" => @source}
+    results = [%Result{site: site(:>), status: :killed}]
+
+    assert Report.render(results, sources, scope: "--line lib/billing.ex:3") =~
+             "mutation score: 100.0%  (1 killed, 0 survived, 1 total)  — scoped by --line lib/billing.ex:3"
+
+    refute Report.render(results, sources, scope: nil) =~ "scoped by"
+  end
+
   test "render/2 with no survivors is just the summary (no leading blank lines)" do
     results = [%Result{site: site(:>), status: :killed}]
     assert Report.render(results, %{"lib/billing.ex" => @source}) == Report.summary(results)

@@ -477,6 +477,7 @@ defmodule Mix.Tasks.MutareTest do
 
       output = drain_shell_info()
       assert output =~ "no mutation sites on lines changed since HEAD; nothing to test"
+      assert output =~ "(0 killed, 0 survived, 0 total)  — scoped by --since HEAD"
       assert %{"files" => files} = out |> File.read!() |> JSON.decode!()
       assert files == %{}
     end

@@ -175,10 +175,19 @@ defmodule Mutare.Report do
 
   The report lists each survivor as a diff, then the lines holding mutants no
   test ran (`no_coverage/1`), then ignored mutants and harness errors, one per
-  line, and ends with the `summary/1` tally.
+  line, and ends with the `summary/2` tally.
   """
   @spec render([Result.t()], %{optional(String.t()) => String.t()}) :: String.t()
-  def render(results, sources) do
+  def render(results, sources), do: render(results, sources, [])
+
+  @doc """
+  Renders the human report with the same arity as machine reporters.
+
+  `opts[:scope]` is the `summary/2` scope note; the other options are ignored
+  (score gating is handled by the caller).
+  """
+  @spec render([Result.t()], %{optional(String.t()) => String.t()}, keyword()) :: String.t()
+  def render(results, sources, opts) do
     survivors = Enum.filter(results, &(&1.status == :survived))
 
     blocks =
@@ -191,31 +200,30 @@ defmodule Mutare.Report do
       no_coverage(results),
       ignored_section(results),
       harness_error_section(results),
-      summary(results)
+      summary(results, opts[:scope])
     ]
     |> Enum.reject(&(&1 == ""))
     |> Enum.join("\n\n")
   end
 
   @doc """
-  Renders the human report with the same arity as machine reporters.
-
-  `opts` is ignored; score gating is handled by the caller.
-  """
-  @spec render([Result.t()], %{optional(String.t()) => String.t()}, keyword()) :: String.t()
-  def render(results, sources, _opts), do: render(results, sources)
-
-  @doc """
   One-line tally, e.g. `mutation score: 66.7%  (2 killed, 1 survived, 3 total)`.
+
+  A run that tested only part of the project (`--since`, `--line`, …) passes the
+  flags that chose that part as `scope`, appended as a trailing `— scoped by …`:
+  its score is over those mutants alone, not the project's.
 
       iex> Mutare.Report.summary([
       ...>   %Mutare.Result{status: :killed},
       ...>   %Mutare.Result{status: :survived}
       ...> ])
       "mutation score: 50.0%  (1 killed, 1 survived, 2 total)"
+
+      iex> Mutare.Report.summary([%Mutare.Result{status: :killed}], "--since main")
+      "mutation score: 100.0%  (1 killed, 0 survived, 1 total)  — scoped by --since main"
   """
-  @spec summary([Result.t()]) :: String.t()
-  def summary(results) do
+  @spec summary([Result.t()], String.t() | nil) :: String.t()
+  def summary(results, scope \\ nil) do
     counts = Enum.frequencies_by(results, & &1.status)
 
     # One labelled count per status, in the registry's render order; the unusual
@@ -234,7 +242,8 @@ defmodule Mutare.Report do
       |> Kernel.++(["#{length(results)} total"])
       |> Enum.join(", ")
 
-    "mutation score: #{Score.percent(Score.score(results))}%  (#{tally})"
+    "mutation score: #{Score.percent(Score.score(results))}%  (#{tally})" <>
+      optional_suffix(scope && "scoped by #{scope}")
   end
 
   # --- internals -----------------------------------------------------------

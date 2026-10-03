@@ -1,12 +1,13 @@
 defmodule Mutare.CLI.Outcome do
   @moduledoc false
-  # The run-outcome presentation of `mix mutare`, extracted from `Mix.Tasks.Mutare`: `report/2`
+  # The run-outcome presentation of `mix mutare`, extracted from `Mix.Tasks.Mutare`: `report/3`
   # emits every configured reporter and applies the post-report CI gates (or notes an early stop);
-  # `checkpoint/3` and `report_interrupted/4` write the partial reports of a run still in
+  # `checkpoint/3` and `report_interrupted/5` write the partial reports of a run still in
   # progress (`Mutare.CLI.PartialReport`);
   # `warn_poison_recovery/1` prints the durable `:call_routes` fix after a poison-recovered run; and
   # `format_error/3` renders each terminal `{:error, reason, detail}` into the message the task
-  # `Mix.raise`s. All output is the task's (stdout report, stderr notes) — this only builds it.
+  # `Mix.raise`s; `scope/2` names the flags a scoped run's score is over. All output is the
+  # task's (stdout report, stderr notes) — this only builds it.
 
   alias Mutare.{CLI, Options, Run, Schema, Score}
   alias Mutare.Poison.Hint
@@ -30,8 +31,44 @@ defmodule Mutare.CLI.Outcome do
     |> Enum.each(fn note -> IO.puts(:stderr, "\n" <> note) end)
   end
 
-  def report(run, %Options{} = options) do
-    emit_all(run.results, run.schema, options)
+  # The flags that chose which of the project's mutants a run tests, as the user wrote them, for
+  # the human report to set beside its score — a scoped run's score is over those mutants alone.
+  # `nil` for a run over the whole project. `--max-mutants` is read from `options`, since
+  # `.mutare.exs` may set it too; a repeatable flag lists its first values, then counts the rest.
+  @doc false
+  @spec scope(keyword(), Options.t()) :: String.t() | nil
+  def scope(flags, %Options{} = options) do
+    [
+      Enum.map(List.wrap(flags[:since]), &"--since #{&1}"),
+      repeated(flags, :only),
+      repeated(flags, :exclude),
+      repeated(flags, :line),
+      Enum.map(List.wrap(options.max_mutants), &"--max-mutants #{&1}")
+    ]
+    |> List.flatten()
+    |> case do
+      [] -> nil
+      parts -> Enum.join(parts, " ")
+    end
+  end
+
+  @listed_values 3
+
+  defp repeated(flags, key) do
+    flag = "--#{key}"
+
+    case Keyword.get_values(flags, key) do
+      values when length(values) <= @listed_values ->
+        Enum.map(values, &"#{flag} #{&1}")
+
+      values ->
+        {listed, rest} = Enum.split(values, @listed_values)
+        Enum.map(listed, &"#{flag} #{&1}") ++ ["(+#{length(rest)} more #{flag})"]
+    end
+  end
+
+  def report(run, %Options{} = options, scope) do
+    emit_all(run.results, run.schema, options, scope)
     finish_run(run, options)
   end
 
@@ -39,18 +76,18 @@ defmodule Mutare.CLI.Outcome do
   # write — empty — so a CI step that uploads a report file finds one, and the gates
   # still apply: over no results they pass (`Mutare.Score` scores an empty denominator
   # at 100), as they would for a run whose every mutant went uncovered.
-  def report_unchanged(%Schema{} = schema, since, %Options{} = options) do
+  def report_unchanged(%Schema{} = schema, since, %Options{} = options, scope) do
     Mix.shell().info(unchanged_note(since))
-    emit_all([], schema, options)
+    emit_all([], schema, options, scope)
     gate([], options)
   end
 
   def unchanged_note(since),
     do: "no mutation sites on lines changed since #{since}; nothing to test"
 
-  defp emit_all(results, %Schema{} = schema, %Options{} = options) do
+  defp emit_all(results, %Schema{} = schema, %Options{} = options, scope) do
     Enum.each(options.reporters, fn {format, path} ->
-      emit(format, path, results, schema, options)
+      emit(format, path, results, schema, options, scope)
     end)
   end
 
@@ -68,10 +105,11 @@ defmodule Mutare.CLI.Outcome do
 
   @doc false
   # Rewrite each JSON/HTML report bound for a file with the results so far, untested mutants
-  # `Pending`. Silent: the live progress already says how far the run has got.
+  # `Pending`. Silent: the live progress already says how far the run has got. Neither format
+  # carries the scope note, so none is passed.
   def checkpoint(results, %Schema{} = schema, %Options{} = options) do
     Enum.each(checkpoint_targets(options), fn {format, path} ->
-      write_report!(path, render_for(format, results, schema, options))
+      write_report!(path, render_for(format, results, schema, options, nil))
     end)
   end
 
@@ -83,11 +121,11 @@ defmodule Mutare.CLI.Outcome do
   # had accepted, then a note on stderr of how far it got. With no result yet — the signal came
   # before the first mutant finished, and `schema` is `nil` if it came during the scan — no
   # report is written, so a previous run's reports stay as they were.
-  def report_interrupted(results, schema, %Options{} = options, signal) do
+  def report_interrupted(results, schema, %Options{} = options, scope, signal) do
     if results != [] do
       options.reporters
       |> Enum.filter(fn {format, _path} -> format in @partial_formats end)
-      |> Enum.each(fn {format, path} -> emit(format, path, results, schema, options) end)
+      |> Enum.each(fn {format, path} -> emit(format, path, results, schema, options, scope) end)
     end
 
     IO.puts(:stderr, interrupted_note(results, schema, options, signal))
@@ -185,24 +223,25 @@ defmodule Mutare.CLI.Outcome do
 
   # A `nil` path means stdout (the console); a path means write the rendered
   # report to that file and note where it went.
-  defp emit(format, nil, results, schema, options) do
-    Mix.shell().info(render_for(format, results, schema, options))
+  defp emit(format, nil, results, schema, options, scope) do
+    Mix.shell().info(render_for(format, results, schema, options, scope))
   end
 
-  defp emit(format, path, results, schema, options) do
-    write_report!(path, render_for(format, results, schema, options))
+  defp emit(format, path, results, schema, options, scope) do
+    write_report!(path, render_for(format, results, schema, options, scope))
     Mix.shell().info("wrote #{format} report to #{path}")
   end
 
   # Every site with no result is `pending:` — none after a complete run; after an early stop,
   # an interruption, or at a checkpoint, the mutants not yet tested.
-  defp render_for(format, results, %Schema{} = schema, options) do
+  defp render_for(format, results, %Schema{} = schema, options, scope) do
     tested = MapSet.new(results, & &1.site.id)
     pending = Enum.reject(schema.sites, &MapSet.member?(tested, &1.id))
 
     Options.renderer(format).render(results, schema.sources,
       min_score: options.min_score,
-      pending: pending
+      pending: pending,
+      scope: scope
     )
   end
 

@@ -153,7 +153,7 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --strict-ignores         # exit 1 if any `# mutare:` comment matched
                                           #   no mutant (a typo'd verb/family or stale line)
 
-  Combine `--since` with CI gates to gate only the code a pull request changed, and `--quiet` to drop the live progress (spinner, phases, per-survivor and `PROGRESS` lines); the final report (and any machine reports) will still be printed. When stderr is not a terminal, the `PROGRESS` lines are what keep a long run from looking silent, so leave them on where a CI system kills jobs that produce no output for a while. A pull request that changes no mutatable line — only tests, docs, or comments — passes, with empty reports written.
+  Combine `--since` with CI gates to gate only the code a pull request changed, and `--quiet` to drop the live progress (spinner, phases, per-survivor and `PROGRESS` lines); the final report (and any machine reports) will still be printed. When stderr is not a terminal, the `PROGRESS` lines are what keep a long run from looking silent, so leave them on where a CI system kills jobs that produce no output for a while. A pull request that changes no mutatable line — only tests, docs, or comments — passes, with empty reports written. The human report's score line names the flags that scoped the run (`— scoped by --since origin/master`), since its score covers those mutants alone; `--only`, `--exclude`, `--line` and `--max-mutants` are named the same way.
 
       mix mutare --since origin/master --min-score 80 --quiet
 
@@ -484,7 +484,7 @@ defmodule Mix.Tasks.Mutare do
 
   # Everything past the no-config flags resolves the project + options first; the
   # remaining inspect-and-exit flags then branch off that, and a normal run falls
-  # through to `run_mutation_testing/3`.
+  # through to `run_mutation_testing/4`.
   defp dispatch_with_options(flags, rest) do
     target = List.first(rest) || "."
     project = resolve_project(target, flags)
@@ -502,7 +502,7 @@ defmodule Mix.Tasks.Mutare do
         flags[:list_ignores] -> Info.print_ignores(project, scan(context, root))
         flags[:dry_run] -> Info.print_dry_run(project, scan(context, root))
         flags[:check] -> run_check(project, context, root, flags[:since])
-        true -> run_mutation_testing(project, context, root, flags[:since])
+        true -> run_mutation_testing(project, context, root, flags)
       end
     rescue
       # A variant-label spec error from *any* scan — a normal run *or* a `--dry-run`/`--list-ignores`
@@ -516,8 +516,10 @@ defmodule Mix.Tasks.Mutare do
     end
   end
 
-  defp run_mutation_testing(%Project{} = project, %Context{} = context, root, since) do
+  defp run_mutation_testing(%Project{} = project, %Context{} = context, root, flags) do
     options = context.options
+    since = flags[:since]
+    scope = Outcome.scope(flags, options)
 
     # Defer the per-mutant diff render (the build's dominant cost) when the active reporters need
     # diff text for survivors *alone* — re-derived at report time (`Mutare.Runner.Hydrate`). Set on
@@ -531,11 +533,13 @@ defmodule Mix.Tasks.Mutare do
     # halts with the status a SIGTERM death reports. Trapped before the scan, so a SIGTERM at
     # any point of the run exits non-zero; `begin/3` replaces the scan-time callback once the
     # schema and the live reporter exist. NOTES "A killed run keeps its reports".
-    {:ok, partial} = PartialReport.start_link(options, &interrupted(&1, nil, nil, options))
+    {:ok, partial} =
+      PartialReport.start_link(options, &interrupted(&1, nil, nil, options, scope))
+
     sigterm = trap_sigterm(fn -> PartialReport.interrupt(partial) end)
 
     runner = fn schema, root, run_context, live ->
-      :ok = PartialReport.begin(partial, schema, &interrupted(&1, schema, live, options))
+      :ok = PartialReport.begin(partial, schema, &interrupted(&1, schema, live, options, scope))
       result = Runner.run_with_schema(schema, root, PartialReport.observe(run_context, partial))
       # The final reports go to the checkpoints' paths: no checkpoint may land after them.
       :ok = PartialReport.close(partial)
@@ -546,9 +550,9 @@ defmodule Mix.Tasks.Mutare do
       run_compiled(project, context, root, since, runner, %{
         ok: fn run ->
           Outcome.warn_poison_recovery(run)
-          Outcome.report(run, options)
+          Outcome.report(run, options, scope)
         end,
-        unchanged: &Outcome.report_unchanged(&1, since, options)
+        unchanged: &Outcome.report_unchanged(&1, since, options, scope)
       })
     after
       if sigterm, do: System.untrap_signal(:sigterm, sigterm)
@@ -567,9 +571,9 @@ defmodule Mix.Tasks.Mutare do
   end
 
   # A SIGTERM before the final reports, in the partial report's process, which halts after it.
-  defp interrupted(results, schema, live, options) do
+  defp interrupted(results, schema, live, options, scope) do
     finish_live(live)
-    Outcome.report_interrupted(results, schema, options, "SIGTERM")
+    Outcome.report_interrupted(results, schema, options, scope, "SIGTERM")
   end
 
   # `--check`: the compile-only preflight. Scan + compile the metamutant (with the same
@@ -635,7 +639,7 @@ defmodule Mix.Tasks.Mutare do
   defp finish_live(nil), do: :ok
   defp finish_live(live), do: Live.finish(live)
 
-  # The shared scan/live prelude of a compile-backed run (`run_mutation_testing/3` and
+  # The shared scan/live prelude of a compile-backed run (`run_mutation_testing/4` and
   # `--check`): host-compile for `use` expansion, start the live reporter, scan with live
   # progress, announce + emit the scan-time warnings, and wire the runner's live hooks.
   # Returns `{live, schema, run_context}`. Callers set `context.defer_site_code` before

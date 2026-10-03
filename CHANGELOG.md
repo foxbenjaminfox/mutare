@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The human report's score line names the flags that scoped the run — `--since`,
+  `--only`, `--exclude`, `--line`, `--max-mutants` — as `— scoped by --since main`, so a
+  score over part of the project does not read as the project's.
 - `Mutare.CallRouting.Call.resolved_module/2` reads `__MODULE__` as the module a routed
   call is written in, and `__MODULE__.Comment` as a name beneath it, so a classifier can
   tell what `from(p in __MODULE__, …)` names inside a schema module. Both resolve to
