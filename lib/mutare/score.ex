@@ -76,13 +76,17 @@ defmodule Mutare.Score do
     * `:max_no_coverage` — maximum allowed `:no_coverage` count, or `nil`
     * `:fail_on_poisoned` — fail if any mutant is `:poisoned`
     * `:fail_on_harness_error` — fail if any mutant is `:harness_error`
+
+  `broken_partitions` are `Mutare.Run`'s: partitions whose kills may be false. The score
+  counts them, so with any present a `:min_score` gate fails whatever the score.
   """
-  @spec gate_failures([Result.t()], keyword() | map()) :: [String.t()]
-  def gate_failures(results, opts \\ []) do
+  @spec gate_failures([Result.t()], keyword() | map(), [Mutare.Run.broken_partition()]) ::
+          [String.t()]
+  def gate_failures(results, opts \\ [], broken_partitions \\ []) do
     counts = tally(results)
 
     [
-      score_gate_failure(results, gate_opt(opts, :min_score)),
+      score_gate_failure(results, gate_opt(opts, :min_score), broken_partitions),
       max_count_gate_failure(count(counts, :no_coverage), gate_opt(opts, :max_no_coverage)),
       fail_on_status_failure(
         count(counts, :poisoned),
@@ -154,14 +158,21 @@ defmodule Mutare.Score do
   # mutare:ignore[guard_drop] opts is always keyword|map; the is_list clause owns lists
   defp gate_opt(opts, key, default) when is_map(opts), do: Map.get(opts, key, default)
 
-  # Equivalent mutant: dropping this clause changes nothing. A nil `min_score` then
-  # reaches the general clause, where `passes_gate?(results, nil)` is true (a nil minimum
-  # always passes), so `unless true` yields nil either way. Scoped to the clause-drop so
-  # the `unless` condition mutant on the general clause stays killable.
-  # mutare:ignore[clause_drop] passes_gate?(_, nil) is true, so the general clause also returns nil
-  defp score_gate_failure(_results, nil), do: nil
+  defp score_gate_failure(_results, nil, _broken_partitions), do: nil
 
-  defp score_gate_failure(results, min_score) do
+  defp score_gate_failure(results, min_score, [_ | _] = broken_partitions) do
+    partitions =
+      case Enum.map(broken_partitions, & &1.partition) do
+        [one] -> "partition #{one}, which"
+        many -> "partitions #{Enum.join(many, ", ")}, which each"
+      end
+
+    "mutation score #{percent(score(results))}% cannot be checked against the required " <>
+      "minimum of #{percent(min_score)}%: it counts the kills on #{partitions} failed " <>
+      "the tests with no mutant active, so some of those kills may be false"
+  end
+
+  defp score_gate_failure(results, min_score, []) do
     unless passes_gate?(results, min_score) do
       "mutation score #{percent(score(results))}% is below the required minimum of #{percent(min_score)}%"
     end

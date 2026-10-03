@@ -231,4 +231,41 @@ defmodule Mutare.Report.JsonTest do
              "end" => %{"line" => 1, "column" => 1}
            }
   end
+
+  describe "partitions" do
+    @broken %{partition: 2, mutant: 7, failure: :app_start, reason: nil}
+
+    defp on_partition(status, partition, id),
+      do: %{result(status, id: id) | partition: partition}
+
+    test "records the partition a mutant's run used, only when partitioned" do
+      [partitioned, bare] =
+        decode([on_partition(:killed, 3, 1), result(:killed, id: 2)])["files"]["lib/a.ex"][
+          "mutants"
+        ]
+
+      assert partitioned["partition"] == 3
+      refute Map.has_key?(bare, "partition")
+    end
+
+    test "a kill on a broken partition says it may be false; nothing else does" do
+      results = [
+        on_partition(:killed, 2, 1),
+        on_partition(:timeout, 2, 2),
+        on_partition(:survived, 2, 3),
+        on_partition(:killed, 1, 4)
+      ]
+
+      mutants =
+        decode(results, %{"lib/a.ex" => "a >= b"}, broken_partitions: [@broken])["files"][
+          "lib/a.ex"
+        ]["mutants"]
+
+      reason =
+        "This kill may be false: on partition 2, where it ran, with no mutant active, " <>
+          "the application would not start"
+
+      assert Enum.map(mutants, & &1["statusReason"]) == [reason, reason, nil, nil]
+    end
+  end
 end

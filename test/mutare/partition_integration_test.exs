@@ -74,6 +74,10 @@ defmodule Mutare.PartitionIntegrationTest do
                workers: 2
              )
 
+    # Partition 2 works, so rerunning its kill there with no mutant active passes. (Not
+    # read from the log: `with_log` would also catch a concurrent module's warning.)
+    assert run.broken_partitions == []
+
     # A clean run (green baseline + probe) means the var reached both; the
     # surviving relational mutant means it reached the per-mutant run too (else
     # the partition test would fail there and false-kill it).

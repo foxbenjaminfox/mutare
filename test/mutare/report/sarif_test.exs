@@ -91,4 +91,34 @@ defmodule Mutare.Report.SarifTest do
     [run] = decode([%Result{site: site(1), status: :killed}])["runs"]
     assert run["results"] == []
   end
+
+  test "a broken partition becomes a warning notification on the run's invocation" do
+    broken = %{partition: 2, mutant: 7, failure: :tests_failed, reason: "** (RuntimeError) no db"}
+
+    results = [
+      %Result{site: site(1), status: :killed, partition: 2},
+      %Result{site: site(2), status: :killed, partition: 2},
+      %Result{site: site(3), status: :killed, partition: 1}
+    ]
+
+    [run] =
+      results
+      |> Sarif.render(%{}, broken_partitions: [broken])
+      |> JSON.decode!()
+      |> Map.fetch!("runs")
+
+    assert [%{"executionSuccessful" => true, "toolExecutionNotifications" => [notification]}] =
+             run["invocations"]
+
+    assert notification["level"] == "warning"
+    assert notification["descriptor"] == %{"id" => "broken-partition"}
+
+    assert notification["message"]["text"] ==
+             "Partition 2's kills may be false: with no mutant active, the tests that killed " <>
+               "mutant 7 failed: ** (RuntimeError) no db. Some of the 2 mutants killed there " <>
+               "may be survivors missing from these results."
+
+    [plain] = decode(results)["runs"]
+    refute Map.has_key?(plain, "invocations")
+  end
 end

@@ -54,6 +54,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- With `--partition-db`/`--partition-env`, a run warns about a partition whose
+  environment is broken — a missing or unmigrated database, say. Only partition 1 is
+  checked before the mutants run, so such a partition's failures used to count as kills
+  without a word. After the run, each other partition's fastest kill has its tests rerun
+  there with no mutant active, and the warning fires if they fail (on every `--kill-runs`
+  attempt) or the application won't start, while the same tests pass on partition 1. If
+  they fail on partition 1 too, a different warning says they fail when run on their
+  own. The partitions found are `Mutare.Run`'s `:broken_partitions`; the human
+  report lists them, the JSON report gives each kill on one a `statusReason`, the SARIF
+  report adds a tool execution notification, and a `--min-score` gate fails. `Mutare.Result`
+  records the partition each run used, and the JSON report gives each mutant its
+  `partition`.
 - Every sandbox `mix` has `MUTARE_PROJECT_ROOT` set to the absolute path of the project
   it copies. A config that derives something from where the project lives — a test
   database per git worktree, named from the checkout's path or branch — can read it

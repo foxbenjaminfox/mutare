@@ -165,7 +165,7 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   is the one env builder every sandbox `mix` goes through (named run options, no raw env passthrough),
   and `reserved_env_names/0` is *derived* from it.
 - **`Mutare.Runner`** (+ `Compile`, `Baseline`, `CoverageProbe`, `AppGraph`, `Stream`, `MutantRun`,
-  `Partitions`, `RunCtx`) — the orchestrator, now thin: it sequences the phases and owns sandbox
+  `Partitions`, `PartitionCheck`, `RunCtx`) — the orchestrator, now thin: it sequences the phases and owns sandbox
   lifecycle + the run-level harness-error abort guard, delegating the heavy concerns to submodules.
   `Compile` is the one compile + poison-recovery loop; `Baseline` checks the suite is green;
   `CoverageProbe` builds test selection; `AppGraph` asks Mix (one `mix eval`) for an umbrella's
@@ -175,8 +175,10 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   early-stop caps (`:max_survivors`/`:time_budget`) and the `:confirm_timeouts` sequential re-run;
   `MutantRun` runs one mutant with the retry policy (`:harness_retries`, the dedicated
   `:boot_failure` budget, the never-retried `:sigkilled` OOM-kill case + `:max_heap_mb` containment,
-  `:kill_runs` unanimous reruns) and maps each outcome to a result status. `RunCtx` is the per-run
-  invariant bundle threaded to `Stream`/`MutantRun`.
+  `:kill_runs` unanimous reruns) and maps each outcome to a result status; `PartitionCheck`, after
+  the stream, reruns one kill per partition there with no mutant and warns where it fails
+  (NOTES "A partition's kills are checked by rerunning one with no mutant"). `RunCtx` is the
+  per-run invariant bundle threaded to `Stream`/`MutantRun`.
 - **`Mutare.Coverage` / `Mutare.Coverage.Recorder`** (+ `Transform.CoverageEmit`) — coverage is **self-recorded** by the
   metamutant at runtime (not `:cover`), keyed by mutant id and attributed per test process. Drives
   `:no_coverage` and test selection at three granularities (`:test_selection` — `:tests` (default,

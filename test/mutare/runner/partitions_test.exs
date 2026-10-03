@@ -11,8 +11,8 @@ defmodule Mutare.Runner.PartitionsTest do
       assert Partitions.stop(:disabled) == :ok
     end
 
-    test "with_slot/2 yields no extra env, and entry/2 is empty" do
-      assert Partitions.with_slot(:disabled, fn env -> env end) == []
+    test "with_slot/2 yields no slot, and entry/2 is empty" do
+      assert Partitions.with_slot(:disabled, fn slot -> slot end) == nil
       assert Partitions.entry(nil, 1) == []
     end
   end
@@ -25,17 +25,17 @@ defmodule Mutare.Runner.PartitionsTest do
   end
 
   describe "with_slot/2 (the pool)" do
-    test "hands the function this slot's env entry" do
+    test "hands the function this slot's number" do
       pool = Partitions.new("PART", 2)
-      assert Partitions.with_slot(pool, fn env -> env end) == [{"PART", "1"}]
+      assert Partitions.with_slot(pool, fn slot -> slot end) == 1
       Partitions.stop(pool)
     end
 
     test "checks a slot back in after use, so a sequential caller reuses it" do
       pool = Partitions.new("P", 1)
-      a = Partitions.with_slot(pool, fn [{"P", p}] -> p end)
-      b = Partitions.with_slot(pool, fn [{"P", p}] -> p end)
-      assert {a, b} == {"1", "1"}
+      a = Partitions.with_slot(pool, & &1)
+      b = Partitions.with_slot(pool, & &1)
+      assert {a, b} == {1, 1}
       Partitions.stop(pool)
     end
 
@@ -43,11 +43,11 @@ defmodule Mutare.Runner.PartitionsTest do
       pool = Partitions.new("P", 1)
 
       assert_raise RuntimeError, fn ->
-        Partitions.with_slot(pool, fn _env -> raise "boom" end)
+        Partitions.with_slot(pool, fn _slot -> raise "boom" end)
       end
 
       # The single slot was returned, so the next checkout still succeeds.
-      assert Partitions.with_slot(pool, fn [{"P", p}] -> p end) == "1"
+      assert Partitions.with_slot(pool, & &1) == 1
       Partitions.stop(pool)
     end
 
@@ -64,9 +64,7 @@ defmodule Mutare.Runner.PartitionsTest do
         1..30
         |> Task.async_stream(
           fn _i ->
-            Partitions.with_slot(pool, fn [{"PART", p}] ->
-              n = String.to_integer(p)
-
+            Partitions.with_slot(pool, fn n ->
               # Was this partition already checked out by another live run?
               collision? =
                 Agent.get_and_update(live, fn held ->

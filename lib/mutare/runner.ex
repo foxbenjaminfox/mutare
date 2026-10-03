@@ -73,6 +73,7 @@ defmodule Mutare.Runner do
     Compile,
     CoverageProbe,
     Hydrate,
+    PartitionCheck,
     Partitions,
     RunCtx,
     Stream
@@ -376,13 +377,19 @@ defmodule Mutare.Runner do
         {results, stopped_early} = Stream.stream_and_collect(ctx, schema.sites)
         {results, confirmation_stopped_early} = Stream.confirm_timeouts(ctx, results)
 
+        # Only partition 1 was checked before the mutants ran; rerun one kill per other
+        # partition with no mutant active, and warn where it fails. After the stream, so
+        # each rerun has its partition to itself.
+        broken_partitions = PartitionCheck.run(ctx, results)
+
         run = %Run{
           schema: schema,
           results: results,
           sandbox: sandbox,
           baseline_ms: baseline_ms,
           stopped_early: stopped_early or confirmation_stopped_early,
-          recovery: recovery
+          recovery: recovery,
+          broken_partitions: broken_partitions
         }
 
         finalize_run(run, options)

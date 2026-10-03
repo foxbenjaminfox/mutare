@@ -9,7 +9,7 @@ defmodule Mutare.Runner.MutantRun do
   # (`Mutare.Sandbox.Command`, which owns the exit-code contract) onto a `Mutare.Result` status.
   # Returns a `%Mutare.Result{}`; the streaming pass (`Mutare.Runner.Stream`) calls `run/2`.
 
-  alias Mutare.{Result, Site, TestSelection}
+  alias Mutare.{Result, Selector, Site, TestSelection}
   alias Mutare.Runner.{Hydrate, Partitions, RunCtx}
   alias Mutare.Sandbox.Command
 
@@ -32,26 +32,19 @@ defmodule Mutare.Runner.MutantRun do
     Hydrate.result(ctx.hydrate, result)
   end
 
-  # `partition` is the per-run partition slot (`[]` when partitioning is off), handed to every
-  # attempt as its `:partition` run option.
-  defp classify(_ctx, %Site{poisoned: true} = site, _partition) do
-    %Result{site: site, status: :poisoned, duration_ms: 0, output: nil}
-  end
+  @doc """
+  The tests `site`'s run selects, narrowed to its umbrella app — or `:no_coverage`, when
+  the coverage probe found none that reach it. Every attempt and retry runs this one
+  selection; the result records its shape.
+  """
+  @spec selection(RunCtx.t(), Site.t()) :: TestSelection.t()
+  def selection(%RunCtx{selection: {:run_all, _degrade}} = ctx, site),
+    do: TestSelection.narrow_to_app(:suite, site.file, ctx.scopes)
 
-  defp classify(_ctx, %Site{ignored: true} = site, _partition) do
-    %Result{site: site, status: :ignored, duration_ms: 0, output: nil}
-  end
-
-  defp classify(%RunCtx{selection: {:run_all, _degrade}} = ctx, site, partition),
-    do: run_selected(ctx, site, :suite, partition)
-
-  defp classify(%RunCtx{selection: {:selective, outcomes}} = ctx, site, partition) do
+  def selection(%RunCtx{selection: {:selective, outcomes}} = ctx, site) do
     case Map.fetch(outcomes, site.id) do
-      {:ok, :no_coverage} ->
-        %Result{site: site, status: :no_coverage, duration_ms: 0, output: nil}
-
       {:ok, selection} ->
-        run_selected(ctx, site, selection, partition)
+        TestSelection.narrow_to_app(selection, site.file, ctx.scopes)
 
       # A failed probe has the explicit :run_all variant. A selective result is total;
       # a missing id contradicts that internal contract rather than expressing uncertainty.
@@ -60,11 +53,21 @@ defmodule Mutare.Runner.MutantRun do
     end
   end
 
-  # Keep the selection semantic through umbrella narrowing and every retry. The
-  # command boundary serializes it; the result records the shape that actually ran.
-  defp run_selected(%RunCtx{} = ctx, site, selection, partition) do
-    selection = TestSelection.narrow_to_app(selection, site.file, ctx.scopes)
-    run_mutant(ctx, site, selection, partition)
+  # `partition` is the run's partition slot (`nil` when partitioning is off), handed to every
+  # attempt as its `:partition` run option and recorded on the result.
+  defp classify(_ctx, %Site{poisoned: true} = site, _partition) do
+    %Result{site: site, status: :poisoned, duration_ms: 0, output: nil}
+  end
+
+  defp classify(_ctx, %Site{ignored: true} = site, _partition) do
+    %Result{site: site, status: :ignored, duration_ms: 0, output: nil}
+  end
+
+  defp classify(%RunCtx{} = ctx, site, partition) do
+    case selection(ctx, site) do
+      :no_coverage -> %Result{site: site, status: :no_coverage, duration_ms: 0, output: nil}
+      selection -> run_mutant(ctx, site, selection, partition)
+    end
   end
 
   # A boot-time node crash (`:boot_failure`) is a known-transient contention
@@ -107,17 +110,13 @@ defmodule Mutare.Runner.MutantRun do
   # innocent run reaped under someone else's memory pressure, an external kill) is
   # one excluded-from-score harness error; the cost of retrying a real one is the
   # host. Fail toward the host's safety.
-  defp run_mutant(%RunCtx{options: options} = ctx, site, selection, partition) do
+  defp run_mutant(%RunCtx{} = ctx, site, selection, partition) do
+    id = Mutare.RuntimeId.of(site)
+
     result =
       ctx
-      |> run_mutant_attempt(
-        site,
-        selection,
-        partition,
-        options.harness_retries,
-        @boot_failure_retries
-      )
-      |> require_unanimous_kill(ctx, site, selection, partition, options.kill_runs - 1)
+      |> run_attempt(id, selection, partition)
+      |> require_unanimous_kill(ctx, id, selection, partition, ctx.options.kill_runs - 1)
 
     case result.outcome do
       outcome when outcome in [:harness_error, :boot_failure, :sigkilled] ->
@@ -130,8 +129,21 @@ defmodule Mutare.Runner.MutantRun do
         :ok
     end
 
-    record(site, result, selection)
+    record(site, result, selection, partition)
   end
+
+  # One run of `selection` with mutant `id` active (`Selector.baseline()` for none), its
+  # infrastructure retries settled, each with a full budget.
+  defp run_attempt(%RunCtx{} = ctx, id, selection, partition),
+    do:
+      run_attempt(
+        ctx,
+        id,
+        selection,
+        partition,
+        ctx.options.harness_retries,
+        @boot_failure_retries
+      )
 
   # `retries` is the general `:harness_retries` budget; `boot_retries` the dedicated
   # boot-failure budget. The two are decremented independently by the *current* run's
@@ -140,23 +152,23 @@ defmodule Mutare.Runner.MutantRun do
   # real verdict (and the recovered kills) falls through unretried — as does
   # `:sigkilled`, deliberately (see `run_mutant/4`: retrying a likely-OOM-killed
   # mutant re-detonates it on the host).
-  defp run_mutant_attempt(%RunCtx{} = ctx, site, selection, partition, retries, boot_retries) do
+  defp run_attempt(%RunCtx{} = ctx, id, selection, partition, retries, boot_retries) do
     result =
-      Command.timed_test(ctx.sandbox, selection, Mutare.RuntimeId.of(site),
+      Command.timed_test(ctx.sandbox, selection, id,
         cap: ctx.cap,
         max_heap_mb: ctx.options.max_heap_mb,
         schedulers: ctx.options.schedulers,
         project_root: ctx.project_root,
-        partition: partition
+        partition: Partitions.entry(ctx.options.partition_env, partition)
       )
 
     case result.outcome do
       outcome when outcome in [:boot_failure, :app_start_failure] and boot_retries > 0 ->
         Process.sleep(boot_backoff_ms())
-        run_mutant_attempt(ctx, site, selection, partition, retries, boot_retries - 1)
+        run_attempt(ctx, id, selection, partition, retries, boot_retries - 1)
 
       :harness_error when retries > 0 ->
-        run_mutant_attempt(ctx, site, selection, partition, retries - 1, boot_retries)
+        run_attempt(ctx, id, selection, partition, retries - 1, boot_retries)
 
       _ ->
         result
@@ -167,26 +179,18 @@ defmodule Mutare.Runner.MutantRun do
   # its own infrastructure retries above; only kill outcomes are repeated, and all
   # attempts must kill. A passing rerun is the conservative verdict, while a
   # persistent harness error stays an infrastructure failure.
-  defp require_unanimous_kill(result, _ctx, _site, _selection, _partition, remaining)
+  defp require_unanimous_kill(result, _ctx, _id, _selection, _partition, remaining)
        when remaining <= 0,
        do: result
 
-  defp require_unanimous_kill(result, ctx, site, selection, partition, remaining) do
+  defp require_unanimous_kill(result, ctx, id, selection, partition, remaining) do
     if kill_outcome?(result.outcome) do
-      next =
-        run_mutant_attempt(
-          ctx,
-          site,
-          selection,
-          partition,
-          ctx.options.harness_retries,
-          @boot_failure_retries
-        )
+      next = run_attempt(ctx, id, selection, partition)
 
       combined = combine_attempts(result, next)
 
       if kill_outcome?(next.outcome) do
-        require_unanimous_kill(combined, ctx, site, selection, partition, remaining - 1)
+        require_unanimous_kill(combined, ctx, id, selection, partition, remaining - 1)
       else
         combined
       end
@@ -199,11 +203,36 @@ defmodule Mutare.Runner.MutantRun do
     %{next | duration_ms: previous.duration_ms + next.duration_ms}
   end
 
-  defp kill_outcome?(outcome),
+  @doc """
+  Run `selection` with no mutant active on partition `slot`, outside the pool, announcing
+  and recording nothing. It runs as a mutant does — under the mutants' cap, with the same
+  boot and harness retries — and a failure, like a kill, must repeat on every one of the
+  `:kill_runs` attempts, so a suite the user has called flaky is not believed broken on
+  one failure. It asks whether partition `slot` itself works
+  (`Mutare.Runner.PartitionCheck`), so it may run only while no pooled run holds `slot`,
+  which is after the stream.
+  """
+  @spec unmutated(RunCtx.t(), TestSelection.runnable(), pos_integer()) :: Command.Result.t()
+  def unmutated(%RunCtx{} = ctx, selection, slot) do
+    id = Selector.baseline()
+
+    ctx
+    |> run_attempt(id, selection, slot)
+    |> require_unanimous_kill(ctx, id, selection, slot, ctx.options.kill_runs - 1)
+  end
+
+  @doc """
+  Whether a run's outcome counts as a kill: a test failed, the cap was hit, the suite or
+  application could not load, or the atom table filled. The rest — a pass, or a run that
+  reached no verdict — do not.
+  """
+  @spec kill_outcome?(Command.outcome()) :: boolean()
+  def kill_outcome?(outcome),
     do: outcome in [:failed, :timeout, :suite_compile_error, :atom_exhausted, :app_start_failure]
 
-  defp record(%Site{} = site, result, selection) do
+  defp record(%Site{} = site, result, selection, partition) do
     %Result{
+      partition: partition,
       site: site,
       status: status_for(result.outcome),
       duration_ms: result.duration_ms,
@@ -314,14 +343,14 @@ defmodule Mutare.Runner.MutantRun do
   # so the report can name the cause. `Command.outcome/2` recovers it from the
   # otherwise-`:harness_error` exit via the VM-abort banner (`Output.atom_exhausted?/1`).
   # Not retried (it is a verdict, not a transient infra blip): only `:harness_error`
-  # and the two boot-time shapes re-run (see `run_mutant_attempt/6`).
+  # and the two boot-time shapes re-run (see `run_attempt/6`).
   defp status_for(:atom_exhausted), do: :atom_exhausted
 
   # The mutation broke project evaluation, configuration, or application startup, so `mix test` never
   # loaded a test. It was still detected: the baseline (and the coverage probe) boot
   # the *same* sandbox green, so the mutation is the only thing that changed. A kill,
   # on the same reasoning as `:suite_compile_error` — and, like every other kill,
-  # only after `run_mutant_attempt/6` has spent the boot-contention budget proving it
+  # only after `run_attempt/6` has spent the boot-contention budget proving it
   # is not a startup stampede.
   defp status_for(:app_start_failure), do: :killed
 end

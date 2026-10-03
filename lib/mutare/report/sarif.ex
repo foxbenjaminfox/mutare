@@ -4,30 +4,69 @@ defmodule Mutare.Report.Sarif do
 
   A surviving mutant is a gap in the suite at a specific location, which is exactly what SARIF models — so GitHub code scanning (and other SARIF consumers) surface each survivor as an inline annotation on the PR diff. Only `:survived` results become findings; killed/skipped mutants are not actionable and are omitted. The mutation description (`Mutare.Site.describe/1`) is reused verbatim as the finding message.
 
+  Under `--partition-db`, a partition whose environment failed the tests with no mutant active (`Mutare.Run`'s `:broken_partitions`) becomes a warning-level tool execution notification on the run's invocation: its kills may be false, so survivors may be missing from the findings.
+
   Emitted by `mix mutare --report sarif` or `mix mutare --report sarif:path.sarif`.
   """
 
-  alias Mutare.{Result, Site}
+  alias Mutare.{Report, Result, Site}
 
   @schema "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json"
   @rule_id "surviving-mutant"
+  @broken_partition_id "broken-partition"
 
-  @doc "Render the survivors in `results` as a SARIF 2.1.0 log string."
+  @doc """
+  Render the survivors in `results` as a SARIF 2.1.0 log string. `opts[:broken_partitions]`
+  (`Mutare.Run`'s) become notifications on the run's invocation.
+  """
   @spec render([Result.t()], %{optional(String.t()) => String.t()}, keyword()) :: String.t()
-  def render(results, _sources, _opts \\ []) do
+  def render(results, _sources, opts \\ []) do
     survivors = Enum.filter(results, &(&1.status == :survived))
 
     %{
       "$schema" => @schema,
       "version" => "2.1.0",
       "runs" => [
-        %{
+        Keyword.get(opts, :broken_partitions, [])
+        |> invocation(results)
+        |> Map.merge(%{
           "tool" => %{"driver" => %{"name" => "Mutare", "rules" => [rule()]}},
           "results" => Enum.map(survivors, &result/1)
-        }
+        })
       ]
     }
     |> JSON.encode!()
+  end
+
+  # The run completed either way; the notifications say its kills on those partitions
+  # may be false.
+  defp invocation([], _results), do: %{}
+
+  defp invocation(broken_partitions, results) do
+    %{
+      "invocations" => [
+        %{
+          "executionSuccessful" => true,
+          "toolExecutionNotifications" =>
+            Enum.map(broken_partitions, &broken_partition(&1, results))
+        }
+      ]
+    }
+  end
+
+  defp broken_partition(%{partition: partition} = broken, results) do
+    kills = Enum.count(results, &(&1.partition == partition and Result.kill?(&1.status)))
+
+    %{
+      "level" => "warning",
+      "descriptor" => %{"id" => @broken_partition_id},
+      "message" => %{
+        "text" =>
+          "Partition #{partition}'s kills may be false: with no mutant active, " <>
+            "#{Report.rerun_failure(broken)}. Some of the #{kills} mutants killed there " <>
+            "may be survivors missing from these results."
+      }
+    }
   end
 
   defp rule do

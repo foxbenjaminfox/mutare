@@ -4648,6 +4648,98 @@ inherited outer root reaching a fixture's sandbox would name the wrong project.
 the variable is the fixture's own path, so a phase that missed it fails the compile or
 false-kills the surviving mutant.
 
+### A partition's kills are checked by rerunning one with no mutant `[done]`
+
+Only partition 1 is used before the mutant phase (compile, baseline, probe — see
+"Per-worker DB partitioning"), so nothing checks that partitions 2..N work. A broken one —
+a worktree that never created or migrated database 3 — fails every mutant run there, and a
+test failure or an app that won't start both record as kills. The score rises and survivors
+vanish. A missing database only ever *adds* kills, so a check only has to doubt kills.
+
+**Rejected: a baseline per partition.** N extra baselines would find a missing database
+directly, but a good suite already uses every core, so they cost N baselines of wall time,
+not one.
+
+**What runs instead** (`Mutare.Runner.PartitionCheck`, after the stream and the timeout
+confirmations, while the pool is idle): for each partition other than 1 that recorded a
+kill, the tests that killed its fastest kill run again *on that partition with no mutant
+active*, all partitions at once. The baseline passed those tests, so a working partition
+passes them again; a failure, a cap overrun or an app that won't start means the
+partition's environment did the killing, and the warning names it. This asks "is
+partition k broken?" directly, so its power doesn't depend on the suite's survival rate.
+The fastest kill because it is the cheapest rerun and a broken environment fails at once.
+Cost before confirmations and controls: N − 1 short runs in parallel, with the usual
+`:kill_runs` attempts and infrastructure retries.
+
+A failing rerun is not yet a broken partition, because a failed check now fails the
+`--min-score` gate (below), and three things other than the partition fail it:
+
+- **Contention.** The cap comes from an uncontended baseline, but these reruns compete
+  for resources. With `:confirm_timeouts` enabled, a timed-out rerun is repeated on its
+  original partition, with the same selection, cap and retry policy, after *all*
+  concurrent checks finish. Confirmations run sequentially, before the controls; their
+  verdict replaces the provisional timeout. Comparing a contended timeout directly
+  with an uncontended partition-1 pass would falsely blame a healthy partition.
+- **A flaky test.** The fastest kill is the likeliest to be a flake's — a flake fails
+  early — so its tests are the likeliest to include the flaky one, and the rerun fails at
+  the flake's own rate. So the rerun follows `--kill-runs`: it counts as failed only if
+  every attempt fails, as a kill must. That is the user's declaration that the suite is
+  flaky, and the remedy costs nothing on a healthy run. Without it, a flake still blames a
+  partition — the control below doesn't catch flakes, since it passes either way.
+- **Tests that fail on their own.** A run selects only the tests that cover its mutant;
+  one that relies on another file's test (a module it defines, state it leaves) passes in
+  the full suite and fails alone, on every partition. A *control* catches this: once a
+  rerun fails on partition k, the same tests run mutant-off on partition 1. If they pass
+  there, partition k is broken; if they fail too, they fail on their own, and the warning
+  says so instead — their kills may be false on any partition, which is a different
+  problem from a partition's and fails no gate. A control that reaches no verdict leaves
+  the check inconclusive, with a warning and nothing recorded. The controls run one at a
+  time: several partitions' checks sharing partition 1 at once would share its database,
+  the contention partitions exist to avoid. They cost runs only on the failing path.
+
+It ignores `--time-budget`, including its confirmations, unlike the mutant stream's
+timeout confirmations: it launches no mutant. Each sequential confirmation and control
+adds capped attempts and their infrastructure retries. Respecting the budget would mean
+either silence exactly when the run was cut short, or a warning on every budgeted
+partitioned run.
+
+Blind spots, accepted: a partition broken only for some tests (one unmigrated table) is
+caught only if the fastest kill's tests touch it; without `--kill-runs`, a flaky test that
+fails the rerun blames its partition, which fails a `--min-score` gate but changes no
+verdict.
+
+**Dead end: picking suspects statistically, then rerunning the mutant on partition 1.**
+The first version compared each partition's survivor and app-start-failure counts with
+partition 1's (one-sided binomial tests, Laplace's rule for the reference rate) and, for a
+suspect, reran one of its kills on partition 1, warning if it survived there. That rerun
+asks the wrong question — "was this kill real?" — and for a healthy suite the answer is
+usually yes regardless: a kill on a broken partition is a mutant chosen by the
+environment, so it survives on partition 1 about as often as any mutant survives. With a
+15% survival rate, ~85% of broken partitions went unwarned. (The app-start path was sound —
+an environment's boot failure doesn't reproduce on partition 1 — but a missing database
+more often fails tests than the app's start.) The tests also lacked power when partition
+1 saw few mutants, which is ~1/N of them, and treated partition 1's estimated rate as
+known, so under a time budget, where it warned on suspicion alone, false warnings were
+likely with many workers.
+
+Signals considered and left out: one failure message shared by many kills on a single
+partition (needs parsing ExUnit's failure format, and real kills by one test share it).
+`--kill-runs` reruns on the *same* partition, so it cannot catch this; making its reruns
+change partition would need a second token while holding one, which breaks the pool's
+non-blocking checkout.
+
+Verdicts are left as recorded. The rerun is evidence about its partition, not a better
+verdict for any mutant: the partition's other kills are just as suspect and were not
+rerun, and some of them may be real. What changes is that every output says so:
+`Mutare.Run`'s `:broken_partitions`, a section of the human report, a `statusReason` on
+each such kill in the JSON (and so the HTML), and a tool execution notification in SARIF —
+SARIF holds survivors only, so what it is missing is the survivors among those kills.
+
+Of the gates, only `--min-score` reads the kill count, so only it fails, and whatever the
+score: a score that clears the bar on false kills proves nothing, and one that misses it
+would only get worse. The other gates count statuses a broken partition doesn't produce.
+Without a gate the run still exits 0, as it does for any score.
+
 ### Kill detection stops at the first failure (`--max-failures 1`) `[done]`
 A mutant is killed the moment *any* test fails — the verdict is killed-vs-survived,
 not *which* test — so `Mutare.Sandbox.Command.timed_test/4` forces `--max-failures 1`

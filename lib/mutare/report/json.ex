@@ -6,10 +6,12 @@ defmodule Mutare.Report.Json do
 
   Two fields locate a mutant. The schema's `location` is the source span its `replacement` text replaces. Mutare adds `position`, a `{line, column}` point: where the mutant *is*, the location the human report prints and `--line` selects by. Its line is the one `# mutare:ignore` reads. Usually `position` is where `location` starts. A mutant whose replacement must cover more text than it changes is the exception: removing a pipe stage, for instance, rewrites the whole pipe but is positioned at the stage.
 
+  Under `--partition-db`, Mutare also adds each mutant's `partition`, the one its run used. A kill on a partition whose environment failed the tests with no mutant active (`Mutare.Run`'s `:broken_partitions`) carries a `statusReason` saying the kill may be false.
+
   Emitted by `mix mutare --report json` or `mix mutare --report json:path.json`.
   """
 
-  alias Mutare.{Result, Site}
+  alias Mutare.{Report, Result, Site}
   alias Mutare.Report.HarnessDiagnostic
   alias Mutare.Result.Status
 
@@ -33,15 +35,22 @@ defmodule Mutare.Report.Json do
   @doc """
   Render `results` and their original `sources` as a report-schema JSON string.
 
-  `opts[:min_score]` (when set) becomes the report's score thresholds, and
-  `opts[:pending]` lists the sites with no result yet, emitted as `Pending`.
+  `opts[:min_score]` (when set) becomes the report's score thresholds,
+  `opts[:pending]` lists the sites with no result yet, emitted as `Pending`, and
+  `opts[:broken_partitions]` (`Mutare.Run`'s) gives each kill on one of those
+  partitions a `statusReason` saying the kill may be false.
   """
   @spec render([Result.t()], %{optional(String.t()) => String.t()}, keyword()) :: String.t()
   def render(results, sources, opts \\ []) do
     %{
       schemaVersion: @schema_version,
       thresholds: thresholds(opts[:min_score]),
-      files: files(results ++ Keyword.get(opts, :pending, []), sources)
+      files:
+        files(
+          results ++ Keyword.get(opts, :pending, []),
+          sources,
+          Map.new(Keyword.get(opts, :broken_partitions, []), &{&1.partition, &1})
+        )
     }
     |> JSON.encode!()
   end
@@ -54,7 +63,7 @@ defmodule Mutare.Report.Json do
   end
 
   # `entries` are results and pending sites together, each file's in id order.
-  defp files(entries, sources) do
+  defp files(entries, sources, broken) do
     entries
     |> Enum.group_by(&site(&1).file)
     |> Map.new(fn {file, file_entries} ->
@@ -62,7 +71,7 @@ defmodule Mutare.Report.Json do
        %{
          language: "elixir",
          source: Map.get(sources, file, ""),
-         mutants: file_entries |> Enum.sort_by(&site(&1).id) |> Enum.map(&mutant/1)
+         mutants: file_entries |> Enum.sort_by(&site(&1).id) |> Enum.map(&mutant(&1, broken))
        }}
     end)
   end
@@ -70,21 +79,24 @@ defmodule Mutare.Report.Json do
   defp site(%Result{site: site}), do: site
   defp site(%Site{} = site), do: site
 
-  defp mutant(%Site{} = site) do
+  defp mutant(%Site{} = site, _broken) do
     site
     |> base_mutant()
     |> Map.put(:status, "Pending")
     |> put_present(:description, site.note)
   end
 
-  defp mutant(%Result{site: site} = result) do
+  defp mutant(%Result{site: site} = result, broken) do
     site
     |> base_mutant()
     |> Map.put(:status, Status.fetch!(result.status).json)
-    |> put_present(:statusReason, status_reason(result))
+    |> put_present(:statusReason, status_reason(result, broken))
     |> put_present(:description, site.note)
     |> put_present(:duration, result.duration_ms)
     |> put_present(:testSelection, selection(result.selection))
+    # Mutare's addition, like `testSelection`: the partition (`--partition-db`) the
+    # mutant's run used, absent when partitioning was off or no run launched.
+    |> put_present(:partition, result.partition)
   end
 
   defp base_mutant(%Site{} = site) do
@@ -111,10 +123,20 @@ defmodule Mutare.Report.Json do
   defp selection(nil), do: nil
   defp selection(shape) when is_atom(shape), do: Atom.to_string(shape)
 
-  defp status_reason(%Result{status: :harness_error} = result),
+  defp status_reason(%Result{status: :harness_error} = result, _broken),
     do: HarnessDiagnostic.summary(result)
 
-  defp status_reason(%Result{site: site}), do: site.ignore_reason
+  defp status_reason(%Result{status: status, partition: partition} = result, broken) do
+    case Result.kill?(status) && Map.get(broken, partition) do
+      %{} = broken_partition -> false_kill_reason(broken_partition)
+      _not_a_false_kill -> result.site.ignore_reason
+    end
+  end
+
+  defp false_kill_reason(%{partition: partition} = broken) do
+    "This kill may be false: on partition #{partition}, where it ran, with no mutant " <>
+      "active, #{Report.rerun_failure(broken)}"
+  end
 
   # Every real `Site` carries a range; this default only guards the typespec's
   # `range: nil` corner so a malformed site can't crash the whole report.

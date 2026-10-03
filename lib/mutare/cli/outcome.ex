@@ -68,7 +68,7 @@ defmodule Mutare.CLI.Outcome do
   end
 
   def report(run, %Options{} = options, scope) do
-    emit_all(run.results, run.schema, options, scope)
+    emit_all(run.results, run.schema, options, scope, run.broken_partitions)
     finish_run(run, options)
   end
 
@@ -85,9 +85,11 @@ defmodule Mutare.CLI.Outcome do
   def unchanged_note(since),
     do: "no mutation sites on lines changed since #{since}; nothing to test"
 
-  defp emit_all(results, %Schema{} = schema, %Options{} = options, scope) do
+  # `broken_partitions` are the finished run's (`Mutare.Run`); a report of an unfinished
+  # run has none yet, since the partition check runs after the stream.
+  defp emit_all(results, %Schema{} = schema, %Options{} = options, scope, broken_partitions \\ []) do
     Enum.each(options.reporters, fn {format, path} ->
-      emit(format, path, results, schema, options, scope)
+      emit(format, path, results, schema, options, scope, broken_partitions)
     end)
   end
 
@@ -168,7 +170,7 @@ defmodule Mutare.CLI.Outcome do
   # machine report on stdout stays clean, like `warn_ineffective_ignores/1`) and
   # skip it.
   defp finish_run(%Run{stopped_early: false} = run, %Options{} = options),
-    do: gate(run.results, options)
+    do: gate(run.results, options, run.broken_partitions)
 
   defp finish_run(%Run{stopped_early: true} = run, %Options{} = options) do
     IO.puts(:stderr, early_stop_note(run, options))
@@ -223,25 +225,28 @@ defmodule Mutare.CLI.Outcome do
 
   # A `nil` path means stdout (the console); a path means write the rendered
   # report to that file and note where it went.
-  defp emit(format, nil, results, schema, options, scope) do
-    Mix.shell().info(render_for(format, results, schema, options, scope))
+  defp emit(format, path, results, schema, options, scope, broken_partitions \\ [])
+
+  defp emit(format, nil, results, schema, options, scope, broken_partitions) do
+    Mix.shell().info(render_for(format, results, schema, options, scope, broken_partitions))
   end
 
-  defp emit(format, path, results, schema, options, scope) do
-    write_report!(path, render_for(format, results, schema, options, scope))
+  defp emit(format, path, results, schema, options, scope, broken_partitions) do
+    write_report!(path, render_for(format, results, schema, options, scope, broken_partitions))
     Mix.shell().info("wrote #{format} report to #{path}")
   end
 
   # Every site with no result is `pending:` — none after a complete run; after an early stop,
   # an interruption, or at a checkpoint, the mutants not yet tested.
-  defp render_for(format, results, %Schema{} = schema, options, scope) do
+  defp render_for(format, results, %Schema{} = schema, options, scope, broken_partitions \\ []) do
     tested = MapSet.new(results, & &1.site.id)
     pending = Enum.reject(schema.sites, &MapSet.member?(tested, &1.id))
 
     Options.renderer(format).render(results, schema.sources,
       min_score: options.min_score,
       pending: pending,
-      scope: scope
+      scope: scope,
+      broken_partitions: broken_partitions
     )
   end
 
@@ -262,8 +267,8 @@ defmodule Mutare.CLI.Outcome do
     end
   end
 
-  defp gate(results, %Options{} = options) do
-    case Score.gate_failures(results, options) do
+  defp gate(results, %Options{} = options, broken_partitions \\ []) do
+    case Score.gate_failures(results, options, broken_partitions) do
       [] ->
         :ok
 

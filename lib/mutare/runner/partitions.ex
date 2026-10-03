@@ -34,7 +34,7 @@ defmodule Mutare.Runner.Partitions do
   ## Disabled
 
   A `nil` env name disables everything: `new/2` returns `:disabled`, `with_slot/2`
-  yields `[]` (no extra env), and `entry/2` is `[]` — so the partition feature is
+  yields `nil` (no slot), and `entry/2` is `[]` — so the partition feature is
   pure opt-in and inert by default. The pool is a small `Agent` holding the free
   tokens; `Mutare.Runner` manages its lifecycle (`new/2` … `stop/1`).
   """
@@ -90,18 +90,19 @@ defmodule Mutare.Runner.Partitions do
   def stop({_env_name, agent, _size}), do: Agent.stop(agent)
 
   @doc """
-  Check out a free partition, call `fun` with its env entries
-  (`[{env_name, "\#{slot}"}]`), and check the partition back in afterwards — even
-  if `fun` raises. When disabled, calls `fun.([])` (no extra env).
+  Check out a free partition, call `fun` with its number, and check the partition
+  back in afterwards — even if `fun` raises. `entry/2` turns the number into the
+  run's env entry, and a result records it, so a run's partition can be compared
+  with the others' afterwards. When disabled, calls `fun.(nil)`.
   """
-  @spec with_slot(t(), ([{String.t(), String.t()}] -> result)) :: result when result: var
-  def with_slot(:disabled, fun), do: fun.([])
+  @spec with_slot(t(), (pos_integer() | nil -> result)) :: result when result: var
+  def with_slot(:disabled, fun), do: fun.(nil)
 
-  def with_slot({env_name, agent, _size}, fun) do
+  def with_slot({_env_name, agent, _size}, fun) do
     slot = checkout(agent)
 
     try do
-      fun.([{env_name, Integer.to_string(slot)}])
+      fun.(slot)
     after
       checkin(agent, slot)
     end

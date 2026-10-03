@@ -237,6 +237,28 @@ defmodule Mutare.ScoreTest do
       assert Score.gate_failures([%Result{status: :killed}], min_score: 50) == []
     end
 
+    test "a broken partition fails a min-score gate whatever the score, and only that gate" do
+      broken = [%{partition: 2, mutant: 7, failure: :tests_failed, reason: nil}]
+      results = [%Result{status: :killed}]
+
+      assert Score.gate_failures(results, [min_score: 50], broken) == [
+               "mutation score 100.0% cannot be checked against the required minimum of " <>
+                 "50.0%: it counts the kills on partition 2, which failed the tests with no " <>
+                 "mutant active, so some of those kills may be false"
+             ]
+
+      assert Score.gate_failures(results, [max_no_coverage: 0], broken) == []
+
+      assert [failure] =
+               Score.gate_failures(
+                 results,
+                 [min_score: 50],
+                 broken ++ [%{hd(broken) | partition: 3}]
+               )
+
+      assert failure =~ "on partitions 2, 3, which each failed"
+    end
+
     test "an enabled fail-on flag with zero such mutants raises no failure" do
       # count is 0, so `fail_on_status_failure/4` must short-circuit — never emit a
       # spurious "0 poisoned mutants are present".

@@ -7,7 +7,7 @@ defmodule Mutare.Report do
   The mutation score and tallies in the report come from `Mutare.Score`, which also implements the CI gates; this module only renders.
   """
 
-  alias Mutare.{Result, Score, Site}
+  alias Mutare.{Result, Run, Score, Site}
   alias Mutare.Report.HarnessDiagnostic
   alias Mutare.Result.Status
 
@@ -171,11 +171,38 @@ defmodule Mutare.Report do
   end
 
   @doc """
+  One line for a partition whose environment failed the run's tests with no mutant
+  active (`t:Mutare.Run.broken_partition/0`), e.g.
+  `partition 2  BROKEN  — with no mutant active, the tests that killed mutant 12 failed: ** (RuntimeError) no database`.
+  """
+  @spec broken_partition(Run.broken_partition()) :: String.t()
+  def broken_partition(%{partition: partition} = broken) do
+    "partition #{partition}  BROKEN  — with no mutant active, #{rerun_failure(broken)}"
+  end
+
+  @doc """
+  How a broken partition's rerun failed, as a clause: `the application would not start`,
+  or what the tests behind the rerun kill did, then the explaining output line if any.
+  """
+  @spec rerun_failure(Run.broken_partition()) :: String.t()
+  def rerun_failure(%{failure: failure, mutant: mutant, reason: reason}) do
+    what =
+      case failure do
+        :app_start -> "the application would not start"
+        :timeout -> "the tests that killed mutant #{mutant} ran past the per-mutant cap"
+        :tests_failed -> "the tests that killed mutant #{mutant} failed"
+      end
+
+    if reason, do: "#{what}: #{reason}", else: what
+  end
+
+  @doc """
   Render the whole report from results and a `%{file => original_source}` map.
 
   The report lists each survivor as a diff, then the lines holding mutants no
   test ran (`no_coverage/1`), then ignored mutants and harness errors, one per
-  line, and ends with the `summary/2` tally.
+  line, then the partitions whose kills may be false, and ends with the
+  `summary/2` tally.
   """
   @spec render([Result.t()], %{optional(String.t()) => String.t()}) :: String.t()
   def render(results, sources), do: render(results, sources, [])
@@ -183,8 +210,9 @@ defmodule Mutare.Report do
   @doc """
   Renders the human report with the same arity as machine reporters.
 
-  `opts[:scope]` is the `summary/2` scope note; the other options are ignored
-  (score gating is handled by the caller).
+  `opts[:scope]` is the `summary/2` scope note, and `opts[:broken_partitions]`
+  (`Mutare.Run`'s) the partitions whose kills may be false; the other options are
+  ignored (score gating is handled by the caller).
   """
   @spec render([Result.t()], %{optional(String.t()) => String.t()}, keyword()) :: String.t()
   def render(results, sources, opts) do
@@ -200,6 +228,7 @@ defmodule Mutare.Report do
       no_coverage(results),
       ignored_section(results),
       harness_error_section(results),
+      broken_partition_section(Keyword.get(opts, :broken_partitions, []), results),
       summary(results, opts[:scope])
     ]
     |> Enum.reject(&(&1 == ""))
@@ -271,6 +300,26 @@ defmodule Mutare.Report do
     results
     |> Enum.filter(&(&1.status == :harness_error))
     |> Enum.map_join("\n", &harness_error/1)
+  end
+
+  # A broken partition's kills stand as recorded, so the summary's score counts them;
+  # say how many there are on each.
+  defp broken_partition_section([], _results), do: ""
+
+  defp broken_partition_section(broken_partitions, results) do
+    lines =
+      Enum.map(broken_partitions, fn %{partition: partition} = broken ->
+        kills = Enum.count(results, &(&1.partition == partition and Result.kill?(&1.status)))
+
+        broken_partition(broken) <>
+          "\n  #{kills} kill#{if kills != 1, do: "s"} on partition #{partition} may be false"
+      end)
+
+    Enum.join(
+      lines ++
+        ["The mutation score below counts these kills; fix the partitions and rerun."],
+      "\n"
+    )
   end
 
   # The `""` default of `Enum.at/3` is unreachable: callers only request lines

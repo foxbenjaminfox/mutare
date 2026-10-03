@@ -670,4 +670,48 @@ defmodule Mutare.ReportTest do
 
     assert Report.render(results, sources) == expected
   end
+
+  describe "broken partitions" do
+    @broken %{
+      partition: 2,
+      mutant: 7,
+      failure: :tests_failed,
+      reason: "** (RuntimeError) no database"
+    }
+
+    defp on_partition(partition, status),
+      do: %Result{site: site(:>), status: status, partition: partition}
+
+    test "render/3 lists each with its kill count, between the harness errors and the summary" do
+      results = [
+        on_partition(2, :killed),
+        on_partition(2, :timeout),
+        on_partition(2, :survived),
+        on_partition(1, :killed)
+      ]
+
+      out = Report.render(results, %{"lib/billing.ex" => @source}, broken_partitions: [@broken])
+
+      assert out =~
+               "partition 2  BROKEN  — with no mutant active, the tests that killed mutant 7 " <>
+                 "failed: ** (RuntimeError) no database\n  2 kills on partition 2 may be false\n" <>
+                 "The mutation score below counts these kills"
+
+      assert index(out, "BROKEN") < index(out, "mutation score:")
+    end
+
+    test "render/3 adds nothing without any" do
+      results = [on_partition(2, :killed)]
+      assert Report.render(results, %{}, broken_partitions: []) == Report.render(results, %{})
+    end
+
+    test "broken_partition/1 says how the rerun failed, with or without a reason" do
+      assert Report.broken_partition(%{@broken | failure: :app_start, reason: nil}) ==
+               "partition 2  BROKEN  — with no mutant active, the application would not start"
+
+      assert Report.broken_partition(%{@broken | failure: :timeout, reason: nil}) ==
+               "partition 2  BROKEN  — with no mutant active, the tests that killed mutant 7 " <>
+                 "ran past the per-mutant cap"
+    end
+  end
 end

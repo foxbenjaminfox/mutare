@@ -21,16 +21,21 @@ defmodule Mutare.Result do
   """
   @type selection :: Mutare.TestSelection.shape() | nil
 
+  @typedoc """
+  A mutant's result. `partition` is the partition its run used under `:partition_env`
+  (`--partition-db`), or `nil` when partitioning is off or no run launched.
+  """
   @type t :: %__MODULE__{
           site: Site.t(),
           status: status(),
           duration_ms: non_neg_integer() | nil,
           output: String.t() | nil,
           exit_status: non_neg_integer() | nil,
-          selection: selection()
+          selection: selection(),
+          partition: pos_integer() | nil
         }
 
-  defstruct [:site, :status, :duration_ms, :output, :exit_status, :selection]
+  defstruct [:site, :status, :duration_ms, :output, :exit_status, :selection, :partition]
 
   # --- status classification -------------------------------------------------
   # The single home for the scoring semantics the reporters and the runner share (see

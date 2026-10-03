@@ -75,6 +75,19 @@ A harness error is a run that reached no verdict. It is excluded from the score,
 - **Workers share a database.** Use `--partition-db` with one pre-created, migrated
   database per worker ("Database isolation across workers" in `mix help mutare`), or
   run `--workers 1`.
+- **"partition N's kills may be false".** That partition's database (or whatever the
+  partition variable selects) is likely missing or unmigrated, so its runs failed for
+  reasons unrelated to the mutants and were counted as kills; the warning's last line
+  shows how its tests failed with no mutant active. Fix it and rerun; the score from
+  this run is inflated, which is why `--min-score` fails with "cannot be checked
+  against the required minimum". If the suite is flaky, a flake can trigger this too;
+  `--kill-runs 2` makes the check (like every kill) require a repeat. With timeout
+  confirmation enabled (the default), a timed-out check is repeated on its original
+  partition without competing checks before the partition can be blamed.
+- **"... fail there and on partition 1 too".** The tests that killed that mutant fail
+  with no mutant active when run as Mutare selects them, without the rest of the suite
+  — they rely on another test file, or are flaky. Their kills may be false on every
+  partition. Make them pass when run alone (or use `--kill-runs 2` if they are flaky).
 - **Config derives a name from the checkout.** The sandbox is a copy under the
   system temp directory with no `.git`, so a database named from the project's path
   or git branch (one per worktree, say) comes out wrong or fails to resolve. Read
