@@ -24,7 +24,8 @@ defmodule Mutare.Runner.PartitionCheck do
   # Verdicts are left as recorded: the warning names the partition so the user can repair
   # it and rerun. NOTES "A partition's kills are checked by rerunning one with no mutant".
 
-  alias Mutare.{Result, Run, Site}
+  alias Mutare.{Result, Site}
+  alias Mutare.Run.BrokenPartition
   alias Mutare.Runner.{MutantRun, RunCtx}
   alias Mutare.Sandbox.Command.Output
 
@@ -45,7 +46,7 @@ defmodule Mutare.Runner.PartitionCheck do
   it launches no mutant. Each confirmation and control adds capped `:kill_runs` attempts
   and their infrastructure retries.
   """
-  @spec run(RunCtx.t(), [Result.t()]) :: [Run.broken_partition()]
+  @spec run(RunCtx.t(), [Result.t()]) :: [BrokenPartition.t()]
   def run(%RunCtx{options: %{partition_env: nil}}, _results), do: []
 
   def run(%RunCtx{} = ctx, results) do
@@ -101,7 +102,7 @@ defmodule Mutare.Runner.PartitionCheck do
 
     cond do
       control.outcome == :passed ->
-        broken = %{
+        broken = %BrokenPartition{
           partition: partition,
           mutant: site.id,
           failure: failure(rerun.outcome),
@@ -125,12 +126,14 @@ defmodule Mutare.Runner.PartitionCheck do
   defp failure(:timeout), do: :timeout
   defp failure(_failed), do: :tests_failed
 
-  defp warn(%RunCtx{options: options}, %Site{} = site, %{partition: partition} = broken) do
+  defp warn(%RunCtx{options: options}, %Site{} = site, %BrokenPartition{} = broken) do
     env = options.partition_env
+    partition = broken.partition
+    what_failed = BrokenPartition.what_failed(broken, mutant(site))
 
     Logger.warning(
       "partition #{partition}'s kills may be false. With no mutant active, " <>
-        "#{what_failed(broken.failure, site)} on partition #{partition}, though the " <>
+        "#{what_failed} on partition #{partition}, though the " <>
         "same tests pass on partition #{@baseline_partition}. Every run on partition " <>
         "#{partition} may have failed the same way and been counted as a kill. Check that " <>
         "whatever #{env}=#{partition} selects (its database, say) exists and is set up like " <>
@@ -158,13 +161,6 @@ defmodule Mutare.Runner.PartitionCheck do
         "partition #{partition} is to blame."
     )
   end
-
-  defp what_failed(:app_start, _site), do: "the application would not start"
-
-  defp what_failed(:timeout, site),
-    do: "the tests that killed #{mutant(site)} ran past the per-mutant cap"
-
-  defp what_failed(:tests_failed, site), do: "the tests that killed #{mutant(site)} failed"
 
   defp mutant(%Site{} = site), do: "mutant #{site.id} (#{Site.location(site)})"
 

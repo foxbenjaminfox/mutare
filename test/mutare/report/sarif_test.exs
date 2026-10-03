@@ -2,6 +2,7 @@ defmodule Mutare.Report.SarifTest do
   use ExUnit.Case, async: true
 
   alias Mutare.{Report.Sarif, Result, Site}
+  alias Mutare.Run.BrokenPartition
 
   defp site(id, file \\ "lib/a.ex") do
     %Site{
@@ -93,7 +94,12 @@ defmodule Mutare.Report.SarifTest do
   end
 
   test "a broken partition becomes a warning notification on the run's invocation" do
-    broken = %{partition: 2, mutant: 7, failure: :tests_failed, reason: "** (RuntimeError) no db"}
+    broken = %BrokenPartition{
+      partition: 2,
+      mutant: 7,
+      failure: :tests_failed,
+      reason: "** (RuntimeError) no db"
+    }
 
     results = [
       %Result{site: site(1), status: :killed, partition: 2},

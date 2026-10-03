@@ -80,7 +80,7 @@ defmodule Mutare.Score do
   `broken_partitions` are `Mutare.Run`'s: partitions whose kills may be false. The score
   counts them, so with any present a `:min_score` gate fails whatever the score.
   """
-  @spec gate_failures([Result.t()], keyword() | map(), [Mutare.Run.broken_partition()]) ::
+  @spec gate_failures([Result.t()], keyword() | map(), [Mutare.Run.BrokenPartition.t()]) ::
           [String.t()]
   def gate_failures(results, opts \\ [], broken_partitions \\ []) do
     counts = tally(results)

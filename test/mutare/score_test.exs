@@ -2,6 +2,7 @@ defmodule Mutare.ScoreTest do
   use ExUnit.Case, async: true
 
   alias Mutare.{Result, Score}
+  alias Mutare.Run.BrokenPartition
 
   doctest Mutare.Score
 
@@ -238,7 +239,7 @@ defmodule Mutare.ScoreTest do
     end
 
     test "a broken partition fails a min-score gate whatever the score, and only that gate" do
-      broken = [%{partition: 2, mutant: 7, failure: :tests_failed, reason: nil}]
+      broken = [%BrokenPartition{partition: 2, mutant: 7, failure: :tests_failed, reason: nil}]
       results = [%Result{status: :killed}]
 
       assert Score.gate_failures(results, [min_score: 50], broken) == [

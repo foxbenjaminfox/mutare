@@ -14,6 +14,7 @@ defmodule Mutare.Report.Json do
   alias Mutare.{Report, Result, Site}
   alias Mutare.Report.HarnessDiagnostic
   alias Mutare.Result.Status
+  alias Mutare.Run.BrokenPartition
 
   # The report schema is versioned `^([1-2])(\.([1-9]\d*|0)){0,2}$`. We depend on
   # no v2-only feature, so we emit the conservative `"1.0"`.
@@ -128,12 +129,12 @@ defmodule Mutare.Report.Json do
 
   defp status_reason(%Result{status: status, partition: partition} = result, broken) do
     case Result.kill?(status) && Map.get(broken, partition) do
-      %{} = broken_partition -> false_kill_reason(broken_partition)
+      %BrokenPartition{} = broken_partition -> false_kill_reason(broken_partition)
       _not_a_false_kill -> result.site.ignore_reason
     end
   end
 
-  defp false_kill_reason(%{partition: partition} = broken) do
+  defp false_kill_reason(%BrokenPartition{partition: partition} = broken) do
     "This kill may be false: on partition #{partition}, where it ran, with no mutant " <>
       "active, #{Report.rerun_failure(broken)}"
   end

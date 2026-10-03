@@ -2,6 +2,7 @@ defmodule Mutare.Report.JsonTest do
   use ExUnit.Case, async: true
 
   alias Mutare.{Report.Json, Result, Site}
+  alias Mutare.Run.BrokenPartition
 
   defp site(id, opts) do
     %Site{
@@ -233,7 +234,7 @@ defmodule Mutare.Report.JsonTest do
   end
 
   describe "partitions" do
-    @broken %{partition: 2, mutant: 7, failure: :app_start, reason: nil}
+    @broken %BrokenPartition{partition: 2, mutant: 7, failure: :app_start, reason: nil}
 
     defp on_partition(status, partition, id),
       do: %{result(status, id: id) | partition: partition}

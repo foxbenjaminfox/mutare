@@ -5,6 +5,7 @@ defmodule Mutare.CLI.OutcomeTest do
 
   alias Mutare.{Options, Result, Run, Schema, Site}
   alias Mutare.CLI.Outcome
+  alias Mutare.Run.BrokenPartition
 
   @moduletag :tmp_dir
 
@@ -19,7 +20,7 @@ defmodule Mutare.CLI.OutcomeTest do
     mutated_code: "-"
   }
 
-  @broken %{partition: 2, mutant: 1, failure: :app_start, reason: nil}
+  @broken %BrokenPartition{partition: 2, mutant: 1, failure: :app_start, reason: nil}
 
   defp run(broken_partitions) do
     %Run{

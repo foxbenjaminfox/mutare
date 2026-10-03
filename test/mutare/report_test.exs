@@ -2,6 +2,7 @@ defmodule Mutare.ReportTest do
   use ExUnit.Case, async: true
 
   alias Mutare.{Report, Result, Site}
+  alias Mutare.Run.BrokenPartition
 
   doctest Mutare.Report
 
@@ -672,7 +673,7 @@ defmodule Mutare.ReportTest do
   end
 
   describe "broken partitions" do
-    @broken %{
+    @broken %BrokenPartition{
       partition: 2,
       mutant: 7,
       failure: :tests_failed,

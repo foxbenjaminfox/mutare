@@ -10,6 +10,7 @@ defmodule Mutare.Report.Sarif do
   """
 
   alias Mutare.{Report, Result, Site}
+  alias Mutare.Run.BrokenPartition
 
   @schema "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json"
   @rule_id "surviving-mutant"
@@ -54,8 +55,8 @@ defmodule Mutare.Report.Sarif do
     }
   end
 
-  defp broken_partition(%{partition: partition} = broken, results) do
-    kills = Enum.count(results, &(&1.partition == partition and Result.kill?(&1.status)))
+  defp broken_partition(%BrokenPartition{partition: partition} = broken, results) do
+    kills = BrokenPartition.kills(broken, results)
 
     %{
       "level" => "warning",

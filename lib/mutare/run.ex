@@ -12,24 +12,11 @@ defmodule Mutare.Run do
     * `:baseline_ms` — the wall-clock duration, in milliseconds, of the green baseline test run used to derive per-mutant timeout caps.
     * `:stopped_early` — whether an early-stop condition (`:max_survivors` or `:time_budget`) stopped the per-mutant phase before every mutant was evaluated, or prevented a provisional timeout from being confirmed. When true, `:results` is usually a source-order prefix rather than the full schema; if every mutant launched before the time budget elapsed, the full set may be present with one or more timeout results left unconfirmed. A survivor stop is deterministic (the first N survivors); a time-budget stop depends on how far the run got before the budget elapsed.
     * `:recovery` — a `t:recovery/0` summary when the one compile needed compile-poison recovery (some mutation would not compile, so it was dropped and the metamutant rebuilt), or `nil` when it compiled clean on the first attempt. It records how many rebuild rounds it took, which mutant ids were dropped, and any unknown block macros that were escalated (skipped wholesale). The Mix task turns the escalations into a copy-pasteable `:call_routes` suggestion so a second run needn't rediscover the same poison — see `Mutare.Poison.Hint`.
-    * `:broken_partitions` — under `:partition_env`, each partition other than `1` whose environment failed the run's tests with no mutant active (`t:broken_partition/0`), in partition order; `[]` otherwise. Only partition `1` is checked before the mutants run, so after them each other partition's fastest kill has its tests rerun there with no mutant active; when they fail on every `:kill_runs` attempt, the same tests are run on partition `1`, and the partition is listed only if they pass there. A partition listed here likely failed every run on it for reasons unrelated to the mutants, and each of those failures is still recorded as a kill, so the score may be inflated. The verdicts are left as recorded because some of those kills may be real.
+    * `:broken_partitions` — under `:partition_env`, each partition other than `1` whose environment failed the run's tests with no mutant active (`Mutare.Run.BrokenPartition`), in partition order; `[]` otherwise. Only partition `1` is checked before the mutants run, so after them each other partition's fastest kill has its tests rerun there with no mutant active; when they fail on every `:kill_runs` attempt, the same tests are run on partition `1`, and the partition is listed only if they pass there. A partition listed here likely failed every run on it for reasons unrelated to the mutants, and each of those failures is still recorded as a kill, so the score may be inflated. The verdicts are left as recorded because some of those kills may be real.
   """
 
   alias Mutare.{Result, Schema}
-
-  @typedoc """
-  A partition (`:partition_env`) whose environment failed the run's tests with no mutant
-  active, while the same tests passed on partition `1`. `:mutant` is the report id of the
-  kill on `:partition` whose tests were rerun there; `:failure` is how the rerun failed — its tests failed (`:tests_failed`), ran past
-  the per-mutant cap (`:timeout`), or the application would not start (`:app_start`) —
-  and `:reason` is the output line that best explains it, or `nil`.
-  """
-  @type broken_partition :: %{
-          partition: pos_integer(),
-          mutant: pos_integer(),
-          failure: :tests_failed | :timeout | :app_start,
-          reason: String.t() | nil
-        }
+  alias Mutare.Run.BrokenPartition
 
   @typedoc """
   One unknown block macro escalated during compile-poison recovery — skipped wholesale
@@ -83,7 +70,7 @@ defmodule Mutare.Run do
           baseline_ms: non_neg_integer(),
           stopped_early: boolean(),
           recovery: recovery() | nil,
-          broken_partitions: [broken_partition()]
+          broken_partitions: [BrokenPartition.t()]
         }
 
   defstruct @enforce_keys ++ [recovery: nil, broken_partitions: []]

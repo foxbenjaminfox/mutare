@@ -68,7 +68,13 @@ defmodule Mutare.CLI.Outcome do
   end
 
   def report(run, %Options{} = options, scope) do
-    emit_all(run.results, run.schema, options, scope, run.broken_partitions)
+    # Only a finished run has `broken_partitions`: the partition check runs after the
+    # stream, so the reports of an unfinished run (a checkpoint, an interruption) have none.
+    emit_all(run.results, run.schema, options,
+      scope: scope,
+      broken_partitions: run.broken_partitions
+    )
+
     finish_run(run, options)
   end
 
@@ -78,18 +84,18 @@ defmodule Mutare.CLI.Outcome do
   # at 100), as they would for a run whose every mutant went uncovered.
   def report_unchanged(%Schema{} = schema, since, %Options{} = options, scope) do
     Mix.shell().info(unchanged_note(since))
-    emit_all([], schema, options, scope)
+    emit_all([], schema, options, scope: scope)
     gate([], options)
   end
 
   def unchanged_note(since),
     do: "no mutation sites on lines changed since #{since}; nothing to test"
 
-  # `broken_partitions` are the finished run's (`Mutare.Run`); a report of an unfinished
-  # run has none yet, since the partition check runs after the stream.
-  defp emit_all(results, %Schema{} = schema, %Options{} = options, scope, broken_partitions \\ []) do
+  # `report_opts` are renderer options beyond the ones `render_for/5` derives: the scope
+  # note, and a finished run's broken partitions.
+  defp emit_all(results, %Schema{} = schema, %Options{} = options, report_opts) do
     Enum.each(options.reporters, fn {format, path} ->
-      emit(format, path, results, schema, options, scope, broken_partitions)
+      emit(format, path, results, schema, options, report_opts)
     end)
   end
 
@@ -111,7 +117,7 @@ defmodule Mutare.CLI.Outcome do
   # carries the scope note, so none is passed.
   def checkpoint(results, %Schema{} = schema, %Options{} = options) do
     Enum.each(checkpoint_targets(options), fn {format, path} ->
-      write_report!(path, render_for(format, results, schema, options, nil))
+      write_report!(path, render_for(format, results, schema, options))
     end)
   end
 
@@ -127,7 +133,9 @@ defmodule Mutare.CLI.Outcome do
     if results != [] do
       options.reporters
       |> Enum.filter(fn {format, _path} -> format in @partial_formats end)
-      |> Enum.each(fn {format, path} -> emit(format, path, results, schema, options, scope) end)
+      |> Enum.each(fn {format, path} ->
+        emit(format, path, results, schema, options, scope: scope)
+      end)
     end
 
     IO.puts(:stderr, interrupted_note(results, schema, options, signal))
@@ -225,28 +233,25 @@ defmodule Mutare.CLI.Outcome do
 
   # A `nil` path means stdout (the console); a path means write the rendered
   # report to that file and note where it went.
-  defp emit(format, path, results, schema, options, scope, broken_partitions \\ [])
-
-  defp emit(format, nil, results, schema, options, scope, broken_partitions) do
-    Mix.shell().info(render_for(format, results, schema, options, scope, broken_partitions))
+  defp emit(format, nil, results, schema, options, report_opts) do
+    Mix.shell().info(render_for(format, results, schema, options, report_opts))
   end
 
-  defp emit(format, path, results, schema, options, scope, broken_partitions) do
-    write_report!(path, render_for(format, results, schema, options, scope, broken_partitions))
+  defp emit(format, path, results, schema, options, report_opts) do
+    write_report!(path, render_for(format, results, schema, options, report_opts))
     Mix.shell().info("wrote #{format} report to #{path}")
   end
 
   # Every site with no result is `pending:` — none after a complete run; after an early stop,
   # an interruption, or at a checkpoint, the mutants not yet tested.
-  defp render_for(format, results, %Schema{} = schema, options, scope, broken_partitions \\ []) do
+  defp render_for(format, results, %Schema{} = schema, options, report_opts \\ []) do
     tested = MapSet.new(results, & &1.site.id)
     pending = Enum.reject(schema.sites, &MapSet.member?(tested, &1.id))
 
-    Options.renderer(format).render(results, schema.sources,
-      min_score: options.min_score,
-      pending: pending,
-      scope: scope,
-      broken_partitions: broken_partitions
+    Options.renderer(format).render(
+      results,
+      schema.sources,
+      [min_score: options.min_score, pending: pending] ++ report_opts
     )
   end
 

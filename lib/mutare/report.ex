@@ -7,9 +7,10 @@ defmodule Mutare.Report do
   The mutation score and tallies in the report come from `Mutare.Score`, which also implements the CI gates; this module only renders.
   """
 
-  alias Mutare.{Result, Run, Score, Site}
+  alias Mutare.{Result, Score, Site}
   alias Mutare.Report.HarnessDiagnostic
   alias Mutare.Result.Status
+  alias Mutare.Run.BrokenPartition
 
   @doc "Apply a single mutation to the original source string."
   @spec patch(Site.t(), String.t()) :: String.t()
@@ -172,27 +173,21 @@ defmodule Mutare.Report do
 
   @doc """
   One line for a partition whose environment failed the run's tests with no mutant
-  active (`t:Mutare.Run.broken_partition/0`), e.g.
+  active (`Mutare.Run.BrokenPartition`), e.g.
   `partition 2  BROKEN  — with no mutant active, the tests that killed mutant 12 failed: ** (RuntimeError) no database`.
   """
-  @spec broken_partition(Run.broken_partition()) :: String.t()
-  def broken_partition(%{partition: partition} = broken) do
+  @spec broken_partition(BrokenPartition.t()) :: String.t()
+  def broken_partition(%BrokenPartition{partition: partition} = broken) do
     "partition #{partition}  BROKEN  — with no mutant active, #{rerun_failure(broken)}"
   end
 
   @doc """
-  How a broken partition's rerun failed, as a clause: `the application would not start`,
-  or what the tests behind the rerun kill did, then the explaining output line if any.
+  How a broken partition's rerun failed, as a clause (`Mutare.Run.BrokenPartition.what_failed/2`),
+  then the explaining output line if any.
   """
-  @spec rerun_failure(Run.broken_partition()) :: String.t()
-  def rerun_failure(%{failure: failure, mutant: mutant, reason: reason}) do
-    what =
-      case failure do
-        :app_start -> "the application would not start"
-        :timeout -> "the tests that killed mutant #{mutant} ran past the per-mutant cap"
-        :tests_failed -> "the tests that killed mutant #{mutant} failed"
-      end
-
+  @spec rerun_failure(BrokenPartition.t()) :: String.t()
+  def rerun_failure(%BrokenPartition{mutant: mutant, reason: reason} = broken) do
+    what = BrokenPartition.what_failed(broken, "mutant #{mutant}")
     if reason, do: "#{what}: #{reason}", else: what
   end
 
@@ -308,8 +303,8 @@ defmodule Mutare.Report do
 
   defp broken_partition_section(broken_partitions, results) do
     lines =
-      Enum.map(broken_partitions, fn %{partition: partition} = broken ->
-        kills = Enum.count(results, &(&1.partition == partition and Result.kill?(&1.status)))
+      Enum.map(broken_partitions, fn %BrokenPartition{partition: partition} = broken ->
+        kills = BrokenPartition.kills(broken, results)
 
         broken_partition(broken) <>
           "\n  #{kills} kill#{if kills != 1, do: "s"} on partition #{partition} may be false"
