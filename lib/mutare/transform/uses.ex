@@ -149,19 +149,20 @@ defmodule Mutare.Transform.Uses do
 
   # `defimpl P, for: T do … end` opens a module scope named `P.T` (**absolute** — never
   # parent-prefixed, regardless of nesting), where a direct `use` is expanded before the
-  # implementation functions. Both `P` and `T` are resolved through the alias env; only a single,
-  # statically-resolvable impl module is entered as a stamping scope (`impl_module/3` yields
-  # `@unresolved` for a list `for:` or a non-static type, which conservatively skips the stamp).
-  defp walk_generic({:defimpl, meta, [proto, opts, [{do_key, body}]]}, _module, env, handlers)
+  # implementation functions. Both `P` and `T` are resolved through the alias env, and a missing
+  # `for:` (`defimpl P do … end`) is the enclosing module, as the compiler infers it; only a single,
+  # statically-resolvable impl module is entered as a stamping scope (`impl_module/4` yields
+  # `@unresolved` for a list `for:`, a non-static type, or an inferred one with no module around
+  # it, which conservatively skips the stamp).
+  defp walk_generic({:defimpl, meta, [proto, opts, [{do_key, body}]]}, module, env, handlers)
        when is_list(opts) do
-    impl = ModuleScope.impl_module(proto, ModuleScope.for_type(opts), env)
+    impl = ModuleScope.impl_module(proto, ModuleScope.for_type(opts), module, env)
     {:defimpl, meta, [proto, opts, [{do_key, walk_module_body(body, impl, env, handlers)}]]}
   end
 
-  # `defimpl P do … end` — the `for:` is inferred from context we don't track, so the impl module
-  # is unknown; descend without stamping (the conservative choice — a wrong caller is worse).
-  defp walk_generic({:defimpl, meta, [proto, [{do_key, body}]]}, _module, env, handlers) do
-    {:defimpl, meta, [proto, [{do_key, walk_module_body(body, @unresolved, env, handlers)}]]}
+  defp walk_generic({:defimpl, meta, [proto, [{do_key, body}]]}, module, env, handlers) do
+    impl = ModuleScope.impl_module(proto, nil, module, env)
+    {:defimpl, meta, [proto, [{do_key, walk_module_body(body, impl, env, handlers)}]]}
   end
 
   # A `quote` block is quoted *data*: a `defmodule … do use Foo end` inside it is only realised

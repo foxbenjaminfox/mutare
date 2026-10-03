@@ -693,8 +693,9 @@ defmodule Mutare.Transform do
   end
 
   # A genuine `Kernel.defimpl` (stamped by `Resolve` with the impl module it opens — `P.T`, or the
-  # unresolved sentinel for a list/inferred/dynamic `for:`): the same module body as a `defmodule`,
-  # so its statements are planned + emitted the same way — guards, head literals and clause
+  # unresolved sentinel for a list or dynamic `for:`, or one inferred with no static module around
+  # it): the same module body as a `defmodule`, so its statements are planned + emitted the same
+  # way — guards, head literals and clause
   # structure lift, and the dispatcher lands inside the impl module. Only the **last** argument
   # holds the `do` block, whatever the surface form (`defimpl P, for: T do … end` →
   # `[proto, opts, do-block]`; the inline `defimpl P, for: T, do: …` → `[proto, [for: …, do: …]]`;

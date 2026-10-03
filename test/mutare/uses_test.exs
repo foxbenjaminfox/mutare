@@ -502,6 +502,36 @@ defmodule Mutare.UsesTest do
              ]
     end
 
+    test "a `defimpl` without `for:` computes the enclosing module as its type" do
+      source = """
+      defmodule MutareInferredImpl do
+        defimpl Mutare.Test.SomeProto do
+          use Mutare.Test.CallerProbe
+        end
+      end
+      """
+
+      # The compiler infers `for: MutareInferredImpl`, so the caller is
+      # `Mutare.Test.SomeProto.MutareInferredImpl`.
+      assert Enum.map(directives_at(source), &Macro.to_string/1) == [
+               "alias Mutare.Test.SomeProto.MutareInferredImpl, as: TheCaller"
+             ]
+    end
+
+    test "a `defimpl` without `for:` under a computed module head is not stamped" do
+      source = """
+      defmodule MutareInferredImpl do
+        defmodule __MODULE__.Computed do
+          defimpl Mutare.Test.SomeProto do
+            use Mutare.Test.CallerProbe
+          end
+        end
+      end
+      """
+
+      assert directives_at(source) == []
+    end
+
     test "a `use` of a sibling-defined module by short name resolves and stamps" do
       source = """
       defmodule Mutare.Test do

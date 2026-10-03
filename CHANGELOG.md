@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Mutare.CallRouting.Call.resolved_module/2` reads `__MODULE__` as the module a routed
+  call is written in, and `__MODULE__.Comment` as a name beneath it, so a classifier can
+  tell what `from(p in __MODULE__, …)` names inside a schema module. Both resolve to
+  `:error` outside a module, or in one whose name is computed. `Call.new/5` takes
+  `enclosing_module:` for tests.
+
+### Fixed
+
+- A `defimpl P do … end` written inside a module, with no `for:`, implements `P` for that
+  module, as the compiler infers it. Mutare now does the same: a `use` in its body is
+  expanded, `:skip_lifting` names its functions under `P.Module`, and `__MODULE__` in a
+  routed call's arguments reads as `P.Module`. Before, the impl module was left unknown.
+
 ## [0.5.0] - 2026-10-03
 
 ### Added

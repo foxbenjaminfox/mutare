@@ -565,9 +565,10 @@ defmodule Mutare.Transform.Resolve do
   # its body must be walked under `P.T`, not the enclosing module (which would resolve/route a nested
   # module or call inside the impl against the wrong one). Handles all three surface forms —
   # `defimpl P, for: T do … end` (`[proto, opts, do-block]`), the inline `defimpl P, for: T, do: …`
-  # (`[proto, [for: …, do: …]]`), and `defimpl P do … end`/`P, do: …` (`for:` inferred → unresolved) —
-  # by scoping only the **last** argument (which always holds the `do` block) to `P.T` and walking the
-  # rest (proto, a standalone `for:`) in the enclosing scope; a standalone `for:` value is a module
+  # (`[proto, [for: …, do: …]]`), and `defimpl P do … end`/`P, do: …` (`for:` inferred, as the
+  # compiler does, as the enclosing module) — by scoping only the **last** argument (which always
+  # holds the `do` block) to `P.T` and walking the rest (proto, a standalone `for:`) in the
+  # enclosing scope; a standalone `for:` value is a module
   # reference, so putting the inline form's `for:` under `P.T` too is harmless (walk never stamps a
   # bare `__aliases__`). Gated on the call still resolving to `Kernel.defimpl` (like the `defmodule`
   # gate): a displaced `defimpl` (a DSL macro over Kernel's) defines no `P.T`, so it falls back to
@@ -582,7 +583,14 @@ defmodule Mutare.Transform.Resolve do
     {meta, module_key} = stamp_bare_call(:defimpl, meta, args, env)
 
     if kernel_module_definer?(:defimpl, meta, args, env) do
-      impl = ModuleScope.impl_module(hd(args), defimpl_for_type(args), env.inputs.aliases)
+      impl =
+        ModuleScope.impl_module(
+          hd(args),
+          defimpl_for_type(args),
+          env.inputs.module,
+          env.inputs.aliases
+        )
+
       {lead, [last]} = Enum.split(args, -1)
 
       walked =
@@ -693,7 +701,7 @@ defmodule Mutare.Transform.Resolve do
 
   # The `for:` type of a `defimpl`, wherever it sits — a standalone opts arg (`defimpl P, for: T do
   # … end`) or the inline combined keyword list (`defimpl P, for: T, do: …`) — or `nil` when inferred
-  # (`defimpl P do … end`), which leaves the impl module unresolved.
+  # (`defimpl P do … end`), which leaves `ModuleScope.impl_module/4` to take the enclosing module.
   defp defimpl_for_type(args) do
     args
     |> Enum.drop(1)

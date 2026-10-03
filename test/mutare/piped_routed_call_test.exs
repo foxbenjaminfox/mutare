@@ -172,6 +172,109 @@ defmodule Mutare.PipedRoutedCallTest do
     assert_received {:scoped_module_name, {:ok, Post}}
   end
 
+  test "a module name written through `__MODULE__` reads the module the call is written in" do
+    defmodule EnclosingModuleRouter do
+      @behaviour Mutare.CallRouting
+      def call_routes, do: [{Mutare.Test.PipedCallDSL, :stage, 2, :routing}]
+
+      def route_arguments(%Call{arguments: [source, {:__block__, _, [label]}]} = call) do
+        send(
+          self(),
+          {:enclosing, label, Macro.to_string(source), Call.resolved_module(call, source)}
+        )
+
+        Mutare.CallRouting.ArgumentRoutes.new(call, [:raw, :raw])
+      end
+    end
+
+    # A computed `defmodule` head is not guessed at; the expected values are the compiler's.
+    source = """
+    defmodule Outer do
+      import Mutare.Test.PipedCallDSL
+      alias Elsewhere.Post
+
+      def outer, do: stage(__MODULE__, :outer)
+      def beneath, do: stage(__MODULE__.Post.Comment, :beneath)
+
+      defmodule Inner do
+        import Mutare.Test.PipedCallDSL
+        def inner, do: stage(__MODULE__, :inner)
+
+        defimpl String.Chars do
+          import Mutare.Test.PipedCallDSL
+          def to_string(_), do: stage(__MODULE__, :inferred_impl)
+        end
+      end
+
+      defmodule __MODULE__.Computed do
+        import Mutare.Test.PipedCallDSL
+        def computed, do: stage(__MODULE__, :computed)
+        def computed_beneath, do: stage(__MODULE__.Post, :computed_beneath)
+
+        defimpl String.Chars do
+          import Mutare.Test.PipedCallDSL
+          def to_string(_), do: stage(__MODULE__, :computed_impl)
+        end
+      end
+
+      def after_nested, do: stage(__MODULE__, :after_nested)
+    end
+
+    defimpl String.Chars, for: Outer do
+      import Mutare.Test.PipedCallDSL
+      def to_string(_), do: stage(__MODULE__, :impl)
+    end
+
+    defmodule :erlang_named do
+      import Mutare.Test.PipedCallDSL
+      def sub, do: stage(__MODULE__.Sub, :erlang_named)
+    end
+    """
+
+    Mutare.Transform.transform_string_with_sites(source,
+      file: "enclosing.ex",
+      mutators: [],
+      extensions: [EnclosingModuleRouter]
+    )
+
+    assert_received {:enclosing, :outer, "__MODULE__", {:ok, Outer}}
+    assert_received {:enclosing, :beneath, "__MODULE__.Post.Comment", {:ok, Outer.Post.Comment}}
+    assert_received {:enclosing, :inner, "__MODULE__", {:ok, Outer.Inner}}
+    assert_received {:enclosing, :computed, "__MODULE__", :error}
+    assert_received {:enclosing, :computed_beneath, "__MODULE__.Post", :error}
+    assert_received {:enclosing, :after_nested, "__MODULE__", {:ok, Outer}}
+    assert_received {:enclosing, :impl, "__MODULE__", {:ok, String.Chars.Outer}}
+    assert_received {:enclosing, :inferred_impl, "__MODULE__", {:ok, String.Chars.Outer.Inner}}
+    assert_received {:enclosing, :computed_impl, "__MODULE__", :error}
+
+    assert_received {:enclosing, :erlang_named, "__MODULE__.Sub",
+                     {:ok, :"Elixir.erlang_named.Sub"}}
+  end
+
+  test "`__MODULE__` outside any module names nothing" do
+    defmodule TopLevelRouter do
+      @behaviour Mutare.CallRouting
+      def call_routes, do: [{Mutare.Test.PipedCallDSL, :stage, 2, :routing}]
+
+      def route_arguments(%Call{arguments: [source, _label]} = call) do
+        send(self(), {:top_level, Call.resolved_module(call, source)})
+        Mutare.CallRouting.ArgumentRoutes.new(call, [:raw, :raw])
+      end
+    end
+
+    Mutare.Transform.transform_string_with_sites(
+      """
+      import Mutare.Test.PipedCallDSL
+      stage(__MODULE__, :top)
+      """,
+      file: "script.exs",
+      mutators: [],
+      extensions: [TopLevelRouter]
+    )
+
+    assert_received {:top_level, :error}
+  end
+
   test "a routed call nested in an argument reads the same however it was spelled" do
     defmodule NestedReader do
       @behaviour Mutare.Mutator

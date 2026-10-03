@@ -11,7 +11,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   alias Mutare.AST
   alias Mutare.CallRouting.Spec
   alias Mutare.Transform.Analyze.CallOptions
-  alias Mutare.Transform.{Calls, Imports, Meta, StructuralForms, WrittenPipe}
+  alias Mutare.Transform.{Calls, Imports, Meta, ModuleScope, StructuralForms, WrittenPipe}
 
   @doc """
   Stamp a call's meta with known-macro argument routing, when the registry in `env` matches it.
@@ -26,7 +26,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
         ) ::
           keyword()
   def stamp(meta, module_key, fun, args, call_node, env) do
-    %{inputs: %{call_routes: registry, aliases: aliases}, diag: diag} = env
+    %{inputs: %{call_routes: registry, aliases: aliases, module: module}, diag: diag} = env
     arity = length(args)
 
     case Routes.lookup(registry, module_key, fun, arity) do
@@ -41,7 +41,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
             {module_key, fun, arity},
             call_node,
             registry,
-            {diag, aliases}
+            {diag, %{alias_env: aliases, enclosing_module: enclosing_module(module)}}
           )
         else
           # A wildcard route (`{Kernel, :*, :raw}`, `{:*, :if, …}`) whose cascade reached a head
@@ -66,8 +66,9 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   # module the resolver couldn't see; the reader then returns `{nil, name, arity}`, which a
   # module-matching classifier clause simply skips (its purpose — match by name instead).
   #
-  # `site` is the diagnostics and the aliases in force at the call: a classifier reads a module
-  # name in the call's arguments through them (`Mutare.CallRouting.Call.resolved_module/2`).
+  # `site` is the diagnostics and what is in force at the call — its aliases and the module it is
+  # written in: a classifier reads a module name in the call's arguments through them
+  # (`Mutare.CallRouting.Call.resolved_module/2`).
   defp stamp_matched(meta, %Entry{} = entry, {module_key, fun, arity}, call_node, registry, site) do
     meta = stamp_identity(Imports.drop_witness(meta), module_key, fun, arity)
     stamp_spec(meta, entry, put_meta(call_node, meta), arity, registry, site)
@@ -124,9 +125,9 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
          call_node,
          _arity,
          _registry,
-         {diag, aliases}
+         {diag, scope}
        ) do
-    call = %{resolved_call!(as_written(call_node), spec) | alias_env: aliases}
+    call = struct!(resolved_call!(as_written(call_node), spec), scope)
     routes = invoke_router!(router, call, spec)
     routes = validate_routes!(spec, call, routes)
     warn_misshapen_keyword_routes(diag, router, spec, call, routes)
@@ -247,6 +248,12 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   # node delivery uses, and fits it, since respelling changes no position and no pair.
   defp as_written({head, meta, args}),
     do: {head, meta, Enum.map(args, &WrittenPipe.resugar/1)}
+
+  # The module `__MODULE__` names at the call: none at a file's top level, and none under a
+  # `defmodule` head `ModuleScope.child_module/3` could not resolve, rather than a guess.
+  defp enclosing_module(module) do
+    if module == ModuleScope.unresolved(), do: nil, else: module
+  end
 
   defp resolved_call!(call_node, spec) do
     case Calls.resolved_routed_call(call_node) do

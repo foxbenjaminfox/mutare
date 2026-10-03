@@ -632,6 +632,28 @@ defmodule Mutare.AliasesTest do
       assert calls[:h] == {[:Helper], [:Outer, :P, :Integer, :Helper]}
     end
 
+    test "a `defimpl` without `for:` scopes its body to the impl for the enclosing module" do
+      # The compiler infers `for: Outer`, so the impl module is `Outer.P.Outer`.
+      calls =
+        resolved("""
+        defmodule Outer do
+          defprotocol P do
+            def foo(x)
+          end
+
+          defimpl P do
+            defmodule Helper do
+              def h, do: :ok
+            end
+
+            def foo(_x), do: Helper.h()
+          end
+        end
+        """)
+
+      assert calls[:h] == {[:Helper], [:Outer, :P, :Outer, :Helper]}
+    end
+
     test "the inline `defimpl P, for: T, do: …` form scopes its body to the impl module too" do
       # The inline keyword form parses as `[proto, [for: T, do: body]]` (a two-element kw list), a
       # distinct shape from the `do … end` block — its body must still resolve under `Outer.P.Integer`.

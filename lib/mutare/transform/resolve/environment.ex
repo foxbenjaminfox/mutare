@@ -29,7 +29,7 @@ defmodule Mutare.Transform.Resolve.Environment do
             aliases: map(),
             imports: map(),
             kernel: Imports.selector(),
-            module: atom() | [atom()],
+            module: module() | nil,
             call_routes: Registry.registry(),
             marks: ArgumentMarks.t()
           }

@@ -13,14 +13,15 @@ defmodule Mutare.CallRouting.Call do
   arguments resolved and `:raw`/`:hosted` fragments preserved, including their pipe operators.
 
   A module named in an argument is written as the call site's aliases make it (`Post` for
-  `MyApp.Post` under `alias MyApp.Post`). Arguments are not resolved at classification, so
-  `resolved_module/2` reads such a name through the aliases in force at the call site. It
-  answers for the call handed to `c:Mutare.CallRouting.route_arguments/1`; a call obtained any
-  other way carries no aliases, and resolves only an `Elixir.`-qualified name.
+  `MyApp.Post` under `alias MyApp.Post`), or through `__MODULE__` (`__MODULE__`,
+  `__MODULE__.Comment`). Arguments are not resolved at classification, so `resolved_module/2`
+  reads such a name through the aliases and the module in force at the call site. It answers
+  for the call handed to `c:Mutare.CallRouting.route_arguments/1`; a call obtained any other
+  way carries neither, and resolves only an `Elixir.`-qualified name.
 
   The struct is produced by Mutare. Extension callbacks should match only the fields they need so
-  additional fields can be added compatibly. `alias_env` is internal, read only through
-  `resolved_module/2`. To build one in a test, use `new/4` or `new/5`.
+  additional fields can be added compatibly. `alias_env` and `enclosing_module` are internal,
+  read only through `resolved_module/2`. To build one in a test, use `new/4` or `new/5`.
   """
 
   alias Mutare.Transform.Aliases
@@ -31,11 +32,12 @@ defmodule Mutare.CallRouting.Call do
           name: atom(),
           arguments: [Macro.t()],
           rebuild: (atom(), [Macro.t()] -> Macro.t()),
-          alias_env: map() | nil
+          alias_env: map() | nil,
+          enclosing_module: module() | nil
         }
 
   @enforce_keys [:node, :module, :name, :arguments, :rebuild]
-  defstruct @enforce_keys ++ [alias_env: nil]
+  defstruct @enforce_keys ++ [alias_env: nil, enclosing_module: nil]
 
   @doc """
   Build a call value from the written call `node`, the resolved `module` and `name`, and the
@@ -61,8 +63,13 @@ defmodule Mutare.CallRouting.Call do
   end
 
   @doc """
-  `new/4`, with the call site's aliases given as `aliases: %{Short => Module}`, the way an
-  `alias Module, as: Short` would bind them, for `resolved_module/2` to read.
+  `new/4`, with what is in force at the call site, for `resolved_module/2` to read:
+
+    * `aliases: %{Short => Module}` — the aliases, the way an `alias Module, as: Short` would
+      bind them;
+    * `enclosing_module: Module` — the module the call is written in, which `__MODULE__` names.
+
+  Either may be left out; a call without it resolves no name that needs it.
 
       iex> node = quote(do: where(Post, x > 1))
       iex> call = Mutare.CallRouting.Call.new(node, Ecto.Query, :where,
@@ -75,19 +82,30 @@ defmodule Mutare.CallRouting.Call do
           module() | atom() | nil,
           atom(),
           (atom(), [Macro.t()] -> Macro.t()),
-          aliases: %{atom() => module()}
+          aliases: %{atom() => module()},
+          enclosing_module: module()
         ) :: t()
-  def new(node, module, name, rebuild, aliases: aliases) when is_map(aliases) do
-    env = Map.new(aliases, fn {short, target} -> {short, Aliases.from_module(target)} end)
-    %{new(node, module, name, rebuild) | alias_env: env}
+  def new(node, module, name, rebuild, site) when is_list(site) do
+    site = Keyword.validate!(site, aliases: nil, enclosing_module: nil)
+    env = site[:aliases] && Map.new(site[:aliases], &alias_entry/1)
+
+    %{
+      new(node, module, name, rebuild)
+      | alias_env: env,
+        enclosing_module: site[:enclosing_module]
+    }
   end
 
+  defp alias_entry({short, target}), do: {short, Aliases.from_module(target)}
+
   @doc """
-  The module an alias node in the call's arguments names, read through the aliases in force at
-  the call site: `{:ok, module}`, or `:error` for a node that is not a module name, or whose
-  aliases the call does not carry (see the moduledoc). An `Elixir.`-qualified name ignores
-  aliases, as the compiler does, and so resolves either way. Whether the module exists is not
-  checked.
+  The module a node in the call's arguments names, read through the aliases and the module in
+  force at the call site: `{:ok, module}`, or `:error` for a node that is not a module name, or
+  that needs something the call does not carry (see the moduledoc). An `Elixir.`-qualified name
+  ignores aliases, as the compiler does, and so resolves either way. `__MODULE__` is the module
+  the call is written in, and `__MODULE__.Comment` a name beneath it, as the compiler reads
+  them; both are `:error` outside a module, or in one whose name is computed (`defmodule
+  __MODULE__.Sub`, say). Whether the module exists is not checked.
 
       iex> node = quote(do: from(p in Post))
       iex> call = Mutare.CallRouting.Call.new(node, Ecto.Query, :from,
@@ -99,8 +117,40 @@ defmodule Mutare.CallRouting.Call do
       {:ok, MyApp.Post.Comment}
       iex> Mutare.CallRouting.Call.resolved_module(call, quote(do: p))
       :error
+
+  `__MODULE__` reads the module the call is written in:
+
+      iex> node = quote(do: from(p in __MODULE__))
+      iex> call = Mutare.CallRouting.Call.new(node, Ecto.Query, :from,
+      ...>   fn name, args -> {name, [], args} end, enclosing_module: MyApp.Post)
+      iex> {:in, _, [_binding, source]} = hd(call.arguments)
+      iex> Mutare.CallRouting.Call.resolved_module(call, source)
+      {:ok, MyApp.Post}
+      iex> Mutare.CallRouting.Call.resolved_module(call, quote(do: __MODULE__.Comment))
+      {:ok, MyApp.Post.Comment}
+      iex> unplaced = Mutare.CallRouting.Call.new(node, Ecto.Query, :from,
+      ...>   fn name, args -> {name, [], args} end)
+      iex> Mutare.CallRouting.Call.resolved_module(unplaced, source)
+      :error
   """
   @spec resolved_module(t(), Macro.t()) :: {:ok, module()} | :error
+  def resolved_module(%__MODULE__{enclosing_module: module}, {:__MODULE__, _meta, context})
+      when is_atom(context) do
+    if module, do: {:ok, module}, else: :error
+  end
+
+  # `__MODULE__.Comment`: the compiler prefixes the module to the written segments, and reads
+  # none of them through an alias.
+  def resolved_module(
+        %__MODULE__{enclosing_module: module},
+        {:__aliases__, _meta, [{:__MODULE__, _, context} | path]}
+      )
+      when is_atom(context) do
+    if module && Aliases.atoms?(path),
+      do: {:ok, Module.concat([module | path])},
+      else: :error
+  end
+
   def resolved_module(%__MODULE__{alias_env: env}, {:__aliases__, _meta, path})
       when is_list(path) do
     cond do

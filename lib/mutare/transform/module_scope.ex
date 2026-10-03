@@ -108,21 +108,27 @@ defmodule Mutare.Transform.ModuleScope do
 
   @doc """
   The implementation module a `defimpl P, for: T` opens: `Module.concat(P, T)` (absolute — never
-  parent-prefixed), both resolved through the alias `env`. `unresolved/0` unless both are statically
-  a single concrete module — a list `for:`, a missing `for:`, or a non-static type degrades. This is
-  the module scope a `defimpl` body is walked under (a nested module inside resolves as `P.T.Sub`).
+  parent-prefixed), both resolved through the alias `env`. Without a `for:`, `T` is the
+  `enclosing` module, as the compiler infers it. `unresolved/0` unless both are statically a
+  single concrete module — a list `for:`, a non-static type, or an inferred type with no module
+  (or an unresolved one) around it degrades. This is the module scope a `defimpl` body is walked
+  under (a nested module inside resolves as `P.T.Sub`).
   """
-  @spec impl_module(Macro.t(), Macro.t() | nil, map()) :: module() | atom()
-  def impl_module(proto, type, env) do
+  @spec impl_module(Macro.t(), Macro.t() | nil, module() | atom() | nil, map()) ::
+          module() | atom()
+  def impl_module(proto, type, enclosing, env) do
     # `Aliases.resolve_node/2` returns a concrete module atom or `nil` (non-static), so both parts
     # resolving to a non-`nil` module is exactly the resolvable case.
     proto_mod = Aliases.resolve_node(proto, env)
-    type_mod = type && Aliases.resolve_node(type, env)
+    type_mod = if type, do: Aliases.resolve_node(type, env), else: inferred_type(enclosing)
 
     if not is_nil(proto_mod) and not is_nil(type_mod),
       do: Module.concat(proto_mod, type_mod),
       else: @unresolved
   end
+
+  defp inferred_type(@unresolved), do: nil
+  defp inferred_type(enclosing), do: enclosing
 
   @doc "The `for:` value of a `defimpl` opts list, or `nil`. Reads Sourceror's wrapped key."
   @spec for_type(Macro.t()) :: Macro.t() | nil
