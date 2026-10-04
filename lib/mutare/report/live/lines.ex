@@ -86,7 +86,7 @@ defmodule Mutare.Report.Live.Lines do
     do: "confirming #{count} timeout#{plural(count)} without contention…"
 
   @doc """
-  The line announcing the post-stream partition check (`Mutare.Runner.PartitionCheck`):
+  The line announcing the partition check that follows the mutant stream:
   `count` partitions each rerun one kill's tests with no mutant active.
   """
   @spec checking_partitions_label(pos_integer()) :: String.t()

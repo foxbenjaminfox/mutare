@@ -33,7 +33,7 @@ defmodule Mutare.CallRouting.Call do
           arguments: [Macro.t()],
           rebuild: (atom(), [Macro.t()] -> Macro.t()),
           alias_env: map() | nil,
-          enclosing_module: Aliases.enclosing()
+          enclosing_module: module() | nil
         }
 
   @enforce_keys [:node, :module, :name, :arguments, :rebuild]
