@@ -6,7 +6,7 @@ defmodule Mutare.Report.Json do
 
   Two fields locate a mutant. The schema's `location` is the source span its `replacement` text replaces. Mutare adds `position`, a `{line, column}` point: where the mutant *is*, the location the human report prints and `--line` selects by. Its line is the one `# mutare:ignore` reads. Usually `position` is where `location` starts. A mutant whose replacement must cover more text than it changes is the exception: removing a pipe stage, for instance, rewrites the whole pipe but is positioned at the stage.
 
-  Under `--partition-db`, Mutare also adds each mutant's `partition`, the one its run used. A kill on a partition whose environment failed the tests with no mutant active (`Mutare.Run`'s `:broken_partitions`) carries a `statusReason` saying the kill may be false.
+  Under `:partition_env` (`--partition-db` or `--partition-env`), Mutare also adds each mutant's `partition`, the one its run used. A kill on a partition whose environment failed the tests with no mutant active (`Mutare.Run`'s `:broken_partitions`) carries a `statusReason` saying the kill may be false.
 
   Emitted by `mix mutare --report json` or `mix mutare --report json:path.json`.
   """
@@ -95,7 +95,7 @@ defmodule Mutare.Report.Json do
     |> put_present(:description, site.note)
     |> put_present(:duration, result.duration_ms)
     |> put_present(:testSelection, selection(result.selection))
-    # Mutare's addition, like `testSelection`: the partition (`--partition-db`) the
+    # Mutare's addition, like `testSelection`: the partition (`:partition_env`) the
     # mutant's run used, absent when partitioning was off or no run launched.
     |> put_present(:partition, result.partition)
   end

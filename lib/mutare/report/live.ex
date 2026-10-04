@@ -82,6 +82,7 @@ defmodule Mutare.Report.Live do
           | :coverage_probe
           | {:running, non_neg_integer()}
           | {:confirming_timeouts, non_neg_integer()}
+          | {:checking_partitions, pos_integer()}
           | {:compiled, non_neg_integer()}
           | {:baseline_done, non_neg_integer()}
           | {:coverage_done, map()}
@@ -95,8 +96,10 @@ defmodule Mutare.Report.Live do
   Records a phase transition or detail event.
 
   Phase transitions are `:scanning`, `:compiling`, `:baseline`, `:coverage_probe`,
-  `{:running, total}`, and `{:confirming_timeouts, count}` (the post-stream
-  confirmation pass, announced while the phase stays `:running`). Detail events are
+  `{:running, total}`, `{:confirming_timeouts, count}` (the post-stream
+  confirmation pass, announced while the phase stays `:running`), and
+  `{:checking_partitions, count}` (the partition check after it, which leaves a line in
+  every mode, since no result reports in while it runs). Detail events are
   verbose-only notes: `{:compiled, ms}`, `{:baseline_done, ms}`, `{:run_config, cfg}`
   (stashed for the `{:running, total}` label), `{:seed_app_build, summary}`, and
   `{:inference_override_declined, info}`. `{:coverage_done, summary}` is verbose for
@@ -286,6 +289,12 @@ defmodule Mutare.Report.Live do
       do: {:noreply, put_line(state, Lines.confirming_label(count))},
       else: {:noreply, redraw(state)}
   end
+
+  # The post-stream partition check (`Mutare.Runner.PartitionCheck`). Unlike the timeout
+  # confirmations, no result reports in while it runs, so a permanent line in every mode
+  # explains why the finished counter sits still.
+  def handle_cast({:phase, {:checking_partitions, count}}, state),
+    do: {:noreply, put_line(state, Lines.checking_partitions_label(count))}
 
   # A pre-mutant phase (`:scanning`, `:compiling`, …): where phases scroll, a permanent
   # note with no block beneath it (the `✓` detail line follows right behind it in verbose);

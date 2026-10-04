@@ -4707,7 +4707,9 @@ It ignores `--time-budget`, including its confirmations, unlike the mutant strea
 timeout confirmations: it launches no mutant. Each sequential confirmation and control
 adds capped attempts and their infrastructure retries. Respecting the budget would mean
 either silence exactly when the run was cut short, or a warning on every budgeted
-partitioned run.
+partitioned run. It announces itself (`{:checking_partitions, n}` through `on_phase`, a
+line in every live mode): no result reports in while it runs, so the finished counter
+would otherwise sit still for as long as the reruns, confirmations and controls take.
 
 Blind spots, accepted: a partition broken only for some tests (one unmigrated table) is
 caught only if the fastest kill's tests touch it; without `--kill-runs`, a flaky test that

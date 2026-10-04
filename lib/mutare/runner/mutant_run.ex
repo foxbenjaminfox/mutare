@@ -159,7 +159,7 @@ defmodule Mutare.Runner.MutantRun do
         max_heap_mb: ctx.options.max_heap_mb,
         schedulers: ctx.options.schedulers,
         project_root: ctx.project_root,
-        partition: Partitions.entry(ctx.options.partition_env, partition)
+        partition: Partitions.slot_entry(ctx.partitions, partition)
       )
 
     case result.outcome do

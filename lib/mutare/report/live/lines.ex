@@ -86,6 +86,16 @@ defmodule Mutare.Report.Live.Lines do
     do: "confirming #{count} timeout#{plural(count)} without contention…"
 
   @doc """
+  The line announcing the post-stream partition check (`Mutare.Runner.PartitionCheck`):
+  `count` partitions each rerun one kill's tests with no mutant active.
+  """
+  @spec checking_partitions_label(pos_integer()) :: String.t()
+  def checking_partitions_label(count) do
+    "checking #{count} partition#{plural(count)}: rerunning one kill's tests on " <>
+      "#{if count == 1, do: "it", else: "each"} with no mutant active…"
+  end
+
+  @doc """
   Returns the status-block lines for `state` at monotonic time `now_ms`.
 
   A running phase has an activity line and a counter. A pre-run phase has one

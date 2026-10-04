@@ -38,31 +38,34 @@ defmodule Mutare.Runner.PartitionCheck do
   @doc """
   Rerun each partition's fastest kill (`kills_to_rerun/1`) there with no mutant active,
   and warn about each partition where those tests fail while they pass on partition 1.
-  Returns those partitions, for `Mutare.Run`'s `:broken_partitions`. Does nothing when
-  partitioning is off.
+  Returns those partitions, for `Mutare.Run`'s `:broken_partitions`. When partitioning is
+  off, no result has a partition, so there is nothing to rerun.
 
-  The reruns run at once, one per partition. Once they all finish, timeout confirmations
-  (`:confirm_timeouts`) and controls on partition 1 run sequentially, so this must run
-  after the stream, while no pooled run holds a partition. It ignores the time budget:
-  it launches no mutant. Each confirmation and control adds capped `:kill_runs` attempts
-  and their infrastructure retries.
+  Announces `{:checking_partitions, count}` through `on_phase` when there is something to
+  rerun: no result reports in while it runs, so without it the finished progress display
+  would sit still. The reruns run at once, one per partition. Once they all finish,
+  timeout confirmations (`:confirm_timeouts`) and controls on partition 1 run
+  sequentially, so this must run after the stream, while no pooled run holds a
+  partition. It ignores the time budget: it launches no mutant. Each confirmation and
+  control adds capped `:kill_runs` attempts and their infrastructure retries.
   """
   @spec run(RunCtx.t(), [Result.t()]) :: [BrokenPartition.t()]
-  def run(%RunCtx{options: %{partition_env: nil}}, _results), do: []
-
   def run(%RunCtx{} = ctx, results) do
-    kills = kills_to_rerun(results)
+    case kills_to_rerun(results) do
+      [] ->
+        []
 
-    kills
-    |> Task.async_stream(&rerun(ctx, &1),
-      max_concurrency: max(length(kills), 1),
-      timeout: :infinity
-    )
-    |> Enum.flat_map(fn {:ok, failed} -> failed end)
-    # Drain every concurrent check before confirming timeouts without contention.
-    |> Enum.flat_map(&confirm_timeout(ctx, &1))
-    # Partition 1 is one environment, so the controls run one at a time.
-    |> Enum.flat_map(&control(ctx, &1))
+      kills ->
+        ctx.on_phase.({:checking_partitions, length(kills)})
+
+        kills
+        |> Task.async_stream(&rerun(ctx, &1), max_concurrency: length(kills), timeout: :infinity)
+        |> Enum.flat_map(fn {:ok, failed} -> failed end)
+        # Drain every concurrent check before confirming timeouts without contention.
+        |> Enum.flat_map(&confirm_timeout(ctx, &1))
+        # Partition 1 is one environment, so the controls run one at a time.
+        |> Enum.flat_map(&control(ctx, &1))
+    end
   end
 
   @doc """

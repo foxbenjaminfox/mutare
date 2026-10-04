@@ -2,7 +2,7 @@ defmodule Mutare.Runner.PartitionCheckTest do
   use ExUnit.Case, async: true
 
   alias Mutare.{Options, Result, Site}
-  alias Mutare.Runner.{PartitionCheck, RunCtx}
+  alias Mutare.Runner.{PartitionCheck, Partitions, RunCtx}
 
   defp result(partition, status, ms \\ 100) do
     %Result{
@@ -52,7 +52,9 @@ defmodule Mutare.Runner.PartitionCheckTest do
     end
   end
 
-  test "run/2 does nothing when partitioning is off" do
+  test "run/2 does nothing, and announces nothing, when partitioning is off" do
+    test_pid = self()
+
     ctx = %RunCtx{
       options: Options.new([]),
       sandbox: "unused",
@@ -60,13 +62,15 @@ defmodule Mutare.Runner.PartitionCheckTest do
       selection: {:run_all, nil},
       cap: 1000,
       scopes: %{},
-      partitions: :disabled,
+      partitions: Partitions.new(nil, 1),
       deadline: nil,
       on_start: fn _ -> :ok end,
       reporter: fn _ -> :ok end,
-      on_phase: fn _ -> :ok end
+      on_phase: &send(test_pid, {:phase, &1})
     }
 
-    assert PartitionCheck.run(ctx, [result(2, :killed)]) == []
+    # With the pool disabled, no run records a partition.
+    assert PartitionCheck.run(ctx, [result(nil, :killed)]) == []
+    refute_received {:phase, _}
   end
 end

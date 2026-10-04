@@ -68,8 +68,10 @@ defmodule Mutare.CLI.Outcome do
   end
 
   def report(run, %Options{} = options, scope) do
-    # Only a finished run has `broken_partitions`: the partition check runs after the
-    # stream, so the reports of an unfinished run (a checkpoint, an interruption) have none.
+    # The runner checks partitions after the stream, so every run it returns has
+    # `broken_partitions`, one stopped early included (whose reports list them, though
+    # `finish_run/2` skips its gate). Checkpoints and an interrupted run's reports are
+    # written before that check, so they have none.
     emit_all(run.results, run.schema, options,
       scope: scope,
       broken_partitions: run.broken_partitions

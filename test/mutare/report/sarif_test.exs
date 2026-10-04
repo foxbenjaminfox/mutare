@@ -119,6 +119,8 @@ defmodule Mutare.Report.SarifTest do
     assert notification["level"] == "warning"
     assert notification["descriptor"] == %{"id" => "broken-partition"}
 
+    assert [%{"id" => "broken-partition"}] = run["tool"]["driver"]["notifications"]
+
     assert notification["message"]["text"] ==
              "Partition 2's kills may be false: with no mutant active, the tests that killed " <>
                "mutant 7 failed: ** (RuntimeError) no db. Some of the 2 mutants killed there " <>
@@ -126,5 +128,18 @@ defmodule Mutare.Report.SarifTest do
 
     [plain] = decode(results)["runs"]
     refute Map.has_key?(plain, "invocations")
+    refute Map.has_key?(plain["tool"]["driver"], "notifications")
+
+    [one_kill] =
+      results
+      |> Enum.drop(1)
+      |> Sarif.render(%{}, broken_partitions: [broken])
+      |> JSON.decode!()
+      |> Map.fetch!("runs")
+
+    assert [%{"toolExecutionNotifications" => [%{"message" => %{"text" => text}}]}] =
+             one_kill["invocations"]
+
+    assert text =~ ~r/\. The mutant killed there may be a survivor missing from these results\.$/
   end
 end

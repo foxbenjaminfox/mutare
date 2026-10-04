@@ -162,6 +162,9 @@ defmodule Mutare.Runner do
     * `{:run_config, cfg}`
     * `{:confirming_timeouts, count}` — the sequential re-run of provisional
       timeouts is starting (see the timeouts section above)
+    * `{:checking_partitions, count}` — under `:partition_env`, after the mutants (and
+      their timeout confirmations): `count` partitions other than `1` are each rerunning
+      one kill's tests with no mutant active (`Mutare.Run`'s `:broken_partitions`)
 
   Custom hooks should ignore phase or detail events they do not recognise.
 

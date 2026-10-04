@@ -545,6 +545,34 @@ defmodule Mutare.Report.LiveTest do
     end
   end
 
+  describe "checking_partitions_label/1" do
+    test "agrees in number with the count" do
+      assert Lines.checking_partitions_label(1) ==
+               "checking 1 partition: rerunning one kill's tests on it with no mutant active…"
+
+      assert Lines.checking_partitions_label(3) ==
+               "checking 3 partitions: rerunning one kill's tests on each with no mutant active…"
+    end
+  end
+
+  describe "partition-check narration (end to end)" do
+    for ansi <- [true, false] do
+      test "leaves a permanent line when not verbose, ansi: #{ansi}" do
+        {:ok, io} = StringIO.open("")
+
+        {:ok, live} =
+          Live.start_link(device: io, ansi: unquote(ansi), verbose: false, width: 200)
+
+        Live.phase(live, {:running, 4})
+        Live.phase(live, {:checking_partitions, 2})
+        Live.finish(live)
+        {_in, out} = StringIO.contents(io)
+
+        assert out =~ "checking 2 partitions: rerunning one kill's tests on each"
+      end
+    end
+  end
+
   describe "poison-round narration (end to end)" do
     test "leaves a permanent line in plain mode, even when not verbose" do
       {:ok, io} = StringIO.open("")

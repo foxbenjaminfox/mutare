@@ -11,9 +11,28 @@ defmodule Mutare.Runner.PartitionsTest do
       assert Partitions.stop(:disabled) == :ok
     end
 
-    test "with_slot/2 yields no slot, and entry/2 is empty" do
+    test "with_slot/2 yields no slot, and entry/2 and slot_entry/2 are empty" do
       assert Partitions.with_slot(:disabled, fn slot -> slot end) == nil
       assert Partitions.entry(nil, 1) == []
+      assert Partitions.slot_entry(:disabled, nil) == []
+    end
+  end
+
+  describe "slot_entry/2 (a pooled slot's env entry)" do
+    test "names the slot under the pool's own variable" do
+      pool = Partitions.new("MY_DB_SLOT", 3)
+      assert Partitions.slot_entry(pool, 3) == [{"MY_DB_SLOT", "3"}]
+      Partitions.stop(pool)
+    end
+
+    test "refuses no slot, or one outside the pool" do
+      pool = Partitions.new("P", 2)
+
+      for slot <- [nil, 0, 3] do
+        assert_raise FunctionClauseError, fn -> Partitions.slot_entry(pool, slot) end
+      end
+
+      Partitions.stop(pool)
     end
   end
 

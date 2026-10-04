@@ -23,7 +23,8 @@ defmodule Mutare.Result do
 
   @typedoc """
   A mutant's result. `partition` is the partition its run used under `:partition_env`
-  (`--partition-db`), or `nil` when partitioning is off or no run launched.
+  (`--partition-db` or `--partition-env`), or `nil` when partitioning is off or no run
+  launched.
   """
   @type t :: %__MODULE__{
           site: Site.t(),

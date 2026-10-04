@@ -34,9 +34,10 @@ defmodule Mutare.Runner.Partitions do
   ## Disabled
 
   A `nil` env name disables everything: `new/2` returns `:disabled`, `with_slot/2`
-  yields `nil` (no slot), and `entry/2` is `[]` — so the partition feature is
-  pure opt-in and inert by default. The pool is a small `Agent` holding the free
-  tokens; `Mutare.Runner` manages its lifecycle (`new/2` … `stop/1`).
+  yields `nil` (no slot), and `entry/2` of the `nil` name and `slot_entry/2` of
+  the `nil` slot are `[]` — so the partition feature is pure opt-in and inert by
+  default. The pool is a small `Agent` holding the free tokens; `Mutare.Runner`
+  manages its lifecycle (`new/2` … `stop/1`).
   """
 
   @opaque t :: :disabled | {String.t(), pid(), pos_integer()}
@@ -57,6 +58,19 @@ defmodule Mutare.Runner.Partitions do
 
   def entry(env_name, n) when is_binary(env_name) and is_integer(n) and n > 0,
     do: [{env_name, Integer.to_string(n)}]
+
+  @doc """
+  Env entries for `slot`, a partition of `pool`'s (a number `with_slot/2` yielded, or one
+  a result recorded): `[]` for the disabled pool's `nil`, else `entry/2` under the pool's
+  variable. The pool, not the options, names the variable, so a slot can never be
+  paired with a variable from a different configuration; a slot outside the pool raises.
+  """
+  @spec slot_entry(t(), pos_integer() | nil) :: [{String.t(), String.t()}]
+  def slot_entry(:disabled, nil), do: []
+
+  def slot_entry({env_name, _agent, size}, slot)
+      when is_integer(slot) and slot >= 1 and slot <= size,
+      do: entry(env_name, slot)
 
   @doc """
   Build a slot pool of `size` tokens (partitions `1..size`) for the variable
@@ -91,7 +105,7 @@ defmodule Mutare.Runner.Partitions do
 
   @doc """
   Check out a free partition, call `fun` with its number, and check the partition
-  back in afterwards — even if `fun` raises. `entry/2` turns the number into the
+  back in afterwards — even if `fun` raises. `slot_entry/2` turns the number into the
   run's env entry, and a result records it, so a run's partition can be compared
   with the others' afterwards. When disabled, calls `fun.(nil)`.
   """

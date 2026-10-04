@@ -20,7 +20,7 @@ defmodule Mutare.PartitionCheckRunnerTest do
   import ExUnit.CaptureLog
 
   alias Mutare.{Options, Result, Site}
-  alias Mutare.Runner.{PartitionCheck, RunCtx}
+  alias Mutare.Runner.{PartitionCheck, Partitions, RunCtx}
   alias Mutare.Sandbox.Command.Exit
   alias Mutare.Test.Project
 
@@ -244,6 +244,9 @@ defmodule Mutare.PartitionCheckRunnerTest do
 
       assert {_output, 0} = Project.compile(project)
 
+      pool = Partitions.new(@slot_var, 3)
+      test_pid = self()
+
       ctx = %RunCtx{
         options:
           Options.new(
@@ -258,12 +261,12 @@ defmodule Mutare.PartitionCheckRunnerTest do
         selection: {:run_all, nil},
         cap: 60_000,
         scopes: %{},
-        partitions: :disabled,
+        partitions: pool,
         # Partition checks, including confirmation, must still run after the budget.
         deadline: System.monotonic_time(:millisecond) - 1,
         on_start: fn _ -> :ok end,
         reporter: fn _ -> :ok end,
-        on_phase: fn _ -> :ok end
+        on_phase: &send(test_pid, {:phase, &1})
       }
 
       kills =
@@ -277,6 +280,9 @@ defmodule Mutare.PartitionCheckRunnerTest do
         end
 
       {broken, log} = with_log(fn -> PartitionCheck.run(ctx, kills) end)
+      Partitions.stop(pool)
+
+      assert_received {:phase, {:checking_partitions, 2}}
 
       refute File.exists?(Path.join(project, "overlapping-confirmation"))
 
