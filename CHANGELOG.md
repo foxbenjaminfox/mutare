@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-04
+
 ### Added
 
 - `--events FILE` (`events:` in `.mutare.exs`) writes a JSON-lines record of a run as it
@@ -16,10 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `finish` that says why the run stopped and carries its counts and score, or the error and
   its message. The `finish` line comes after the reports are written.
   `Mutare.Report.Events` documents the format.
-
 - `Mutare.Run.Context.listen/3` adds a listener to a run hook beside the one already bound,
   and `Mutare.Score.score_counts/1` scores a tally of statuses rather than a result list.
-
 - The human report's score line names the flags that scoped the run — `--since`,
   `--only`, `--exclude`, `--line`, `--max-mutants` — as `— scoped by --since main`, so a
   score over part of the project does not read as the project's.
@@ -880,7 +880,8 @@ Initial release.
   any label a mutator declares) to your own functions, with the mutators'
   value-aware reaction: `{MyApp.Http, :get, 2, [{:keyword, :recv_timeout}], :timeout}`.
 
-[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/foxbenjaminfox/mutare/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/foxbenjaminfox/mutare/compare/v0.4.1...v0.4.2
