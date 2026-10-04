@@ -196,6 +196,9 @@ defmodule Mutare.PipedRoutedCallTest do
       def outer, do: stage(__MODULE__, :outer)
       def beneath, do: stage(__MODULE__.Post.Comment, :beneath)
 
+      alias __MODULE__.Comment
+      def aliased_beneath, do: stage(Comment, :aliased_beneath)
+
       defmodule Inner do
         import Mutare.Test.PipedCallDSL
         def inner, do: stage(__MODULE__, :inner)
@@ -206,7 +209,18 @@ defmodule Mutare.PipedRoutedCallTest do
         end
       end
 
-      defmodule __MODULE__.Computed do
+      defmodule __MODULE__.Named do
+        import Mutare.Test.PipedCallDSL
+        def named, do: stage(__MODULE__, :named)
+        def named_beneath, do: stage(__MODULE__.Post, :named_beneath)
+
+        defimpl String.Chars do
+          import Mutare.Test.PipedCallDSL
+          def to_string(_), do: stage(__MODULE__, :named_impl)
+        end
+      end
+
+      defmodule Module.concat(__MODULE__, Computed) do
         import Mutare.Test.PipedCallDSL
         def computed, do: stage(__MODULE__, :computed)
         def computed_beneath, do: stage(__MODULE__.Post, :computed_beneath)
@@ -239,7 +253,11 @@ defmodule Mutare.PipedRoutedCallTest do
 
     assert_received {:enclosing, :outer, "__MODULE__", {:ok, Outer}}
     assert_received {:enclosing, :beneath, "__MODULE__.Post.Comment", {:ok, Outer.Post.Comment}}
+    assert_received {:enclosing, :aliased_beneath, "Comment", {:ok, Outer.Comment}}
     assert_received {:enclosing, :inner, "__MODULE__", {:ok, Outer.Inner}}
+    assert_received {:enclosing, :named, "__MODULE__", {:ok, Outer.Named}}
+    assert_received {:enclosing, :named_beneath, "__MODULE__.Post", {:ok, Outer.Named.Post}}
+    assert_received {:enclosing, :named_impl, "__MODULE__", {:ok, String.Chars.Outer.Named}}
     assert_received {:enclosing, :computed, "__MODULE__", :error}
     assert_received {:enclosing, :computed_beneath, "__MODULE__.Post", :error}
     assert_received {:enclosing, :after_nested, "__MODULE__", {:ok, Outer}}
@@ -251,13 +269,13 @@ defmodule Mutare.PipedRoutedCallTest do
                      {:ok, :"Elixir.erlang_named.Sub"}}
   end
 
-  test "`__MODULE__` outside any module names nothing" do
+  test "`__MODULE__` outside any module names nothing, and drops out of a longer name" do
     defmodule TopLevelRouter do
       @behaviour Mutare.CallRouting
       def call_routes, do: [{Mutare.Test.PipedCallDSL, :stage, 2, :routing}]
 
-      def route_arguments(%Call{arguments: [source, _label]} = call) do
-        send(self(), {:top_level, Call.resolved_module(call, source)})
+      def route_arguments(%Call{arguments: [source, {:__block__, _, [label]}]} = call) do
+        send(self(), {:top_level, label, Call.resolved_module(call, source)})
         Mutare.CallRouting.ArgumentRoutes.new(call, [:raw, :raw])
       end
     end
@@ -266,13 +284,50 @@ defmodule Mutare.PipedRoutedCallTest do
       """
       import Mutare.Test.PipedCallDSL
       stage(__MODULE__, :top)
+      stage(__MODULE__.Top, :top_beneath)
       """,
       file: "script.exs",
       mutators: [],
       extensions: [TopLevelRouter]
     )
 
-    assert_received {:top_level, :error}
+    # The compiler reads `__MODULE__.Top` at the top level as `Top`.
+    assert_received {:top_level, :top, :error}
+    assert_received {:top_level, :top_beneath, {:ok, Top}}
+  end
+
+  test "a call written on `__MODULE__`, or imported through it, is routed" do
+    defmodule ModuleReceiverRouter do
+      @behaviour Mutare.CallRouting
+      def call_routes, do: [{Mutare.Test.PipedCallDSL, :stage, 2, :routing}]
+
+      def route_arguments(%Call{arguments: [source, {:__block__, _, [label]}]} = call) do
+        send(self(), {:receiver, label, Call.resolved_module(call, source)})
+        Mutare.CallRouting.ArgumentRoutes.new(call, [:raw, :raw])
+      end
+    end
+
+    Mutare.Transform.transform_string_with_sites(
+      """
+      defmodule Mutare.Test.PipedCallDSL do
+        def go, do: __MODULE__.stage(__MODULE__, :itself)
+      end
+
+      defmodule Mutare.Test do
+        def go, do: __MODULE__.PipedCallDSL.stage(__MODULE__, :beneath)
+
+        import __MODULE__.PipedCallDSL
+        def imported, do: stage(__MODULE__, :imported)
+      end
+      """,
+      file: "receiver.ex",
+      mutators: [],
+      extensions: [ModuleReceiverRouter]
+    )
+
+    assert_received {:receiver, :itself, {:ok, Mutare.Test.PipedCallDSL}}
+    assert_received {:receiver, :beneath, {:ok, Mutare.Test}}
+    assert_received {:receiver, :imported, {:ok, Mutare.Test}}
   end
 
   test "a routed call nested in an argument reads the same however it was spelled" do

@@ -11,9 +11,9 @@ defmodule Mutare.Transform.Aliases do
   # of them — and worse, `alias MyApp.Enum` makes a *local* module masquerade as the stdlib
   # one, so a family would wrongly fire on it.
   #
-  # `Resolve` folds a lexically-scoped alias env with `register/2` and, at each remote call,
+  # `Resolve` folds a lexically-scoped alias env with `register/3` and, at each remote call,
   # stamps the *call-module* `__aliases__` node with the module it actually refers to under
-  # `meta[:mutare_alias]` via `stamp_module/2` — but only when that differs from the written
+  # `meta[:mutare_alias]` via `stamp_module/3` — but only when that differs from the written
   # path, so an unaliased call carries no new metadata. `resolved_module/2` is the reader: the
   # stamped module, or the literal path when none. (An unknown atom meta key is ignored by
   # Sourceror's renderer and never reaches compilation, so the stamp is invisible in both the
@@ -60,11 +60,18 @@ defmodule Mutare.Transform.Aliases do
   #     declared inside a child scope do not leak back out. This falls out of `Resolve`
   #     folding the env left-to-right over each statement sequence and passing it *down* into
   #     children without bringing a child's additions back up.
-  #   * A `__MODULE__`-relative alias (`alias __MODULE__.Sub`) cannot be resolved to a
-  #     concrete module statically, so it is skipped (it never names a stdlib module).
+  #   * A `__MODULE__`-led name (`__MODULE__`, `__MODULE__.Sub`) names the module it is written
+  #     in, wherever it stands — an `alias` target (`alias __MODULE__.{A, B}` too), an `import`,
+  #     `use` or `@behaviour` target, a call's receiver, a `defmodule` or `defimpl` head — so
+  #     every reader here takes that module (`t:enclosing/0`) beside the alias env. The segments
+  #     after `__MODULE__` are appended as written, never read through an alias, as the compiler
+  #     does, and an `alias` without `as:` binds the last segment of the module named (`alias
+  #     __MODULE__` inside `A.B` binds `B`). At a file's top level `__MODULE__` is `nil`, so
+  #     `__MODULE__.Sub` is `Sub` and `__MODULE__` names nothing; where the module is unknown
+  #     (`unresolved_module/0`) neither resolves.
   #   * `use`-injected aliases are surfaced by `Mutare.Transform.Uses` (it expands an
   #     expandable, static-arg, module-level `use` and folds the `alias`es it injects through
-  #     `register/2`); a dynamic-arg or non-loadable `use`, or a non-`use` macro that injects an
+  #     `register/3`); a dynamic-arg or non-loadable `use`, or a non-`use` macro that injects an
   #     alias, stays invisible. `import` resolution is the sibling vocabulary in
   #     `Mutare.Transform.Imports`.
 
@@ -76,19 +83,38 @@ defmodule Mutare.Transform.Aliases do
   @typedoc """
   A resolved module reference: an Elixir-module **path** (`[:Enum]`, `[:String]`) or an
   Erlang-module **atom** (`:binary`, `:string`). The shape the module-key operations here
-  (`resolve_path/2`, `to_module/1`, `resolve_node/2`, `resolved_module/2`) produce or consume,
+  (`resolve_path/3`, `to_module/1`, `resolve_node/3`, `resolved_module/2`) produce or consume,
   and the key the call-matching families table on. The single home for the type, referenced by
   `Mutare.Transform.{Calls, Imports, ImportWitness}` rather than each re-spelling `[atom()] |
   atom()`.
   """
   @type module_key :: [atom()] | atom()
 
+  @unresolved :__mutare_unresolved__
+
+  @typedoc """
+  The module a statement is written in, as the module-scope walks thread it
+  (`Mutare.Transform.ModuleScope`, `Mutare.Lifting`): the module, `nil` at a file's top level,
+  or `unresolved_module/0` under a `defmodule` head that names no module statically (`unquote`,
+  `Module.concat(…)`), and so under everything nested in one. `__MODULE__` reads it.
+  """
+  @type enclosing :: module() | nil
+
+  @doc """
+  The `t:enclosing/0` value for a module that cannot be known statically. Distinct from
+  `nil`: a name resolved by the top-level rules beneath a dynamic head would land on an
+  unrelated module.
+  """
+  @spec unresolved_module() :: :__mutare_unresolved__
+  def unresolved_module, do: @unresolved
+
   @doc """
   The module a call's `__aliases__` refers to: the resolved path stamped by
-  `stamp_module/2`, or the literal path when no alias applied. The reader half of the
-  `:mutare_alias` contract.
+  `stamp_module/3`, or the literal path when no alias applied. The reader half of the
+  `:mutare_alias` contract. For a `__MODULE__` receiver, pass `nil` as the literal path: it
+  has none, and is `nil` where `stamp_module/3` could not name its module.
   """
-  @spec resolved_module(keyword(), [atom()]) :: module_key()
+  @spec resolved_module(keyword(), [atom()] | nil) :: module_key() | nil
   def resolved_module(alias_meta, literal_path) when is_list(alias_meta),
     do: Keyword.get(alias_meta, @meta_key, literal_path)
 
@@ -96,8 +122,9 @@ defmodule Mutare.Transform.Aliases do
 
   @doc """
   Resolve a written module path against an alias env: a first segment that is an
-  aliased name expands to its target, the remaining segments riding along.
-  Anything else is verbatim. Exposed so the `import` pre-pass
+  aliased name expands to its target, the remaining segments riding along, and a leading
+  `__MODULE__` is the `enclosing` module (see the moduledoc). Anything else is verbatim,
+  a `__MODULE__`-led path whose module is not known included. Exposed so the `import` pre-pass
   (`Mutare.Transform.Imports`) can resolve an `import E` (where `E` is an alias)
   through the *same* lexical alias environment, never reimplementing it.
 
@@ -106,7 +133,15 @@ defmodule Mutare.Transform.Aliases do
   (`B` → `:binary`); a trailing segment after it (`B.Sub`) is not a real module, so it is
   left unresolved.
   """
-  @spec resolve_path([atom()] | term(), map()) :: module_key() | term()
+  @spec resolve_path([atom()] | term(), map(), enclosing()) :: module_key() | term()
+  def resolve_path([{:__MODULE__, _meta, context} | rest] = path, _env, enclosing)
+      when is_atom(context) do
+    case beneath_module(enclosing, rest) do
+      {:ok, key} -> key
+      :error -> path
+    end
+  end
+
   # A literal `Elixir.`-prefixed written path (`Elixir.String`, `Elixir.Elixir.MyUse`) is the
   # **fully-qualified, alias-proof** form — `Elixir.` ignores every alias in scope (it's exactly
   # what `Mutare.Transform.Calls.qualifier/1` emits to dodge a rebinding alias). Normalize it
@@ -114,9 +149,9 @@ defmodule Mutare.Transform.Aliases do
   # `String`, whereas a *bare* `String.first` resolves to `Wrong` (below) — the two deliberately
   # differ. The `[:"Elixir", _ | _]` shape (two+ segments) is required so a *lone* `Elixir` (the
   # root namespace, never a call target) falls through to the env-consulting clause unchanged.
-  def resolve_path([:"Elixir", _ | _] = path, _env), do: normalize(path)
+  def resolve_path([:"Elixir", _ | _] = path, _env, _enclosing), do: normalize(path)
 
-  def resolve_path([first | rest], env) when is_atom(first) do
+  def resolve_path([first | rest], env, _enclosing) when is_atom(first) do
     case Map.fetch(env, first) do
       # An alias expands to its bound base; **normalize the combined path** because the base may
       # itself be — or end on — the root namespace. `alias Elixir, as: E; E.String` and
@@ -131,7 +166,22 @@ defmodule Mutare.Transform.Aliases do
     end
   end
 
-  def resolve_path(path, _env), do: path
+  def resolve_path(path, _env, _enclosing), do: path
+
+  # `__MODULE__` followed by the written `rest`, as the compiler reads it: the segments are
+  # appended to the enclosing module, none of them read through an alias. Beneath an
+  # Erlang-atom module the result is the quoted atom the compiler makes (`:"Elixir.foo.Sub"`).
+  # At the top level `__MODULE__` is `nil`, which names no module alone and drops out of a
+  # longer name.
+  defp beneath_module(@unresolved, _rest), do: :error
+  defp beneath_module(nil, []), do: :error
+
+  defp beneath_module(enclosing, rest) when is_atom(enclosing) do
+    if atoms?(rest),
+      do:
+        {:ok, from_module(if rest == [], do: enclosing, else: Module.concat([enclosing | rest]))},
+      else: :error
+  end
 
   # Strip the single leading `Elixir` **canonical prefix** off an assembled module key so it
   # matches the bare key the call families and `to_module/1` expect (`[Elixir, :String]` →
@@ -150,33 +200,46 @@ defmodule Mutare.Transform.Aliases do
   changes it, **and so does a `require Mod, as: Name`** — Elixir's `:as` on `require` "sets
   up an alias" exactly like `alias/2`, so `require String, as: S; S.upcase(x)` resolves
   `S` to `String`. A bare `require Mod` (no `as:`) brings macros into scope but introduces
-  no name, and every other statement passes through unchanged. The unified resolution walk
-  (`Mutare.Transform.Resolve`) folds the alias env with this as it descends each statement
-  sequence; `Mutare.Transform.Behaviours` and `Mutare.Transform.Uses` fold it too.
+  no name, and every other statement passes through unchanged. `enclosing` is the module the
+  statement is written in, which a `__MODULE__`-led target names.
+  The unified resolution walk (`Mutare.Transform.Resolve`) folds the alias env with this as it
+  descends each statement sequence; `Mutare.Transform.Behaviours` and `Mutare.Transform.Uses`
+  fold it too.
   """
-  @spec register(Macro.t(), map()) :: map()
-  def register({:alias, _meta, args}, env), do: register_alias(args, env)
+  @spec register(Macro.t(), map(), enclosing()) :: map()
+  def register({:alias, _meta, args}, env, module), do: register_alias(args, env, module)
 
   # `require Mod, as: Name` aliases identically to `alias Mod, as: Name` (same arg shape:
-  # `[mod_ast, opts]`), so it delegates to `register_alias/2` — but only when an `as:` is
+  # `[mod_ast, opts]`), so it delegates to `register_alias/3` — but only when an `as:` is
   # present; a bare `require Mod` introduces no alias.
-  def register({:require, _meta, [mod_ast, opts]}, env) when is_list(opts) do
-    if as_name(opts), do: register_alias([mod_ast, opts], env), else: env
+  def register({:require, _meta, [mod_ast, opts]}, env, module) when is_list(opts) do
+    if as_name(opts), do: register_alias([mod_ast, opts], env, module), else: env
   end
 
-  def register(_stmt, env), do: env
+  def register(_stmt, env, _module), do: env
 
   @doc """
   Stamp a call's `__aliases__` module node with the module it resolves to under the env,
   but only when that differs from the written path (an unaliased call keeps clean
   metadata). The write half of the `:mutare_alias` contract; called by
-  `Mutare.Transform.Resolve` at each remote call.
+  `Mutare.Transform.Resolve` at each remote call, where a `__MODULE__` receiver is stamped
+  with the `enclosing` module.
   """
-  @spec stamp_module(Macro.t(), map()) :: Macro.t()
-  def stamp_module({:__aliases__, _meta, path} = node, env),
-    do: stamp(node, resolve_path(path, env))
+  @spec stamp_module(Macro.t(), map(), enclosing()) :: Macro.t()
+  def stamp_module({:__aliases__, _meta, path} = node, env, enclosing),
+    do: stamp(node, resolve_path(path, env, enclosing))
 
-  def stamp_module(node, _env), do: node
+  # A `__MODULE__` receiver has no written path to fall back on, so it is stamped whenever its
+  # module is known.
+  def stamp_module({:__MODULE__, meta, context} = node, _env, enclosing)
+      when is_list(meta) and is_atom(context) do
+    case beneath_module(enclosing, []) do
+      {:ok, key} -> {:__MODULE__, [{@meta_key, key} | meta], context}
+      :error -> node
+    end
+  end
+
+  def stamp_module(node, _env, _enclosing), do: node
 
   # Stamp the resolved module onto the alias node's meta, but only when it differs from the
   # written path (an unaliased call keeps clean metadata).
@@ -188,59 +251,80 @@ defmodule Mutare.Transform.Aliases do
 
   # --- alias directives ------------------------------------------------------
 
-  # `alias Foo.{Bar, Baz}` — the multi-alias special form: each child rides on the base.
-  # The base is resolved through the env first, so `alias X, as: Foo; alias Foo.{Bar}`
-  # binds `Bar` to the real `X.Bar`, not the written `Foo.Bar`.
-  defp register_alias([{{:., _, [{:__aliases__, _, base}, :{}]}, _, children} | _], env)
-       when is_list(base) and is_list(children) do
-    if atoms?(base) do
-      resolved_base = resolve_path(base, env)
+  # `alias Foo.{Bar, Baz}` — the multi-alias special form: each child rides on the base, and is
+  # bound under its own last segment. The base is resolved first, so `alias X, as: Foo;
+  # alias Foo.{Bar}` binds `Bar` to the real `X.Bar`, not the written `Foo.Bar`. A base that
+  # names an Erlang-atom module has nothing beneath it, so it binds nothing.
+  defp register_alias([{{:., _, [base, :{}]}, _, children} | _], env, module)
+       when is_list(children) do
+    case target(base, env, module) do
+      {:ok, _name, resolved_base} when is_list(resolved_base) ->
+        Enum.reduce(children, env, fn
+          # `normalize/1`: the assembled child target may lead with the root namespace
+          # (`alias Elixir.{String}` assembles `[Elixir, :String]`), which must collapse to the
+          # bare key — exactly the combined-path normalization the resolution clause applies.
+          {:__aliases__, _, seg}, env when is_list(seg) ->
+            if atoms?(seg),
+              do: Map.put(env, List.last(seg), normalize(resolved_base ++ seg)),
+              else: env
 
-      Enum.reduce(children, env, fn
-        # `normalize/1`: the assembled child target may lead with the root namespace
-        # (`alias Elixir.{String}` assembles `[Elixir, :String]`), which must collapse to the
-        # bare key — exactly the combined-path normalization the resolution clause applies.
-        {:__aliases__, _, seg}, env when is_list(seg) ->
-          if atoms?(seg), do: bind(env, base ++ seg, normalize(resolved_base ++ seg)), else: env
+          _other, env ->
+            env
+        end)
 
-        _other, env ->
-          env
-      end)
-    else
-      env
+      _ ->
+        env
     end
   end
 
-  # `alias :erlang_mod, as: Name` — an Erlang atom module bound to its `as:` name. (An atom
-  # has no last segment, so the `as:` is mandatory; `alias :binary` with none binds nothing.)
-  defp register_alias([{:__block__, _meta, [atom]}, opts], env) when is_atom(atom) do
-    case as_name(opts) do
+  # `alias Foo.Bar` / `alias Foo.Bar, as: Baz` — an explicit `as:` name overrides the default.
+  defp register_alias([target_ast], env, module),
+    do: bind(env, target(target_ast, env, module), nil)
+
+  defp register_alias([target_ast, opts], env, module),
+    do: bind(env, target(target_ast, env, module), as_name(opts))
+
+  defp register_alias(_args, env, _module), do: env
+
+  defp bind(env, {:ok, default, resolved}, as) do
+    case as || default do
       nil -> env
-      name -> Map.put(env, name, atom)
+      name -> Map.put(env, name, resolved)
     end
   end
 
-  # `alias Foo.Bar, as: Baz` — an explicit name overrides the last-segment default.
-  defp register_alias([{:__aliases__, _, path}, opts], env) when is_list(path) do
-    cond do
-      not atoms?(path) -> env
-      (name = as_name(opts)) != nil -> Map.put(env, name, resolve_path(path, env))
-      true -> bind(env, path, resolve_path(path, env))
+  defp bind(env, :error, _as), do: env
+
+  # A written alias target → `{:ok, default_name, module_key}`, or `:error` when it names no
+  # module statically. The key is always fully expanded, never another alias: `alias MyApp, as:
+  # String; alias String, as: S` binds `S` to `MyApp`, so a later `S.upcase` is not mistaken for
+  # a stdlib `String` call. The default name is the last *written* segment, so an aliased
+  # single-segment target keeps its written name (`alias X, as: Foo; alias Foo` binds `Foo`),
+  # except under `__MODULE__`, whose own name is the last segment of the enclosing module. An
+  # Erlang atom (`alias :binary, as: B`) has no segment to default the name from, so it binds
+  # only with an `as:`.
+  defp target({:__aliases__, _, [{:__MODULE__, _, context} | rest]}, _env, enclosing)
+       when is_atom(context),
+       do: target_beneath(enclosing, rest)
+
+  defp target({:__MODULE__, _, context}, _env, enclosing) when is_atom(context),
+    do: target_beneath(enclosing, [])
+
+  defp target({:__aliases__, _, path}, env, enclosing) when is_list(path) do
+    if atoms?(path), do: {:ok, List.last(path), resolve_path(path, env, enclosing)}, else: :error
+  end
+
+  defp target({:__block__, _, [atom]}, _env, _module) when is_atom(atom), do: {:ok, nil, atom}
+  defp target(_ast, _env, _module), do: :error
+
+  # Beneath an Erlang-atom module the key is a quoted atom, with no segment to default the
+  # name from, so it binds only with an `as:`.
+  defp target_beneath(enclosing, rest) do
+    case beneath_module(enclosing, rest) do
+      {:ok, key} -> {:ok, if(is_list(key), do: List.last(key)), key}
+      :error -> :error
     end
   end
-
-  # `alias Foo.Bar` — the introduced name is the last segment.
-  defp register_alias([{:__aliases__, _, path}], env) when is_list(path) do
-    if atoms?(path), do: bind(env, path, resolve_path(path, env)), else: env
-  end
-
-  defp register_alias(_args, env), do: env
-
-  # Bind the introduced name (the last segment of the *written* path) to the *resolved*
-  # path. The name comes from what was written so an aliased single-segment target keeps
-  # its written name even when resolution expands it (`alias X, as: Foo; alias Foo` binds
-  # `Foo`, not `X`).
-  defp bind(env, written, resolved), do: Map.put(env, List.last(written), resolved)
 
   # The `as:` target's single segment, or nil. Handles Sourceror's block-wrapped key, and keeps
   # only a single-segment alias value (`as: Foo`) — a multi-segment or non-alias `as:` yields nil.
@@ -266,16 +350,17 @@ defmodule Mutare.Transform.Aliases do
   @doc """
   A module **key** — an Elixir path (`[:Enum]`) or an Erlang atom (`:binary`) — to its
   concrete module atom: a path is `Module.concat`-ed, an atom is itself, any other shape
-  (never a real key) is `nil`. The follow-on to `resolve_path/2`: the import/use/behaviour
-  pre-passes all do `path |> resolve_path(env) |> to_module()` to land on the runtime module.
+  (never a real key) is `nil`. The follow-on to `resolve_path/3`: the import/use/behaviour
+  pre-passes all do `path |> resolve_path(env, enclosing) |> to_module()` to land on the
+  runtime module.
 
   A plain `Module.concat` is exactly right and needs **no** leading-`Elixir` compensation:
-  `resolve_path/2` already normalizes the key it hands back — a single canonical `Elixir`
+  `resolve_path/3` already normalizes the key it hands back — a single canonical `Elixir`
   prefix is stripped (`[:String]`), a *doubled* one (a real `Elixir` segment) is kept whole
   (`[:Elixir, :Elixir, :MyUse]`) — so `Module.concat` lands correctly either way (folding the
   one canonical prefix off a doubled key → `Elixir.MyUse`). A path reaching here therefore
   never carries a *single* leading `Elixir`; compensating for one would wrongly double-fold a
-  genuine doubled prefix. The canonical-prefix disambiguation lives in `resolve_path/2`, not
+  genuine doubled prefix. The canonical-prefix disambiguation lives in `resolve_path/3`, not
   here.
   """
   @spec to_module(module_key() | term()) :: module() | nil
@@ -301,21 +386,32 @@ defmodule Mutare.Transform.Aliases do
   end
 
   @doc """
-  A module **reference node** → its concrete module atom, or `nil`. Resolves the three shapes a
+  A module **reference node** → its concrete module atom, or `nil`. Resolves the shapes a
   module reference takes in the AST: an Elixir alias path (`{:__aliases__, _, segments}`,
-  resolved through the alias `env` then `Module.concat`-ed — a non-static segment yields `nil`),
-  a Sourceror-wrapped atom (`{:__block__, _, [:gen_server]}`), and a bare atom — the latter two
-  being Erlang-style modules taken as-is.
+  resolved through the alias `env` and the `enclosing` module then `Module.concat`-ed — a
+  non-static segment yields `nil`), `__MODULE__` (the `enclosing` module), a Sourceror-wrapped
+  atom (`{:__block__, _, [:gen_server]}`), and a bare atom — the latter two being Erlang-style
+  modules taken as-is.
 
   The single home for the "AST node + env → module" step the `use`/`@behaviour`/`import`
-  pre-passes need, composing `resolve_path/2` with `to_module/1`.
+  pre-passes need, composing `resolve_path/3` with `to_module/1`.
   """
-  @spec resolve_node(Macro.t(), map()) :: module() | nil
-  def resolve_node({:__aliases__, _meta, path}, env) when is_list(path) do
-    if atoms?(path), do: path |> resolve_path(env) |> to_module(), else: nil
+  @spec resolve_node(Macro.t(), map(), enclosing()) :: module() | nil
+  def resolve_node({:__aliases__, _meta, path}, env, enclosing) when is_list(path) do
+    case resolve_path(path, env, enclosing) do
+      atom when is_atom(atom) -> atom
+      key -> if atoms?(key), do: to_module(key)
+    end
   end
 
-  def resolve_node({:__block__, _meta, [atom]}, _env) when is_atom(atom), do: atom
-  def resolve_node(atom, _env) when is_atom(atom), do: atom
-  def resolve_node(_other, _env), do: nil
+  def resolve_node({:__MODULE__, _meta, context}, _env, enclosing) when is_atom(context) do
+    case beneath_module(enclosing, []) do
+      {:ok, key} -> to_module(key)
+      :error -> nil
+    end
+  end
+
+  def resolve_node({:__block__, _meta, [atom]}, _env, _enclosing) when is_atom(atom), do: atom
+  def resolve_node(atom, _env, _enclosing) when is_atom(atom), do: atom
+  def resolve_node(_other, _env, _enclosing), do: nil
 end

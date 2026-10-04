@@ -47,7 +47,7 @@ defmodule Mutare.Transform.Uses do
   #
   # `use Foo` may name an *aliased* module (`alias RealUse, as: Foo; use Foo`), in which case the
   # compiler expands `RealUse.__using__`, not `Foo.__using__`. So the walk folds a lexically-scoped
-  # alias env (reusing `Aliases.register/2` + `resolve_path/2`, the very rules `Resolve` uses for
+  # alias env (reusing `Aliases.register/3` + `resolve_path/3`, the very rules `Resolve` uses for
   # `import`) and resolves each `use` target through it before expanding — otherwise an unrelated
   # but loadable `Foo` would be expanded and its directives stamped as the wrong module.
   #
@@ -60,6 +60,7 @@ defmodule Mutare.Transform.Uses do
   # — see `expand_using/4`. (Without this, the pre-pass harvested directives against the *wrong*
   # module and rewrote later bare calls accordingly.)
 
+  alias Mutare.AST
   alias Mutare.Extension
   alias Mutare.Transform.Aliases
   alias Mutare.Transform.MetaKeys
@@ -74,9 +75,9 @@ defmodule Mutare.Transform.Uses do
 
   # The module name of a nested `defmodule` we couldn't resolve to a concrete atom (a non-static
   # head, or a child of an already-unresolved parent). Expansion is *skipped* under it — see
-  # `ModuleScope.child_module/3` and `stamp/4`. Sourced from `ModuleScope` (which owns the
-  # implicit-alias vocabulary) so the sentinel Uses pattern-matches can't drift from it.
-  @unresolved ModuleScope.unresolved()
+  # `ModuleScope.child_module/3` and `stamp/4`. Sourced from `Aliases`, which reads module names
+  # under it, so the sentinel Uses pattern-matches can't drift from it.
+  @unresolved Aliases.unresolved_module()
 
   @doc """
   Stamp each eligible module-level `use` node's meta with `:mutare_use_directives` — the
@@ -119,7 +120,7 @@ defmodule Mutare.Transform.Uses do
   # --- the module-tracking walk ----------------------------------------------
   #
   # Expansion needs the enclosing module (for a faithful `__CALLER__.module`), so `Uses` threads it
-  # as it walks. It also threads a lexically-scoped **alias env** (`Aliases.register/2`, folded
+  # as it walks. It also threads a lexically-scoped **alias env** (`Aliases.register/3`, folded
   # left-to-right over a module body so a `use` sees only the aliases declared *before* it; nested
   # scopes inherit, a child's additions don't leak) so an aliased `use` target resolves to the real
   # module. The env mirrors **both** explicit aliases *and the implicit alias Elixir auto-introduces
@@ -149,20 +150,16 @@ defmodule Mutare.Transform.Uses do
 
   # `defimpl P, for: T do … end` opens a module scope named `P.T` (**absolute** — never
   # parent-prefixed, regardless of nesting), where a direct `use` is expanded before the
-  # implementation functions. Both `P` and `T` are resolved through the alias env, and a missing
-  # `for:` (`defimpl P do … end`) is the enclosing module, as the compiler infers it; only a single,
-  # statically-resolvable impl module is entered as a stamping scope (`impl_module/4` yields
+  # implementation functions. `ModuleScope.defimpl_module/3` reads it off the arguments as
+  # `Resolve` and `Behaviours` do, whatever the surface form (the inline `for: T, do: …` too);
+  # only a single, statically-resolvable impl module is entered as a stamping scope (it yields
   # `@unresolved` for a list `for:`, a non-static type, or an inferred one with no module around
-  # it, which conservatively skips the stamp).
-  defp walk_generic({:defimpl, meta, [proto, opts, [{do_key, body}]]}, module, env, handlers)
-       when is_list(opts) do
-    impl = ModuleScope.impl_module(proto, ModuleScope.for_type(opts), module, env)
-    {:defimpl, meta, [proto, opts, [{do_key, walk_module_body(body, impl, env, handlers)}]]}
-  end
-
-  defp walk_generic({:defimpl, meta, [proto, [{do_key, body}]]}, module, env, handlers) do
-    impl = ModuleScope.impl_module(proto, nil, module, env)
-    {:defimpl, meta, [proto, [{do_key, walk_module_body(body, impl, env, handlers)}]]}
+  # it, which conservatively skips the stamp). The `do:` body sits in the last argument.
+  defp walk_generic({:defimpl, meta, args}, module, env, handlers)
+       when is_list(args) and length(args) >= 2 do
+    impl = ModuleScope.defimpl_module(args, module, env)
+    {lead, [last]} = Enum.split(args, -1)
+    {:defimpl, meta, lead ++ [walk_impl_options(last, impl, module, env, handlers)]}
   end
 
   # A `quote` block is quoted *data*: a `defmodule … do use Foo end` inside it is only realised
@@ -199,6 +196,23 @@ defmodule Mutare.Transform.Uses do
 
   defp walk_generic(other, _module, _env, _handlers), do: other
 
+  # A `defimpl`'s last argument: its `do:` body is the impl module's body; any other entry, or a
+  # last argument that is no keyword list at all, is descended in the module around the `defimpl`.
+  defp walk_impl_options(opts, impl, module, env, handlers) when is_list(opts) do
+    Enum.map(opts, fn
+      {key, body} = entry ->
+        if AST.key_atom(key) == :do,
+          do: {key, walk_module_body(body, impl, env, handlers)},
+          else: walk_generic(entry, module, env, handlers)
+
+      other ->
+        walk_generic(other, module, env, handlers)
+    end)
+  end
+
+  defp walk_impl_options(other, _impl, module, env, handlers),
+    do: walk_generic(other, module, env, handlers)
+
   # A **module body** statement sequence (the only place a `use` is a directive): its direct
   # statements are module-level, so the alias env is folded left-to-right (a `use` resolves
   # against the aliases declared above it) and each `use` is stamped (`walk_stmt/4`); everything
@@ -228,7 +242,7 @@ defmodule Mutare.Transform.Uses do
   # env and stay unstamped.
   defp advance_env(stmt, node, module, env) do
     env = ModuleScope.register_lexical(stmt, module, env)
-    node |> injected_directives() |> Enum.reduce(env, &Aliases.register/2)
+    node |> injected_directives() |> Enum.reduce(env, &Aliases.register(&1, &2, module))
   end
 
   defp injected_directives({:use, meta, _args}) when is_list(meta), do: directives(meta)

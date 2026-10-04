@@ -11,7 +11,7 @@ defmodule Mutare.Transform.Behaviours do
   #
   #   * **direct** `@behaviour Foo` statements in the body — resolved through the lexical
   #     alias env in force (so `alias MyApp.Server, as: S; @behaviour S` records
-  #     `MyApp.Server`, not `S`), reusing `Aliases.register/2` + `Aliases.resolve_path/2`;
+  #     `MyApp.Server`, not `S`), reusing `Aliases.register/3` + `Aliases.resolve_path/3`;
   #   * **`use`-injected** behaviours — `use GenServer` injects `@behaviour GenServer` in
   #     its `__using__` body, harvested by `Mutare.Transform.Uses` and read back off each
   #     `use` node's `:mutare_use_behaviours` stamp (present only when `:expand_uses` ran
@@ -78,6 +78,16 @@ defmodule Mutare.Transform.Behaviours do
     {form, meta, [mod_ast, [{do_key, body}]]}
   end
 
+  # A `defimpl` opens the module scope `P.T` (`ModuleScope.defimpl_module/3`), so a module nested in
+  # its body is named beneath it, and its `__MODULE__` is that name — as `Resolve` and `Uses` walk
+  # it. Only the last argument holds the body, whatever the surface form. The impl itself is not
+  # stamped: its `:ok` tails are unit-returning like any non-callback's (see `Mutare.Transform`).
+  defp walk({:defimpl, meta, args}, module, aliases) when is_list(args) and length(args) >= 2 do
+    impl = ModuleScope.defimpl_module(args, module, aliases)
+    {lead, [last]} = Enum.split(args, -1)
+    {:defimpl, meta, Enum.map(lead, &walk(&1, module, aliases)) ++ [walk(last, impl, aliases)]}
+  end
+
   # A statement sequence (the file top level, a module body, or any block): fold the alias env
   # left-to-right — explicit aliases *and* the implicit alias a nested `defmodule`/`defprotocol`
   # introduces (`ModuleScope.register_lexical/3`) — so a `defmodule` after a preceding sibling or
@@ -122,7 +132,7 @@ defmodule Mutare.Transform.Behaviours do
       body
       |> body_statements()
       |> Enum.reduce({MapSet.new(), outer_aliases}, fn stmt, {set, aliases} ->
-        set = set |> add_direct(stmt, aliases) |> add_injected(stmt)
+        set = set |> add_direct(stmt, aliases, module) |> add_injected(stmt)
         {set, ModuleScope.register_lexical(stmt, module, aliases)}
       end)
 
@@ -132,16 +142,16 @@ defmodule Mutare.Transform.Behaviours do
   defp body_statements({:__block__, _meta, stmts}) when is_list(stmts), do: stmts
   defp body_statements(single), do: [single]
 
-  # A direct `@behaviour Foo` statement: resolve the module through the alias env in force
-  # and add it. Anything else leaves the set untouched.
-  defp add_direct(set, {:@, _meta, [{:behaviour, _bmeta, [mod_ast]}]}, aliases) do
-    case Aliases.resolve_node(mod_ast, aliases) do
+  # A direct `@behaviour Foo` statement: resolve the module through the alias env and the module
+  # in force (`@behaviour __MODULE__.Callbacks`) and add it. Anything else leaves the set untouched.
+  defp add_direct(set, {:@, _meta, [{:behaviour, _bmeta, [mod_ast]}]}, aliases, module) do
+    case Aliases.resolve_node(mod_ast, aliases, module) do
       nil -> set
       mod -> MapSet.put(set, mod)
     end
   end
 
-  defp add_direct(set, _stmt, _aliases), do: set
+  defp add_direct(set, _stmt, _aliases, _module), do: set
 
   # A `use` statement: union in whatever behaviours `Uses` harvested from its `__using__`
   # body (empty unless `:expand_uses` ran and the module was loadable).

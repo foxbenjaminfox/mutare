@@ -11,7 +11,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   alias Mutare.AST
   alias Mutare.CallRouting.Spec
   alias Mutare.Transform.Analyze.CallOptions
-  alias Mutare.Transform.{Calls, Imports, Meta, ModuleScope, StructuralForms, WrittenPipe}
+  alias Mutare.Transform.{Calls, Imports, Meta, StructuralForms, WrittenPipe}
 
   @doc """
   Stamp a call's meta with known-macro argument routing, when the registry in `env` matches it.
@@ -41,7 +41,7 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
             {module_key, fun, arity},
             call_node,
             registry,
-            {diag, %{alias_env: aliases, enclosing_module: enclosing_module(module)}}
+            {diag, %{alias_env: aliases, enclosing_module: module}}
           )
         else
           # A wildcard route (`{Kernel, :*, :raw}`, `{:*, :if, …}`) whose cascade reached a head
@@ -248,12 +248,6 @@ defmodule Mutare.Transform.Resolve.RouteStamp do
   # node delivery uses, and fits it, since respelling changes no position and no pair.
   defp as_written({head, meta, args}),
     do: {head, meta, Enum.map(args, &WrittenPipe.resugar/1)}
-
-  # The module `__MODULE__` names at the call: none at a file's top level, and none under a
-  # `defmodule` head `ModuleScope.child_module/3` could not resolve, rather than a guess.
-  defp enclosing_module(module) do
-    if module == ModuleScope.unresolved(), do: nil, else: module
-  end
 
   defp resolved_call!(call_node, spec) do
     case Calls.resolved_routed_call(call_node) do

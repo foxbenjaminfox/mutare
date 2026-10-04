@@ -10,7 +10,7 @@ defmodule Mutare.Transform.Resolve.Environment do
   # describes one replacement walk, and retaining it would retain its ASTs too.
 
   alias Mutare.CallRouting.Registry
-  alias Mutare.Transform.Imports
+  alias Mutare.Transform.{Aliases, Imports}
   alias Mutare.Transform.Resolve.ArgumentMarks
 
   defmodule Inputs do
@@ -29,7 +29,7 @@ defmodule Mutare.Transform.Resolve.Environment do
             aliases: map(),
             imports: map(),
             kernel: Imports.selector(),
-            module: module() | nil,
+            module: Aliases.enclosing(),
             call_routes: Registry.registry(),
             marks: ArgumentMarks.t()
           }

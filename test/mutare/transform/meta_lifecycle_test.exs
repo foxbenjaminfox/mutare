@@ -32,6 +32,22 @@ defmodule Mutare.Transform.Meta.LifecycleTest do
     assert Lifecycle.invalidate_call_resolution(invalidated) == invalidated
   end
 
+  test "invalidating a call on `__MODULE__` clears the receiver's module stamp" do
+    {:defmodule, _, [_head, [{_do, call}]]} =
+      "defmodule Outer do\n  __MODULE__.go(x)\nend"
+      |> Sourceror.parse_string!()
+      |> Resolve.annotate()
+
+    {{:., _, [{:__MODULE__, stamped, _}, :go]}, _, _} = call
+    assert Keyword.has_key?(stamped, MetaKeys.alias_key())
+
+    {{:., _, [{:__MODULE__, meta, _}, :go]}, _, _} = Lifecycle.invalidate_call_resolution(call)
+    refute Keyword.has_key?(meta, MetaKeys.alias_key())
+
+    {{:., _, [{:__MODULE__, meta, _}, :go]}, _, _} = Lifecycle.preserve_written(call)
+    refute Keyword.has_key?(meta, MetaKeys.alias_key())
+  end
+
   test "consuming delivery leaves resolution and spelling available to later emission" do
     call = "xs |> Enum.sum()" |> Sourceror.parse_string!() |> Resolve.annotate()
 

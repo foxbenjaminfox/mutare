@@ -11,7 +11,7 @@ defmodule Mutare.Mutators.AliasLiteral do
     * `alias`/`import`/`require`/`use` directives, `@behaviour`/`@type`/specs, and a `defmodule` name — all compile-time;
     * the module of a `defimpl`/`for:`, a `defprotocol`, or a `defdelegate` `to:` (a `defimpl`'s implementation *body* still mutates).
 
-  Only fully-literal aliases (every segment an atom) are touched; a dynamic alias like `__MODULE__.Sub` or `unquote(m).Foo` is left alone.
+  Only fully-literal aliases (every segment an atom) are touched; an alias led by `__MODULE__` (`__MODULE__.Sub`) or holding a computed segment (`unquote(m).Foo`) is left alone.
   """
   @behaviour Mutare.Mutator
 

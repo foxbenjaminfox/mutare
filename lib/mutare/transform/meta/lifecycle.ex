@@ -27,7 +27,7 @@ defmodule Mutare.Transform.Meta.Lifecycle do
   # A changed call may carry the offered call's meta (`rebuild` copies it, the stamped head
   # included; a mutator may reuse it outright): every stamp resolution left there describes
   # another call, and the walk stamps the call it now is. `Imports.stamp/5` and
-  # `Aliases.stamp_module/2` prepend, so a stale stamp left behind a fresh one is unread, but
+  # `Aliases.stamp_module/3` prepend, so a stale stamp left behind a fresh one is unread, but
   # one left where the rebuilt name resolves to nothing would be read as the call's — a
   # renamed bare import as the import it no longer is. The node's identity, spelling and
   # positions are not resolution's (`:mutare_nid`, `:mutare_written_pipe`, `:mutare_operand_of`)
@@ -49,10 +49,8 @@ defmodule Mutare.Transform.Meta.Lifecycle do
 
   def invalidate_call_resolution(node), do: node
 
-  defp unstamped_head({:., dot_meta, [{:__aliases__, alias_meta, path}, fun]}),
-    do:
-      {:., dot_meta,
-       [{:__aliases__, Keyword.delete(alias_meta, MetaKeys.alias_key()), path}, fun]}
+  defp unstamped_head({:., dot_meta, [receiver, fun]}),
+    do: {:., dot_meta, [unstamped_module(receiver), fun]}
 
   defp unstamped_head(form), do: form
 
@@ -97,13 +95,21 @@ defmodule Mutare.Transform.Meta.Lifecycle do
 
   # A remote head's module stamp is dropped with its call (`invalidate_call_resolution/1`); an `__aliases__`
   # outside a call head (a `defmodule`'s) carries one too.
-  defp unresolved({:__aliases__, meta, path}) when is_list(meta),
-    do: {:__aliases__, Keyword.delete(meta, MetaKeys.alias_key()), path}
+  defp unresolved({form, meta, _context} = node)
+       when form in [:__aliases__, :__MODULE__] and is_list(meta),
+       do: unstamped_module(node)
 
   defp unresolved({_form, meta, args} = node) when is_list(meta) and is_list(args),
     do: for_resolution(node)
 
   defp unresolved(node), do: node
+
+  # The module stamp `Aliases.stamp_module/3` puts on an `__aliases__` or a `__MODULE__`.
+  defp unstamped_module({form, meta, context})
+       when form in [:__aliases__, :__MODULE__] and is_list(meta),
+       do: {form, Keyword.delete(meta, MetaKeys.alias_key()), context}
+
+  defp unstamped_module(node), do: node
 
   # Release every retained environment. A call's meta carries it, and a meta is carried
   # inside other metas — a desugared pipe's written spelling, a grouped prefix's

@@ -726,7 +726,7 @@ defmodule Mutare.TransformResolutionTest do
     end
 
     test "a fully-qualified `import Elixir.Enum` resolves its bare calls" do
-      # `resolve_path/2` is shared with the import pre-pass, so the `Elixir.`-prefix strip must
+      # `resolve_path/3` is shared with the import pre-pass, so the `Elixir.`-prefix strip must
       # land `import Elixir.Enum` on the same `[:Enum]` key as a plain `import Enum` — else the
       # bare `reject` would carry `[:Elixir, :Enum]`, match no swap table, and be missed. This
       # guards the import path against a future `resolve_path` refactor (the call path has its

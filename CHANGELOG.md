@@ -14,9 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   score over part of the project does not read as the project's.
 - `Mutare.CallRouting.Call.resolved_module/2` reads `__MODULE__` as the module a routed
   call is written in, and `__MODULE__.Comment` as a name beneath it, so a classifier can
-  tell what `from(p in __MODULE__, …)` names inside a schema module. Both resolve to
-  `:error` outside a module, or in one whose name is computed. `Call.new/5` takes
-  `enclosing_module:` for tests.
+  tell what `from(p in __MODULE__, …)` names inside a schema module. At a file's top level
+  `__MODULE__` is `:error` and `__MODULE__.Comment` is `Comment`, as the compiler reads
+  them; in a module whose name is computed (`defmodule Module.concat(…)`) both are
+  `:error`. `Call.new/5` takes `enclosing_module:` for tests.
 
 ### Fixed
 
@@ -27,6 +28,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   module, as the compiler infers it. Mutare now does the same: a `use` in its body is
   expanded, `:skip_lifting` names its functions under `P.Module`, and `__MODULE__` in a
   routed call's arguments reads as `P.Module`. Before, the impl module was left unknown.
+- `alias __MODULE__.Sub` (and `alias __MODULE__`, `alias __MODULE__.{A, B}`, the `as:`
+  forms, `require __MODULE__.Sub, as: S`) now binds its name to the module beneath the one
+  it is written in. Before, it was ignored and the short name read as written: under
+  `alias __MODULE__.Enum`, `Enum.filter` was mutated as the standard library's, and a call
+  route, argument mark, `@behaviour` or `use` reached through such an alias, or a module a
+  routed call's argument names through one, was read as the wrong module. In a module
+  whose name is computed, the alias still binds nothing.
+- `__MODULE__` now names the module it is written in everywhere Mutare reads a module
+  name: a call's receiver (`__MODULE__.go(x)`, `__MODULE__.Sub.run(x)`, and their
+  captures), an `import`, `use` or `@behaviour` target, and a `defprotocol` or `defimpl`
+  head or `for:`. Before, each was left unresolved, so a call route or argument mark
+  keyed on that module did not apply, an import through it stamped no calls, and its
+  `use` was not expanded.
+- `defmodule __MODULE__.Sub` names `Parent.Sub`, as the compiler reads it. Before, Mutare
+  treated the head as computed, so it left every `use` in the module unexpanded and
+  resolved no `__MODULE__` or nested module name inside it.
+- An `@behaviour` in a module nested inside a `defimpl` body now resolves a sibling's short
+  name beneath the impl module (`P.T.Cb`), as the compiler does. Before, it resolved beneath
+  the module around the `defimpl` (`Outer.Cb`), so a behaviour-gated mutator could miss it.
+- A `use` in an inline `defimpl P, for: T, do: (use M)` is now expanded with `P.T` as its
+  caller, as in the `do … end` form. Before, it was left unexpanded.
 
 ## [0.5.0] - 2026-10-03
 

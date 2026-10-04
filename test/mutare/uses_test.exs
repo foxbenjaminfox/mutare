@@ -93,6 +93,19 @@ defmodule Mutare.UsesTest do
       assert "alias String, as: S" in rendered
     end
 
+    test "a `use` of a module named through `__MODULE__` expands" do
+      source = """
+      defmodule Mutare.Test do
+        use __MODULE__.ControllerUsing
+      end
+      """
+
+      assert "import Enum, only: [reject: 2]" in Enum.map(
+               directives_at(source),
+               &Macro.to_string/1
+             )
+    end
+
     test "a `use` with no opts expands" do
       source = """
       defmodule UsesSchemaOnly do
@@ -227,10 +240,10 @@ defmodule Mutare.UsesTest do
              )
     end
 
-    test "a `use` in a non-statically-named nested module (`__MODULE__.Child`) is skipped" do
+    test "a `use` in a non-statically-named nested module is skipped" do
       source = """
       defmodule UsesDynamicChild do
-        defmodule __MODULE__.Child do
+        defmodule Module.concat(__MODULE__, Child) do
           use Mutare.Test.ControllerUsing
         end
       end
@@ -239,6 +252,21 @@ defmodule Mutare.UsesTest do
       # The child's concrete name is unknown, so expanding would pass the *parent* as
       # `__CALLER__.module` and stamp directives for the wrong namespace — skip instead.
       assert directives_at(source) == []
+    end
+
+    test "a `use` in a module named `__MODULE__.Child` expands with that module as caller" do
+      source = """
+      defmodule UsesModuleChild do
+        defmodule __MODULE__.Child do
+          use Mutare.Test.CallerProbe
+        end
+      end
+      """
+
+      # The compiler names the module `UsesModuleChild.Child`, without a second prefix.
+      assert Enum.map(directives_at(source), &Macro.to_string/1) == [
+               "alias UsesModuleChild.Child, as: TheCaller"
+             ]
     end
   end
 
@@ -317,6 +345,28 @@ defmodule Mutare.UsesTest do
       # `RealTarget` through it (Elixir does), surfacing RealTarget's `import Map, only: [get: 2]`.
       assert "alias Mutare.Test.RealTarget, as: T" in rendered
       assert "import Map, only: [get: 2]" in rendered
+    end
+
+    test "an alias a `use` injects through `__MODULE__` resolves a later `use` target" do
+      source = """
+      defmodule Mutare.Test do
+        use Mutare.Test.SelfAliasInjector
+        use T
+      end
+      """
+
+      # `T` is `Mutare.Test.RealTarget`, whose `__using__` imports `Map.get/2`.
+      assert "import Map, only: [get: 2]" in Enum.map(directives_at(source), &Macro.to_string/1)
+    end
+
+    test "an alias injected through `__MODULE__` inside a `__using__` body resolves a sibling" do
+      source = """
+      defmodule Mutare.Test do
+        use Mutare.Test.NestedSelfAliasUsing
+      end
+      """
+
+      assert "import Map, only: [get: 2]" in Enum.map(directives_at(source), &Macro.to_string/1)
     end
 
     test "an `unquote`d-target alias in a `__using__` body resolves a sibling `use`" do
@@ -518,10 +568,23 @@ defmodule Mutare.UsesTest do
              ]
     end
 
+    test "an inline `defimpl P, for: T, do: …` expands its `use` with `P.T` as caller" do
+      source = """
+      defmodule MutareInlineImpl do
+        defimpl Mutare.Test.SomeProto, for: Integer, do: (use Mutare.Test.CallerProbe)
+      end
+      """
+
+      # The `for:` shares the keyword list with `do:`; the compiler still opens `P.Integer`.
+      assert Enum.map(directives_at(source), &Macro.to_string/1) == [
+               "alias Mutare.Test.SomeProto.Integer, as: TheCaller"
+             ]
+    end
+
     test "a `defimpl` without `for:` under a computed module head is not stamped" do
       source = """
       defmodule MutareInferredImpl do
-        defmodule __MODULE__.Computed do
+        defmodule Module.concat(__MODULE__, Computed) do
           defimpl Mutare.Test.SomeProto do
             use Mutare.Test.CallerProbe
           end

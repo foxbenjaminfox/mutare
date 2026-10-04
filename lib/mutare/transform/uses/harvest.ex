@@ -90,7 +90,7 @@ defmodule Mutare.Transform.Uses.Harvest do
   @spec run(Macro.t(), module(), map(), [Extension.Spec.t()]) ::
           {[Macro.t()], [module()], degradation()}
   def run(sourceror_use_node, caller_module, env, handlers) do
-    case target(sourceror_use_node, env) do
+    case target(sourceror_use_node, env, caller_module) do
       {:ok, mod, args} ->
         # The extension `context`: the caller `:module` (the dispatcher adds each handler's `:opts`).
         # A map, so `expand_use/3` can gain context keys without an arity bump.
@@ -234,33 +234,34 @@ defmodule Mutare.Transform.Uses.Harvest do
   # (`:controller`, not `{:__block__, [], [:controller]}`) and an extension sees a clean opts AST. The
   # round-tripped `{:use, _, args}` is exactly `use_target/2`'s arg shape, so module resolution + the
   # `nil`-is-an-atom guard are delegated there — the single home — rather than duplicated.
-  defp target(sourceror_use_node, env) do
+  defp target(sourceror_use_node, env, caller) do
     case Code.string_to_quoted!(Sourceror.to_string(sourceror_use_node, Mutare.AST.render_opts())) do
-      {:use, _, args} -> use_target(args, env)
+      {:use, _, args} -> use_target(args, env, caller)
       _ -> :error
     end
   end
 
   # `[mod_ast | rest]` (standard quoted) → `{:ok, module_atom, raw_rest}`, or `:error`. The single
-  # home for resolving a `use` target + its raw args, shared by the top-level `target/2` (after its
+  # home for resolving a `use` target + its raw args, shared by the top-level `target/3` (after its
   # round-trip) and a **nested** `use` reached in a `__using__` body. It resolves the module through
-  # the `env` (an aliased `alias RealUse, as: Foo; use Foo` yields the real module) and returns the
-  # **raw** args with no static-literal gate, so an extension override sees them as written (Gettext's
-  # `backend:` is not a literal); the in-process fallbacks (`in_process/5`, `nested_in_process/3`)
-  # apply the opts gate.
+  # the `env` and the `caller` module (an aliased `alias RealUse, as: Foo; use Foo` yields the real
+  # module, and `use __MODULE__.Sub` the caller's `Sub`) and returns the **raw** args with no
+  # static-literal gate, so an extension override sees them as written (Gettext's `backend:` is
+  # not a literal); the in-process fallbacks (`in_process/5`, `nested_in_process/3`) apply the
+  # opts gate.
   #
-  # `not is_nil` matters: `Aliases.resolve_node/2` returns `nil` (itself an atom) for an unresolvable
+  # `not is_nil` matters: `Aliases.resolve_node/3` returns `nil` (itself an atom) for an unresolvable
   # target, so an un-guarded `is_atom` would yield `{:ok, nil, rest}` and hand a `nil` module to every
   # extension's `expand_use/3`. The in-process path degrades safely on `nil`, but an extension with an
   # unguarded catch-all clause would fire on a `use` it can't see.
-  defp use_target([mod_ast | rest], env) do
-    case Aliases.resolve_node(mod_ast, env) do
+  defp use_target([mod_ast | rest], env, caller) do
+    case Aliases.resolve_node(mod_ast, env, caller) do
       mod when is_atom(mod) and not is_nil(mod) -> {:ok, mod, rest}
       _ -> :error
     end
   end
 
-  defp use_target(_args, _env), do: :error
+  defp use_target(_args, _env, _caller), do: :error
 
   # In-process expansion of a nested `use` no extension overrode: apply the static-literal opts gate
   # + loadability check (the old `use_args/2` behaviour), then recurse. `caller_aliases` already
@@ -354,7 +355,7 @@ defmodule Mutare.Transform.Uses.Harvest do
     Macro.expand_once({{:., [], [mod, :__using__]}, [], [opts]}, env)
   end
 
-  # The source alias env (`%{name => path | atom}`, the form `Aliases.register/2` builds) rendered
+  # The source alias env (`%{name => path | atom}`, the form `Aliases.register/3` builds) rendered
   # into the `Macro.Env.aliases` shape — `[{Elixir.Name, module}]`, e.g. `[{U, Enum}, {B, :binary}]`
   # — a `__using__` body reads via `__CALLER__.aliases`. Each name (a single segment atom) becomes
   # its module atom (`Module.concat([U]) == Elixir.U`); the target is an Elixir path
@@ -379,7 +380,8 @@ defmodule Mutare.Transform.Uses.Harvest do
         # nested `use` (or `require …, as:`) that injects an alias resolves a later sibling `use`
         # (`use AliasInjector; use T`), exactly as Elixir expands it. (A direct `alias` yields
         # itself, so its binding is captured too; an `import` yields a no-op for the alias env.)
-        {merge(acc, harvested), Enum.reduce(directives, env, &register_harvested/2)}
+        {merge(acc, harvested),
+         Enum.reduce(directives, env, &register_harvested(&1, &2, ctx.caller))}
       end)
 
     collected
@@ -410,7 +412,7 @@ defmodule Mutare.Transform.Uses.Harvest do
   # source) — exactly how the compiler expands a later nested `use`. The extension override sees the
   # **raw** args (no opts gate), matching `target/2`.
   defp collect({:use, _, args}, %Ctx{} = ctx, env) do
-    case use_target(args, env) do
+    case use_target(args, env, ctx.caller) do
       {:ok, mod, raw_args} ->
         nested_ctx = %{ctx | caller_aliases: Map.merge(ctx.caller_aliases, env)}
 
@@ -432,10 +434,10 @@ defmodule Mutare.Transform.Uses.Harvest do
   # `@behaviour Foo` injected by the `__using__` body (e.g. `use GenServer` injects
   # `@behaviour GenServer`): harvest the behaviour *module*, resolved through the body's alias
   # env. Only the canonical `@behaviour` is recognised — Elixir rejects `@behavior`. A
-  # non-static / unresolvable module (`Aliases.resolve_node/2` → `nil`) is dropped, like an
+  # non-static / unresolvable module (`Aliases.resolve_node/3` → `nil`) is dropped, like an
   # un-round-trippable directive.
-  defp collect({:@, _, [{:behaviour, _, [mod_ast]}]}, _ctx, env) do
-    case Aliases.resolve_node(mod_ast, env) do
+  defp collect({:@, _, [{:behaviour, _, [mod_ast]}]}, ctx, env) do
+    case Aliases.resolve_node(mod_ast, env, ctx.caller) do
       nil -> @nothing
       mod -> {[], [mod]}
     end
@@ -460,15 +462,15 @@ defmodule Mutare.Transform.Uses.Harvest do
   # Fold one harvested directive into the body-local alias env *after converting it to Sourceror
   # form*. The harvested directives are raw standard-quoted (pre-`to_sourceror`), where an
   # `unquote(mod)`/`bind_quoted` alias carries its target as a **bare module atom**
-  # (`{:alias, _, [Mutare.Foo, [as: T]]}`) — a shape `Aliases.register/2` doesn't recognise, so
+  # (`{:alias, _, [Mutare.Foo, [as: T]]}`) — a shape `Aliases.register/3` doesn't recognise, so
   # binding it raw is a silent no-op. Converting first (the same Sourceror round-trip `run` applies
   # at the end, turning the atom into an `{:__aliases__, …}` node) makes `alias unquote(target),
   # as: T` actually bind `T`, so a later sibling `use T` in the same expanded body resolves and
   # expands. An un-round-trippable directive (nil) is a no-op.
-  defp register_harvested(directive, env) do
+  defp register_harvested(directive, env, caller) do
     case to_sourceror(directive) do
       nil -> env
-      normalized -> Aliases.register(normalized, env)
+      normalized -> Aliases.register(normalized, env, caller)
     end
   end
 end

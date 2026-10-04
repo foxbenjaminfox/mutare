@@ -16,22 +16,14 @@ defmodule Mutare.Lifting do
   # dynamic (`defmodule Module.concat(...)`), so every module nested under it is unknowable
   # too. Distinct from `nil` (= file top level, where the lexical alias env applies): a head
   # under an unresolved parent must resolve to *nothing* — resolving it with the top-level
-  # rules would let it match an unrelated module's `:skip_lifting` entry. Same value as
-  # `Mutare.Transform.Uses`' internal `@unresolved` for greppability (the two never meet).
-  @unresolved :__mutare_unresolved__
+  # rules would let it match an unrelated module's `:skip_lifting` entry. `Mutare.Transform`
+  # threads it (`Aliases.unresolved_module/0`), as the resolve pre-passes do.
+  @unresolved Aliases.unresolved_module()
 
-  @type enclosing :: module() | :__mutare_unresolved__ | nil
+  @type enclosing :: Aliases.enclosing()
 
   @alias_segment ~r/\A[A-Z][A-Za-z0-9_]*\z/
   @function_name ~r/\A[a-z_][A-Za-z0-9_]*[?!]?\z/
-
-  @doc """
-  The sentinel `Mutare.Transform` threads as the scope module when a `defmodule` head
-  can't be resolved (a dynamic head). `skip?/4` and `module_from_alias/2` treat it as
-  "never match / can't resolve" — unlike `nil`, which means "file top level".
-  """
-  @spec unresolved() :: :__mutare_unresolved__
-  def unresolved, do: @unresolved
 
   @spec validate_skip_lifting!(nil | MapSet.t() | list()) :: MapSet.t(skip_entry())
   def validate_skip_lifting!(nil), do: MapSet.new()
@@ -97,6 +89,16 @@ defmodule Mutare.Lifting do
   end
 
   @spec module_from_alias(Macro.t(), enclosing()) :: module() | nil
+  # A `__MODULE__`-led head names the module it spells, never parent-prefixed, read as
+  # `Aliases` reads such a name everywhere (`Mutare.Transform.ModuleScope.child_module/3`, the
+  # resolve pre-passes' twin of this function, included): `nil` under an unresolved parent.
+  def module_from_alias(
+        {:__aliases__, _meta, [{:__MODULE__, _, context} | _]} = head,
+        current_module
+      )
+      when is_atom(context),
+      do: Aliases.resolve_node(head, %{}, current_module)
+
   def module_from_alias({:__aliases__, meta, path}, current_module)
       when is_list(path) and path != [] do
     case module_path(path, meta, current_module) do
@@ -170,14 +172,6 @@ defmodule Mutare.Lifting do
   # fall through to the top-level rules, which would resolve the *written* path (or its
   # alias stamp) and match an unrelated module's entry.
   defp module_path(_path, _meta, @unresolved), do: :error
-
-  defp module_path([{:__MODULE__, _node_meta, _context} | rest], _meta, current_module)
-       when is_atom(current_module) and not is_nil(current_module) do
-    if literal_path?(rest), do: {:ok, [current_module | rest]}, else: :error
-  end
-
-  defp module_path([{:__MODULE__, _node_meta, _context} | rest], _meta, nil),
-    do: literal_module_path(rest)
 
   # A **nested** head: Elixir prefixes the *written* path with the enclosing module and does
   # **not** apply aliases to it (`alias Foo.Bar; defmodule Bar.Baz` inside `Outer` defines

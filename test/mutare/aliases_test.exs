@@ -1,7 +1,7 @@
 defmodule Mutare.AliasesTest do
   use ExUnit.Case, async: true
 
-  alias Mutare.Transform.{Aliases, Resolve}
+  alias Mutare.Transform.{Aliases, Calls, Imports, Resolve}
 
   # Annotate `source` (through the unified resolution walk), then return
   # `{literal_path, resolved_path}` for every remote call, keyed by the called function name —
@@ -26,10 +26,10 @@ defmodule Mutare.AliasesTest do
     calls
   end
 
-  defp register_alias(source, env) do
+  defp register_alias(source, env, module \\ nil) do
     source
     |> Sourceror.parse_string!()
-    |> Aliases.register(env)
+    |> Aliases.register(env, module)
   end
 
   describe "resolved_module/2 (the reader)" do
@@ -41,25 +41,25 @@ defmodule Mutare.AliasesTest do
     end
   end
 
-  describe "resolve_path/2" do
+  describe "resolve_path/3" do
     test "an atom-module alias resolves only a lone segment" do
       env = %{B: :binary}
 
-      assert Aliases.resolve_path([:B], env) == :binary
-      assert Aliases.resolve_path([:B, :Sub], env) == [:B, :Sub]
+      assert Aliases.resolve_path([:B], env, nil) == :binary
+      assert Aliases.resolve_path([:B, :Sub], env, nil) == [:B, :Sub]
     end
 
     test "non-path terms pass through unchanged" do
-      assert Aliases.resolve_path(:binary, %{B: [:String]}) == :binary
+      assert Aliases.resolve_path(:binary, %{B: [:String]}, nil) == :binary
 
-      assert Aliases.resolve_path({:__MODULE__, [], nil}, %{B: [:String]}) ==
+      assert Aliases.resolve_path({:__MODULE__, [], nil}, %{B: [:String]}, nil) ==
                {:__MODULE__, [], nil}
     end
 
     test "a leading Elixir segment (fully-qualified prefix) is stripped" do
       # `Elixir.String` *is* `String` — the alias-proof escape `Calls.qualifier/1` emits.
-      assert Aliases.resolve_path([Elixir, :String], %{}) == [:String]
-      assert Aliases.resolve_path([Elixir, :My, :Mod], %{}) == [:My, :Mod]
+      assert Aliases.resolve_path([Elixir, :String], %{}, nil) == [:String]
+      assert Aliases.resolve_path([Elixir, :My, :Mod], %{}, nil) == [:My, :Mod]
     end
 
     test "the Elixir prefix is alias-proof: the rest is NOT re-resolved against the env" do
@@ -68,25 +68,25 @@ defmodule Mutare.AliasesTest do
       # *bare* `String` would resolve to the alias target.
       env = %{String: [:Wrong]}
 
-      assert Aliases.resolve_path([Elixir, :String], env) == [:String]
-      assert Aliases.resolve_path([:String], env) == [:Wrong]
+      assert Aliases.resolve_path([Elixir, :String], env, nil) == [:String]
+      assert Aliases.resolve_path([:String], env, nil) == [:Wrong]
     end
 
     test "a lone Elixir (root namespace, never a call target) is left untouched" do
-      assert Aliases.resolve_path([Elixir], %{}) == [Elixir]
+      assert Aliases.resolve_path([Elixir], %{}, nil) == [Elixir]
     end
 
     test "a doubled Elixir prefix (a real Elixir segment) is kept whole, not stripped" do
       # `Elixir.Elixir.MyUse` names the module `Elixir.MyUse` (atom `:"Elixir.Elixir.MyUse"`).
       # Stripping one `Elixir` would leave `[:Elixir, :MyUse]`, which `to_module/1` would fold
       # back to the bare `MyUse` — so the whole path is preserved (env-free) instead.
-      assert Aliases.resolve_path([Elixir, Elixir, :MyUse], %{}) == [Elixir, Elixir, :MyUse]
+      assert Aliases.resolve_path([Elixir, Elixir, :MyUse], %{}, nil) == [Elixir, Elixir, :MyUse]
 
-      assert Aliases.resolve_path([Elixir, Elixir, :My, :Mod], %{}) ==
+      assert Aliases.resolve_path([Elixir, Elixir, :My, :Mod], %{}, nil) ==
                [Elixir, Elixir, :My, :Mod]
 
       # The preservation is env-free, like the single strip: no alias redirects it.
-      assert Aliases.resolve_path([Elixir, Elixir, :MyUse], %{"Elixir": [:Wrong]}) ==
+      assert Aliases.resolve_path([Elixir, Elixir, :MyUse], %{"Elixir": [:Wrong]}, nil) ==
                [Elixir, Elixir, :MyUse]
     end
 
@@ -95,8 +95,8 @@ defmodule Mutare.AliasesTest do
       # `alias Elixir, as: E`) and the literal `Elixir.Elixir.GenServer` could land on the same
       # path, but they name *different* modules. The aliased root must fold to bare `GenServer`;
       # the real `Elixir` segment must not.
-      aliased = Aliases.resolve_path([:E, :GenServer], %{E: [Elixir]})
-      doubled = Aliases.resolve_path([Elixir, Elixir, :GenServer], %{})
+      aliased = Aliases.resolve_path([:E, :GenServer], %{E: [Elixir]}, nil)
+      doubled = Aliases.resolve_path([Elixir, Elixir, :GenServer], %{}, nil)
 
       assert Aliases.to_module(aliased) == GenServer
       assert Aliases.to_module(doubled) == :"Elixir.Elixir.GenServer"
@@ -111,8 +111,8 @@ defmodule Mutare.AliasesTest do
       env = register_alias("alias Elixir, as: E", %{})
       assert env == %{E: [Elixir]}
 
-      assert Aliases.resolve_path([:E, :String], env) == [:String]
-      assert Aliases.resolve_path([:E, :My, :Mod], env) == [:My, :Mod]
+      assert Aliases.resolve_path([:E, :String], env, nil) == [:String]
+      assert Aliases.resolve_path([:E, :My, :Mod], env, nil) == [:My, :Mod]
     end
 
     test "a grouped alias of the root namespace normalizes each child key" do
@@ -121,8 +121,8 @@ defmodule Mutare.AliasesTest do
       env = register_alias("alias Elixir.{String, Enum}", %{})
       assert env == %{String: [:String], Enum: [:Enum]}
 
-      assert Aliases.resolve_path([:String], env) == [:String]
-      assert Aliases.resolve_path([:Enum], env) == [:Enum]
+      assert Aliases.resolve_path([:String], env, nil) == [:String]
+      assert Aliases.resolve_path([:Enum], env, nil) == [:Enum]
     end
   end
 
@@ -143,7 +143,7 @@ defmodule Mutare.AliasesTest do
     test "folds a single leading Elixir (a canonical prefix), but keeps a doubled one" do
       # `to_module/1` adds no compensation: a single leading `Elixir` is a canonical prefix
       # `Module.concat` folds (`[:Elixir, :MyUse]` → `MyUse`), while a doubled one — what
-      # `resolve_path/2` hands back for a real `Elixir` segment — folds just the one prefix.
+      # `resolve_path/3` hands back for a real `Elixir` segment — folds just the one prefix.
       assert Aliases.to_module([Elixir, :MyUse]) == MyUse
       assert Aliases.to_module([Elixir, Elixir, :MyUse]) == :"Elixir.Elixir.MyUse"
     end
@@ -151,15 +151,16 @@ defmodule Mutare.AliasesTest do
     test "end-to-end: resolve_path then to_module round-trips a doubled Elixir prefix" do
       # The whole pipeline the use/behaviour pre-passes run: the source literal
       # `Elixir.Elixir.MyUse` parses to `[:Elixir, :Elixir, :MyUse]`, is kept whole by
-      # `resolve_path/2`, and lands back on the module it named, `:"Elixir.Elixir.MyUse"`.
-      assert [Elixir, Elixir, :MyUse] |> Aliases.resolve_path(%{}) |> Aliases.to_module() ==
+      # `resolve_path/3`, and lands back on the module it named, `:"Elixir.Elixir.MyUse"`.
+      assert [Elixir, Elixir, :MyUse] |> Aliases.resolve_path(%{}, nil) |> Aliases.to_module() ==
                :"Elixir.Elixir.MyUse"
 
       # An ordinary fully-qualified `Elixir.String` still lands on the bare module.
-      assert [Elixir, :String] |> Aliases.resolve_path(%{}) |> Aliases.to_module() == String
+      assert [Elixir, :String] |> Aliases.resolve_path(%{}, nil) |> Aliases.to_module() == String
 
       # An aliased root namespace folds to the bare module, *not* a doubled one.
-      assert [:E, :Enum] |> Aliases.resolve_path(%{E: [Elixir]}) |> Aliases.to_module() == Enum
+      assert [:E, :Enum] |> Aliases.resolve_path(%{E: [Elixir]}, nil) |> Aliases.to_module() ==
+               Enum
     end
 
     test "a lone Elixir folds to the root namespace, not Elixir.Elixir" do
@@ -167,17 +168,27 @@ defmodule Mutare.AliasesTest do
     end
   end
 
-  describe "stamp_module/2" do
+  describe "stamp_module/3" do
     test "leaves non-alias nodes unchanged" do
+      node = {:x, [line: 1], nil}
+
+      assert Aliases.stamp_module(node, %{S: [:String]}, A) == node
+    end
+
+    test "stamps a `__MODULE__` with the enclosing module, where it names one" do
       node = {:__MODULE__, [line: 1], nil}
 
-      assert Aliases.stamp_module(node, %{S: [:String]}) == node
+      assert Aliases.stamp_module(node, %{}, A.B) ==
+               {:__MODULE__, [mutare_alias: [:A, :B], line: 1], nil}
+
+      assert Aliases.stamp_module(node, %{}, nil) == node
+      assert Aliases.stamp_module(node, %{}, Aliases.unresolved_module()) == node
     end
 
     test "leaves clean metadata when the written path is already resolved" do
       node = {:__aliases__, [line: 1], [:String]}
 
-      assert Aliases.stamp_module(node, %{}) == node
+      assert Aliases.stamp_module(node, %{}, nil) == node
     end
   end
 
@@ -374,12 +385,79 @@ defmodule Mutare.AliasesTest do
       assert register_alias("alias :binary", env) == env
     end
 
-    test "a __MODULE__-relative alias is left unresolved (can't name a concrete module)" do
+    test "a `__MODULE__`-led alias names a module beneath the enclosing one" do
+      # Expected bindings are the compiler's (`__ENV__.aliases` in the same module).
+      env =
+        Enum.reduce(
+          [
+            "alias __MODULE__",
+            "alias __MODULE__.{C, D.E}",
+            "alias __MODULE__.Sub",
+            "alias __MODULE__, as: Me",
+            "alias __MODULE__.Other, as: O",
+            "require __MODULE__.R, as: RR"
+          ],
+          %{},
+          &register_alias(&1, &2, A.B)
+        )
+
+      assert env == %{
+               B: [:A, :B],
+               C: [:A, :B, :C],
+               E: [:A, :B, :D, :E],
+               Sub: [:A, :B, :Sub],
+               Me: [:A, :B],
+               O: [:A, :B, :Other],
+               RR: [:A, :B, :R]
+             }
+    end
+
+    test "segments after `__MODULE__` are not read through an alias" do
+      env = register_alias("alias __MODULE__.Sub", %{Sub: [:Elsewhere]}, A)
+      assert env == %{Sub: [:A, :Sub]}
+    end
+
+    test "beneath an Erlang-atom module, a `__MODULE__`-led alias binds only with `as:`" do
+      # The compiler: `alias __MODULE__.Sub, as: S` in `defmodule :foo` binds `S` to
+      # `:"Elixir.foo.Sub"`, and `alias __MODULE__.Sub` alone is a compile error.
+      assert register_alias("alias __MODULE__.Sub, as: S", %{}, :foo) == %{S: :"Elixir.foo.Sub"}
+      assert register_alias("alias __MODULE__, as: F", %{}, :foo) == %{F: :foo}
+      assert register_alias("alias __MODULE__.Sub", %{}, :foo) == %{}
+    end
+
+    test "a `__MODULE__`-led alias resolves calls through the enclosing module" do
       calls =
         resolved("""
-        defmodule M do
+        defmodule M.N do
           alias __MODULE__.Sub
+          alias __MODULE__.Enum
+          alias __MODULE__
           def go(x), do: Sub.run(x)
+          def filter(xs), do: Enum.filter(xs, & &1)
+          def self_call(x), do: N.call(x)
+
+          defmodule Inner do
+            alias __MODULE__.Deep
+            def deep(x), do: Deep.dive(x)
+          end
+        end
+        """)
+
+      assert calls[:run] == {[:Sub], [:M, :N, :Sub]}
+      # A local module shadowing a stdlib name is not mistaken for it.
+      assert calls[:filter] == {[:Enum], [:M, :N, :Enum]}
+      assert calls[:call] == {[:N], [:M, :N]}
+      assert calls[:dive] == {[:Deep], [:M, :N, :Inner, :Deep]}
+    end
+
+    test "a `__MODULE__`-led alias binds nothing where the module is not known" do
+      calls =
+        resolved("""
+        defmodule Outer do
+          defmodule Module.concat(__MODULE__, Computed) do
+            alias __MODULE__.Sub
+            def go(x), do: Sub.run(x)
+          end
         end
         """)
 
@@ -420,7 +498,94 @@ defmodule Mutare.AliasesTest do
     end
   end
 
-  describe "register/2 — malformed alias directives" do
+  describe "annotate/1 — `__MODULE__` outside an alias" do
+    # `{module_key, fun}` for each call `Mutare.Transform.Calls.resolved_call/1` reads after the
+    # walk, keyed by function name.
+    defp read_calls(source) do
+      {_ast, calls} =
+        source
+        |> Sourceror.parse_string!()
+        |> Resolve.annotate()
+        |> Macro.prewalk(%{}, fn node, acc ->
+          case Calls.resolved_call(node) do
+            {module, fun, _args, _rebuild} -> {node, Map.put(acc, fun, module)}
+            nil -> {node, acc}
+          end
+        end)
+
+      calls
+    end
+
+    test "a `__MODULE__`-led receiver names the module it is written in, or one beneath it" do
+      calls =
+        read_calls("""
+        defmodule Outer do
+          def a(x), do: __MODULE__.Sub.run(x)
+          def b(x), do: __MODULE__.go(x)
+          def c, do: &__MODULE__.captured/1
+        end
+        """)
+
+      assert calls[:run] == [:Outer, :Sub]
+      assert calls[:go] == [:Outer]
+      assert calls[:captured] == [:Outer]
+    end
+
+    test "a `__MODULE__` receiver is rebuilt as written" do
+      {_ast, [rebuild]} =
+        "defmodule Outer do\n  def b(x), do: __MODULE__.go(x)\nend"
+        |> Sourceror.parse_string!()
+        |> Resolve.annotate()
+        |> Macro.prewalk([], fn node, acc ->
+          case Calls.resolved_call(node) do
+            {[:Outer], :go, _args, rebuild} -> {node, [rebuild | acc]}
+            _ -> {node, acc}
+          end
+        end)
+
+      assert rebuild.(:stop, [{:y, [], nil}]) |> Sourceror.to_string() == "__MODULE__.stop(y)"
+    end
+
+    test "a `__MODULE__` receiver names nothing where its module is not known" do
+      calls =
+        read_calls("""
+        __MODULE__.top(1)
+        __MODULE__.Beneath.top_beneath(1)
+
+        defmodule Module.concat(Outer, Computed) do
+          def b(x), do: __MODULE__.go(x)
+        end
+        """)
+
+      refute Map.has_key?(calls, :top)
+      # At the top level `__MODULE__` is `nil`, which drops out of a longer name.
+      assert calls[:top_beneath] == [:Beneath]
+      refute Map.has_key?(calls, :go)
+    end
+
+    test "`import __MODULE__.Mod` imports the module beneath the enclosing one" do
+      {_ast, imports} =
+        """
+        defmodule Mutare.Test do
+          import __MODULE__.PipedCallDSL
+          def go(x), do: stage(x, true)
+        end
+        """
+        |> Sourceror.parse_string!()
+        |> Resolve.annotate()
+        |> Macro.prewalk([], fn
+          {:stage, meta, args} = node, acc when is_list(args) ->
+            {node, [Imports.resolved_import(meta) | acc]}
+
+          node, acc ->
+            {node, acc}
+        end)
+
+      assert imports == [{[:Mutare, :Test, :PipedCallDSL], :bare}]
+    end
+  end
+
+  describe "register/3 — malformed alias directives" do
     test "ignores a multi-alias whose base or child is not an atom path" do
       env = %{Existing: [:Existing]}
 
@@ -444,19 +609,21 @@ defmodule Mutare.AliasesTest do
             [{:__aliases__, [], [{:__MODULE__, [], nil}]}]}
          ]}
 
-      assert Aliases.register(bad_children, env) == env
-      assert Aliases.register(bad_base, env) == env
-      assert Aliases.register(bad_child, env) == env
+      assert Aliases.register(bad_children, env, nil) == env
+      assert Aliases.register(bad_base, env, nil) == env
+      assert Aliases.register(bad_child, env, nil) == env
     end
 
-    test "ignores a simple alias whose path is not all atoms" do
+    test "ignores a `__MODULE__`-led alias where the module is not known" do
       env = %{Existing: [:Existing]}
 
       bad_alias =
         {:alias, [],
          [{:__aliases__, [], [{:__MODULE__, [], nil}, :Sub]}, [as: {:__aliases__, [], [:Sub]}]]}
 
-      assert Aliases.register(bad_alias, env) == env
+      assert Aliases.register(bad_alias, env, Aliases.unresolved_module()) == env
+      # At the top level `__MODULE__` is `nil`, which drops out: the alias is `Sub` itself.
+      assert Aliases.register(bad_alias, env, nil) == Map.put(env, :Sub, [:Sub])
     end
 
     test "only the :as option overrides the introduced name" do
@@ -465,7 +632,8 @@ defmodule Mutare.AliasesTest do
       assert Aliases.register(
                {:alias, [],
                 [{:__aliases__, [], [:Foo, :Bar]}, [bee: {:__aliases__, [], [:Baz]}]]},
-               env
+               env,
+               nil
              ) == Map.put(env, :Bar, [:Foo, :Bar])
     end
 
@@ -474,7 +642,8 @@ defmodule Mutare.AliasesTest do
 
       assert Aliases.register(
                {:alias, [], [{:__aliases__, [], [:Foo, :Bar]}, :not_keyword_options]},
-               env
+               env,
+               nil
              ) == Map.put(env, :Bar, [:Foo, :Bar])
     end
   end
@@ -590,9 +759,8 @@ defmodule Mutare.AliasesTest do
       assert calls[:bar] == {[:Foo], [:Outer, :Mid, :Foo]}
     end
 
-    test "a module under a non-static head is not aliased to the wrong parent" do
-      # `defmodule __MODULE__.Foo` can't be named statically, so a nested `Bar` inside must NOT be
-      # resolved to `Outer.Bar` (the compiler defines `Outer.Foo.Bar`) — it stays the literal `Bar`.
+    test "a module under a `__MODULE__`-led head resolves beneath the module it names" do
+      # The compiler names the head `Outer.Foo` (no second prefix) and defines `Outer.Foo.Bar`.
       calls =
         resolved("""
         defmodule Outer do
@@ -606,7 +774,47 @@ defmodule Mutare.AliasesTest do
         end
         """)
 
+      assert calls[:baz] == {[:Bar], [:Outer, :Foo, :Bar]}
+    end
+
+    test "a module under a non-static head is not aliased to the wrong parent" do
+      # `defmodule Module.concat(__MODULE__, Foo)` can't be named statically, so a nested `Bar`
+      # inside must NOT be resolved to `Outer.Bar` — it stays the literal `Bar`.
+      calls =
+        resolved("""
+        defmodule Outer do
+          defmodule Module.concat(__MODULE__, Foo) do
+            defmodule Bar do
+              def baz, do: :ok
+            end
+
+            def call, do: Bar.baz()
+          end
+        end
+        """)
+
       assert calls[:baz] == {[:Bar], [:Bar]}
+    end
+
+    test "`defimpl __MODULE__.P, for: __MODULE__` scopes its body to `Outer.P.Outer`" do
+      calls =
+        resolved("""
+        defmodule Outer do
+          defprotocol __MODULE__.P do
+            def foo(x)
+          end
+
+          defimpl __MODULE__.P, for: __MODULE__ do
+            defmodule Helper do
+              def h, do: :ok
+            end
+
+            def foo(_x), do: Helper.h()
+          end
+        end
+        """)
+
+      assert calls[:h] == {[:Helper], [:Outer, :P, :Outer, :Helper]}
     end
 
     test "a nested module inside a defimpl body resolves against the impl module (P.T)" do

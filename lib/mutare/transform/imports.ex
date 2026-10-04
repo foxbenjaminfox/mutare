@@ -92,19 +92,20 @@ defmodule Mutare.Transform.Imports do
   def default_selector, do: {:all, MapSet.new()}
 
   @doc """
-  Fold an `import` directive into the `{imports, kernel}` environment, given the alias env in
-  force (to resolve `import E` where `E` is an alias). The directive's own selection
+  Fold an `import` directive into the `{imports, kernel}` environment, given the alias env and
+  the module in force (to resolve `import E` where `E` is an alias, and `import
+  __MODULE__.Helpers`). The directive's own selection
   (`:all`/`only:`/`except:`/`only: :functions`) is **combined** with any prior import of the
   same module: `only:`/a plain `import` replace the selection, `except:` subtracts from it (so
   repeated imports of one module compose as Elixir does). `import Kernel, …` combines into the
   tracked Kernel selector likewise. Every non-import statement passes the env through unchanged.
   Resolution is by *module*; exported arities are checked later, at the call, by `stamp/6`.
   """
-  @spec register(Macro.t(), map(), map(), selector()) :: {map(), selector()}
-  def register({:import, _meta, args}, aliases, imports, kernel),
-    do: register_import(args, aliases, imports, kernel)
+  @spec register(Macro.t(), map(), Aliases.enclosing(), map(), selector()) :: {map(), selector()}
+  def register({:import, _meta, args}, aliases, enclosing, imports, kernel),
+    do: register_import(args, {aliases, enclosing}, imports, kernel)
 
-  def register(_stmt, _aliases, imports, kernel), do: {imports, kernel}
+  def register(_stmt, _aliases, _enclosing, imports, kernel), do: {imports, kernel}
 
   @doc """
   The metadata for a bare call, stamped with the module it resolves to (`:mutare_import` —
@@ -287,8 +288,8 @@ defmodule Mutare.Transform.Imports do
   # Parse the directive args to a resolved `{module_key, op}` (or `nil` for an unrecognised
   # form) and bind it. `put_import` is reached from one place, so the bind logic — the `Kernel`
   # special-case, the `module_key?` guard, the op-combining — lives in exactly one path.
-  defp register_import(args, aliases, imports, kernel) do
-    case parse_import_args(args, aliases) do
+  defp register_import(args, names, imports, kernel) do
+    case parse_import_args(args, names) do
       {module_key, op} -> put_import(module_key, op, imports, kernel)
       nil -> {imports, kernel}
     end
@@ -298,30 +299,31 @@ defmodule Mutare.Transform.Imports do
   # path through the alias env, so `import E` (and `import B` where `B` aliases an Erlang
   # atom module) lands on the real module key.
   # mutare:ignore[guard_drop] equivalent — an `__aliases__` segment list is always a list, so the guard can't fail.
-  defp parse_import_args([{:__aliases__, _meta, path}], aliases) when is_list(path),
-    do: {Aliases.resolve_path(path, aliases), :all}
+  defp parse_import_args([{:__aliases__, _meta, path}], {aliases, enclosing}) when is_list(path),
+    do: {Aliases.resolve_path(path, aliases, enclosing), :all}
 
-  defp parse_import_args([{:__aliases__, _meta, path}, opts], aliases)
+  defp parse_import_args([{:__aliases__, _meta, path}, opts], {aliases, enclosing})
        when is_list(path) and is_list(opts),
-       do: {Aliases.resolve_path(path, aliases), op_from_opts(opts)}
+       do: {Aliases.resolve_path(path, aliases, enclosing), op_from_opts(opts)}
 
   # `import :erlang_module` (a Sourceror-wrapped atom) — the module key is the atom itself.
   # Dropping `when is_atom(atom)` lets a non-atom single-literal import (`import "x"`) reach
   # `put_import`, but `module_key?` rejects it there exactly as the fallback clause would.
   # mutare:ignore[guard_drop] equivalent — `module_key?` masks the difference downstream.
-  defp parse_import_args([{:__block__, _meta, [atom]}], _aliases) when is_atom(atom),
+  defp parse_import_args([{:__block__, _meta, [atom]}], _names) when is_atom(atom),
     do: {atom, :all}
 
-  defp parse_import_args([{:__block__, _meta, [atom]}, opts], _aliases)
+  defp parse_import_args([{:__block__, _meta, [atom]}, opts], _names)
        when is_atom(atom) and is_list(opts),
        do: {atom, op_from_opts(opts)}
 
-  defp parse_import_args(_args, _aliases), do: nil
+  defp parse_import_args(_args, _names), do: nil
 
   # Bind a resolved module key (an Elixir path `[:Enum]` or an Erlang atom `:binary`) to its
   # selection, **combining** the directive's op with any prior import of that module. `Kernel`
   # is special — it lives in the `kernel` slot (an implicit default whole import that a
-  # narrowing combines into); a `__MODULE__`-relative or otherwise non-module path is skipped.
+  # narrowing combines into); a path that names no module statically (a `__MODULE__`-led one
+  # whose module is unknown, say) is skipped.
   defp put_import([:Kernel], op, imports, kernel), do: {imports, combine(kernel, op)}
 
   defp put_import(module_key, op, imports, kernel) do

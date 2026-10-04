@@ -2,7 +2,7 @@ defmodule Mutare.Calls do
   @moduledoc """
   Call-resolution readers for custom mutators and macro integrations.
 
-  `resolved_call/1` normalizes qualified, aliased, imported, and Erlang-module calls to `{module, function, arguments, rebuild}`. Use `rebuild` to preserve the source's written call form when that is compile-safe; bare imported calls may be requalified when the replacement changes name or arity. It operates on nodes passed to a mutator by Mutare's transform.
+  `resolved_call/1` normalizes qualified, aliased, imported, `__MODULE__`, and Erlang-module calls to `{module, function, arguments, rebuild}`. Use `rebuild` to preserve the source's written call form when that is compile-safe; bare imported calls may be requalified when the replacement changes name or arity. It operates on nodes passed to a mutator by Mutare's transform.
 
   This reads the `alias`/`import` stamps the transform places on the AST before mutators run, so it is only meaningful on a node handed to a mutator by the transform (a `mutate/1` argument) — exactly where a call-matching mutator needs it.
 

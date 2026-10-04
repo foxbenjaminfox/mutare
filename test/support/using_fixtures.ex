@@ -99,6 +99,31 @@ defmodule Mutare.Test.AliasInjector do
   end
 end
 
+defmodule Mutare.Test.SelfAliasInjector do
+  @moduledoc """
+  A `__using__` that injects `alias __MODULE__.RealTarget, as: T` — an alias named through the
+  *caller's* module, so it resolves only where the using module is known (`use`d from
+  `Mutare.Test`, `T` is `Mutare.Test.RealTarget`).
+  """
+  defmacro __using__(_opts) do
+    quote do: alias(__MODULE__.RealTarget, as: T)
+  end
+end
+
+defmodule Mutare.Test.NestedSelfAliasUsing do
+  @moduledoc """
+  A `__using__` whose body is `use SelfAliasInjector; use T`: the alias the first `use` injects
+  is named through `__MODULE__`, so the sibling `use T` resolves only if the harvest reads it
+  against the caller's module.
+  """
+  defmacro __using__(_opts) do
+    quote do
+      use Mutare.Test.SelfAliasInjector
+      use T
+    end
+  end
+end
+
 defmodule Mutare.Test.NestedInjectUsing do
   @moduledoc """
   A `__using__` whose body is `use AliasInjector; use T`: the first nested `use` *injects* `alias
@@ -156,7 +181,7 @@ defmodule Mutare.Test.UnquoteAliasUsing do
   @moduledoc """
   A `__using__` whose body declares an alias via **`unquote`d** target and then `use`s it. The
   `unquote(target)` splices the module as a *bare atom* (`{:alias, _, [Mutare.Test.BodyAliasTarget,
-  [as: T]]}`), the shape `Aliases.register/2` only understands after Sourceror normalization — so
+  [as: T]]}`), the shape `Aliases.register/3` only understands after Sourceror normalization — so
   the sibling `use T` resolves (and surfaces `BodyAliasTarget`'s `import Map, only: [merge: 2]`)
   only when the harvested alias is normalized *before* being folded into the body env.
   """

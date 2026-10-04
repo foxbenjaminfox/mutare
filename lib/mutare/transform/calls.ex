@@ -15,7 +15,8 @@ defmodule Mutare.Transform.Calls do
   #   * an **Elixir remote** call `Mod.fun(args)` — resolved through the lexical `alias` env
   #     (`Mutare.Transform.Aliases`); `rebuild` reuses the *written* alias node, so renaming
   #     `S.filter` to `S.reject` keeps the `S.` the source wrote (minimal diff, swap stays
-  #     within the module).
+  #     within the module). A `__MODULE__` receiver is read the same way, through the module
+  #     `Mutare.Transform.Resolve` stamped on it.
   #   * an **Erlang remote** call `:binary.fun(args)` — the module is a bare atom; `rebuild`
   #     reuses it. (An *aliased* atom module `alias :binary, as: B; B.fun` is the Elixir-remote
   #     shape above, resolving to the atom via the `:mutare_alias` stamp.)
@@ -60,16 +61,37 @@ defmodule Mutare.Transform.Calls do
     {Aliases.resolved_module(alias_meta, mod), fun, args, rebuild}
   end
 
+  # A call on the enclosing module, `__MODULE__.fun(args)`: `Mutare.Transform.Resolve` stamped the
+  # receiver with the module it names (`Aliases.stamp_module/3`); unstamped, it names no module
+  # statically (a dynamic `defmodule` head, or a file's top level). Rebuilt reusing the written
+  # receiver, like an alias.
+  defp read_resolved_call(
+         {{:., dot_meta, [{:__MODULE__, mod_meta, context} = mod, fun]}, call_meta, args}
+       )
+       when is_atom(context) and is_atom(fun) and is_list(args) do
+    case Aliases.resolved_module(mod_meta, nil) do
+      nil ->
+        nil
+
+      module ->
+        rebuild = fn new_fun, new_args ->
+          {{:., dot_meta, [mod, new_fun]}, call_meta, new_args}
+        end
+
+        {module, fun, args, rebuild}
+    end
+  end
+
   # A direct atom-module remote call `:binary.fun(args)` — the module is a bare atom (Sourceror-
   # wrapped or plain), which `Aliases` never stamps; the atom names the module outright, and its
   # key is `Aliases.from_module/1`'s encoding: an Erlang atom its own, an Elixir module atom
   # (`Elixir.Enum`, what a mutator's `quote do: unquote(mod).f()` writes) its segment path, as
-  # the `__aliases__` clause above and the registry key it. `Aliases.resolve_node/2` (env-free — a
-  # direct remote carries no alias) only ever sees the bare/wrapped-atom shapes here, returning
-  # the atom (or `nil` for a non-module receiver).
+  # the `__aliases__` clause above and the registry key it. `Aliases.resolve_node/3` (with no
+  # alias env and no module — a direct remote carries neither) only ever sees the
+  # bare/wrapped-atom shapes here, returning the atom (or `nil` for a non-module receiver).
   defp read_resolved_call({{:., dot_meta, [mod, fun]}, call_meta, args})
        when is_atom(fun) and is_list(args) do
-    case Aliases.resolve_node(mod, %{}) do
+    case Aliases.resolve_node(mod, %{}, Aliases.unresolved_module()) do
       nil ->
         nil
 

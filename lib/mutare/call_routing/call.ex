@@ -33,11 +33,11 @@ defmodule Mutare.CallRouting.Call do
           arguments: [Macro.t()],
           rebuild: (atom(), [Macro.t()] -> Macro.t()),
           alias_env: map() | nil,
-          enclosing_module: module() | nil
+          enclosing_module: Aliases.enclosing()
         }
 
   @enforce_keys [:node, :module, :name, :arguments, :rebuild]
-  defstruct @enforce_keys ++ [alias_env: nil, enclosing_module: nil]
+  defstruct @enforce_keys ++ [alias_env: nil, enclosing_module: Aliases.unresolved_module()]
 
   @doc """
   Build a call value from the written call `node`, the resolved `module` and `name`, and the
@@ -67,7 +67,8 @@ defmodule Mutare.CallRouting.Call do
 
     * `aliases: %{Short => Module}` — the aliases, the way an `alias Module, as: Short` would
       bind them;
-    * `enclosing_module: Module` — the module the call is written in, which `__MODULE__` names.
+    * `enclosing_module: Module` — the module the call is written in, which `__MODULE__` names;
+      `nil` for a file's top level.
 
   Either may be left out; a call without it resolves no name that needs it.
 
@@ -83,10 +84,12 @@ defmodule Mutare.CallRouting.Call do
           atom(),
           (atom(), [Macro.t()] -> Macro.t()),
           aliases: %{atom() => module()},
-          enclosing_module: module()
+          enclosing_module: module() | nil
         ) :: t()
   def new(node, module, name, rebuild, site) when is_list(site) do
-    site = Keyword.validate!(site, aliases: nil, enclosing_module: nil)
+    site =
+      Keyword.validate!(site, aliases: nil, enclosing_module: Aliases.unresolved_module())
+
     env = site[:aliases] && Map.new(site[:aliases], &alias_entry/1)
 
     %{
@@ -104,8 +107,9 @@ defmodule Mutare.CallRouting.Call do
   that needs something the call does not carry (see the moduledoc). An `Elixir.`-qualified name
   ignores aliases, as the compiler does, and so resolves either way. `__MODULE__` is the module
   the call is written in, and `__MODULE__.Comment` a name beneath it, as the compiler reads
-  them; both are `:error` outside a module, or in one whose name is computed (`defmodule
-  __MODULE__.Sub`, say). Whether the module exists is not checked.
+  them: at a file's top level `__MODULE__` is `:error` and `__MODULE__.Comment` is `Comment`,
+  and in a module whose name is computed (`defmodule Module.concat(…)`) both are `:error`.
+  Whether the module exists is not checked.
 
       iex> node = quote(do: from(p in Post))
       iex> call = Mutare.CallRouting.Call.new(node, Ecto.Query, :from,
@@ -134,39 +138,32 @@ defmodule Mutare.CallRouting.Call do
       :error
   """
   @spec resolved_module(t(), Macro.t()) :: {:ok, module()} | :error
-  def resolved_module(%__MODULE__{enclosing_module: module}, {:__MODULE__, _meta, context})
-      when is_atom(context) do
-    if module, do: {:ok, module}, else: :error
-  end
-
-  # `__MODULE__.Comment`: the compiler prefixes the module to the written segments, and reads
-  # none of them through an alias.
+  # A name led by `__MODULE__` reads no alias, so it resolves whether or not the call carries them.
   def resolved_module(
-        %__MODULE__{enclosing_module: module},
-        {:__aliases__, _meta, [{:__MODULE__, _, context} | path]}
+        %__MODULE__{enclosing_module: enclosing},
+        {:__MODULE__, _meta, context} = node
       )
-      when is_atom(context) do
-    if module && Aliases.atoms?(path),
-      do: {:ok, Module.concat([module | path])},
-      else: :error
-  end
+      when is_atom(context),
+      do: found(Aliases.resolve_node(node, %{}, enclosing))
 
-  def resolved_module(%__MODULE__{alias_env: env}, {:__aliases__, _meta, path})
+  def resolved_module(
+        %__MODULE__{enclosing_module: enclosing},
+        {:__aliases__, _meta, [{:__MODULE__, _, context} | _]} = node
+      )
+      when is_atom(context),
+      do: found(Aliases.resolve_node(node, %{}, enclosing))
+
+  def resolved_module(%__MODULE__{alias_env: env}, {:__aliases__, _meta, path} = node)
       when is_list(path) do
     cond do
-      not Aliases.atoms?(path) ->
-        :error
-
-      match?([:"Elixir", _ | _], path) ->
-        {:ok, path |> Aliases.resolve_path(%{}) |> Aliases.to_module()}
-
-      env == nil ->
-        :error
-
-      true ->
-        {:ok, path |> Aliases.resolve_path(env) |> Aliases.to_module()}
+      match?([:"Elixir", _ | _], path) -> found(Aliases.resolve_node(node, %{}, nil))
+      env == nil -> :error
+      true -> found(Aliases.resolve_node(node, env, nil))
     end
   end
 
   def resolved_module(%__MODULE__{}, _node), do: :error
+
+  defp found(nil), do: :error
+  defp found(module), do: {:ok, module}
 end

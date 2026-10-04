@@ -889,9 +889,10 @@ defmodule Mutare.Transform.Analyze do
 
   # Whether a dot-call receiver is a **module reference** (opaque — the module side of a remote call)
   # rather than a runtime expression: an Elixir alias path (`Enum`, kept opaque even when dynamic so a
-  # `Foo.unquote(x).bar` receiver is never split), a Sourceror-wrapped atom module (`:lists`), or a
-  # bare atom (the only way a bare atom appears in receiver position is as a module).
+  # `Foo.unquote(x).bar` receiver is never split), `__MODULE__`, a Sourceror-wrapped atom module
+  # (`:lists`), or a bare atom (the only way a bare atom appears in receiver position is as a module).
   defp module_reference?({:__aliases__, _meta, _path}), do: true
+  defp module_reference?({:__MODULE__, _meta, context}) when is_atom(context), do: true
   defp module_reference?({:__block__, _meta, [atom]}) when is_atom(atom), do: true
   defp module_reference?(atom) when is_atom(atom), do: true
   defp module_reference?(_other), do: false

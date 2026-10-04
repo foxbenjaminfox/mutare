@@ -71,6 +71,56 @@ defmodule Mutare.BehavioursTest do
       assert behaviours_of(source, "R") == [MyApp.Custom]
     end
 
+    test "an @behaviour named through a `__MODULE__`-led alias resolves" do
+      source = """
+      defmodule MyApp.Server do
+        alias __MODULE__.Callbacks
+        @behaviour Callbacks
+      end
+      """
+
+      assert behaviours_of(source, "MyApp.Server") == [MyApp.Server.Callbacks]
+    end
+
+    test "an @behaviour named through `__MODULE__` resolves" do
+      source = """
+      defmodule MyApp.Server do
+        @behaviour __MODULE__.Callbacks
+        @behaviour __MODULE__
+      end
+      """
+
+      assert behaviours_of(source, "MyApp.Server") == [MyApp.Server, MyApp.Server.Callbacks]
+    end
+
+    test "a module nested in a defimpl body resolves `__MODULE__` beneath the impl module" do
+      # The compiler names `Helper` `P.Integer.Helper` (the impl module is absolute), and the
+      # inferred `for:` of the second impl is the enclosing `Outer`.
+      source = """
+      defmodule Outer do
+        defimpl P, for: Integer do
+          defmodule Helper do
+            @behaviour __MODULE__.Callbacks
+          end
+        end
+
+        defimpl Q do
+          defmodule Inferred do
+            @behaviour __MODULE__.Callbacks
+          end
+        end
+
+        defimpl R, for: Atom, do: (defmodule Inline do
+          @behaviour __MODULE__.Callbacks
+        end)
+      end
+      """
+
+      assert behaviours_of(source, "Helper") == [P.Integer.Helper.Callbacks]
+      assert behaviours_of(source, "Inferred") == [Q.Outer.Inferred.Callbacks]
+      assert behaviours_of(source, "Inline") == [R.Atom.Inline.Callbacks]
+    end
+
     test "a top-level alias declared above the module resolves its @behaviour" do
       source = """
       alias MyApp.Thing, as: T
@@ -95,7 +145,7 @@ defmodule Mutare.BehavioursTest do
 
     test "a fully-qualified @behaviour whose real first segment is Elixir is preserved" do
       # `Elixir.Elixir.Server` names the module `:"Elixir.Elixir.Server"` (a real leading
-      # `Elixir` segment under the canonical prefix). `resolve_path/2` keeps the doubled prefix
+      # `Elixir` segment under the canonical prefix). `resolve_path/3` keeps the doubled prefix
       # whole so `Module.concat` folds just the one canonical prefix — without that, the path
       # would silently degrade to the wrong module `Server`.
       source = """

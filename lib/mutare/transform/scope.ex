@@ -33,7 +33,7 @@ defmodule Mutare.Transform.Scope do
   #     The empty default is safe; the sole constructor primes it.
   #   * `module` — the module currently being transformed, for user options keyed
   #     by fully-qualified `{Module, function, arity}`. `nil` at file top level;
-  #     `Mutare.Lifting.unresolved/0` inside a module whose `defmodule` head was dynamic
+  #     `Mutare.Transform.Aliases.unresolved_module/0` inside a module whose `defmodule` head was dynamic
   #     (`defmodule Module.concat(...)`) — distinct values, because a module nested under
   #     an unresolvable parent must never resolve with the top-level rules (it could match
   #     an unrelated module's `:skip_lifting` entry).

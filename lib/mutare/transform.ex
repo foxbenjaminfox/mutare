@@ -180,6 +180,7 @@ defmodule Mutare.Transform do
   alias Mutare.Site
 
   alias Mutare.Transform.{
+    Aliases,
     Analyze,
     Behaviours,
     BindingEscapeEmit,
@@ -683,8 +684,10 @@ defmodule Mutare.Transform do
       # An unresolvable (dynamic) head threads the explicit sentinel, never `nil`: `nil`
       # means "file top level" downstream, and a literal module nested under a dynamic
       # parent resolved with the top-level rules would match an unrelated module's
-      # `:skip_lifting` entry (see `Mutare.Lifting.unresolved/0`).
-      module = Lifting.module_from_alias(alias_node, outer_module) || Lifting.unresolved()
+      # `:skip_lifting` entry (see `Mutare.Transform.Aliases.unresolved_module/0`).
+      module =
+        Lifting.module_from_alias(alias_node, outer_module) || Aliases.unresolved_module()
+
       {do_keyword, ctx} = transform_module_body(do_keyword, module, meta, ctx)
       {{:defmodule, meta, [alias_node, do_keyword]}, ctx}
     else

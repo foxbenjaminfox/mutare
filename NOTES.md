@@ -15139,3 +15139,40 @@ Regressions cover edits that change earlier files' counts, deletion of the check
 multiple recovery rounds, skipped/zero-site files, no repeated count callbacks,
 deferred hydration under line/cap selection, both sandbox materialization modes,
 seeded-beam invalidation and deletion of the original source during real poison recovery.
+
+### A `__MODULE__`-led name is static (2026-10-04)
+
+NOTES "Implicit nested-module alias — shared `ModuleScope`, folded by `Resolve`/`Behaviours`
+too" listed `defmodule __MODULE__.Foo` as a non-static head, and every reader skipped a `__MODULE__`-led name: an
+`alias __MODULE__.Enum` was ignored, so `Enum.filter` beneath it was mutated as the standard
+library's, and a route, mark, `@behaviour`, `import` or `use` reached through `__MODULE__` was
+missed or read as the wrong module. The name is in fact as static as the module around it.
+The compiler expands `__MODULE__` to that module and appends the written segments, reading none
+of them through an alias, and `Aliases` now does the same wherever it reads a module name
+(`resolve_path/3`, `resolve_node/3`, `register/3`, `stamp_module/3`). Two consequences follow
+the compiler rather than intuition, and the tests take their expected values from it
+(`__ENV__.aliases`, `IO.inspect(__MODULE__.X)`):
+
+  * At a file's top level `__MODULE__` is `nil`, which names nothing alone but drops out of a
+    longer name: `__MODULE__.Top` is `Top`. `Call.resolved_module/2` answers `:error` and
+    `{:ok, Top}` for the two.
+  * `defmodule __MODULE__.Sub` is `Parent.Sub`, not parent-prefixed again, and introduces no
+    implicit alias: `Kernel.defmodule` aliases only a head whose first segment is an atom.
+
+"Unknown" and "top level" are now different answers to every reader, so the sentinel for a
+module that cannot be named (`Module.concat(…)` heads, and everything under one) moved from
+`ModuleScope`/`Lifting` into `Aliases.unresolved_module/0`, and `Call`'s `enclosing_module`
+defaults to it: a `Call` built without one resolves no `__MODULE__`-led name, where `nil`
+would have read `__MODULE__.X` as `X`.
+
+Resolving `__MODULE__` turned one old gap from "unknown" into "wrong": `Behaviours` walked a
+`defimpl` body under the enclosing module, so `@behaviour __MODULE__.Cb` in a module nested
+there named `Outer.Helper.Cb` rather than the compiler's `P.T.Helper.Cb`. It now scopes the body
+as `Resolve` does, through `ModuleScope.defimpl_module/3`, and so does `Uses`, whose two
+hand-matched `defimpl` clauses had missed the inline `defimpl P, for: T, do: …` (a `use` there
+went unexpanded). `Behaviours`, unlike `Resolve`, does not check that `defimpl` and `defmodule`
+are still `Kernel`'s: it runs before `Resolve` stamps that, and its `defmodule` clause never
+did either. `Transform` names module
+scopes through `Lifting.module_from_alias/2` (no alias env; it reads `Resolve`'s stamps) while
+the pre-passes use `ModuleScope.child_module/3`; both now hand a `__MODULE__`-led head to
+`Aliases.resolve_node/3`, so the two readings cannot disagree about it.

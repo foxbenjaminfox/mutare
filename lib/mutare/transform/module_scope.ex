@@ -9,7 +9,7 @@ defmodule Mutare.Transform.ModuleScope do
   #       def call, do: Foo.bar()    # `Foo` resolves to `Outer.Foo`, no explicit `alias`
   #     end
   #
-  # The three walks each fold a lexically-scoped alias env (via `Aliases.register/2`) so an
+  # The three walks each fold a lexically-scoped alias env (via `Aliases.register/3`) so an
   # explicit `alias`/`require …, as:` reaches later siblings; this module adds the *implicit*
   # alias a `defmodule`/`defprotocol` introduces, so a sibling/body reference to a nested module
   # by its short name resolves to the module Elixir actually defines. Without it, a call keyed on
@@ -17,11 +17,11 @@ defmodule Mutare.Transform.ModuleScope do
   # `Behaviours`) is resolved to the wrong module and silently missed.
   #
   # Tracking the implicit alias requires the **enclosing module** (the parent), so each caller
-  # threads a `module` accumulator (`nil` at the file top level, the sentinel `unresolved/0` under
-  # a non-static head). `child_module/3` computes a nested head's full module from that parent +
-  # the alias env; `register_defined_module/3` folds the implicit alias the head introduces;
-  # `register_lexical/3` is the combined "explicit alias then implicit module alias" fold each
-  # walk applies at every statement in a scope.
+  # threads a `module` accumulator (`nil` at the file top level, the sentinel
+  # `Aliases.unresolved_module/0` under a non-static head). `child_module/3` computes a nested
+  # head's full module from that parent + the alias env; `register_defined_module/3` folds the
+  # implicit alias the head introduces; `register_lexical/3` is the combined "explicit alias then
+  # implicit module alias" fold each walk applies at every statement in a scope.
 
   alias Mutare.AST
   alias Mutare.Transform.Aliases
@@ -29,22 +29,18 @@ defmodule Mutare.Transform.ModuleScope do
   # The module name of a nested `defmodule` we couldn't resolve to a concrete atom (a non-static
   # head, or a child of an already-unresolved parent). A caller that reaches it stamps/resolves
   # nothing under that scope rather than run with a wrong `__CALLER__.module` / wrong key.
-  @unresolved :__mutare_unresolved__
-
-  @doc "The sentinel a non-resolvable module head resolves to (so a caller can pattern-match it)."
-  @spec unresolved() :: atom()
-  def unresolved, do: @unresolved
+  @unresolved Aliases.unresolved_module()
 
   @doc """
   Fold into the alias env both the alias a *source* statement introduces (an explicit
-  `alias`/`require …, as:`, via `Aliases.register/2`) **and** the implicit alias Elixir
+  `alias`/`require …, as:`, via `Aliases.register/3`) **and** the implicit alias Elixir
   auto-introduces for a nested module the statement defines (`register_defined_module/3`). Both
   scope to following siblings, so the unified fold keeps the env faithful for a later
   `use`/`defimpl`/call/`@behaviour` that refers to a sibling by short name.
   """
-  @spec register_lexical(Macro.t(), module() | atom() | nil, map()) :: map()
+  @spec register_lexical(Macro.t(), Aliases.enclosing(), map()) :: map()
   def register_lexical(stmt, module, env) do
-    stmt |> Aliases.register(env) |> then(&register_defined_module(stmt, module, &1))
+    stmt |> Aliases.register(env, module) |> then(&register_defined_module(stmt, module, &1))
   end
 
   @doc """
@@ -54,13 +50,13 @@ defmodule Mutare.Transform.ModuleScope do
   `U => Outer.U`, so the `use` target resolves. The alias binds the **first** written segment to
   the parent-prefixed first segment (`defmodule Foo.Bar` ⇒ `Foo => Outer.Foo`, *not*
   `Bar => Outer.Foo.Bar` — verified against the compiler), so it is computed as the
-  `child_module/3` of just that first segment. Stored as a path (the form `Aliases.register/2`
-  uses) so `resolve_path/2` can extend it (`P.Sub` ⇒ `Outer.P.Sub`). Skipped for a dynamic head
+  `child_module/3` of just that first segment. Stored as a path (the form `Aliases.register/3`
+  uses) so `resolve_path/3` can extend it (`P.Sub` ⇒ `Outer.P.Sub`). Skipped for a dynamic head
   (`@unresolved`), an absolute `Elixir.`-led head, and an atom-named module (no segment to alias).
   Only `defmodule`/`defprotocol` define such an alias — `defimpl` defines `P.T` but introduces no
   convenient short name, so it is not a definer here.
   """
-  @spec register_defined_module(Macro.t(), module() | atom() | nil, map()) :: map()
+  @spec register_defined_module(Macro.t(), Aliases.enclosing(), map()) :: map()
   def register_defined_module({def_form, _meta, [mod_ast | _]}, module, env)
       when def_form in [:defmodule, :defprotocol] do
     with {:__aliases__, _, [first | _]} when is_atom(first) and first != :"Elixir" <- mod_ast,
@@ -76,8 +72,8 @@ defmodule Mutare.Transform.ModuleScope do
 
   @doc """
   The full module name of a nested `defmodule`/`defprotocol`/`defimpl` head, best-effort: Elixir
-  prepends the enclosing module to a nested alias. A non-static head (`__MODULE__.Child`,
-  `unquote(mod)`, a `Module.concat(…)` call) can't be resolved to a concrete module, so it yields
+  prepends the enclosing module to a nested alias. A non-static head (`unquote(mod)`, a
+  `Module.concat(…)` call) can't be resolved to a concrete module, so it yields
   `@unresolved` and a caller expands/stamps/resolves **nothing** inside that module (rather than
   run with the wrong `__CALLER__.module`). The sentinel propagates inward (an unresolved parent ⇒
   unresolved child). A leading `Elixir` segment (`defmodule Elixir.Bar`) is the **absolute** escape
@@ -90,14 +86,22 @@ defmodule Mutare.Transform.ModuleScope do
   head is *not* alias-resolved: Elixir prepends the parent to the *literal* segments (`defmodule
   RP.Child` inside `Outer` is `Outer.RP.Child`, the alias untouched), which the literal-path
   `Module.concat([parent | path])` already matches.
+
+  A `__MODULE__`-led head (`defmodule __MODULE__.Child`) is not prefixed either: the compiler
+  reads it as the name it spells, `Parent.Child` (or `Child` at the top level), and
+  introduces no alias for it.
   """
-  @spec child_module(Macro.t(), module() | atom() | nil, map()) :: module() | atom()
+  @spec child_module(Macro.t(), Aliases.enclosing(), map()) :: Aliases.enclosing()
+  def child_module({:__aliases__, _, [{:__MODULE__, _, context} | _]} = head, parent, env)
+      when is_atom(context),
+      do: Aliases.resolve_node(head, env, parent) || @unresolved
+
   def child_module({:__aliases__, _, path}, parent, env) when is_list(path) do
     cond do
       not Aliases.atoms?(path) -> @unresolved
       match?([:"Elixir" | _], path) -> Module.concat(path)
       parent == @unresolved -> @unresolved
-      parent == nil -> path |> Aliases.resolve_path(env) |> Aliases.to_module()
+      parent == nil -> path |> Aliases.resolve_path(env, nil) |> Aliases.to_module()
       true -> Module.concat([parent | path])
     end
   end
@@ -109,18 +113,19 @@ defmodule Mutare.Transform.ModuleScope do
   @doc """
   The implementation module a `defimpl P, for: T` opens: `Module.concat(P, T)` (absolute — never
   parent-prefixed), both resolved through the alias `env`. Without a `for:`, `T` is the
-  `enclosing` module, as the compiler infers it. `unresolved/0` unless both are statically a
-  single concrete module — a list `for:`, a non-static type, or an inferred type with no module
-  (or an unresolved one) around it degrades. This is the module scope a `defimpl` body is walked
-  under (a nested module inside resolves as `P.T.Sub`).
+  `enclosing` module, as the compiler infers it. `Aliases.unresolved_module/0` unless both are
+  statically a single concrete module — a list `for:`, a non-static type, or an inferred type
+  with no module (or an unresolved one) around it degrades. This is the module scope a
+  `defimpl` body is walked under (a nested module inside resolves as `P.T.Sub`).
   """
-  @spec impl_module(Macro.t(), Macro.t() | nil, module() | atom() | nil, map()) ::
-          module() | atom()
+  @spec impl_module(Macro.t(), Macro.t() | nil, Aliases.enclosing(), map()) :: Aliases.enclosing()
   def impl_module(proto, type, enclosing, env) do
-    # `Aliases.resolve_node/2` returns a concrete module atom or `nil` (non-static), so both parts
+    # `Aliases.resolve_node/3` returns a concrete module atom or `nil` (non-static), so both parts
     # resolving to a non-`nil` module is exactly the resolvable case.
-    proto_mod = Aliases.resolve_node(proto, env)
-    type_mod = if type, do: Aliases.resolve_node(type, env), else: inferred_type(enclosing)
+    proto_mod = Aliases.resolve_node(proto, env, enclosing)
+
+    type_mod =
+      if type, do: Aliases.resolve_node(type, env, enclosing), else: inferred_type(enclosing)
 
     if not is_nil(proto_mod) and not is_nil(type_mod),
       do: Module.concat(proto_mod, type_mod),
@@ -129,6 +134,19 @@ defmodule Mutare.Transform.ModuleScope do
 
   defp inferred_type(@unresolved), do: nil
   defp inferred_type(enclosing), do: enclosing
+
+  @doc """
+  `impl_module/4` read off a `defimpl` call's arguments, whatever the surface form: the `for:`
+  type sits in a standalone opts argument (`defimpl P, for: T do … end`) or in the inline keyword
+  list beside `do:` (`defimpl P, for: T, do: …`), and is inferred when neither carries one
+  (`defimpl P do … end`). The walks that scope a `defimpl` body by its last argument (`Resolve`,
+  `Behaviours`, `Uses`) share this reading.
+  """
+  @spec defimpl_module([Macro.t()], Aliases.enclosing(), map()) :: Aliases.enclosing()
+  def defimpl_module([proto | rest], enclosing, env) do
+    type = Enum.find_value(rest, fn arg -> if is_list(arg), do: for_type(arg) end)
+    impl_module(proto, type, enclosing, env)
+  end
 
   @doc "The `for:` value of a `defimpl` opts list, or `nil`. Reads Sourceror's wrapped key."
   @spec for_type(Macro.t()) :: Macro.t() | nil

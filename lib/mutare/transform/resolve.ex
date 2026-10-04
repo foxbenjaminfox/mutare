@@ -105,8 +105,10 @@ defmodule Mutare.Transform.Resolve do
   @doc false
   @spec advance_context(Macro.t(), map()) :: map()
   def advance_context(stmt, %{resolution: env} = context) do
-    aliases = Aliases.register(stmt, env.inputs.aliases)
-    {imports, kernel} = Imports.register(stmt, aliases, env.inputs.imports, env.inputs.kernel)
+    aliases = register_aliases(stmt, env)
+
+    {imports, kernel} =
+      Imports.register(stmt, aliases, env.inputs.module, env.inputs.imports, env.inputs.kernel)
 
     %{
       context
@@ -229,11 +231,13 @@ defmodule Mutare.Transform.Resolve do
        )
        when is_atom(fun),
        do:
-         {Aliases.resolved_module(alias_meta, Aliases.resolve_path(path, env.inputs.aliases)),
-          fun}
+         {Aliases.resolved_module(
+            alias_meta,
+            Aliases.resolve_path(path, env.inputs.aliases, env.inputs.module)
+          ), fun}
 
-  defp preserved_identity({:., _dot_meta, [mod, fun]}, _meta, _args, _env) when is_atom(fun) do
-    case Aliases.resolve_node(mod, %{}) do
+  defp preserved_identity({:., _dot_meta, [mod, fun]}, _meta, _args, env) when is_atom(fun) do
+    case Aliases.resolve_node(mod, %{}, env.inputs.module) do
       nil -> nil
       module -> {Aliases.from_module(module), fun}
     end
@@ -482,8 +486,8 @@ defmodule Mutare.Transform.Resolve do
          env
        )
        when is_list(args) do
-    stamped = Aliases.stamp_module(aliases, env.inputs.aliases)
-    module_key = Aliases.resolve_path(path, env.inputs.aliases)
+    stamped = Aliases.stamp_module(aliases, env.inputs.aliases, env.inputs.module)
+    module_key = Aliases.resolve_path(path, env.inputs.aliases, env.inputs.module)
     call_node = {{:., dot_meta, [stamped, fun]}, call_meta, args}
 
     call_meta = RouteStamp.stamp(call_meta, module_key, fun, args, call_node, env)
@@ -498,11 +502,12 @@ defmodule Mutare.Transform.Resolve do
   # `Aliases.from_module/1`'s encoding: an Erlang atom is its own key, an Elixir module atom
   # (`Elixir.Enum`, what a mutator's `quote do: unquote(mod).f()` writes) its segment path, as
   # the registry keys it. (An *aliased* atom module `alias :binary, as: B; B.fun(...)` is the
-  # `__aliases__` shape above, resolved via the alias env.)
-  # `Aliases.resolve_node/2` is consulted **env-free** (`%{}`), exactly as
-  # `Mutare.Transform.Calls.resolved_call/1`'s twin clause: the `__aliases__` (Elixir) shape was
-  # handled above, so only bare/wrapped-atom (and non-module) receivers reach here, none of which
-  # consult the alias env — passing it would be misleading dead input.
+  # `__aliases__` shape above, resolved via the alias env.) A `__MODULE__` receiver
+  # (`__MODULE__.fun(...)`) names the enclosing module, and is stamped with it, since
+  # `Mutare.Transform.Calls.resolved_call/1`'s twin clause has no other way to learn it.
+  # `Aliases.resolve_node/3` is consulted without the alias env (`%{}`): the `__aliases__` (Elixir)
+  # shape was handled above, so only bare/wrapped-atom, `__MODULE__` (and non-module) receivers
+  # reach here, none of which consult it — passing it would be misleading dead input.
   #
   # The receiver splits the two cases cleanly: a non-nil result is a genuine **atom module**, so the
   # call is stamped with its known-macro routing (the module side stays opaque, never walked — same
@@ -516,7 +521,7 @@ defmodule Mutare.Transform.Resolve do
   # to mutators.)
   defp walk_node({{:., dot_meta, [mod, fun]}, call_meta, args}, env)
        when is_atom(fun) and is_list(args) do
-    case Aliases.resolve_node(mod, %{}) do
+    case Aliases.resolve_node(mod, %{}, env.inputs.module) do
       nil ->
         walked = walk(mod, env)
         {{:., dot_meta, [walked, fun]}, retain_environment(call_meta, env), descend(args, env)}
@@ -528,7 +533,9 @@ defmodule Mutare.Transform.Resolve do
         call_meta = stamp_mark_call(call_meta, module_key, fun, args, env)
         call_meta = retain_environment(call_meta, env)
         walked = descend_marked(args, module_key, fun, call_meta, env)
-        {{:., dot_meta, [mod, fun]}, call_meta, walked}
+
+        {{:., dot_meta, [Aliases.stamp_module(mod, %{}, env.inputs.module), fun]}, call_meta,
+         walked}
     end
   end
 
@@ -545,7 +552,7 @@ defmodule Mutare.Transform.Resolve do
   # resolve a top-level aliased head like `alias Real.Parent, as: RP; defmodule RP.Child`; a dynamic
   # head is *walked* so its interior calls resolve), then — **only for a genuine `Kernel.defmodule`**
   # — open the module scope its body is walked under: the module entered (`ModuleScope.child_module/3`,
-  # the unresolved sentinel for a non-static head like `__MODULE__.Sub`, under which nested modules
+  # the unresolved sentinel for a non-static head like `Module.concat(…)`, under which nested modules
   # stay unresolved rather than resolve against the enclosing module) plus the in-body self-alias the
   # head introduces. A **displaced** `defmodule` (a DSL macro imported over Kernel's — `import Kernel,
   # except: [defmodule: 2]` + `import MyDSL, only: [defmodule: 2]`) defines no module named after its
@@ -583,14 +590,7 @@ defmodule Mutare.Transform.Resolve do
     {meta, module_key} = stamp_bare_call(:defimpl, meta, args, env)
 
     if kernel_module_definer?(:defimpl, meta, args, env) do
-      impl =
-        ModuleScope.impl_module(
-          hd(args),
-          defimpl_for_type(args),
-          env.inputs.module,
-          env.inputs.aliases
-        )
-
+      impl = ModuleScope.defimpl_module(args, env.inputs.module, env.inputs.aliases)
       {lead, [last]} = Enum.split(args, -1)
 
       walked =
@@ -679,7 +679,7 @@ defmodule Mutare.Transform.Resolve do
   # `Mutare.Lifting`; no descent — it's a module path), a non-`__aliases__` (dynamic) head is a live
   # expression, so it is walked so its interior calls resolve.
   defp defmodule_head({:__aliases__, _, _} = head, env),
-    do: Aliases.stamp_module(head, env.inputs.aliases)
+    do: Aliases.stamp_module(head, env.inputs.aliases, env.inputs.module)
 
   defp defmodule_head(head, env), do: walk(head, env)
 
@@ -697,15 +697,6 @@ defmodule Mutare.Transform.Resolve do
       )
 
     %{env | inputs: %{env.inputs | module: child, aliases: aliases}}
-  end
-
-  # The `for:` type of a `defimpl`, wherever it sits — a standalone opts arg (`defimpl P, for: T do
-  # … end`) or the inline combined keyword list (`defimpl P, for: T, do: …`) — or `nil` when inferred
-  # (`defimpl P do … end`), which leaves `ModuleScope.impl_module/4` to take the enclosing module.
-  defp defimpl_for_type(args) do
-    args
-    |> Enum.drop(1)
-    |> Enum.find_value(fn arg -> if is_list(arg), do: ModuleScope.for_type(arg) end)
   end
 
   # `descend/2`, preceded by stamping any argument marks the resolved `{module_key, fun}` carries
@@ -783,15 +774,17 @@ defmodule Mutare.Transform.Resolve do
   # their module through the *just-updated* alias env (an `import` is never an `alias`, so it is the
   # env in force).
   defp register(stmt, env) do
-    aliases =
-      stmt
-      |> Aliases.register(env.inputs.aliases)
-      |> maybe_register_defined_module(stmt, env)
+    aliases = stmt |> register_aliases(env) |> maybe_register_defined_module(stmt, env)
 
-    {imports, kernel} = Imports.register(stmt, aliases, env.inputs.imports, env.inputs.kernel)
+    {imports, kernel} =
+      Imports.register(stmt, aliases, env.inputs.module, env.inputs.imports, env.inputs.kernel)
+
     env = %{env | inputs: %{env.inputs | aliases: aliases, imports: imports, kernel: kernel}}
     fold_use_directives(stmt, env)
   end
+
+  defp register_aliases(stmt, env),
+    do: Aliases.register(stmt, env.inputs.aliases, env.inputs.module)
 
   # Fold the implicit alias a nested module definition introduces for its following siblings — but
   # only for a **genuine** `Kernel.defmodule`/`defprotocol`. A displaced definer (a DSL macro over
