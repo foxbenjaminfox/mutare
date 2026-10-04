@@ -212,12 +212,13 @@ defmodule Mix.Tasks.MutareTest do
       on_exit(fn -> File.rm_rf!(root) end)
 
       test_pid = self()
+      events = Path.join(root, "events.jsonl")
 
       stderr =
         ExUnit.CaptureIO.capture_io(:stderr, fn ->
           error =
             assert_raise Mix.Error, fn ->
-              Mix.Tasks.Mutare.run([root, "--strict-ignores"])
+              Mix.Tasks.Mutare.run([root, "--strict-ignores", "--events", events])
             end
 
           send(test_pid, {:strict_ignores_error, error})
@@ -229,6 +230,52 @@ defmodule Mix.Tasks.MutareTest do
                "--strict-ignores: 1 `# mutare:ignore` directive suppressed no mutant (see the warnings above)"
 
       assert stderr =~ "warning: # mutare:ignore[bogus] at lib/a.ex:2 suppressed no mutant"
+
+      # A scan-time abort ends the event log with the message the task raised with.
+      assert [
+               %{"event" => "start"},
+               %{
+                 "event" => "finish",
+                 "stopped" => "error",
+                 "error" => "aborted",
+                 "message" => message
+               }
+             ] = event_lines(events)
+
+      assert message == error.message
+    end
+
+    test "a bad ignore qualifier in a mutation run ends the event log with an error finish" do
+      root =
+        bare_project("""
+        defmodule A do
+          def f(x), do: x + 1 # mutare:ignore[arithmetic:bogus]
+        end
+        """)
+
+      events = Path.join(root, "events.jsonl")
+
+      test_pid = self()
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        error =
+          assert_raise Mix.Error, fn -> Mix.Tasks.Mutare.run([root, "--events", events]) end
+
+        send(test_pid, {:spec_error, error})
+      end)
+
+      assert_receive {:spec_error, error}
+
+      assert %{
+               "event" => "finish",
+               "stopped" => "error",
+               "error" => "aborted",
+               "message" => message
+             } =
+               List.last(event_lines(events))
+
+      assert message == error.message
+      assert message =~ ~s("bogus" is not a arithmetic variant)
     end
 
     test "warns on an unrecognized `mutare:` comment; --strict-ignores counts both kinds" do
@@ -462,6 +509,7 @@ defmodule Mix.Tasks.MutareTest do
       File.mkdir_p!(Path.join(root, "test"))
       File.write!(Path.join(root, "test/a_test.exs"), "# a change only a test file sees\n")
       out = Path.join(root, "mutare.json")
+      events = Path.join(root, "events.jsonl")
 
       ExUnit.CaptureIO.capture_io(:stderr, fn ->
         Mix.Tasks.Mutare.run([
@@ -471,7 +519,9 @@ defmodule Mix.Tasks.MutareTest do
           "--min-score",
           "80",
           "--report",
-          "json:" <> out
+          "json:" <> out,
+          "--events",
+          events
         ])
       end)
 
@@ -480,6 +530,12 @@ defmodule Mix.Tasks.MutareTest do
       assert output =~ "(0 killed, 0 survived, 0 total)  — scoped by --since HEAD"
       assert %{"files" => files} = out |> File.read!() |> JSON.decode!()
       assert files == %{}
+
+      assert [
+               %{"event" => "start"},
+               %{"event" => "scanned", "mutants" => 0},
+               %{"event" => "finish", "stopped" => "complete", "mutants" => 0, "evaluated" => 0}
+             ] = event_lines(events)
     end
 
     test "--check under --since reports an empty scope rather than aborting" do
@@ -494,12 +550,27 @@ defmodule Mix.Tasks.MutareTest do
 
     test "--since still aborts on a configured path that does not exist" do
       root = committed_project("defmodule A do\n  def f(x), do: x + 1\nend\n")
+      events = Path.join(root, "events.jsonl")
 
       ExUnit.CaptureIO.capture_io(:stderr, fn ->
         assert_raise Mix.Error, ~r/resolved relative to the target project/, fn ->
-          Mix.Tasks.Mutare.run([root, "--since", "HEAD", "--only", "lib/nonexistent.ex"])
+          Mix.Tasks.Mutare.run([
+            root,
+            "--since",
+            "HEAD",
+            "--only",
+            "lib/nonexistent.ex",
+            "--events",
+            events
+          ])
         end
       end)
+
+      # The error `finish` carries the message the task raised with.
+      assert %{"event" => "finish", "stopped" => "error", "message" => message} =
+               List.last(event_lines(events))
+
+      assert message =~ "resolved relative to the target project"
     end
 
     test "--show-config scopes umbrella apps from comma-separated --app values" do
@@ -873,11 +944,13 @@ defmodule Mix.Tasks.MutareTest do
 
   @tag :runner
   @tag timeout: 180_000
-  test "end to end against an example: prints survivors, writes a JSON report, and gates on --min-score" do
+  test "end to end against an example: prints survivors, writes a JSON report and the events, and gates on --min-score" do
     sandbox = Project.tmp_dir(:task)
     out = Mutare.Test.Project.tmp_dir(:report) <> ".json"
+    events = Mutare.Test.Project.tmp_dir(:events) <> ".jsonl"
     on_exit(fn -> File.rm_rf!(sandbox) end)
     on_exit(fn -> File.rm(out) end)
+    on_exit(fn -> File.rm(events) end)
 
     # The example has surviving mutants (well under 100%), so a 100% floor must
     # fail. `--report json:PATH` adds a file reporter; both reporters run
@@ -891,6 +964,8 @@ defmodule Mix.Tasks.MutareTest do
           "100",
           "--report",
           "json:" <> out,
+          "--events",
+          events,
           "--sandbox",
           sandbox
         ])
@@ -915,7 +990,38 @@ defmodule Mix.Tasks.MutareTest do
              mutants,
              &(&1["status"] == "Killed" and &1["replacement"] not in [nil, ""])
            )
+
+    # The events tell the same run: every phase, a line per mutant, and a `finish` — written
+    # before the gate fired — whose counts are the report's.
+    lines = event_lines(events)
+    assert [%{"event" => "start"}, %{"event" => "scanned", "mutants" => total} | _] = lines
+
+    assert lines
+           |> Enum.filter(&(&1["event"] == "phase"))
+           |> Enum.map(& &1["phase"])
+           |> Enum.take(4) ==
+             ~w(compiling baseline coverage_probe running)
+
+    mutant_events = Enum.filter(lines, &(&1["event"] == "mutant"))
+    assert Enum.map(mutant_events, & &1["evaluated"]) == Enum.to_list(1..total)
+
+    assert Enum.sort(Enum.map(mutant_events, & &1["id"])) ==
+             Enum.sort(Enum.map(mutants, &String.to_integer(&1["id"])))
+
+    assert %{
+             "event" => "finish",
+             "stopped" => "complete",
+             "evaluated" => ^total,
+             "counts" => counts
+           } =
+             List.last(lines)
+
+    assert counts["survived"] == Enum.count(mutants, &(&1["status"] == "Survived"))
+    assert counts["survived"] == Enum.count(mutant_events, &(&1["status"] == "survived"))
   end
+
+  defp event_lines(path),
+    do: path |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&JSON.decode!/1)
 
   defp shell_info(acc \\ []) do
     receive do

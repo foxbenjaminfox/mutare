@@ -132,6 +132,23 @@ have routes.
   writes every report except SARIF from the results so far and exits with status
   143. SIGINT is not trapped and leaves only the last checkpoint. However the run
   ends, every mutant BEAM halts when the process that spawned it dies.
+- **Follow a background run with `--events mutare.events.jsonl`.** Mutare appends a
+  JSON line to the file as the run enters each phase and as each mutant's verdict
+  lands. `tail -n 1 mutare.events.jsonl` says where the run stands: the phase, or a
+  mutant line whose `evaluated` counts the verdicts so far, out of the `mutants` on
+  the `scanned` line. `jq -c 'select(.status == "survived")' mutare.events.jsonl`
+  lists the survivors so far, each with its `file`, `line`, `mutator`, and the patch
+  as `original` → `replacement`. Verdicts are written in source order, so one slow
+  mutant holds back the lines of later mutants that have already finished: a quiet
+  file does not mean a stalled run. The last line is a `finish` event naming why the
+  run stopped (`complete`, `max_survivors`, `time_budget`, `sigterm`, or `error` with
+  a `message`), with the counts and score. It is written after the reports, so once
+  it appears `mutare.json` is complete — unless it says `error`: that run wrote no
+  final report, so `mutare.json` is an earlier run's or, if mutants had already run,
+  possibly this run's last checkpoint, with untested mutants `Pending`. (A SIGTERM
+  while the final reports are being written can also leave `mutare.json` at its last
+  checkpoint, behind the `finish` counts.) A file that ends without a `finish`, and no
+  `mix mutare` process still running, means the run died; its stderr says why.
 - **Redirect to files; never pipe into `tail` or `head`.** `mix mutare … | tail -40`
   shows nothing until the run ends, and if the harness kills the pipeline midway,
   the output dies with it. Run
@@ -139,9 +156,9 @@ have routes.
   stdout, progress to stderr. When stderr is not a terminal, progress is plain
   lines: each phase, each survivor as it appears, and a `PROGRESS` line with counts
   and an ETA at every tenth of the mutants and at least every two minutes.
-  `grep PROGRESS progress.log | tail -n 1` tells you where a run stands. Leave
-  `--quiet` off for anything you'll need to check on, because it silences those
-  lines too.
+  `grep PROGRESS progress.log | tail -n 1` tells you where a run stands, though
+  `--events` answers that more precisely. `--quiet` silences these lines, but not
+  the events.
 - **Request JSON when you will process the results.** `--report json:mutare.json`
   writes the Stryker mutation-testing-elements schema and still prints the human
   report. The human report is the better one to read: it shows each survivor as a

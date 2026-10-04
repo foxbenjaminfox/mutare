@@ -94,6 +94,13 @@ defmodule Mutare.Run.ContextTest do
     end
   end
 
+  describe "listen/3" do
+    test "an unset hook becomes the listener itself" do
+      listener = fn _ -> :ok end
+      assert Context.listen(Context.new([]), :on_phase, listener).on_phase == listener
+    end
+  end
+
   describe "ensure_project/2" do
     test "resolves a project from root when unset" do
       context = Context.ensure_project(Context.new([]), ".")

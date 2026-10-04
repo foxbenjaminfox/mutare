@@ -564,6 +564,23 @@ defmodule Mutare.Options.Registry do
             "#{inspect(formats)}, got: #{inspect(entry)}"
   end
 
+  # `:events` names the file `mix mutare` appends its JSON-lines event stream to
+  # (`Mutare.CLI.EventLog`). A file only: stdout carries the final report, and `-` reads as a
+  # request for it. That no report shares the path is checked in `Mutare.Options`, across fields.
+  defp validate_events!("-") do
+    raise ArgumentError,
+          ":events must name a file; stdout carries the report, so it cannot carry the events " <>
+            "too, got: \"-\""
+  end
+
+  defp validate_events!(path),
+    do:
+      validate_nullable!(
+        path,
+        &(is_binary(&1) and &1 != ""),
+        ":events must be a non-empty path string or nil"
+      )
+
   # --- `--show-config` value formatters ------------------------------------
 
   # The generic formatter: a list inspects, a string is itself, anything else (atoms, numbers,
@@ -597,6 +614,9 @@ defmodule Mutare.Options.Registry do
       {format, path} -> "#{format} (#{path})"
     end)
   end
+
+  defp show_events(nil), do: "(none)"
+  defp show_events(path), do: path
 
   defp show_timeout(nil), do: "derived from baseline run"
   defp show_timeout(ms), do: to_string(ms)
@@ -860,6 +880,13 @@ defmodule Mutare.Options.Registry do
         default: [{:human, nil}],
         show: &show_reporters/1,
         validate: &validate_reporters!/1
+      ),
+      spec(
+        key: :events,
+        default: nil,
+        cli: :string,
+        show: &show_events/1,
+        validate: &validate_events!/1
       )
     ]
   end

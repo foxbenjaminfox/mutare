@@ -60,7 +60,8 @@ defmodule Mutare.Options do
           max_survivors: pos_integer() | nil,
           time_budget: String.t() | nil,
           min_score: number() | nil,
-          reporters: [{:human | :json | :html | :sarif, String.t() | nil}]
+          reporters: [{:human | :json | :html | :sarif, String.t() | nil}],
+          events: String.t() | nil
         }
 
   # The struct, its `@keys` whitelist (`reject_unknown!/1`), and `new/1`'s per-field defaults
@@ -154,6 +155,7 @@ defmodule Mutare.Options do
     |> then(&struct(__MODULE__, &1))
     |> resolve_parallelism()
     |> validate_argument_mark_labels!()
+    |> validate_events_destination!()
   end
 
   # `:workers` and `:schedulers` share one budget, so they are defaulted together rather than
@@ -165,7 +167,7 @@ defmodule Mutare.Options do
     %{options | workers: workers, schedulers: schedulers}
   end
 
-  # The one cross-field check: a configured `argument_marks:` label must be one some mutator
+  # A cross-field check: a configured `argument_marks:` label must be one some mutator
   # *declares positions for* (`Mutare.Mutator.declared_labels/1`) — a mark's meaning lives in the
   # mutators that read it, so a label nobody declares would mark positions nobody looks at. The
   # known set is the enabled mutators' labels plus every built-in family's (so `--mutators`
@@ -194,6 +196,25 @@ defmodule Mutare.Options do
     end)
 
     options
+  end
+
+  # A cross-field check: the event log may not share a file with a report, which would replace
+  # it at each checkpoint (`Mutare.CLI.PartialReport`) and at the end. Compared as expanded paths,
+  # as the reporters are compared with each other.
+  defp validate_events_destination!(%__MODULE__{events: nil} = options), do: options
+
+  defp validate_events_destination!(%__MODULE__{events: events, reporters: reporters} = options) do
+    case Enum.find(reporters, fn {_format, path} ->
+           path && Path.expand(path) == Path.expand(events)
+         end) do
+      nil ->
+        options
+
+      {format, path} ->
+        raise ArgumentError,
+              ":events and the #{format} report both name #{inspect(path)}; the report would " <>
+                "replace the events. Give the events a file of their own"
+    end
   end
 
   # Read option `key` from `opts`, falling back to its registry default — the one place `new/1`'s

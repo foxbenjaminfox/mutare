@@ -50,6 +50,7 @@ defmodule Mutare.InterruptRunnerTest do
 
     json = Path.join(base, "report.json")
     sarif = Path.join(base, "report.sarif")
+    events = Path.join(base, "events.jsonl")
 
     port =
       Port.open({:spawn_executable, System.find_executable("mix")}, [
@@ -68,7 +69,9 @@ defmodule Mutare.InterruptRunnerTest do
           "--report",
           "json:" <> json,
           "--report",
-          "sarif:" <> sarif
+          "sarif:" <> sarif,
+          "--events",
+          events
         ]
       ])
 
@@ -93,6 +96,14 @@ defmodule Mutare.InterruptRunnerTest do
 
     refute File.exists?(sarif)
     assert Enum.filter(File.ls!(base), &String.ends_with?(&1, ".tmp")) == []
+
+    # The event log ends with the SIGTERM's `finish`, over the mutant lines before it.
+    lines = events |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&JSON.decode!/1)
+    evaluated = Enum.count(lines, &(&1["event"] == "mutant"))
+    assert evaluated > 0
+
+    assert %{"event" => "finish", "stopped" => "sigterm", "evaluated" => ^evaluated} =
+             List.last(lines)
   end
 
   # Collect the run's output until the checkpoint at `path` exists.

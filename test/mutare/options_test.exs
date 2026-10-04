@@ -973,6 +973,29 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":events" do
+    test "names a file, or nothing" do
+      assert Options.new([]).events == nil
+      assert Options.new(events: "run.jsonl").events == "run.jsonl"
+
+      assert_raise ArgumentError, ~r/:events must be a non-empty path/, fn ->
+        Options.new(events: "")
+      end
+    end
+
+    test "rejects stdout, which carries the report" do
+      assert_raise ArgumentError, ~r/:events must name a file; stdout carries the report/, fn ->
+        Options.new(events: "-")
+      end
+    end
+
+    test "rejects a path a report writes to, however it is spelled" do
+      assert_raise ArgumentError, ~r/:events and the json report both name "out.json"/, fn ->
+        Options.new(events: "./out.json", reporters: [:human, {:json, "out.json"}])
+      end
+    end
+  end
+
   describe "context keys are not options" do
     test "the runtime-wiring keys are rejected as unknown options (they live on Run.Context)" do
       for key <- [:project, :reporter, :on_phase, :on_start, :on_scan] do

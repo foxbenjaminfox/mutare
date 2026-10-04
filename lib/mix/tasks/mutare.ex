@@ -314,6 +314,16 @@ defmodule Mix.Tasks.Mutare do
 
   A run that is killed keeps what it found. While mutants run, a `json` or `html` report bound for a file is rewritten at each tenth of the mutants and within two minutes of any new result, with every mutant not yet tested marked `Pending`; each write replaces the file whole, so even a SIGKILL leaves the last complete checkpoint. A SIGTERM stops the run at once: every report except SARIF is written from the results so far (untested mutants `Pending` in JSON and HTML), a note on stderr says how far the run got, and the run exits with status 143. SARIF is written only by a run that finishes or stops early on `--max-survivors`/`--time-budget` — a partial upload would close the code-scanning alerts of every mutant it did not test. A report written after an early stop also marks the untested mutants `Pending`. A SIGINT (Ctrl-C) is not trapped — the VM answers it with its BREAK menu — so it leaves only the last checkpoint.
 
+  ### Following a run: `--events`
+
+      mix mutare --events mutare.events.jsonl
+                                          # append a JSON line to the file for each
+                                          #   phase and each mutant's verdict
+
+  The reports describe a run once it has finished; `--events FILE` describes it while it runs. Each line is one JSON object: a `start`, a `scanned` with the number of mutants, a `phase` as the run enters each phase, a `mutant` for each verdict — its location, family, status, the patch as `original` and `replacement` over a source `range`, and `evaluated`, how many verdicts the file holds so far — and, last, a `finish` saying why the run stopped (`complete`, `max_survivors`, `time_budget`, `sigterm`, or `error`) with its counts and score. Verdicts are written in source order, as the run accepts them, so a slow mutant holds back the lines of later ones that have finished, and a timeout confirmed by its sequential re-run comes at the end. The `finish` line is written after the reports, so a reader that waits for it finds them complete — except after an `error`, which writes no final report: a report file then holds what it held before, an earlier run's report or, when the error came after mutants had run (too many harness errors), possibly this run's last checkpoint, with the mutants it had not tested `Pending`. A SIGTERM that arrives while the final reports are being written stops the writes, so each report is then either its final version or the last checkpoint, which may hold fewer verdicts than the `finish` counts. A file that ends without a `finish` belongs to a run still going or one that died. The file is truncated as the run starts. Only a mutation run writes events: `--check`, `--dry-run` and the other inspect-and-exit flags leave the file alone. `Mutare.Report.Events` documents every field.
+
+      tail -f mutare.events.jsonl | jq -c 'select(.status == "survived")'
+
   ## Configuration file (`.mutare.exs`)
 
   Configuration may also be placed in `.mutare.exs` (a keyword list); a CLI flag overrides the matching key. Every option is optional — the block below lists all the file-settable keys with their defaults:
@@ -433,13 +443,15 @@ defmodule Mix.Tasks.Mutare do
         verbose: false,
         # emit several reports at once (default is [:human]; the file path is optional and if omitted the report is printed to stdout.)
         # reporters: [:human, {:json, "mutare.json"}, {:sarif, "mutare.sarif"}]
+        # append the run's events to this file as JSON lines (see "Following a run: `--events`")
+        # events: "mutare.events.jsonl"
       ]
   """
   use Mix.Task
 
   alias Mutare.{Config, Options, Project, Runner, Schema}
   alias Mutare.CLI
-  alias Mutare.CLI.{Diagnostics, Info, Outcome, PartialReport}
+  alias Mutare.CLI.{Diagnostics, EventLog, Info, Outcome, PartialReport}
   alias Mutare.Options.Registry
   alias Mutare.Report.Live
   alias Mutare.Run.Context
@@ -509,6 +521,20 @@ defmodule Mix.Tasks.Mutare do
     parse_error in OptionParser.ParseError -> Exception.message(parse_error)
   end
 
+  # The exceptions the task renders as a clean Mix abort rather than a raw stacktrace, from any
+  # mode (`dispatch_with_options/2`); a mutation run also ends its event log on them, and on a
+  # `Mix.Error` (`run_mutation_testing/4`), so add a new one here, not at either rescue:
+  #
+  #   * `Mutare.Ignore.SpecError` — a variant-label spec error from *any* scan: a normal run *or*
+  #     a `--dry-run`/`--list-ignores` info mode (both build a `Mutare.Schema`, so both can
+  #     raise), e.g. a `# mutare:ignore[family:label]` naming a known family's bad variant, or a
+  #     mutator declaring a wire-unsafe label/name.
+  #   * `Mutare.InvariantError` — a `--verify-invariants` violation: the message names every
+  #     violation and its site, which is what a mutator author needs; the checker's stacktrace
+  #     is not.
+  @clean_aborts [Mutare.Ignore.SpecError, Mutare.InvariantError]
+  @event_log_aborts [Mix.Error | @clean_aborts]
+
   # Everything past the no-config flags resolves the project + options first; the
   # remaining inspect-and-exit flags then branch off that, and a normal run falls
   # through to `run_mutation_testing/4`.
@@ -532,14 +558,7 @@ defmodule Mix.Tasks.Mutare do
         true -> run_mutation_testing(project, context, root, flags)
       end
     rescue
-      # A variant-label spec error from *any* scan — a normal run *or* a `--dry-run`/`--list-ignores`
-      # info mode (both build a `Mutare.Schema`, so both can raise) — e.g. a `# mutare:ignore[family:label]`
-      # naming a known family's bad variant, or a mutator declaring a wire-unsafe label/name. Render it
-      # as a clean Mix abort, not a raw stacktrace.
-      error in Mutare.Ignore.SpecError -> Mix.raise(Exception.message(error))
-      # A `--verify-invariants` violation: the message names every violation and its site, which
-      # is what a mutator author needs; the checker's stacktrace is not.
-      error in Mutare.InvariantError -> Mix.raise(Exception.message(error))
+      error in @clean_aborts -> Mix.raise(Exception.message(error))
     end
   end
 
@@ -560,16 +579,35 @@ defmodule Mix.Tasks.Mutare do
     # halts with the status a SIGTERM death reports. Trapped before the scan, so a SIGTERM at
     # any point of the run exits non-zero; `begin/3` replaces the scan-time callback once the
     # schema and the live reporter exist. NOTES "A killed run keeps its reports".
+    #
+    # The event log opens first, before the scan, so its file holds this run's events alone from
+    # the start.
+    events = start_event_log(options)
+
     {:ok, partial} =
-      PartialReport.start_link(options, &interrupted(&1, nil, nil, options, scope))
+      PartialReport.start_link(options, &interrupted(&1, nil, nil, options, scope, events))
 
     sigterm = trap_sigterm(fn -> PartialReport.interrupt(partial) end)
 
     runner = fn schema, root, run_context, live ->
-      :ok = PartialReport.begin(partial, schema, &interrupted(&1, schema, live, options, scope))
-      result = Runner.run_with_schema(schema, root, PartialReport.observe(run_context, partial))
-      # The final reports go to the checkpoints' paths: no checkpoint may land after them.
-      :ok = PartialReport.close(partial)
+      # `scanned` before `begin/3`: a SIGTERM's `finish` counts the mutants once the scan has.
+      if events, do: EventLog.scanned(events, schema)
+
+      :ok =
+        PartialReport.begin(
+          partial,
+          schema,
+          &interrupted(&1, schema, live, options, scope, events)
+        )
+
+      result = Runner.run_with_schema(schema, root, observe(run_context, partial, events, schema))
+      # The final reports go to the checkpoints' paths: no checkpoint may land after them. A
+      # SIGTERM while they are written leaves them be, but still ends the event log.
+      :ok =
+        PartialReport.close(partial, fn _results ->
+          if events, do: EventLog.interrupted(events)
+        end)
+
       result
     end
 
@@ -577,14 +615,57 @@ defmodule Mix.Tasks.Mutare do
       run_compiled(project, context, root, since, runner, %{
         ok: fn run ->
           Outcome.warn_poison_recovery(run)
-          Outcome.report(run, options, scope)
+
+          Outcome.report(run, options, scope, fn ->
+            if events, do: EventLog.finished(events, run, options)
+          end)
         end,
-        unchanged: &Outcome.report_unchanged(&1, since, options, scope)
+        unchanged: fn schema ->
+          if events, do: EventLog.scanned(events, schema)
+
+          Outcome.report_unchanged(schema, since, options, scope, fn ->
+            if events, do: EventLog.unchanged(events)
+          end)
+        end,
+        error: fn reason, message -> if events, do: EventLog.failed(events, reason, message) end
       })
+    rescue
+      # An abort the task renders as a clean failure (`@clean_aborts`, or a `Mix.Error` such as
+      # `--strict-ignores`) ends the event log too, so a reader can tell it from a crash. A
+      # runner error has written its own `finish` by now, and a failing gate raises after one;
+      # the log keeps the `finish` it has.
+      error in @event_log_aborts ->
+        if events, do: EventLog.failed(events, :aborted, Exception.message(error))
+        reraise error, __STACKTRACE__
     after
       if sigterm, do: System.untrap_signal(:sigterm, sigterm)
       GenServer.stop(partial)
+      if events, do: EventLog.stop(events)
     end
+  end
+
+  # The `--events` writer, or `nil` when the run writes no events. A file that cannot be opened
+  # aborts the run before it starts: an agent waiting on it would otherwise wait for nothing.
+  defp start_event_log(%Options{events: nil}), do: nil
+
+  defp start_event_log(%Options{events: path}) do
+    case EventLog.start_link(path) do
+      {:ok, events} ->
+        events
+
+      {:error, reason} ->
+        Mix.raise("cannot write the events to #{path}: #{:file.format_error(reason)}")
+    end
+  end
+
+  # The runner's hooks with the partial report, and the event log if there is one, listening.
+  defp observe(run_context, partial, nil, _schema),
+    do: PartialReport.observe(run_context, partial)
+
+  defp observe(run_context, partial, events, schema) do
+    run_context
+    |> PartialReport.observe(partial)
+    |> EventLog.observe(events, schema)
   end
 
   # The VM's own SIGTERM handler (`init:stop()`, exit status 0) runs after every trap, so the
@@ -598,9 +679,10 @@ defmodule Mix.Tasks.Mutare do
   end
 
   # A SIGTERM before the final reports, in the partial report's process, which halts after it.
-  defp interrupted(results, schema, live, options, scope) do
+  defp interrupted(results, schema, live, options, scope, events) do
     finish_live(live)
     Outcome.report_interrupted(results, schema, options, scope, "SIGTERM")
+    if events, do: EventLog.interrupted(events)
   end
 
   # `--check`: the compile-only preflight. Scan + compile the metamutant (with the same
@@ -619,17 +701,19 @@ defmodule Mix.Tasks.Mutare do
 
     run_compiled(project, context, root, since, runner, %{
       ok: &Info.print_check(&1, project),
-      unchanged: fn _schema -> Mix.shell().info(Outcome.unchanged_note(since)) end
+      unchanged: fn _schema -> Mix.shell().info(Outcome.unchanged_note(since)) end,
+      error: fn _reason, _message -> :ok end
     })
   end
 
   # The shape both compile-backed runs share: scan with live progress, hand the schema to
   # `runner`, tear the live status block down before anything else prints (so the final
-  # report / error lands on a clean terminal — the block lives on stderr), then `on_ok` the
-  # result or raise the error. The `after` is the backstop for an unexpected raise inside the
-  # runner; `Live.finish/1` is idempotent. A scan-time abort (a variant-label
-  # `Mutare.Ignore.SpecError`, or a `--strict-ignores` failure) is already torn down inside
-  # `start_live_scan/3` before it reaches here.
+  # report / error lands on a clean terminal — the block lives on stderr), then `on.ok` the
+  # result, or tell `on.error` the error's reason and message and raise with the message. The
+  # `after` is the backstop for an unexpected raise inside the runner; `Live.finish/1` is
+  # idempotent. A scan-time abort (a variant-label `Mutare.Ignore.SpecError`, or a
+  # `--strict-ignores` failure) is already torn down inside `start_live_scan/3` before it
+  # reaches here.
   #
   # A `--since` scan that found nothing on the changed lines is an answer, not a mistake —
   # a branch that touched only tests, docs or comments changes no code to mutate — so it
@@ -648,8 +732,13 @@ defmodule Mix.Tasks.Mutare do
         finish_live(live)
 
         case result do
-          {:ok, value} -> on.ok.(value)
-          {:error, reason, detail} -> Mix.raise(Outcome.format_error(reason, detail, root))
+          {:ok, value} ->
+            on.ok.(value)
+
+          {:error, reason, detail} ->
+            message = Outcome.format_error(reason, detail, root)
+            on.error.(reason, message)
+            Mix.raise(message)
         end
       end
     after
@@ -753,11 +842,13 @@ defmodule Mix.Tasks.Mutare do
   # `Sourceror` diff for *every* mutant when only the displayed handful need it). Safe to defer
   # when every active reporter needs diff text for survivors **alone**: the default human report
   # and SARIF. `--verbose` leaves a line (with its diff) for *every* mutant as the run streams,
+  # `--events` writes every mutant's replacement,
   # and `:json`/`:html` emit *every* mutant's replacement, so those render eagerly up front.
   # `Mutare.Runner.Hydrate` re-derives the deferred survivors' code at report time. Scoped to the
   # Mix task's known reporters; the library `Mutare.run/2` path never sets it (a custom `:reporter`
   # hook may read any result's code), so it stays eager.
   defp defer_site_code?(%Options{verbose: true}), do: false
+  defp defer_site_code?(%Options{events: path}) when is_binary(path), do: false
 
   defp defer_site_code?(%Options{reporters: reporters}),
     do: Enum.all?(reporters, fn {format, _path} -> format in [:human, :sarif] end)

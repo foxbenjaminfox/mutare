@@ -111,6 +111,20 @@ defmodule Mutare.CLI.PartialReportTest do
     refute File.exists?(json)
   end
 
+  test "after close, an interrupt runs the callback close gave, then halts", %{tmp_dir: tmp_dir} do
+    %{partial: partial, context: context} = start(tmp_dir, 2)
+    test = self()
+
+    context.reporter.(result(1))
+    :ok = PartialReport.close(partial, &send(test, {:closed_interrupt, &1}))
+    context.reporter.(result(2))
+    PartialReport.interrupt(partial)
+
+    assert_received {:closed_interrupt, [%Result{site: %{id: 1}}]}
+    refute_received {:interrupt, _}
+    assert_received {:halt, 143}
+  end
+
   test "the halt happens even when the callback raises", %{tmp_dir: tmp_dir} do
     test = self()
     options = Options.new(reporters: [{:json, Path.join(tmp_dir, "r.json")}])

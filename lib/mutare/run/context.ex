@@ -147,6 +147,32 @@ defmodule Mutare.Run.Context do
   end
 
   @doc """
+  The context with `listener` also called on each event of the hook bound to `field`, after
+  the hook already there (if any) — how the Mix task's partial report and event log listen
+  beside the live reporter.
+
+      iex> ctx = Mutare.Run.Context.new(reporter: &send(self(), {:first, &1}))
+      iex> ctx = Mutare.Run.Context.listen(ctx, :reporter, &send(self(), {:then, &1}))
+      iex> ctx.reporter.(:result)
+      iex> Process.info(self(), :messages)
+      {:messages, [first: :result, then: :result]}
+  """
+  @spec listen(t(), :reporter | :on_phase | :on_start | :on_scan, (term() -> any())) :: t()
+  def listen(%__MODULE__{} = context, field, listener)
+      when field in [:reporter, :on_phase, :on_start, :on_scan] and is_function(listener, 1) do
+    Map.update!(context, field, fn
+      nil ->
+        listener
+
+      hook ->
+        fn event ->
+          hook.(event)
+          listener.(event)
+        end
+    end)
+  end
+
+  @doc """
   Ensure the context carries a `Mutare.Project`, resolving one from `root` if it is
   unset. The entry points (`Mutare.Runner.run/2`, the Mix task) resolve the project
   from the target path + scope flags; the direct `Mutare.run/2` API leaves it `nil`,

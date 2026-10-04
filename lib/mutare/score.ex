@@ -28,11 +28,20 @@ defmodule Mutare.Score do
       50.0
   """
   @spec score([Result.t()]) :: float()
-  def score(results) do
+  def score(results), do: results |> tally() |> score_counts()
+
+  @doc """
+  `score/1` over a tally of the results' statuses, as `Enum.frequencies_by(results, & &1.status)`
+  gives it: for a caller that keeps the counts rather than the results.
+
+      iex> Mutare.Score.score_counts(%{killed: 3, survived: 1, ignored: 2})
+      75.0
+  """
+  @spec score_counts(%{optional(Result.status()) => non_neg_integer()}) :: float()
+  def score_counts(counts) do
     # Kills (numerator) and the scored set (denominator) are classified by `Mutare.Result`:
     # a timeout/atom-exhaustion is a kill, while no-coverage/ignored/poisoned/harness-error
     # reach no verdict and are excluded from the denominator.
-    counts = tally(results)
     killed = count_where(counts, &Result.kill?/1)
     denominator = count_where(counts, &Result.scored?/1)
 

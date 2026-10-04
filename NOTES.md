@@ -1335,16 +1335,58 @@ fed through the `:reporter` hook) keeps every accepted result and writes them tw
   keeps the never-returning code to one clause (and Dialyzer's `no_return` quiet). A hand-rolled `:erl_signal_server` handler that
   removed the default was the first version; the trap does the same job without touching the
   VM's own handler (and without taking SIGQUIT/SIGUSR1 handling with it).
-- **`close/1` before the final reports.** The final reports go to the checkpoints' paths, so a
+- **`close/2` before the final reports.** The final reports go to the checkpoints' paths, so a
   checkpoint landing after them would replace a complete report with a partial one. Once
-  closed, `PartialReport` drops further results, and a SIGTERM during the final writes just
-  halts (the atomic writes leave each file either the last checkpoint or the final report).
+  closed, `PartialReport` drops further results, and a SIGTERM during the final writes writes
+  no report (the atomic writes leave each file either the last checkpoint or the final report):
+  it runs the callback `close/2` gave, which ends the event log, and halts.
 - **SIGINT is not covered.** The VM does not let a program trap it: it opens the BREAK menu,
   which on a terminal waits for input and without one reads EOF and exits with status 0. Only
   the last checkpoint survives.
 - **Deferred: resume.** An append-only log of results would let a re-run skip mutants a killed
   run already tested — the fix for runs too long for one CI job. It needs to know an old verdict
   still holds (same source, same suite, same mutant ids), so it is a feature of its own.
+
+### The event log follows a run; the reports record it `[done]`
+`--events FILE` (`Mutare.CLI.EventLog`, format in `Mutare.Report.Events`) is for a reader
+watching a run in progress, chiefly an agent. The checkpoints above already survive a kill, but
+each one rewrites a whole document, at most every tenth of the mutants or two minutes apart, and
+the plain stderr progress is prose. A JSON line per event can be tailed and filtered one line at
+a time.
+
+- **Accepted verdicts, in source order.** Events hang off the `:reporter` hook, which the ordered
+  collector calls (`Runner.Stream`). A worker knows sooner that its mutant finished, but not
+  whether the result counts: an early stop discards stragglers, and under `:confirm_timeouts` a
+  streamed timeout is provisional. So a line is a verdict the run keeps. The price is that a slow
+  mutant holds back finished ones after it, and confirmed timeouts arrive last. The docs say a
+  quiet file is not a stalled run.
+- **`finish` follows the reports.** `Outcome.report/4` runs its `written` callback between the
+  reports and the gates (a failing gate raises), so a reader that waits for `finish` reads
+  complete reports. An error finish carries `Outcome.format_error/3`'s text, the message the task
+  raises with.
+- **A SIGTERM's `finish` counts the log's own lines.** The partial report and the log each get a
+  result through the hook chain, and the signal is handled in another process. Counting the
+  partial report's results could put `finish` one result ahead of or behind the `mutant` lines
+  above it, so the log keeps a tally of the statuses it wrote. Nothing is written after a
+  `finish`. A SIGTERM while the final reports are written still gets one, `sigterm`, from the
+  callback `PartialReport.close/2` installs; one after the `finish` changes nothing. That one
+  breaks the rule above: the halt cuts the final writes short, so each report is its final
+  version or its last checkpoint, which can trail the `finish` counts. The docs say so.
+- **A clean abort also finishes.** A runner error passes its reason to `on.error`; any other
+  abort the task renders as a clean failure (a bad `# mutare:ignore` qualifier, an invariant
+  violation, `--strict-ignores`) is rescued around the run and finishes as `aborted`, with the
+  text the task raises. Only a SIGKILL or a crash leaves a file without a `finish`.
+- **An `error` writes no final report, but may follow checkpoints.** The harness-error guard
+  aborts after the per-mutant phase, by which time a JSON or HTML report may hold this run's
+  last checkpoint. The docs say so rather than calling the file an earlier run's.
+- **The patch is read off `Mutare.Report.patch/2`.** `original_code` is a Sourceror re-render,
+  not source text, and `Sourceror.patch_string/2` re-indents a multi-line replacement, so
+  `mutated_code` is not the text it splices either. The event gives the source text in the range
+  and the text the patch puts there, so splicing `replacement` reproduces the human diff.
+- **It costs the deferred render.** Every `mutant` line needs its replacement, so `--events`
+  turns off `defer_site_code`, as JSON and HTML do.
+- **Not the resume log the entry above defers.** Its lines record no fingerprint of the source or
+  suite, so they cannot tell a re-run which verdicts still hold.
 
 ### Umbrella support `[M5, done; was in progress]`
 Following the cargo-mutants precedent: **copy the whole umbrella, mutate a scoped

@@ -53,7 +53,8 @@ defmodule Mutare.Options.RegistryTest do
              keep_sandbox: :boolean,
              seed_app_build: :boolean,
              quiet: :boolean,
-             verbose: :boolean
+             verbose: :boolean,
+             events: :string
            ]
 
     # exceptional/translated flags are owned by Mutare.Config, not the registry
@@ -124,7 +125,8 @@ defmodule Mutare.Options.RegistryTest do
              {"seed_app_build", "true"},
              {"quiet", "false"},
              {"verbose", "false"},
-             {"reporters", "human (stdout)"}
+             {"reporters", "human (stdout)"},
+             {"events", "(none)"}
            ]
   end
 

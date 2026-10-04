@@ -1,6 +1,6 @@
 defmodule Mutare.CLI.Outcome do
   @moduledoc false
-  # The run-outcome presentation of `mix mutare`, extracted from `Mix.Tasks.Mutare`: `report/3`
+  # The run-outcome presentation of `mix mutare`, extracted from `Mix.Tasks.Mutare`: `report/4`
   # emits every configured reporter and applies the post-report CI gates (or notes an early stop);
   # `checkpoint/3` and `report_interrupted/5` write the partial reports of a run still in
   # progress (`Mutare.CLI.PartialReport`);
@@ -67,7 +67,9 @@ defmodule Mutare.CLI.Outcome do
     end
   end
 
-  def report(run, %Options{} = options, scope) do
+  # `written` runs once every report is written and before the gates, which may raise: the event
+  # log's `finish` line (`Mutare.CLI.EventLog`) tells a reader the reports are complete.
+  def report(run, %Options{} = options, scope, written \\ fn -> :ok end) do
     # The runner checks partitions after the stream, so every run it returns has
     # `broken_partitions`, one stopped early included (whose reports list them, though
     # `finish_run/2` skips its gate). Checkpoints and an interrupted run's reports are
@@ -77,6 +79,7 @@ defmodule Mutare.CLI.Outcome do
       broken_partitions: run.broken_partitions
     )
 
+    written.()
     finish_run(run, options)
   end
 
@@ -84,9 +87,16 @@ defmodule Mutare.CLI.Outcome do
   # write — empty — so a CI step that uploads a report file finds one, and the gates
   # still apply: over no results they pass (`Mutare.Score` scores an empty denominator
   # at 100), as they would for a run whose every mutant went uncovered.
-  def report_unchanged(%Schema{} = schema, since, %Options{} = options, scope) do
+  def report_unchanged(
+        %Schema{} = schema,
+        since,
+        %Options{} = options,
+        scope,
+        written \\ fn -> :ok end
+      ) do
     Mix.shell().info(unchanged_note(since))
     emit_all([], schema, options, scope: scope)
+    written.()
     gate([], options)
   end
 
@@ -190,11 +200,11 @@ defmodule Mutare.CLI.Outcome do
   # set was evaluated, and — only when a CI gate was configured — that gates were
   # skipped because the result set is partial.
   defp early_stop_note(run, %Options{} = options) do
-    survivors = Enum.count(run.results, &(&1.status == :survived))
     evaluated = length(run.results)
     total = Schema.count(run.schema)
+    cause = stop_cause(stop_reason(run, options), run, options)
 
-    "stopped #{stop_cause(options, survivors)}; evaluated #{evaluated} of #{total} " <>
+    "stopped #{cause}; evaluated #{evaluated} of #{total} " <>
       "mutant#{CLI.plural(total)}. " <> score_scope_note(evaluated, total, options)
   end
 
@@ -212,18 +222,32 @@ defmodule Mutare.CLI.Outcome do
     "The mutation score above is over this stopped run" <> gate_skipped_note(options)
   end
 
-  # Which early-stop condition fired. The survivor cap stops the loop the instant the count reaches
-  # the limit and discards later stragglers, so `survivors == max_survivors` *exactly* on a survivor
-  # stop — when both caps are set and the count is short of the limit, the wall-clock budget must
-  # have fired. (The final clause is unreachable given `stopped_early`, but keeps the note total.)
-  defp stop_cause(%Options{max_survivors: n}, survivors) when is_integer(n) and survivors >= n,
-    do: "after finding #{survivors} survivor#{CLI.plural(survivors)} (--max-survivors #{n})"
+  @doc false
+  # Why the per-mutant phase stopped. The survivor cap stops the loop the instant the count
+  # reaches the limit and discards later stragglers, so `survivors >= max_survivors` on a survivor
+  # stop (a timeout the sequential re-run confirms as a survivor can push the count past it) —
+  # when both caps are set and the count is short of the limit, the wall-clock budget must have
+  # fired. (The final clause is unreachable given `stopped_early`, but keeps the answer total.)
+  @spec stop_reason(Run.t(), Options.t()) :: :complete | :max_survivors | :time_budget
+  def stop_reason(%Run{stopped_early: false}, _options), do: :complete
 
-  defp stop_cause(%Options{time_budget: budget}, _survivors) when is_binary(budget),
+  def stop_reason(%Run{results: results}, %Options{max_survivors: n, time_budget: budget}) do
+    cond do
+      is_integer(n) and survivors(results) >= n -> :max_survivors
+      is_binary(budget) -> :time_budget
+      true -> :max_survivors
+    end
+  end
+
+  defp survivors(results), do: Enum.count(results, &(&1.status == :survived))
+
+  defp stop_cause(:max_survivors, run, %Options{max_survivors: n}) do
+    survivors = survivors(run.results)
+    "after finding #{survivors} survivor#{CLI.plural(survivors)} (--max-survivors #{n})"
+  end
+
+  defp stop_cause(:time_budget, _run, %Options{time_budget: budget}),
     do: "on reaching the time budget (--time-budget #{budget})"
-
-  defp stop_cause(%Options{max_survivors: n}, survivors),
-    do: "after finding #{survivors} survivor#{CLI.plural(survivors)} (--max-survivors #{n})"
 
   defp gate_skipped_note(%Options{} = options) do
     if ci_gates_configured?(options) do

@@ -12,9 +12,10 @@ defmodule Mutare.CLI.PartialReport do
   #     returns, and exits 0. What to write depends on how far the run got, so `begin/3`
   #     replaces the callback the scan ran under.
   #
-  # `close/1` ends both once the runner returns: the final reports go to the same paths, and a
+  # `close/2` ends both once the runner returns: the final reports go to the same paths, and a
   # checkpoint landing after them would overwrite a complete report with a partial one. A signal
-  # after `close/1` finds the final reports being written (atomically) and just halts.
+  # after `close/2` finds the final reports being written (atomically), so it writes none: it
+  # runs the callback `close/2` gave, which has no reports to write, and halts.
   # NOTES "A killed run keeps its reports".
 
   use GenServer
@@ -74,29 +75,21 @@ defmodule Mutare.CLI.PartialReport do
 
   @doc "Records each result the runner accepts, after the context's own `:reporter` (if any)."
   @spec observe(Mutare.Run.Context.t(), GenServer.server()) :: Mutare.Run.Context.t()
-  def observe(%{reporter: reporter} = context, server) do
-    record = &GenServer.cast(server, {:record, &1})
-
-    %{
-      context
-      | reporter:
-          if(reporter,
-            do: fn result ->
-              reporter.(result)
-              record.(result)
-            end,
-            else: record
-          )
-    }
-  end
-
-  @doc "Stops checkpointing: the final reports are about to be written."
-  @spec close(GenServer.server()) :: :ok
-  def close(server), do: GenServer.call(server, :close)
+  def observe(%Mutare.Run.Context{} = context, server),
+    do: Mutare.Run.Context.listen(context, :reporter, &GenServer.cast(server, {:record, &1}))
 
   @doc """
-  On SIGTERM: hands the results so far to `on_interrupt` (unless closed), then halts with status
-  143 whatever the callback did. Returns only under a `:halt` that does.
+  Stops checkpointing and recording: the final reports are about to be written. A SIGTERM from
+  now on gets `on_interrupt`, which must not write a report (the final writes are under way);
+  by default it does nothing.
+  """
+  @spec close(GenServer.server(), on_interrupt()) :: :ok
+  def close(server, on_interrupt \\ fn _results -> :ok end) when is_function(on_interrupt, 1),
+    do: GenServer.call(server, {:close, on_interrupt})
+
+  @doc """
+  On SIGTERM: hands the results so far to the `on_interrupt` callback that now applies, then
+  halts with status 143 whatever the callback did. Returns only under a `:halt` that does.
   """
   @spec interrupt(GenServer.server()) :: :ok
   def interrupt(server), do: GenServer.call(server, :interrupt, :infinity)
@@ -108,13 +101,14 @@ defmodule Mutare.CLI.PartialReport do
   def handle_call({:begin, schema, on_interrupt}, _from, state),
     do: {:reply, :ok, %{state | schema: schema, on_interrupt: on_interrupt}}
 
-  def handle_call(:close, _from, state), do: {:reply, :ok, %{state | closed?: true}}
+  def handle_call({:close, on_interrupt}, _from, state),
+    do: {:reply, :ok, %{state | closed?: true, on_interrupt: on_interrupt}}
 
   def handle_call(:interrupt, _from, state) do
     results = Enum.reverse(state.results)
 
     try do
-      if not state.closed?, do: state.on_interrupt.(results)
+      state.on_interrupt.(results)
     after
       state.halt.(@sigterm_status)
     end
