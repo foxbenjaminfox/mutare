@@ -139,7 +139,20 @@ defmodule Mix.Tasks.Mutare do
                                           #   app's built beams on a narrowed run
                                           #   (on by default)
 
-  `--only`/`--exclude`/`--line` paths (and `:paths` in `.mutare.exs`) are resolved relative to the **target project**, not the directory `mix` was invoked from: targeting another checkout is `mix mutare ./phoenix --only lib/phoenix/naming.ex` — not `--only phoenix/lib/...`. A path that matches nothing aborts with `no mutation sites found`. Under `--since`, a scope that exists but whose changed lines hold no mutation site is not an error: the run reports `nothing to test`, writes empty reports, and exits 0.
+  ### How the scoping flags combine
+
+  A run tests the mutants that pass every one of its filters:
+
+    * **Files** — under an `--only` path and matched by no `--exclude` glob. Several `--only` paths add up; several `--exclude` globs each remove more. In both, a directory stands for every file beneath it.
+    * **Lines** — on a `--line` location (several add up), and on a line changed since the `--since` ref. Given both, a `--line` entry survives only on a changed line. A `--line` in a file the file filter dropped selects nothing; it does not add the file back.
+    * **Families** — produced by a `--mutators` family.
+    * **Count** — `--max-mutants N` applies last: it keeps the first N mutants that passed the filters, ordered by file path, then as each file numbers its mutants. That numbering puts an expression's operands before the expression itself, so it does not run strictly top to bottom: in a call spanning several lines, its arguments' mutants come before the call's own. Ignored and poisoned mutants take places within the N.
+
+  Each of these flags but `--since` replaces its `.mutare.exs` counterpart rather than adding to it, so it can widen a run as well as narrow it: `--only` replaces `paths:`, `--exclude` replaces `exclude:` (the file's excludes no longer apply), `--mutators` replaces `mutators:`, `--line` replaces `only_lines:`, and `--max-mutants` replaces `max_mutants:`. `--since` narrows instead: it keeps the configured `only_lines:` entries on changed lines, as it does `--line` entries. `--dry-run` lists what a combination selects without running anything. The human report's score line names the scoping flags given — `--since`, `--only`, `--exclude`, `--line`, and `--max-mutants`, the last also when `.mutare.exs` set it — since its score covers those mutants alone: `— scoped by --since master --only lib/billing`.
+
+  Paths are resolved relative to the **target project**, not the directory `mix` was invoked from: targeting another checkout is `mix mutare ./phoenix --only lib/phoenix/naming.ex` — not `--only phoenix/lib/...`. In an umbrella, the project is the whole umbrella, even when the target is `apps/billing`, and the apps chosen (see "Umbrella projects") come first: `--only` paths (and `paths:`) are read inside each chosen app, so `--only lib/billing` means `apps/<app>/lib/billing` in each. `--exclude` and `--line` take paths from the umbrella root, as does `--since`'s diff. Those are the paths the report prints, so a survivor's location can be pasted into `--line` as it stands.
+
+  A path that matches nothing aborts with `no mutation sites found`. Under `--since`, a scope that exists but whose changed lines hold no mutation site is not an error: the run reports `nothing to test`, writes empty reports, and exits 0.
 
   ## Continuous integration
 
@@ -153,7 +166,7 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --strict-ignores         # exit 1 if any `# mutare:` comment matched
                                           #   no mutant (a typo'd verb/family or stale line)
 
-  Combine `--since` with CI gates to gate only the code a pull request changed, and `--quiet` to drop the live progress (spinner, phases, per-survivor and `PROGRESS` lines); the final report (and any machine reports) will still be printed. When stderr is not a terminal, the `PROGRESS` lines are what keep a long run from looking silent, so leave them on where a CI system kills jobs that produce no output for a while. A pull request that changes no mutatable line — only tests, docs, or comments — passes, with empty reports written. The human report's score line names the flags that scoped the run (`— scoped by --since origin/master`), since its score covers those mutants alone; `--only`, `--exclude`, `--line` and `--max-mutants` are named the same way.
+  Combine `--since` with CI gates to gate only the code a pull request changed, and `--quiet` to drop the live progress (spinner, phases, per-survivor and `PROGRESS` lines); the final report (and any machine reports) will still be printed. When stderr is not a terminal, the `PROGRESS` lines are what keep a long run from looking silent, so leave them on where a CI system kills jobs that produce no output for a while. A pull request that changes no mutatable line — only tests, docs, or comments — passes, with empty reports written.
 
       mix mutare --since origin/master --min-score 80 --quiet
 
