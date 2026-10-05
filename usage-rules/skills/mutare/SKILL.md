@@ -25,7 +25,7 @@ Two companion files hold the longer material:
 [references/triage.md](references/triage.md) (what each kind of survivor usually
 means and how to kill it) and
 [references/troubleshooting.md](references/troubleshooting.md) (red baselines,
-poisoned builds, harness errors, slow runs).
+poisoned builds, harness errors, crashed runs, slow runs).
 
 ## What the mechanism implies
 

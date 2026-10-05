@@ -161,7 +161,8 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   outcome, declined inference wraps) and `Runner.Compile` narrates it. `Command` is the
   **decoding side of the exit-code contract**: it runs a mutant `mix test` and reads exit code +
   output into a typed outcome
-  (`:passed`/`:failed`/`:timeout`/`:sigkilled`/`:harness_error`, refined from output into
+  (`:passed`/`:failed`/`:timeout`/`:sigkilled`/`:harness_error`, refined by the failure witness
+  into `:failed_then_crashed` and from output into
   `:suite_compile_error`/`:atom_exhausted`/`:app_start_failure`/`:boot_failure`); the codes
   themselves are the leaf
   `Command.Exit`, which the watcher ASTs in `Command.Invocation` also read. `Invocation.environment/2`
@@ -250,7 +251,10 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   `Mutare.Selector`; the timeout and owner-death env vars + watchers in
   `Mutare.Sandbox.Command.Invocation` and their exit codes in `Mutare.Sandbox.Command.Exit`; the
   coverage contract (`MUTARE_COVERAGE`, immutable probe mode, recording readiness, the ETS tables, `MutareCov`, the dump
-  file) in `Mutare.Coverage.Recorder`. `Mutare.Transform` emits the selectors/coverage into the
+  file) in `Mutare.Coverage.Recorder`. The failure witness (`MUTARE_FAILURE_WITNESS`, the formatter the
+  test helper appends) lives in `Mutare.Sandbox.Command.FailureWitness`; `Command.outcome/3` reads
+  it only to refine a harness error into a kill — NOTES "A test that failed before the run
+  crashed is a kill". `Mutare.Transform` emits the selectors/coverage into the
   metamutant; `Mutare.Sandbox` emits the reader/watchers/helper into the bootstrap (and the
   owner-death watcher into `config/config.exs`, so it guards the one compile too — NOTES
   "Owner-death reaping"). Change one half in isolation and the metamutant stops responding. (The selection key is

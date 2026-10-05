@@ -6,7 +6,9 @@ defmodule Mutare.Sandbox do
   each metamutant over its original, and inject a tiny bootstrap into
   `test/test_helper.exs` that combines `MUTARE_MUTANT_NAMESPACE` (the active
   mutant's file) and `MUTARE_ACTIVE_MUTANT` (its id within that file) into one
-  `:persistent_term` entry before the suite starts. A second injection prefixes
+  `:persistent_term` entry before the suite starts. After the user's helper, Mutare appends a
+  formatter that records a failed test (`Mutare.Sandbox.Command.FailureWitness`), so a run
+  that crashes after a failure still counts as a kill. A second injection prefixes
   `config/config.exs` with the owner-death watcher
   (`Mutare.Sandbox.Command.Invocation.owner_watch_ast/0`),
   so every sandbox `mix` — including the one-time compile, which runs before any
@@ -52,7 +54,7 @@ defmodule Mutare.Sandbox do
   alias Mutare.Run.Context
   alias Mutare.Sandbox.{CompilerOptions, Lock, Mirror, Ownership, Paths, RuntimeConfig, Seed}
   alias Mutare.Sandbox.ProjectEvaluation
-  alias Mutare.Sandbox.Command.Invocation
+  alias Mutare.Sandbox.Command.{FailureWitness, Invocation}
 
   # The top-level entries a sandbox never takes from the target: build output, VCS and editor
   # state, and the lock. One list for both modes — the fresh copy skips them and the kept-mode
@@ -135,6 +137,14 @@ defmodule Mutare.Sandbox do
   @coverage_after_suite """
   # ---- injected by Mutare: coverage dump (inert unless probing) -------------
   #{Macro.to_string(Recorder.after_suite_ast())}
+  # ---------------------------------------------------------------------------
+  """
+
+  # After the user's `ExUnit.start/1` too, so the witness formatter is appended to whatever
+  # formatters the helper configured rather than overwritten by them.
+  @failure_witness """
+  # ---- injected by Mutare: record a failed test (inert unless armed) --------
+  #{Macro.to_string(FailureWitness.install_ast())}
   # ---------------------------------------------------------------------------
   """
 
@@ -391,14 +401,14 @@ defmodule Mutare.Sandbox do
   # behavior: the root helper, created if absent.
   defp helper_rels(_root, _project), do: [@helper_rel]
 
-  # Wrap the user's test helper with the selector/timeout bootstrap and the
-  # coverage probe (split around `ExUnit.start/0`; see the constants above). Shared
-  # by both the fresh and keep paths so the rendered helper can't drift.
+  # Wrap the user's test helper with the selector/timeout bootstrap, the coverage
+  # probe (split around `ExUnit.start/0`; see the constants above) and the failure
+  # witness. Shared by both the fresh and keep paths so the rendered helper can't drift.
   defp helper_contents(user_source, attribution) do
     @bootstrap <>
       "\n" <>
       @coverage_setup <>
-      "\n" <> user_source <> "\n" <> attribution <> @coverage_after_suite
+      "\n" <> user_source <> "\n" <> attribution <> @coverage_after_suite <> @failure_witness
   end
 
   # The probe-gated calls to each coverage-attribution extension

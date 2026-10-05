@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - On Elixir's development branch (`main`), a dropped clause's live-progress summary no
   longer includes the comment written above the clause.
+- A mutant whose test failed is counted as killed even when the run then crashed before
+  `mix test` could exit with the failure code. A formatter that raises while printing the
+  failure does this: ExUnit's own CLI formatter does it for an assertion message that is not
+  valid UTF-8. Such a run used to be recorded as a harness error. The test bootstrap now
+  adds a formatter that records the first failed test. Mutare counts a run as killed when
+  that record exists, and logs a warning naming the crash.
 
 ## [0.5.1] - 2026-10-04
 

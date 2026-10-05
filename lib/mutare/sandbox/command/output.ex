@@ -9,7 +9,7 @@ defmodule Mutare.Sandbox.Command.Output do
       a mutation that broke the test suite's own compilation — and a BEAM abort can
       land on any code. `suite_compile_error?/1`, `atom_exhausted?/1`,
       `app_start_failure?/1`, `config_failure?/1`, `project_failure?/1`, and `boot_failure?/1` are the pure
-      discriminators `Mutare.Sandbox.Command.outcome/2` uses to split those cases (see that
+      discriminators `Mutare.Sandbox.Command.outcome/3` uses to split those cases (see that
       module's moduledoc for *why* each is the verdict it is).
     * **Locating a failure.** `Mutare.Poison` maps a failed metamutant compile back
       to mutant ids (`source_location_regex/0` + `diagnostic_severity/1`, and the
@@ -56,7 +56,7 @@ defmodule Mutare.Sandbox.Command.Output do
   # stderr and halts the whole node the instant the global atom table fills; a
   # mutation that mints unbounded atoms (an unterminated search building a fresh
   # `:"#{x}_#{i}"` per step) is what gets it there. `stderr` is merged into the
-  # captured output (`stderr_to_stdout: true`), so the banner reaches `outcome/2`.
+  # captured output (`stderr_to_stdout: true`), so the banner reaches `outcome/3`.
   # The wording (`no more index entries in atom_tab`) is stable across OTP releases.
   @atom_table_exhausted ~r/no more index entries in atom_tab/
 
@@ -103,7 +103,7 @@ defmodule Mutare.Sandbox.Command.Output do
   #
   # Distinct again from `@boot_during_startup` above, which is the node dying so
   # early that no Mix error survives at all — that one stays infra too, and outranks
-  # this marker in `Mutare.Sandbox.Command.outcome/2`.
+  # this marker in `Mutare.Sandbox.Command.outcome/3`.
   @app_start_failure ~r/^\*\* \(Mix\) Could not start application [^\s:]+: .*\.start\(/m
 
   # Config evaluates user code before Application.start/2, including runtime.exs.
@@ -358,7 +358,7 @@ defmodule Mutare.Sandbox.Command.Output do
   the mutation active.
 
   This predicate only refines an otherwise-`:harness_error` exit in
-  `Mutare.Sandbox.Command.outcome/2`; normal pass, fail, and timeout verdicts
+  `Mutare.Sandbox.Command.outcome/3`; normal pass, fail, and timeout verdicts
   take precedence.
   """
   @spec atom_exhausted?(String.t()) :: boolean()
@@ -373,7 +373,7 @@ defmodule Mutare.Sandbox.Command.Output do
   starts the app before it loads `test_helper.exs`, and the sandbox has already
   selected the mutant by then, so such a mutation aborts the boot instead of failing
   a test. The baseline boots the same sandbox green, so the runner treats a
-  *persistent* one as a kill — see `Mutare.Sandbox.Command.outcome/2` and
+  *persistent* one as a kill — see `Mutare.Sandbox.Command.outcome/3` and
   `Mutare.Runner.MutantRun`, which first spends the boot-contention retry budget so a
   transient startup collision is never charged as a detection.
 
@@ -400,7 +400,7 @@ defmodule Mutare.Sandbox.Command.Output do
   Config's evaluator frame or a `runtime.exs` script frame also identifies that
   boundary when present. Arbitrary exceptions and
   missing config files remain infrastructure failures. The baseline configured
-  the same sandbox successfully; `Mutare.Sandbox.Command.outcome/2` treats this
+  the same sandbox successfully; `Mutare.Sandbox.Command.outcome/3` treats this
   as `:app_start_failure`, subject to the same boot-contention retries and
   `boot_failure?/1` precedence as a failing application callback.
   """
@@ -417,7 +417,7 @@ defmodule Mutare.Sandbox.Command.Output do
   The sandbox's `mix.exs` wrapper emits explicit evidence before re-raising,
   retaining attribution when a deep library call loses every project stack frame.
   An exception alone, or a message merely mentioning `mix.exs`, is insufficient.
-  `Mutare.Sandbox.Command.outcome/2` applies the same startup-kill policy as for
+  `Mutare.Sandbox.Command.outcome/3` applies the same startup-kill policy as for
   configuration, including boot-contention retries and `boot_failure?/1` precedence.
   """
   @spec project_failure?(String.t()) :: boolean()

@@ -15,7 +15,7 @@ defmodule Mutare.Sandbox.Command do
       gets (one builder per run option, from which the reserved variable set derives),
       and the watcher ASTs (the *producing* side of the timeout and owner-death codes).
     * `Mutare.Sandbox.Command.Output` — every pattern that reads `mix`'s human-readable
-      output, including the discriminators used by `outcome/2` below.
+      output, including the discriminators used by `outcome/3` below.
     * `Mutare.Sandbox.CompilerOptions` — the env that speeds the one metamutant compile.
 
   ## The exit-code contract
@@ -24,9 +24,17 @@ defmodule Mutare.Sandbox.Command do
   leaf `Mutare.Sandbox.Command.Exit`, which both the watcher ASTs (the producing
   side, in `Invocation`) and this module (the decoding side) read from.
 
-  `outcome/2` refines `Exit.decode/1`'s ambiguous "anything else" case with the
-  run's output (via the `Mutare.Sandbox.Command.Output` discriminators). Three refinements recover
-  *detected*-mutant cases from the otherwise-`:harness_error` bucket:
+  `outcome/3` refines `Exit.decode/1`'s ambiguous "anything else" case. The first
+  refinement reads no output: the test bootstrap's failure witness
+  (`Mutare.Sandbox.Command.FailureWitness`) records that a test failed, so a run that
+  crashed afterwards — a formatter raising while it printed the failure takes `mix test`
+  down at ExUnit's teardown, exit `1`, before Mix can exit with the failure code — is
+  `:failed_then_crashed`, a kill. The witness is evidence in one direction only: its
+  absence decides nothing.
+
+  The rest read the run's output (via the `Mutare.Sandbox.Command.Output`
+  discriminators). Three recover *detected*-mutant cases from the
+  otherwise-`:harness_error` bucket:
 
     * a mutation that broke the **test suite's** own compilation (it ran at the
       test modules' compile time) exits `1` with a test-script compile-error
@@ -58,8 +66,8 @@ defmodule Mutare.Sandbox.Command do
   it harder (see `Mutare.Runner`).
 
   `timed_test/4` applies the `--exit-status` flag (`test_argv/1`), runs the mutant via
-  `Mutare.Sandbox.Command.Invocation.timed_mix/4`, and returns a typed
-  `Mutare.Sandbox.Command.Result` decoded via `outcome/2`.
+  `Mutare.Sandbox.Command.Invocation.timed_mix/4` with a fresh failure witness armed, and
+  returns a typed `Mutare.Sandbox.Command.Result` decoded via `outcome/3`.
 
   ## Kill detection stops at the first failure
 
@@ -76,7 +84,7 @@ defmodule Mutare.Sandbox.Command do
   """
 
   alias Mutare.TestSelection
-  alias Mutare.Sandbox.Command.{Exit, Invocation, Output, Result}
+  alias Mutare.Sandbox.Command.{Exit, FailureWitness, Invocation, Output, Result}
 
   # Startup work a per-mutant `mix test` can safely skip. The metamutant lib is compiled
   # **once** before any mutant runs and its sources never change between runs (the
@@ -113,18 +121,18 @@ defmodule Mutare.Sandbox.Command do
       `Plug.Router.Utils` helper, an `EEx`/`use`-time call, a compile-time
       `@attr` expression…). The mutation *was* detected — the suite can't even
       build with it — so the runner counts it as a kill, not an infra failure
-      (see `outcome/2`).
+      (see `outcome/3`).
     * `:atom_exhausted` — a refinement of `:harness_error`: the mutation made the
       program mint unbounded atoms and the BEAM aborted when the atom table filled.
       A resource-divergence like a timeout (the suite can never pass with it), so
-      the runner counts it as a kill — see `outcome/2` and `Output.atom_exhausted?/1`.
+      the runner counts it as a kill — see `outcome/3` and `Output.atom_exhausted?/1`.
     * `:app_start_failure` — a refinement of `:harness_error`: Mix refused to start
       the target's OTP application because the mutation broke project evaluation
       (`Output.project_failure?/1`), configuration
       (`Output.config_failure?/1`) or code reachable from `Application.start/2`
       (`Output.app_start_failure?/1`). The suite never ran, but
       the mutation *was* detected — the app can't even boot with it — so the runner
-      counts it as a kill once the boot-contention retries are spent (see `outcome/2`
+      counts it as a kill once the boot-contention retries are spent (see `outcome/3`
       and `Mutare.Runner.MutantRun`).
     * `:boot_failure` — a refinement of `:harness_error` that is **still not a
       kill**: the sandbox node died during boot and its own diagnostic was erased
@@ -137,6 +145,11 @@ defmodule Mutare.Sandbox.Command do
       dominant cause is the kernel OOM killer reaping a mutant made to allocate
       unboundedly, and re-running such a mutant re-detonates the same memory
       blowup on the host (see `Mutare.Runner` and the `:max_heap_mb` option).
+    * `:failed_then_crashed` — a refinement of `:harness_error`: the failure witness
+      saw a test fail, and the run then crashed before Mix could exit with the
+      failure code (typically a formatter raising while printing the failure). The
+      verdict was reached before the crash, so the runner counts it as a kill and
+      warns about the crash (see `outcome/3`).
   """
   @type outcome ::
           :passed
@@ -148,10 +161,17 @@ defmodule Mutare.Sandbox.Command do
           | :app_start_failure
           | :boot_failure
           | :sigkilled
+          | :failed_then_crashed
 
   @doc """
-  Decode an exit status *refined by the run's output* — the only place this
-  contract looks past the exit code, and only to split one ambiguous case.
+  Decode an exit status *refined by the run's failure witness and output* — the only
+  place this contract looks past the exit code, and only to split one ambiguous case.
+
+  The witness comes first. When it records a failed test (`:test_failed`), a run that
+  exited off the contract is `:failed_then_crashed`: a test failed, so the mutation was
+  detected, whatever ended the run afterwards. Its absence (`:none`) is no evidence —
+  the witness is a formatter, fed by casts, and can lose the race with a halting VM — so
+  every other reading below is unchanged by it.
 
   Exit `1` covers both a real harness failure (a missing dep, an infra compile
   error) *and* a mutation that broke the test suite's own compilation. They are
@@ -190,13 +210,19 @@ defmodule Mutare.Sandbox.Command do
   refinements: a SIGKILLed run's output is truncated wherever the kill landed, so
   matching output markers in it would be unreliable — and none of these markers'
   causes exits via SIGKILL anyway (a compile error exits `1`; atom exhaustion is
-  the VM aborting itself).
+  the VM aborting itself). It bypasses the witness too: read as a kill, it would be
+  re-run under `:kill_runs`, re-detonating the memory blowup a SIGKILL most often means.
   """
-  @spec outcome(non_neg_integer(), String.t()) :: outcome()
-  def outcome(status, output) when is_binary(output) do
+  @spec outcome(non_neg_integer(), String.t(), FailureWitness.t()) :: outcome()
+  def outcome(status, output, witness) when is_binary(output) do
     case Exit.decode(status) do
       :harness_error ->
         cond do
+          # Not read off the output, and first: a failed test is the verdict itself, and
+          # whatever ended the run afterwards cannot undo it.
+          witness == :test_failed ->
+            :failed_then_crashed
+
           # These two kills come first: a detected mutation must never be masked by a
           # boot banner (they don't co-occur — a node dead at boot never compiled a
           # test script nor filled the atom table — but precedence is fail-safe).
@@ -259,7 +285,8 @@ defmodule Mutare.Sandbox.Command do
   run options of `Mutare.Sandbox.Command.Invocation.mix/4` — `:cap` bounds an
   overrun via the watcher, `:max_heap_mb` caps the heap, `:schedulers` trims the
   run's scheduler threads, `:partition` carries the per-worker partition entry; `[]`
-  sets none.
+  sets none. `:failure_witness` is always set here, to a path this run alone uses, and
+  read back (and removed) once the run ends.
   """
   @spec timed_test(
           Path.t(),
@@ -269,10 +296,12 @@ defmodule Mutare.Sandbox.Command do
         ) ::
           Result.t()
   def timed_test(sandbox, selection, mutant_id, opts \\ []) do
+    witness_path = FailureWitness.fresh_path()
+    opts = Keyword.put(opts, :failure_witness, witness_path)
     {ms, output, status} = Invocation.timed_mix(sandbox, test_argv(selection), mutant_id, opts)
 
     %Result{
-      outcome: outcome(status, output),
+      outcome: outcome(status, output, FailureWitness.take(witness_path)),
       exit_status: status,
       output: output,
       duration_ms: ms

@@ -19,7 +19,8 @@ defmodule Mutare.Runner.OutcomePolicyTest do
              app_start_failure: :killed,
              harness_error: :harness_error,
              boot_failure: :harness_error,
-             sigkilled: :harness_error
+             sigkilled: :harness_error,
+             failed_then_crashed: :killed
            }
 
     assert Map.new(OutcomePolicy.outcomes(), &{&1, OutcomePolicy.retry(&1)}) == %{
@@ -31,7 +32,8 @@ defmodule Mutare.Runner.OutcomePolicyTest do
              app_start_failure: :boot_contention,
              harness_error: :harness,
              boot_failure: :boot_contention,
-             sigkilled: :none
+             sigkilled: :none,
+             failed_then_crashed: :none
            }
   end
 
@@ -42,7 +44,8 @@ defmodule Mutare.Runner.OutcomePolicyTest do
                :timeout,
                :suite_compile_error,
                :atom_exhausted,
-               :app_start_failure
+               :app_start_failure,
+               :failed_then_crashed
              ])
   end
 
@@ -56,7 +59,8 @@ defmodule Mutare.Runner.OutcomePolicyTest do
              app_start_failure: :contended_kill,
              harness_error: :no_verdict,
              boot_failure: :no_verdict,
-             sigkilled: :no_verdict
+             sigkilled: :no_verdict,
+             failed_then_crashed: :crashed_after_kill
            }
   end
 

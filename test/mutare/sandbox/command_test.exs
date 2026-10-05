@@ -61,7 +61,63 @@ defmodule Mutare.Sandbox.CommandTest do
     end
   end
 
-  describe "outcome/2 refines a harness error with the run's output" do
+  describe "outcome/3 refines a harness error with the failure witness" do
+    @crash """
+    ** (EXIT from #PID<0.99.0>) exited in: GenServer.stop(#PID<0.175.0>, :normal, :infinity)
+        ** (EXIT) an exception was raised:
+            ** (ArgumentError) argument error
+                (ex_unit 1.19.6) lib/ex_unit/cli_formatter.ex:134: ExUnit.CLIFormatter.handle_cast/2
+    """
+
+    test "a witnessed failure in a run that exited off the contract is a kill" do
+      assert Command.outcome(1, @crash, :test_failed) == :failed_then_crashed
+      assert Command.outcome(1, @crash, :none) == :harness_error
+    end
+
+    test "a witnessed failure outranks every output refinement" do
+      # A test failed: that is the verdict, whatever the output says happened afterwards.
+      for output <- [
+            "** (Mix) Could not start application shop: exited in: " <>
+              "Shop.Application.start(:normal, [])\n",
+            "== Compilation error in file test/a_test.exs ==\n",
+            "Slogan: Runtime terminating during boot ({badarg,[{io,put_chars,[standard_error,"
+          ] do
+        assert Command.outcome(1, output, :test_failed) == :failed_then_crashed
+      end
+    end
+
+    test "the witness never changes a decoded code" do
+      # Exit 0 with a witness cannot happen under `mix test`, and the other codes already
+      # carry their verdict; a SIGKILL stays unretried rather than rerun as a kill.
+      for {status, decoded} <- [
+            {0, :passed},
+            {Exit.failure(), :failed},
+            {Exit.timeout(), :timeout},
+            {Exit.sigkill(), :sigkilled}
+          ] do
+        assert Command.outcome(status, @crash, :test_failed) == decoded
+      end
+    end
+  end
+
+  describe "FailureWitness.take/1" do
+    alias Mutare.Sandbox.Command.FailureWitness
+
+    test "reports and removes a witness file, and reports :none when there is none" do
+      path = FailureWitness.fresh_path()
+      assert FailureWitness.take(path) == :none
+
+      File.write!(path, "")
+      assert FailureWitness.take(path) == :test_failed
+      refute File.exists?(path)
+    end
+
+    test "fresh paths are distinct" do
+      refute FailureWitness.fresh_path() == FailureWitness.fresh_path()
+    end
+  end
+
+  describe "outcome/3 refines a harness error with the run's output" do
     # The discriminators these decode against are unit-tested in
     # `Mutare.Sandbox.Command.Output`; here we pin the *decoder* — that each
     # refinement maps to the right outcome and never overrides a real verdict.
@@ -76,26 +132,26 @@ defmodule Mutare.Sandbox.CommandTest do
       # The mutation broke code that runs at the test modules' compile time, so the
       # suite can't build with it — detected. The lib compiled once at baseline, so
       # this fresh compile error can only be a re-evaluated test script.
-      assert Command.outcome(1, @test_compile_error) == :suite_compile_error
+      assert Command.outcome(1, @test_compile_error, :none) == :suite_compile_error
     end
 
     test "a real harness error (missing dep, exit 1) stays a harness error" do
       missing_dep = "Unchecked dependencies for environment test:\n* mime (Hex package)"
-      assert Command.outcome(1, missing_dep) == :harness_error
+      assert Command.outcome(1, missing_dep, :none) == :harness_error
     end
 
     test "a lib-file compile error is not a suite compile error (fail safe)" do
       # A compile error in a lib source is unexpected (the lib compiled at
       # baseline) — treat it as infra, never silently as a kill.
       lib_error = "== Compilation error in file lib/plug/router/utils.ex ==\n** (CompileError)"
-      assert Command.outcome(1, lib_error) == :harness_error
+      assert Command.outcome(1, lib_error, :none) == :harness_error
     end
 
     test "output never overrides a real verdict (pass/fail/timeout win)" do
       # The refinement only applies to the otherwise-`:harness_error` case.
-      assert Command.outcome(0, @test_compile_error) == :passed
-      assert Command.outcome(Exit.failure(), @test_compile_error) == :failed
-      assert Command.outcome(Exit.timeout(), @test_compile_error) == :timeout
+      assert Command.outcome(0, @test_compile_error, :none) == :passed
+      assert Command.outcome(Exit.failure(), @test_compile_error, :none) == :failed
+      assert Command.outcome(Exit.timeout(), @test_compile_error, :none) == :timeout
     end
 
     # The BEAM prints this to stderr (merged into the captured output) and aborts
@@ -109,14 +165,14 @@ defmodule Mutare.Sandbox.CommandTest do
     test "an atom-table exhaustion is a kill (resource-divergence), not infra" do
       # The VM crashed before the timeout watcher could self-halt, so it lands on a
       # generic harness exit code — exit 1, or a signal code if the abort raised one.
-      assert Command.outcome(1, @atom_crash) == :atom_exhausted
-      assert Command.outcome(134, @atom_crash) == :atom_exhausted
+      assert Command.outcome(1, @atom_crash, :none) == :atom_exhausted
+      assert Command.outcome(134, @atom_crash, :none) == :atom_exhausted
     end
 
     test "the atom banner never overrides a real verdict (pass/fail/timeout win)" do
-      assert Command.outcome(0, @atom_crash) == :passed
-      assert Command.outcome(Exit.failure(), @atom_crash) == :failed
-      assert Command.outcome(Exit.timeout(), @atom_crash) == :timeout
+      assert Command.outcome(0, @atom_crash, :none) == :passed
+      assert Command.outcome(Exit.failure(), @atom_crash, :none) == :failed
+      assert Command.outcome(Exit.timeout(), @atom_crash, :none) == :timeout
     end
 
     # The emulator's self-erasing boot crash: a supervised child fails to start under
@@ -136,8 +192,8 @@ defmodule Mutare.Sandbox.CommandTest do
       # (exit 1, or a signal code if the abort raised one). The refinement *names* the
       # cause (`:boot_failure`) so the runner can retry/message it — but it stays out
       # of the score, never charged as a kill.
-      assert Command.outcome(1, @boot_crash) == :boot_failure
-      assert Command.outcome(158, @boot_crash) == :boot_failure
+      assert Command.outcome(1, @boot_crash, :none) == :boot_failure
+      assert Command.outcome(158, @boot_crash, :none) == :boot_failure
     end
 
     # Mix stopping the run because the target's application would not start with the
@@ -150,7 +206,7 @@ defmodule Mutare.Sandbox.CommandTest do
     """
 
     test "an application that will not start with the mutation active is a kill" do
-      assert Command.outcome(1, @app_start_crash) == :app_start_failure
+      assert Command.outcome(1, @app_start_crash, :none) == :app_start_failure
     end
 
     @config_crash """
@@ -164,8 +220,8 @@ defmodule Mutare.Sandbox.CommandTest do
     """
 
     test "a runtime configuration exception receives the startup kill and retry policy" do
-      assert Command.outcome(1, @config_crash) == :app_start_failure
-      assert Command.outcome(1, @config_crash <> @boot_crash) == :boot_failure
+      assert Command.outcome(1, @config_crash, :none) == :app_start_failure
+      assert Command.outcome(1, @config_crash <> @boot_crash, :none) == :boot_failure
     end
 
     test "project evaluation evidence receives the startup policy without overriding exit verdicts" do
@@ -173,23 +229,26 @@ defmodule Mutare.Sandbox.CommandTest do
 
       for header <- ["** (RuntimeError) rejected", "** (exit) :rejected", "** (throw) :rejected"] do
         output = marker <> "\n" <> header <> "\n"
-        assert Command.outcome(1, output) == :app_start_failure
-        assert Command.outcome(1, String.replace(output, "\n", "\r\n")) == :app_start_failure
-        assert Command.outcome(1, output <> @boot_crash) == :boot_failure
-        assert Command.outcome(0, output) == :passed
-        assert Command.outcome(Exit.failure(), output) == :failed
-        assert Command.outcome(Exit.timeout(), output) == :timeout
-        assert Command.outcome(Exit.sigkill(), output) == :sigkilled
+        assert Command.outcome(1, output, :none) == :app_start_failure
 
-        assert Command.outcome(1, header) == :harness_error
-        assert Command.outcome(1, header <> " mentions " <> marker) == :harness_error
+        assert Command.outcome(1, String.replace(output, "\n", "\r\n"), :none) ==
+                 :app_start_failure
 
-        assert Command.outcome(1, header <> "\n" <> marker <> " mentioned in a message\n") ==
+        assert Command.outcome(1, output <> @boot_crash, :none) == :boot_failure
+        assert Command.outcome(0, output, :none) == :passed
+        assert Command.outcome(Exit.failure(), output, :none) == :failed
+        assert Command.outcome(Exit.timeout(), output, :none) == :timeout
+        assert Command.outcome(Exit.sigkill(), output, :none) == :sigkilled
+
+        assert Command.outcome(1, header, :none) == :harness_error
+        assert Command.outcome(1, header <> " mentions " <> marker, :none) == :harness_error
+
+        assert Command.outcome(1, header <> "\n" <> marker <> " mentioned in a message\n", :none) ==
                  :harness_error
       end
 
-      assert Command.outcome(1, marker <> "\n") == :harness_error
-      assert Command.outcome(1, "** (File.Error) could not read mix.exs") == :harness_error
+      assert Command.outcome(1, marker <> "\n", :none) == :harness_error
+      assert Command.outcome(1, "** (File.Error) could not read mix.exs", :none) == :harness_error
     end
 
     test "configuration output never overrides an exit-code verdict or SIGKILL" do
@@ -198,23 +257,28 @@ defmodule Mutare.Sandbox.CommandTest do
           "\n** (ArithmeticError) bad argument in arithmetic expression\n"
 
       for output <- [@config_crash, marked_crash] do
-        assert Command.outcome(1, output) == :app_start_failure
-        assert Command.outcome(1, output <> @boot_crash) == :boot_failure
-        assert Command.outcome(0, output) == :passed
-        assert Command.outcome(Exit.failure(), output) == :failed
-        assert Command.outcome(Exit.timeout(), output) == :timeout
-        assert Command.outcome(Exit.sigkill(), output) == :sigkilled
+        assert Command.outcome(1, output, :none) == :app_start_failure
+        assert Command.outcome(1, output <> @boot_crash, :none) == :boot_failure
+        assert Command.outcome(0, output, :none) == :passed
+        assert Command.outcome(Exit.failure(), output, :none) == :failed
+        assert Command.outcome(Exit.timeout(), output, :none) == :timeout
+        assert Command.outcome(Exit.sigkill(), output, :none) == :sigkilled
       end
     end
 
     test "an exception without evidence of configuration evaluation stays infrastructure" do
-      assert Command.outcome(1, "** (RuntimeError) pool_size must be small") == :harness_error
+      assert Command.outcome(1, "** (RuntimeError) pool_size must be small", :none) ==
+               :harness_error
 
-      assert Command.outcome(1, """
-             ** (File.Error) could not read file "config/runtime.exs": permission denied
-                 (elixir 1.19.5) lib/file.ex:385: File.read!/1
-                 (elixir 1.19.5) lib/config/reader.ex:102: Config.Reader.read!/2
-             """) == :harness_error
+      assert Command.outcome(
+               1,
+               """
+               ** (File.Error) could not read file "config/runtime.exs": permission denied
+                   (elixir 1.19.5) lib/file.ex:385: File.read!/1
+                   (elixir 1.19.5) lib/config/reader.ex:102: Config.Reader.read!/2
+               """,
+               :none
+             ) == :harness_error
     end
 
     test "a sandbox with no built .app stays a harness error under the same banner" do
@@ -225,42 +289,42 @@ defmodule Mutare.Sandbox.CommandTest do
         "** (Mix) Could not start application shop: could not find application " <>
           "file: shop.app\n"
 
-      assert Command.outcome(1, missing_app) == :harness_error
+      assert Command.outcome(1, missing_app, :none) == :harness_error
     end
 
     test "the self-erasing boot crash outranks the could-not-start banner" do
       # A node dead mid-boot with its diagnostic erased is unambiguously infra,
       # whatever Mix printed on the way down — so the harness-error refinement wins
       # and `Mutare.Runner.MutantRun` retries instead of charging a kill.
-      assert Command.outcome(1, @app_start_crash <> @boot_crash) == :boot_failure
+      assert Command.outcome(1, @app_start_crash <> @boot_crash, :none) == :boot_failure
     end
 
     test "the could-not-start banner never overrides a real verdict" do
-      assert Command.outcome(0, @app_start_crash) == :passed
-      assert Command.outcome(Exit.failure(), @app_start_crash) == :failed
-      assert Command.outcome(Exit.timeout(), @app_start_crash) == :timeout
+      assert Command.outcome(0, @app_start_crash, :none) == :passed
+      assert Command.outcome(Exit.failure(), @app_start_crash, :none) == :failed
+      assert Command.outcome(Exit.timeout(), @app_start_crash, :none) == :timeout
     end
 
     test "the boot banner never overrides a real verdict (pass/fail/timeout win)" do
-      assert Command.outcome(0, @boot_crash) == :passed
-      assert Command.outcome(Exit.failure(), @boot_crash) == :failed
-      assert Command.outcome(Exit.timeout(), @boot_crash) == :timeout
+      assert Command.outcome(0, @boot_crash, :none) == :passed
+      assert Command.outcome(Exit.failure(), @boot_crash, :none) == :failed
+      assert Command.outcome(Exit.timeout(), @boot_crash, :none) == :timeout
     end
 
     test "a detected kill is never masked by a co-occurring boot banner" do
       # Contrived (a node dead at boot never filled the atom table), but precedence
       # is fail-safe toward the kill — the verdict wins over the cause label.
-      assert Command.outcome(1, @atom_crash <> @boot_crash) == :atom_exhausted
+      assert Command.outcome(1, @atom_crash <> @boot_crash, :none) == :atom_exhausted
     end
 
     test "a SIGKILL bypasses the output refinements (truncated output is unreliable)" do
       # A SIGKILLed run's output stops wherever the kill landed, so banner-matching
       # against it would be guesswork — and none of the markers' causes exits via
       # SIGKILL anyway (a compile error exits 1; atom exhaustion aborts the VM itself).
-      assert Command.outcome(Exit.sigkill(), "") == :sigkilled
-      assert Command.outcome(Exit.sigkill(), @test_compile_error) == :sigkilled
-      assert Command.outcome(Exit.sigkill(), @atom_crash) == :sigkilled
-      assert Command.outcome(Exit.sigkill(), @boot_crash) == :sigkilled
+      assert Command.outcome(Exit.sigkill(), "", :none) == :sigkilled
+      assert Command.outcome(Exit.sigkill(), @test_compile_error, :none) == :sigkilled
+      assert Command.outcome(Exit.sigkill(), @atom_crash, :none) == :sigkilled
+      assert Command.outcome(Exit.sigkill(), @boot_crash, :none) == :sigkilled
     end
   end
 

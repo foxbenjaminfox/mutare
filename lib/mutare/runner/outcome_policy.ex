@@ -6,9 +6,9 @@ defmodule Mutare.Runner.OutcomePolicy do
   # this module makes them, in one table.
   #
   # The two vocabularies stay distinct on purpose. An outcome is what one `mix test` did,
-  # refined as far as its exit code and output allow (`Command.outcome/2`); a status is
-  # the verdict a reporter shows and the score counts. Several outcomes share a status —
-  # `:boot_failure` and `:sigkilled` are harness errors by verdict, refined only so the
+  # refined as far as its exit code, failure witness and output allow (`Command.outcome/3`);
+  # a status is the verdict a reporter shows and the score counts. Several outcomes share a
+  # status — `:boot_failure` and `:sigkilled` are harness errors by verdict, refined only so the
   # runner can retry and warn about them differently — and no reporter sees an outcome.
   #
   # Each row states two independent facts, the status and the retry budget. Everything
@@ -19,6 +19,10 @@ defmodule Mutare.Runner.OutcomePolicy do
   #     `:contended_kill` for a kill that draws on the boot-contention budget, whose
   #     signature a startup stampede also produces and which is believed only once that
   #     budget is spent.
+  #
+  # One warning is not derived: `:crashed_after_kill`, for the one outcome whose run broke
+  # after its verdict. That the run crashed is a fact about the run, which neither the
+  # status (a plain kill) nor the budget (none) carries.
 
   alias Mutare.Result
   alias Mutare.Sandbox.Command
@@ -39,8 +43,10 @@ defmodule Mutare.Runner.OutcomePolicy do
     * `:no_verdict` — the run reached no verdict, so it is left out of the score; say why.
     * `:contended_kill` — a kill no failing test stands behind, which contention could
       also have produced; say why it was believed.
+    * `:crashed_after_kill` — a test failed, then the run crashed; the kill stands, but
+      the crash is worth fixing, and it hid the failure's report.
   """
-  @type warning :: :none | :no_verdict | :contended_kill
+  @type warning :: :none | :no_verdict | :contended_kill | :crashed_after_kill
 
   @policy %{
     # Real verdicts: never retried — a retry could only flip a verdict the suite reached.
@@ -48,8 +54,13 @@ defmodule Mutare.Runner.OutcomePolicy do
     failed: {:killed, :none},
     timeout: {:timeout, :none},
 
+    # A test failed — the failure witness saw it — and the run then crashed before Mix
+    # could exit with the failure code (a formatter raising on the failure takes the run
+    # down at ExUnit's teardown). The verdict came first, so a kill, not retried.
+    failed_then_crashed: {:killed, :none},
+
     # The mutation broke the test suite's own compilation: it was detected, so a kill.
-    # `Command.outcome/2` separates it from an infrastructure compile failure (which stays
+    # `Command.outcome/3` separates it from an infrastructure compile failure (which stays
     # `:harness_error`), so it cannot be an infra blip and is not retried.
     suite_compile_error: {:killed, :none},
 
@@ -108,6 +119,7 @@ defmodule Mutare.Runner.OutcomePolicy do
   @spec warning(Command.outcome()) :: warning()
   def warning(outcome) do
     cond do
+      outcome == :failed_then_crashed -> :crashed_after_kill
       status(outcome) == :harness_error -> :no_verdict
       kill?(outcome) and retry(outcome) == :boot_contention -> :contended_kill
       true -> :none

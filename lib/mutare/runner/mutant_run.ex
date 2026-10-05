@@ -13,6 +13,7 @@ defmodule Mutare.Runner.MutantRun do
   alias Mutare.{Result, Selector, Site, TestSelection}
   alias Mutare.Runner.{Hydrate, OutcomePolicy, Partitions, RunCtx}
   alias Mutare.Sandbox.Command
+  alias Mutare.Sandbox.Command.Output
 
   require Logger
 
@@ -90,6 +91,7 @@ defmodule Mutare.Runner.MutantRun do
     case OutcomePolicy.warning(result.outcome) do
       :no_verdict -> warn_no_verdict(site, result)
       :contended_kill -> warn_contended_kill(site, result)
+      :crashed_after_kill -> warn_crashed_after_kill(site, result)
       :none -> :ok
     end
 
@@ -259,6 +261,27 @@ defmodule Mutare.Runner.MutantRun do
         "Application.start/2 stops the " <>
         "run there. The baseline boots the same sandbox green, so this counts as killed, " <>
         "not as a harness error."
+    )
+  end
+
+  # A kill with a broken run behind it. The kill is sound — a test failed before the crash —
+  # but the crash usually lives in the user's suite (a formatter that cannot print a failure
+  # message, such as one that is not valid UTF-8), and it hides that failure's report from
+  # everyone, so name it rather than let the kill swallow it. No report carries a kill's
+  # output, so the warning quotes the crash's salient line itself.
+  defp warn_crashed_after_kill(%Site{} = site, result) do
+    crash =
+      case Output.salient_line(result.output) do
+        nil -> ""
+        line -> ": #{line}"
+      end
+
+    Logger.warning(
+      "#{site_ref(site)} — a test failed with this mutation active, then the run crashed " <>
+        "before mix test could report it (exit #{result.exit_status})#{crash}. Counted as " <>
+        "killed. A formatter that raises while printing a failure (ExUnit's own does on a " <>
+        "message that is not valid UTF-8) is the usual cause, and then plain mix test " <>
+        "crashes the same way whenever that test fails."
     )
   end
 

@@ -5,7 +5,7 @@ defmodule Mutare.Sandbox.Command.Exit do
   A leaf on purpose: both halves of the exit-code contract read from here. The
   *producing* half is `Mutare.Sandbox.Command.Invocation` — its watcher ASTs embed
   `timeout/0` and `owner_lost/0` in the code the sandbox halts itself with — and the
-  *decoding* half is `Mutare.Sandbox.Command` (`outcome/2`), which refines
+  *decoding* half is `Mutare.Sandbox.Command` (`outcome/3`), which refines
   `decode/1` with the run's output. Keeping the codes below both means neither
   module needs the other to name a code.
 
@@ -102,7 +102,7 @@ defmodule Mutare.Sandbox.Command.Exit do
 
   @doc """
   Decode a mutant-run exit status by its code alone — the single, total reading of
-  the contract in the moduledoc. `Mutare.Sandbox.Command.outcome/2` refines the
+  the contract in the moduledoc. `Mutare.Sandbox.Command.outcome/3` refines the
   `:harness_error` case with the run's output.
   """
   @spec decode(non_neg_integer()) :: decoded()

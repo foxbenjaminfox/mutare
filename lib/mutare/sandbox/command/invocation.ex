@@ -50,7 +50,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
   """
 
   alias Mutare.Coverage.Recorder
-  alias Mutare.Sandbox.Command.Exit
+  alias Mutare.Sandbox.Command.{Exit, FailureWitness}
   alias Mutare.Sandbox.CompilerOptions
   alias Mutare.Selector
 
@@ -126,6 +126,8 @@ defmodule Mutare.Sandbox.Command.Invocation do
       (`Mutare.Sandbox.CompilerOptions.compiler_env/0`).
     * `:coverage` (`{dump_path, root}`, or `nil`) — the coverage probe's capture
       flag, dump path and path-normalisation root (`Mutare.Coverage.Recorder`).
+    * `:failure_witness` (a path, or `nil`) — where the test bootstrap records that a
+      test failed (`Mutare.Sandbox.Command.FailureWitness`).
     * `:max_heap_mb` (MB, or `nil`) — the per-process heap cap (`emulator_flags_env/1`).
     * `:schedulers` (a count, `:all`, or `nil`) — the run's scheduler threads
       (`emulator_flags_env/1`).
@@ -134,16 +136,18 @@ defmodule Mutare.Sandbox.Command.Invocation do
     * `:partition` (`[{name, id}]` or `[]`) — the user-named partition entry
       (`Mutare.Runner.Partitions.entry/2`), appended last.
 
-  Every option is optional. An absent `:cap`, `:compile_cap`, `:coverage` or
-  `:project_root` clears its variables explicitly rather than emitting nothing, so a value inherited from
-  Mutare's own environment cannot enable a watcher or probe omitted from this invocation's
-  options. The remaining absent options emit nothing.
+  Every option is optional. An absent `:cap`, `:compile_cap`, `:coverage`,
+  `:failure_witness` or `:project_root` clears its variables explicitly rather than
+  emitting nothing, so a value inherited from Mutare's own environment cannot enable a
+  watcher, probe or witness omitted from this invocation's options. The remaining absent
+  options emit nothing.
   """
   @type run_opts :: [
           cap: pos_integer() | nil,
           compile_cap: pos_integer() | nil,
           compile: boolean(),
           coverage: {Path.t(), Path.t()} | nil,
+          failure_witness: Path.t() | nil,
           max_heap_mb: pos_integer() | nil,
           schedulers: pos_integer() | :all | nil,
           project_root: Path.t() | nil,
@@ -205,6 +209,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
       cap_env(@compile_timeout_env, opts[:compile_cap]) ++
       compile_env(opts[:compile]) ++
       coverage_env(opts[:coverage]) ++
+      failure_witness_env(opts[:failure_witness]) ++
       emulator_flags_env(opts) ++
       project_root_entry(opts[:project_root]) ++
       Keyword.get(opts, :partition, [])
@@ -231,6 +236,11 @@ defmodule Mutare.Sandbox.Command.Invocation do
   defp coverage_env({dump, root}) when is_binary(dump) and is_binary(root),
     do: [{Recorder.env_var(), "1"}, {Recorder.dump_path_env(), dump}, {Recorder.root_env(), root}]
 
+  # Cleared when absent, like the caps: a witness path inherited from an outer run (Mutare
+  # under Mutare) would otherwise collect a fixture run's failures.
+  defp failure_witness_env(nil), do: [{FailureWitness.env(), nil}]
+  defp failure_witness_env(path) when is_binary(path), do: [{FailureWitness.env(), path}]
+
   # Cleared when absent, like the caps: Mutare's own suite runs under Mutare, so an
   # inherited `MUTARE_PROJECT_ROOT` would otherwise name the outer project to a fixture's
   # sandbox. Expanded here, so a relative `copy_root` (`"."`) reaches the target absolute.
@@ -244,6 +254,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
     compile_cap: 1,
     compile: true,
     coverage: {"mutare_coverage.dump", "."},
+    failure_witness: "mutare_failure_witness",
     max_heap_mb: 1,
     schedulers: 1,
     project_root: "."

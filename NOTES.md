@@ -1121,7 +1121,7 @@ Two correctness anchors:
 - **`:suite_compile_error` detection survives.** `--no-compile` skips the *lib* recompile (which
   can't fail per-mutant anyway — it's built once), but `.exs` **test scripts** are still evaluated
   at `mix test` time, so a mutation that breaks a test file at load time still trips the test-file
-  compile banner `outcome/2` reads as a kill.
+  compile banner `outcome/3` reads as a kill.
 
 Implication for tests: `--no-compile` makes `Command.timed_test/4` strictly a *post-compile* tool
 (exactly its production contract). The `Mutare.HarnessTest` first-block tests that drove it directly
@@ -4894,7 +4894,7 @@ runs (poison handled at baseline), so a *fresh* compile error during a per-mutan
 test` cannot come from the lib — only from a re-evaluated `.exs` test script the
 mutation broke at load time.
 
-So `Command.outcome/2` refines `outcome/1`'s exit-`1`→`:harness_error` case with the
+So `Command.outcome/3` refines `outcome/1`'s exit-`1`→`:harness_error` case with the
 run's output: a `== Compilation error in file <path> ==` banner whose `<path>` is a
 `.exs` under a `test/` dir (`suite_compile_error?/1`) → `:suite_compile_error`, which
 `Runner.OutcomePolicy.status/1` maps to `:killed`. Anything else — a lib-file compile error, a
@@ -4940,7 +4940,7 @@ warning's "see the mutant's output to diagnose the sandbox" led nowhere.
 Two engine-side fixes, both confined to the modules that already own these contracts:
 
 - **Recognise + name it** (`Output.boot_failure?/1` → the `:boot_failure` outcome). A
-  third `outcome/2` output-refinement of the otherwise-`:harness_error` bucket, but —
+  third `outcome/3` output-refinement of the otherwise-`:harness_error` bucket, but —
   unlike `:suite_compile_error`/`:atom_exhausted`, which flip to *kills* — this one
   keeps the **harness-error verdict** (`Runner.OutcomePolicy.status(:boot_failure)` →
   `:harness_error`, out of the score). It is purely an internal label that never
@@ -4976,6 +4976,51 @@ specific warning; skipped to keep the change focused. The launch-stagger idea (o
 worker starts so N nodes don't boot in lockstep) is also deferred — the boot-retry
 jitter addresses re-collision on retry, and `--workers`/`--partition-db` remain the
 documented fixes for the initial stampede.
+
+### A test that failed before the run crashed is a kill: the failure witness `[done]`
+Reported from a target's run: four mutants came back as harness errors (`argument error`),
+yet a test had failed under each. Its assertion message held a binary that is not valid
+UTF-8, and ExUnit's CLI formatter raised printing it (`:io.put_chars` on a unicode device).
+Reproduced on Elixir 1.19.6. ExUnit had counted the failure — `ExUnit.RunnerStats` reports
+`failures: 1` to `Runner.run_with_trap/2` — but the next line, `EventManager.stop/1`,
+`GenServer.stop`s each formatter, and the one still dying in its cast exits that call. The
+run's task dies with it and Mix never reaches its `failures > 0 → --exit-status` branch, so
+`mix test` exits `1`. Whether it does is a race: a formatter that finishes crashing *before*
+the stop is gone from the supervisor's children (it is `:temporary`), and the run exits `101`
+as usual. Under `--max-failures 1` the suite ends right after the first failure, so the slow
+path — the formatter still formatting at teardown — is the likely one.
+
+No output refinement could recover it. The failure report is printed by the formatter that
+died; the only trace is the crash report's `Last message: {:"$gen_cast", {:test_finished,
+%ExUnit.Test{… state: {:failed, …`, which is OTP's crash-report layout and `inspect`
+truncation — not something to decode a verdict from.
+
+So the test bootstrap now adds a formatter of its own (`Mutare.Sandbox.Command.FailureWitness`),
+which creates a per-run file on the first failure it sees, and `Command.outcome/3` reads it
+**only to refine the harness-error bucket** into `:failed_then_crashed` (a kill, with a
+warning naming the crash: it usually lives in the user's suite and hides that failure's report).
+It does not replace the exit-code contract, which is what the report originally asked for:
+
+- **Formatters are fed by casts** — the lesson the coverage redesign learnt (NOTES "Test
+  selection — self-recorded coverage"). The witness races whatever ends the run, so its
+  evidence runs one way: a file proves a test failed; no file proves nothing. A pass stays
+  exit `0`, and nothing else.
+- **It counts what `RunnerStats` counts** (`:failed`/`:invalid` tests, and passed tests in a
+  module that failed afterwards), so it never sees a failure Mix would not have reported.
+- **It ranks first** among the refinements: a failed test is the verdict, whatever the output
+  says happened next. But it refines only the harness-error bucket. A witnessed SIGKILL stays
+  `:sigkilled`, because a kill is rerun under `:kill_runs` and a SIGKILL's usual cause is an
+  OOM blowup that would re-detonate.
+- **It must not crash itself**: it writes with `File.write/2`, not `File.write!/2`, since a
+  raising formatter ends the run at teardown — turning a clean `101` into the very harness
+  error it exists to see past.
+- **It is appended after the user's helper**, to the formatters that helper configured. `mix
+  test --formatter` would replace that list (`Mix.Tasks.Test.formatter_opts/1`), and Mix
+  re-applies only the options it was given after the helper, so an appended entry survives.
+
+The end-to-end test crashes the run from a fixture formatter's `terminate/2`, which raises
+inside `EventManager.stop/1` every time, rather than relying on the CLI formatter: that is
+deterministic, and does not depend on ExUnit continuing to raise on a non-UTF-8 message.
 
 ### Test selection — self-recorded coverage (M3b done, race-free redesign) `[done]`
 Coverage-driven *test selection* is done at **test-file** granularity from a
@@ -8131,7 +8176,7 @@ buys less than the duplication costs:
 The other two items from that pass are documented where they live: the `Uses` env-mirror **seqlock
 invariant** in `Mutare.Transform.Uses.EnvMirror`'s module comment (the home the extraction gave it),
 and the **harness-retry contract** — only `:harness_error` is retried, because the kill outcomes
-`Command.outcome/2` recovers (`:suite_compile_error`, `:atom_exhausted`) are already distinct by the
+`Command.outcome/3` recovers (`:suite_compile_error`, `:atom_exhausted`) are already distinct by the
 time `Runner.run_mutant/6` reads `result.outcome` — at that guard.
 
 ### Mutator capability behaviours — split the `Mutare.Mutator` bag `[done]`
@@ -10456,7 +10501,7 @@ harness-retry budget, warned the user to "fix the sandbox", and tripped
 `--max-harness-error-rate`, aborting the whole run. Without the project prefix the same
 mutant is `:killed`.
 
-So `Output.app_start_failure?/1` recognises that failure and `Command.outcome/2` returns a new
+So `Output.app_start_failure?/1` recognises that failure and `Command.outcome/3` returns a new
 `:app_start_failure`, which `MutantRun` records as a kill — the same reasoning as
 `:suite_compile_error`, resting on the same evidence: the baseline and the probe boot *this*
 sandbox green, so the mutation is the only thing that changed. Two guards keep it fail-safe.

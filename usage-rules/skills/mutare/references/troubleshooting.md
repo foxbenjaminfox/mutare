@@ -98,6 +98,16 @@ A harness error is a run that reached no verdict. It is excluded from the score,
   (same section of `mix help mutare`).
 - **The kept sandbox has gone bad.** `--no-keep-sandbox`.
 
+## "a test failed with this mutation active, then the run crashed"
+
+The kill stands: a test failed before the crash. The crash is usually in the suite
+rather than in Mutare. A formatter raised while printing the failure, and the run died
+before anyone saw which test failed. ExUnit's own formatter does this for a failure
+message that is not valid UTF-8, such as a custom `assert` message or `flunk` built from
+raw bytes. The same test crashes plain `mix test` whenever it fails. The warning quotes
+the crash. Fix it by making the message printable (`inspect/1` the bytes), not by
+suppressing the mutant.
+
 ## Suspicious survivors
 
 - **A survivor you think a test kills.** The default selection runs only the test

@@ -114,9 +114,9 @@ defmodule Mutare.CoverageStartupRunnerTest do
         |> Enum.reject(&String.starts_with?(&1, "    "))
         |> Enum.join("\n")
 
-      assert Mutare.Sandbox.Command.outcome(1, without_frames) == :app_start_failure
+      assert Mutare.Sandbox.Command.outcome(1, without_frames, :none) == :app_start_failure
 
-      assert Mutare.Sandbox.Command.outcome(1, String.replace(without_frames, marker, "")) ==
+      assert Mutare.Sandbox.Command.outcome(1, String.replace(without_frames, marker, ""), :none) ==
                :harness_error
     end
   end
@@ -410,12 +410,12 @@ defmodule Mutare.CoverageStartupRunnerTest do
         |> Enum.reject(&String.contains?(&1, [runtime_path, "Config.__eval__!/3"]))
         |> Enum.join("\n")
 
-      assert Mutare.Sandbox.Command.outcome(1, without_frames) == :app_start_failure
+      assert Mutare.Sandbox.Command.outcome(1, without_frames, :none) == :app_start_failure
 
       without_marker =
         String.replace(without_frames, Mutare.Sandbox.RuntimeConfig.failure_marker(), "")
 
-      assert Mutare.Sandbox.Command.outcome(1, without_marker) == :harness_error
+      assert Mutare.Sandbox.Command.outcome(1, without_marker, :none) == :harness_error
     end
   end
 
@@ -472,7 +472,7 @@ defmodule Mutare.CoverageStartupRunnerTest do
         |> Enum.reject(&String.contains?(&1, ["runtime.exs", "Config.__eval__!/3"]))
         |> Enum.join("\n")
 
-      assert Mutare.Sandbox.Command.outcome(1, without_frames) == :app_start_failure
+      assert Mutare.Sandbox.Command.outcome(1, without_frames, :none) == :app_start_failure
     end
   end
 

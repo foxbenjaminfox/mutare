@@ -13,11 +13,13 @@ defmodule Mutare.MixProject do
   # (`Mutare.Mutator.Dispatch.mutations/3`, `Mutare.Transform.Uses.Harvest`) is covered
   # by its parent's entry. Add a module here when a new `@moduledoc false` module gets
   # referenced from a visible moduledoc (the warning tells you which). Also covers the
-  # rare case of a *stdlib* module that's hidden the same way (`Module.ParallelChecker`,
-  # named in `Mutare.Sandbox.CompilerOptions` — internal to the Elixir compiler, no doc
-  # page of its own).
+  # rare case of a *stdlib* module that's hidden the same way, with no doc page of its own:
+  # `Module.ParallelChecker` (internal to the Elixir compiler, named in
+  # `Mutare.Sandbox.CompilerOptions`) and `ExUnit.RunnerStats` (named in
+  # `Mutare.Sandbox.Command.FailureWitness`).
   @hidden_internal_modules ~w(
     Module.ParallelChecker
+    ExUnit.RunnerStats
     Mutare.Transform.Resolve
     Mutare.Transform.Uses
     Mutare.Transform.Behaviours
