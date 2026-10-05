@@ -292,8 +292,12 @@ defmodule Mutare.Site do
   # Render a node to source via `Macro.to_string/1` for the live summary — far cheaper than
   # `Sourceror.to_string/1` and fine for an ephemeral one-liner (it normalises formatting, which
   # the report/JSON/SARIF can't tolerate but a spinner line can). Shares `clause_form/2` with
-  # `clause_code/2` so the `->`/keyword-pair shape handling can't drift between the two.
-  defp macro(node), do: clause_form(node, &(&1 |> WrittenPipe.resugar() |> Macro.to_string()))
+  # `clause_code/2` so the `->`/keyword-pair shape handling can't drift between the two. Comments
+  # are stripped as `AST.to_string/2` strips them: `Macro.to_string/1` on Elixir main renders a
+  # node's `:leading_comments`, which would put a dropped clause's preceding comment in its summary.
+  defp macro(node) do
+    clause_form(node, &(&1 |> AST.strip_comments() |> WrittenPipe.resugar() |> Macro.to_string()))
+  end
 
   # A Sourceror keyword pair: a two-tuple whose key node carries `format: :keyword`.
   # This is the shape an attributed whole-clause replace/delete takes. Render it as

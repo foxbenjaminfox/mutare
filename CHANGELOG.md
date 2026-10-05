@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The `{:macro_poison, …}` phase event counts, for each macro, only the mutants that round
+  newly drops; it used to include mutants an earlier round had already dropped.
+
+### Fixed
+
+- On Elixir's development branch (`main`), a dropped clause's live-progress summary no
+  longer includes the comment written above the clause.
+
 ## [0.5.1] - 2026-10-04
 
 ### Added
