@@ -1064,9 +1064,9 @@ by the outer function's emit (it isn't separately planned/lifted), so `active_bo
 otherwise leak straight through the `defmodule` boundary. Fix: `emit/2` is a
 `Macro.traverse`, not a `postwalk` — it counts nested-module depth on the way down
 (`Ctx.module_depth`, bumped on `defmodule`/`defimpl`/`defprotocol`), and `SelectorEmit.subject/1`
-gates the hoisted form on `module_depth == 0`, and only that hoisted form sets
-`Scope.active_referenced` (the flag `emit_clause_body/3` reads to decide the prologue), so
-the outer prologue is added only for a *direct*-body reference. A mixed body
+gates the hoisted form on `module_depth == 0`, and only that hoisted form records a read of
+the binding (the count the prologue's `BindingScope` returns), so the outer prologue is added
+only for a *direct*-body reference. A mixed body
 (`a = x + 1; defmodule … ; a * 2`) hoists the direct sites and inlines the nested one, the
 depth restoring to 0 after the `defmodule` so the trailing site re-hoists.
 
@@ -6146,7 +6146,7 @@ nest cleanly in emit's post-order walk (the original branch of the outer selecto
 holds the already-emitted bodies; the mutant branches are raw copies). The hoisted
 active-id read just works: a `fn` is a closure, so an enclosing `def`'s
 `mutare_active` binding (dispatcher param or `:do`-prologue) is in scope inside the
-body, and a body selector inside the `fn` sets `Scope.active_referenced` like any other, so
+body, and a body selector inside the `fn` records its read like any other, so
 the prologue is added when one needs it; persistent_term is process-constant, so a captured value is always
 the live active id even if the closure runs in another process. Scoped to `fn`
 **only** — `receive` (which shares `attach_clause_pattern_candidates/4`) is *not* a
@@ -10353,7 +10353,7 @@ up most of the three-test row.
 ### Hoist the per-site coverage tracking read `[investigated; lifecycle prerequisite]`
 
 **2026-09-12:** the emitter plumbing is more straightforward after the explicit
-`Scope.active_referenced` handoff and the dispatch-name handoff to Manifest. But the
+binding-reference handoff and the dispatch-name handoff to Manifest. But the
 tracking flag does **not** have the active selector's run-constant lifetime:
 `Recorder.setup_ast/0` enables it in the injected test-helper prefix. A dependency-free
 temporary `mix test` project confirmed that `Application.start/2` runs before that
@@ -11047,10 +11047,12 @@ knows to the place that asks.
     stripped before render) and the hoist reads the marker — the same handoff candidates use.
   - **`references_var?/2`** walked every emitted `:do` block, and every lifted group's clauses,
     hunting for the dispatch variable's name to decide whether a prologue or a dispatcher was
-    needed. `SelectorEmit.subject/1` now returns the scope with `active_referenced` set whenever
-    it emits the bound read; the per-clause deliveries that read the binding directly (fn/receive
-    gates, rescue factoring) call `reference_active/1`. The two readers reset the flag before
-    their emit and read it after — no scan, and no reliance on the name being unique.
+    needed. `SelectorEmit.subject/1` now records a reference whenever it emits the bound read;
+    the per-clause deliveries that read the binding directly (fn/receive gates, rescue
+    factoring) record their own (`reference_active/2`). The binding's scope counts them — no
+    scan, and no reliance on the name being unique. (The two readers first reset a flag before
+    their emit and read it after; NOTES "A binding scope returns what it asks of its binding"
+    gave that sequence one owner.)
   - **`Manifest.active_var/1`** reconstructed the per-file, possibly salted dispatch name from the
     rendered metamutant: ~95 lines of heuristics (a coverage record's `<var> == 0` read, then a
     binding or tupled pattern filtered to the salted-name family, else the canonical name) with a
@@ -11476,8 +11478,8 @@ region `case` as a selector hosting no mutant (neither pattern is a positive int
 
 The cost of a region is one decision on an already-bound id; what it saves is one selector
 per *site executed*, whatever number of variants the site hosts (an integer literal is one
-site with three variants). `Scope.active_references` was already counting reads of the
-bound id to decide whether a prologue is needed, so it became a count instead of a flag,
+site with three variants). The emitters were already recording reads of the bound id to
+decide whether a prologue is needed, so the flag became a count (`Scope.active_references`),
 and a lifted group adds one per claimed head mutant (each costs the dispatch a gate or an
 exclusion). The leaf kernels put the crossover between one and two sites: with one, the
 decision costs what the selector did. 14% of regions in Mutare's `lib/` hold a single
@@ -12223,7 +12225,7 @@ copy's lines under the interval (`:clean` spans: the clean branch, and each relo
 depend on emission order); `Manifest.blame_at_line/2` puts mutant regions and clean spans
 under the one narrowest-range rule; `Poison.attribution/4` reports `:clean`;
 `Runner.Compile` accumulates `skip_regions` and hands them to `Schema.rebuild/5`, which
-gives each file its own intervals; the transform's `clean_verdict/3` answers `:dropped`.
+gives each file its own intervals; the transform's `clean_region/4` records `:dropped`.
 A dropped region costs no mutant and changes no id or site — the function just answers its
 selectors when the mutant is elsewhere — so it folds into whatever else the round drops.
 
@@ -15374,3 +15376,33 @@ second.
 One observable change: a `{:macro_poison, …}` entry's `count` is now the macro's *newly*
 dropped ids, where it was every id the fallback matched. They differ only when the fallback
 matches an id already dropped, which a rebuilt metamutant no longer contains.
+
+### A binding scope returns what it asks of its binding `[done]` (2026-10-05)
+
+Two boundaries introduce the hoisted active-id binding, a non-lifted clause's `:do` prologue
+and a lifted group's dispatcher, and each decided two things from the code emitted beneath it:
+whether to bind at all, and whether a clean region repays its copy. Both did it by the same
+hand sequence: note `next_id` and `emitted`, zero `Scope.active_references`, emit, read the
+counter and the claim deltas back, then assemble a region map for `clean_verdict/3`. The
+counter meant something only between one boundary's reset and its read, and each boundary had
+to know that.
+
+`Transform.BindingScope.emit/2` now owns that sequence. It returns the emitted value with the
+scope's `references`, its claimed `ids` (a `Range`) and its emitted `variants`; `referenced?/1`
+is the bind-or-not answer, and `clean_region/4` takes the scope whole and returns the interval
+or `nil`. The scope puts back the enclosing count rather than adding to it: the scope's own
+binding satisfies its readers. Nothing nests today (a runtime `defmodule` in a body is walked in
+place, and its reads are not counted), so this changes no output; it removes the way a future
+nested boundary could have wiped an outer count.
+
+The dispatcher's scope covers the lifted claims as well as the body, and each claimed head
+mutant is recorded as a read, since its gate or exclusion reads the dispatcher's parameter.
+The region's sites were already counted that way (`body_sites + length(claimed)`), so the
+decision records are unchanged; what changed is that "bind at all" and "sites" are now one
+number at both boundaries. The old dispatcher test, `claimed == [] and body_sites == 0`, is
+`not referenced?` with nothing left to add.
+
+Not done: an emitter that reads the binding directly (an `fn`/`receive` gate, rescue factoring,
+an `:enclosing` coverage record) still has to call `SelectorEmit.reference_active/2` itself.
+The next step is for those deliveries to return their reads with their AST, as the boundaries
+now do.

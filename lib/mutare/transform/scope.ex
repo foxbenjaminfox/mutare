@@ -42,18 +42,14 @@ defmodule Mutare.Transform.Scope do
   #     `Mutare.Transform.emit_block_macro/2` binds it for the body's emit and restores it after;
   #     `Mutare.Transform.ClaimState.claim/6` stamps it onto every `Mutare.Site` claimed
   #     meanwhile (`Site.block_macro`), so poison recovery can skip the whole invocation at once.
-  #   * `active_references` — how many times the emit has referenced the hoisted `active_var`
-  #     binding since the count was last reset: a selector read it as its subject
-  #     (`Mutare.Transform.SelectorEmit.subject/1`), or a per-clause delivery read it directly in
-  #     a gate or a creation-time coverage record (`SelectorEmit.reference_active/1`). Two readers
-  #     reset it first and read it after the enclosed emit. Whether the binding must exist at all
-  #     (any reference): `Mutare.Transform.emit_prologue_block/4` for a non-lifted `:do` block's
-  #     prologue (an unreferenced binding would warn "unused"), `emit_function_plan/2` for whether
-  #     a group with no lifted mutant still needs its dispatcher. And how many selector sites the
-  #     enclosed code holds, which is what a clean region saves per activation
-  #     (`Mutare.Transform.CleanRegion.worthwhile?/2`). Meaningful only between such a reset and
-  #     its read; a nested module scope never counts (its selectors use the inline read,
-  #     `module_depth`), so a reference there never adds an outer prologue.
+  #   * `active_references` — how many times the emit has read the hoisted `active_var` binding
+  #     within the innermost `Mutare.Transform.BindingScope`: a selector read it as its subject
+  #     (`Mutare.Transform.SelectorEmit.subject/1`), or a delivery read it directly in a gate, an
+  #     exclusion or a creation-time coverage record (`SelectorEmit.reference_active/2`).
+  #     `BindingScope.emit/2` alone resets and reads it, and returns it as the scope's
+  #     `references`; it is meaningful nowhere else. A nested module scope never counts (its
+  #     selectors use the inline read, `module_depth`), so a reference there never adds an
+  #     outer prologue.
 
   @type t :: %__MODULE__{
           active_bound: boolean(),

@@ -66,16 +66,18 @@ defmodule Mutare.Transform.SelectorEmit do
     do: {:case, [], [subject, [do: mutant_clauses ++ [catch_all]]]}
 
   @doc """
-  Record that the emitted code references the hoisted binding (`Scope.active_references`).
+  Record that the emitted code reads the hoisted binding `count` times (`Scope.active_references`).
 
   `subject/1` does this for every selector that reads the variable as its scrutinee; a
   per-clause delivery that reads it directly — a `<var> === <id>` gate in an `fn`/`receive`
-  clause, an exclusion guard, a creation-time coverage record — calls this itself.
-  `Mutare.Transform` uses the flag to determine whether to bind the variable at all.
+  clause, an exclusion guard, a creation-time coverage record — calls this itself, as does a
+  lifted group for its dispatch gates and exclusions. The enclosing
+  `Mutare.Transform.BindingScope` reads the count to decide whether to bind the variable at
+  all, and whether a clean region repays its copy.
   """
-  @spec reference_active(Ctx.t()) :: Ctx.t()
-  def reference_active(%Ctx{} = ctx),
-    do: Ctx.update_scope(ctx, &%{&1 | active_references: &1.active_references + 1})
+  @spec reference_active(Ctx.t(), non_neg_integer()) :: Ctx.t()
+  def reference_active(%Ctx{} = ctx, count \\ 1),
+    do: Ctx.update_scope(ctx, &%{&1 | active_references: &1.active_references + count})
 
   @doc """
   The selector `case` scrutinee for the current emit scope, with the scope updated.
