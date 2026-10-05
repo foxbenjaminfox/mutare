@@ -4897,7 +4897,7 @@ mutation broke at load time.
 So `Command.outcome/2` refines `outcome/1`'s exit-`1`→`:harness_error` case with the
 run's output: a `== Compilation error in file <path> ==` banner whose `<path>` is a
 `.exs` under a `test/` dir (`suite_compile_error?/1`) → `:suite_compile_error`, which
-`Runner.status_for/1` maps to `:killed`. Anything else — a lib-file compile error, a
+`Runner.OutcomePolicy.status/1` maps to `:killed`. Anything else — a lib-file compile error, a
 missing dep, no banner — **stays `:harness_error`** (fail safe: an ambiguous failure
 is never charged as a kill). This is the **only** place the contract reads output
 rather than just the exit code; the split is deliberate and confined to this one case.
@@ -4942,7 +4942,7 @@ Two engine-side fixes, both confined to the modules that already own these contr
 - **Recognise + name it** (`Output.boot_failure?/1` → the `:boot_failure` outcome). A
   third `outcome/2` output-refinement of the otherwise-`:harness_error` bucket, but —
   unlike `:suite_compile_error`/`:atom_exhausted`, which flip to *kills* — this one
-  keeps the **harness-error verdict** (`Runner.status_for(:boot_failure)` →
+  keeps the **harness-error verdict** (`Runner.OutcomePolicy.status(:boot_failure)` →
   `:harness_error`, out of the score). It is purely an internal label that never
   reaches `Result.status`/the reporters; its only jobs are messaging and retries. The
   signature requires *both* markers (`terminating during boot` **and** `standard_error`),
@@ -7238,7 +7238,7 @@ ETA) that animates via an internal tick timer. Design decisions worth rememberin
   with no terminal and no time. The server only wraps them in cursor codes
   (`\r\e[2K` + `\e[1A\e[2K` per extra line to erase, then redraw) and a
   `System.monotonic_time` read.
-- **Known caveat:** `Mutare.Runner.warn_harness_error/2` logs to stderr too, so a
+- **Known caveat:** `Mutare.Runner.MutantRun.warn_no_verdict/2` logs to stderr too, so a
   harness-error warning mid-run can interleave with the status block and nudge the
   cursor accounting for one frame (self-heals on the next redraw). Rare path; left as-is.
 - **Scan progress, before the runner.** The pre-run scan (mutant discovery —
@@ -7697,7 +7697,7 @@ a metamutant with **zero** poisons.
     *partial* case where baseline passed but many per-mutant runs then failed.
     The decision is pure and tested (`Report.harness_errors_exceed?/2`, mirroring
     `passes_gate?/2`); the runner owns the abort + message.
-  - **Per-mutant warning** (`warn_harness_error/2`). Each *persistent* harness
+  - **Per-mutant warning** (`MutantRun.warn_no_verdict/2`). Each *persistent* harness
     error (retries exhausted) emits a `Logger.warning` naming the mutant
     (`file:line`, id) and its exit code, so infrastructure breakage is loud
     during the run, not just a count in the summary. Fires once per mutant at the

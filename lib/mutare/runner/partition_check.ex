@@ -27,7 +27,7 @@ defmodule Mutare.Runner.PartitionCheck do
 
   alias Mutare.{Result, Site}
   alias Mutare.Run.BrokenPartition
-  alias Mutare.Runner.{MutantRun, RunCtx}
+  alias Mutare.Runner.{MutantRun, OutcomePolicy, RunCtx}
   alias Mutare.Sandbox.Command.Output
 
   require Logger
@@ -100,7 +100,7 @@ defmodule Mutare.Runner.PartitionCheck do
   # passed, or when it reached no verdict, which leaves that partition unchecked.
   defp failed_on_partition(%Result{site: site, partition: partition} = kill, selection, rerun) do
     cond do
-      MutantRun.kill_outcome?(rerun.outcome) ->
+      OutcomePolicy.kill?(rerun.outcome) ->
         [{kill, selection, rerun}]
 
       rerun.outcome == :passed ->
@@ -133,7 +133,7 @@ defmodule Mutare.Runner.PartitionCheck do
         warn(ctx, site, broken)
         [broken]
 
-      MutantRun.kill_outcome?(control.outcome) ->
+      OutcomePolicy.kill?(control.outcome) ->
         warn_fails_everywhere(site, partition, control)
         []
 

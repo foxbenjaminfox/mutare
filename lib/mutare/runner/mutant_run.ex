@@ -5,12 +5,13 @@ defmodule Mutare.Runner.MutantRun do
   # poisoned/ignored short-circuit, a no-coverage skip, or a real run narrowed to its selected
   # tests), then `run_mutant/*` executes it with the retry/rerun policy — the general
   # `:harness_retries` budget, the dedicated boot-failure budget, the `:kill_runs` unanimous-kill
-  # reruns, and the never-retried `:sigkilled` case — and maps the typed outcome
-  # (`Mutare.Sandbox.Command`, which owns the exit-code contract) onto a `Mutare.Result` status.
+  # reruns — taking every per-outcome decision (which budget a retry draws on, what counts as a
+  # kill, what to warn about, which `Mutare.Result` status to record) from
+  # `Mutare.Runner.OutcomePolicy`.
   # Returns a `%Mutare.Result{}`; the streaming pass (`Mutare.Runner.Stream`) calls `run/2`.
 
   alias Mutare.{Result, Selector, Site, TestSelection}
-  alias Mutare.Runner.{Hydrate, Partitions, RunCtx}
+  alias Mutare.Runner.{Hydrate, OutcomePolicy, Partitions, RunCtx}
   alias Mutare.Sandbox.Command
 
   require Logger
@@ -70,46 +71,14 @@ defmodule Mutare.Runner.MutantRun do
     end
   end
 
-  # A boot-time node crash (`:boot_failure`) is a known-transient contention
-  # signature, so it gets its **own** retry budget on top of `:harness_retries`,
-  # with a short jittered backoff so the retry doesn't re-collide with the same
-  # boot stampede. Sized to the field-proven figure: 4 extra attempts (total 5)
-  # cleared it across repeated runs of a contended target.
-  #
-  # `:app_start_failure` draws on the same budget, for the same reason and to the
-  # opposite end: startup contention that *does* manage to reach Mix's
-  # `Could not start application` banner is indistinguishable, on one attempt, from
-  # a mutation that broke configuration or `Application.start/2`. Spending this
-  # budget separates them — contention clears on a retry, the mutation re-detonates every time —
-  # so only a failure that survives all five attempts is charged as a kill.
+  # The dedicated boot-contention budget (`OutcomePolicy` says which outcomes draw on it),
+  # with a short jittered backoff so a retry doesn't re-collide with the same boot
+  # stampede. Sized to the field-proven figure: 4 extra attempts (total 5) cleared it
+  # across repeated runs of a contended target.
   @boot_failure_retries 4
   @boot_retry_base_ms 150
   @boot_retry_jitter_ms 350
 
-  # A `:harness_error` means the suite never reached a verdict (a compile error,
-  # a missing dep, a filesystem/lock race). Some of those are *transient*, so we
-  # re-run before recording — a fresh `mix` boot is its own natural backoff. A
-  # real verdict (passed/failed/timeout) is never retried. Exhausting the budget
-  # records the harness error as-is; the run-level guard decides if too many
-  # persisted.
-  #
-  # Two of the **kill** outcomes `Command.outcome/2` recovers from an otherwise-
-  # `:harness_error` exit (`:suite_compile_error`, `:atom_exhausted`) are already
-  # distinct outcomes here, so they record as kills and are never retried — neither
-  # can be an infra blip. The third kill, `:app_start_failure`, *is* retried, and so
-  # is `:boot_failure`: both are boot-time shapes a startup stampede can also
-  # produce, so each spends the dedicated budget before it is believed; see
-  # `@boot_failure_retries`.
-  #
-  # `:sigkilled` (the OS SIGKILLed the run — exit 137) is the refinement that must
-  # NOT be retried, ever: its signature cause is the kernel OOM killer reaping a
-  # mutant whose mutation made it allocate without bound, and that failure mode is
-  # *deterministic* — a back-to-back retry re-detonates the same multi-GB blowup
-  # on the host (observed live: two consecutive ~25GB RSS spikes before the retry
-  # budget ran out). The cost of not retrying the rare transient SIGKILL (an
-  # innocent run reaped under someone else's memory pressure, an external kill) is
-  # one excluded-from-score harness error; the cost of retrying a real one is the
-  # host. Fail toward the host's safety.
   defp run_mutant(%RunCtx{} = ctx, site, selection, partition) do
     id = Mutare.RuntimeId.of(site)
 
@@ -118,15 +87,10 @@ defmodule Mutare.Runner.MutantRun do
       |> run_attempt(id, selection, partition)
       |> require_unanimous_kill(ctx, id, selection, partition, ctx.options.kill_runs - 1)
 
-    case result.outcome do
-      outcome when outcome in [:harness_error, :boot_failure, :sigkilled] ->
-        warn_harness_error(site, result)
-
-      :app_start_failure ->
-        warn_app_start_failure(site, result)
-
-      _verdict ->
-        :ok
+    case OutcomePolicy.warning(result.outcome) do
+      :no_verdict -> warn_no_verdict(site, result)
+      :contended_kill -> warn_contended_kill(site, result)
+      :none -> :ok
     end
 
     record(site, result, selection, partition)
@@ -146,12 +110,9 @@ defmodule Mutare.Runner.MutantRun do
       )
 
   # `retries` is the general `:harness_retries` budget; `boot_retries` the dedicated
-  # boot-failure budget. The two are decremented independently by the *current* run's
+  # boot-contention budget. The two are decremented independently by the *current* run's
   # outcome, so a boot failure that later degrades to a plain harness error still draws
-  # its general retries, and vice versa. Only the two retryable outcomes recurse; every
-  # real verdict (and the recovered kills) falls through unretried — as does
-  # `:sigkilled`, deliberately (see `run_mutant/4`: retrying a likely-OOM-killed
-  # mutant re-detonates it on the host).
+  # its general retries, and vice versa.
   defp run_attempt(%RunCtx{} = ctx, id, selection, partition, retries, boot_retries) do
     result =
       Command.timed_test(ctx.sandbox, selection, id,
@@ -162,15 +123,15 @@ defmodule Mutare.Runner.MutantRun do
         partition: Partitions.slot_entry(ctx.partitions, partition)
       )
 
-    case result.outcome do
-      outcome when outcome in [:boot_failure, :app_start_failure] and boot_retries > 0 ->
+    case OutcomePolicy.retry(result.outcome) do
+      :boot_contention when boot_retries > 0 ->
         Process.sleep(boot_backoff_ms())
         run_attempt(ctx, id, selection, partition, retries, boot_retries - 1)
 
-      :harness_error when retries > 0 ->
+      :harness when retries > 0 ->
         run_attempt(ctx, id, selection, partition, retries - 1, boot_retries)
 
-      _ ->
+      _exhausted_or_none ->
         result
     end
   end
@@ -184,12 +145,12 @@ defmodule Mutare.Runner.MutantRun do
        do: result
 
   defp require_unanimous_kill(result, ctx, id, selection, partition, remaining) do
-    if kill_outcome?(result.outcome) do
+    if OutcomePolicy.kill?(result.outcome) do
       next = run_attempt(ctx, id, selection, partition)
 
       combined = combine_attempts(result, next)
 
-      if kill_outcome?(next.outcome) do
+      if OutcomePolicy.kill?(next.outcome) do
         require_unanimous_kill(combined, ctx, id, selection, partition, remaining - 1)
       else
         combined
@@ -221,20 +182,11 @@ defmodule Mutare.Runner.MutantRun do
     |> require_unanimous_kill(ctx, id, selection, slot, ctx.options.kill_runs - 1)
   end
 
-  @doc """
-  Whether a run's outcome counts as a kill: a test failed, the cap was hit, the suite or
-  application could not load, or the atom table filled. The rest — a pass, or a run that
-  reached no verdict — do not.
-  """
-  @spec kill_outcome?(Command.outcome()) :: boolean()
-  def kill_outcome?(outcome),
-    do: outcome in [:failed, :timeout, :suite_compile_error, :atom_exhausted, :app_start_failure]
-
   defp record(%Site{} = site, result, selection, partition) do
     %Result{
       partition: partition,
       site: site,
-      status: status_for(result.outcome),
+      status: OutcomePolicy.status(result.outcome),
       duration_ms: result.duration_ms,
       output: result.output,
       exit_status: result.exit_status,
@@ -246,7 +198,7 @@ defmodule Mutare.Runner.MutantRun do
   # don't re-stampede shared services in lockstep on the same instant.
   defp boot_backoff_ms, do: @boot_retry_base_ms + :rand.uniform(@boot_retry_jitter_ms)
 
-  # A persistent harness error (retries exhausted) is recorded out of the score —
+  # A run that reached no verdict (retries exhausted) is recorded out of the score —
   # but silence would hide infrastructure breakage behind a count buried in the
   # summary. Warn once, naming the mutant and its exit code, so it's actionable;
   # the full `mix` output stays on the `Mutare.Result` for inspection.
@@ -255,7 +207,7 @@ defmodule Mutare.Runner.MutantRun do
   # from output (the boot crash erased its own diagnostic), so rather than send the
   # user to output that can't help, we name the actual fix — it is almost always
   # startup contention across concurrent workers.
-  defp warn_harness_error(%Site{} = site, %{outcome: :boot_failure} = result) do
+  defp warn_no_verdict(%Site{} = site, %{outcome: :boot_failure} = result) do
     Logger.warning(
       "#{site_ref(site)} — the sandbox node died during boot " <>
         "(exit #{result.exit_status}). Its underlying error couldn't reach a torn-down " <>
@@ -269,10 +221,10 @@ defmodule Mutare.Runner.MutantRun do
 
   # A `:sigkilled` run also gets a *specific* message: exit 137 is the OS's, not
   # the suite's, and its signature cause is the kernel OOM killer reaping a mutant
-  # made to allocate unboundedly. Deliberately not retried (see `run_mutant/4`),
+  # made to allocate unboundedly. Deliberately not retried (see `OutcomePolicy`),
   # and the actionable mitigation — a per-process heap cap on the sandbox runs —
   # is named here.
-  defp warn_harness_error(%Site{} = site, %{outcome: :sigkilled} = result) do
+  defp warn_no_verdict(%Site{} = site, %{outcome: :sigkilled} = result) do
     Logger.warning(
       "#{site_ref(site)} — the OS killed the run with SIGKILL " <>
         "(exit #{result.exit_status}). This is usually the kernel OOM killer: a mutation can " <>
@@ -285,7 +237,7 @@ defmodule Mutare.Runner.MutantRun do
     )
   end
 
-  defp warn_harness_error(%Site{} = site, result) do
+  defp warn_no_verdict(%Site{} = site, result) do
     Logger.warning(
       "#{site_ref(site)} failed at the harness level " <>
         "(exit #{result.exit_status}) — the suite never reached a verdict (a compile error, " <>
@@ -297,7 +249,8 @@ defmodule Mutare.Runner.MutantRun do
   # Not a harness error — a kill — but a *silent* one: no test failed, so the
   # survivor diff a user would normally read has no failing test behind it. Say what
   # happened, once, so a startup kill is never mistaken for a mis-scored infra blip.
-  defp warn_app_start_failure(%Site{} = site, result) do
+  # `:app_start_failure` is the one contended kill; another would need its own message.
+  defp warn_contended_kill(%Site{} = site, %{outcome: :app_start_failure} = result) do
     Logger.warning(
       "#{site_ref(site)} — the target's application would not start with this " <>
         "mutation active (exit #{result.exit_status}), and kept refusing across the " <>
@@ -311,46 +264,4 @@ defmodule Mutare.Runner.MutantRun do
 
   # The `file:line:column: mutant id` prefix shared by the warnings above.
   defp site_ref(%Site{} = site), do: "#{Site.location(site)}: mutant #{site.id}"
-
-  # Map a run's typed outcome (decoded by `Mutare.Sandbox.Command`, which owns the
-  # exit-code contract) onto a result status. A `:harness_error` — the suite never
-  # reached a verdict (compile error, missing dep, filesystem race) — is *not* a
-  # kill: it says nothing about the mutation, so it's recorded separately and kept
-  # out of the score's denominator rather than inflating the kill count.
-  defp status_for(:passed), do: :survived
-  defp status_for(:failed), do: :killed
-  defp status_for(:timeout), do: :timeout
-  defp status_for(:harness_error), do: :harness_error
-  # A boot-time node crash is a harness error by *verdict* (it says nothing about
-  # the mutation — it's startup contention), so it records under the same status
-  # and stays out of the score. The `:boot_failure` outcome is purely an internal
-  # refinement (`Command.outcome/2`) driving the harder retry and the specific
-  # warning; it never reaches the reporters' `Result.status` vocabulary.
-  defp status_for(:boot_failure), do: :harness_error
-  # An OS SIGKILL (almost always the kernel OOM killer reaping a runaway-allocation
-  # mutant) is likewise a harness error by *verdict* — the suite never reached one.
-  # The `:sigkilled` outcome is an internal refinement like `:boot_failure`, but
-  # driving the opposite retry behavior (none — see `run_mutant/4`) and its own
-  # warning; reporters never see it as a status.
-  defp status_for(:sigkilled), do: :harness_error
-  # The mutation broke the test suite's own compilation — it can't even build
-  # with the mutant active, so it was detected: a kill. `Command.outcome/2`
-  # separates this from a genuine harness/infra compile failure (which stays
-  # `:harness_error`); only a per-mutant *test-script* compile error lands here.
-  defp status_for(:suite_compile_error), do: :killed
-  # The mutation minted unbounded atoms and crashed the BEAM (atom table full) —
-  # a resource-divergence like a timeout, so a kill, recorded under its own status
-  # so the report can name the cause. `Command.outcome/2` recovers it from the
-  # otherwise-`:harness_error` exit via the VM-abort banner (`Output.atom_exhausted?/1`).
-  # Not retried (it is a verdict, not a transient infra blip): only `:harness_error`
-  # and the two boot-time shapes re-run (see `run_attempt/6`).
-  defp status_for(:atom_exhausted), do: :atom_exhausted
-
-  # The mutation broke project evaluation, configuration, or application startup, so `mix test` never
-  # loaded a test. It was still detected: the baseline (and the coverage probe) boot
-  # the *same* sandbox green, so the mutation is the only thing that changed. A kill,
-  # on the same reasoning as `:suite_compile_error` — and, like every other kill,
-  # only after `run_attempt/6` has spent the boot-contention budget proving it
-  # is not a startup stampede.
-  defp status_for(:app_start_failure), do: :killed
 end
