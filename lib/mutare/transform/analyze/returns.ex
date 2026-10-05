@@ -164,7 +164,11 @@ defmodule Mutare.Transform.Analyze.Returns do
       _ ->
         Attach.ranged_candidates(tail, fn range ->
           Enum.map(replacements, fn {spec, replacement} ->
-            %Candidate.Return{mutator: spec, original: tail, mutated: replacement, range: range}
+            %Candidate.Return{
+              mutator: spec,
+              mutated: replacement,
+              report: Candidate.Report.replace(tail, replacement, range)
+            }
           end)
         end)
     end
@@ -198,8 +202,9 @@ defmodule Mutare.Transform.Analyze.Returns do
   @spec raise_undelivered!([[struct()]]) :: no_return()
   defp raise_undelivered!(candidate_lists) do
     tails =
-      Enum.map_join(candidate_lists, "; ", fn [%Candidate.Return{} = candidate | _] ->
-        "line #{candidate.range.start[:line]}: #{Macro.to_string(candidate.original)}"
+      Enum.map_join(candidate_lists, "; ", fn [%Candidate.Return{report: report} | _] ->
+        {:replace, tail, _constant} = report.edit
+        "line #{report.range.start[:line]}: #{Macro.to_string(tail)}"
       end)
 
     raise "internal error: return-value candidates found no host node in the analyzed tree " <>

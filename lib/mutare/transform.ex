@@ -189,6 +189,7 @@ defmodule Mutare.Transform do
     Calls,
     Candidate,
     Candidate.Delivery,
+    Candidate.Eligibility,
     CaseClauseEmit,
     ClaimState,
     ClauseAST,
@@ -1353,8 +1354,8 @@ defmodule Mutare.Transform do
 
   # Apply mutator opt-outs, suppress duplicate return constants and withhold binding-dropping
   # mutants *before* id assignment, on the source node — shared with the collect walk via
-  # `Candidate.Delivery.gate/2` (see there for the policy).
-  defp gate_candidates(candidates, node), do: Delivery.gate(candidates, node)
+  # `Candidate.Eligibility.gate/2` (see there for the policy).
+  defp gate_candidates(candidates, node), do: Eligibility.gate(candidates, node)
 
   defp emit_site({:try, _, [blocks]} = node, candidates, ctx) when is_list(blocks) do
     case RescueEmit.emit(node, candidates, ctx) do

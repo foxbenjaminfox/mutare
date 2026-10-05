@@ -13993,7 +13993,7 @@ same release `preserved_routing/2` began answering `:unknown` for a classifier t
 could not invoke — written for a *skipped* call's arguments, where the arguments are ordinary
 Elixir that runs and the guaranteed reader (`BindingEscapeEmit`) must read every nested call,
 so a classifier it cannot invoke leaves a hole a blanket has to close (`unknown_routing?/1`,
-`Delivery.gate/2` withholding every candidate on the node). `Bindings.matched/2` descended
+`Eligibility.gate/2` withholding every candidate on the node). `Bindings.matched/2` descended
 every argument alike, so the same answer came back for a `from` nested in a `having:` value
 routed `:hosted`, and the `div`-like node around the outer query lost every whole-call
 mutant. The blanket protects nothing there: a `:raw`/`:hosted` position is the enclosing
@@ -14337,7 +14337,7 @@ later binding clears it, as it clears a conflict). Every reader keeps the fresh 
 uncertain name, which is safe where the two rules agree: an escaping name every branch binds
 is exported either way, and a mutant dropping one that is read after is withheld either way.
 Where they disagree — a name the node matches in a position its route reads as no value, and
-something reads after — `Delivery.gate/2` withholds every candidate on the node, as it
+something reads after — `Eligibility.gate/2` withholds every candidate on the node, as it
 already did for a bound name in conflict: exported as incoming it may name nothing, trapped
 it may hide the write the source lets out. This is not the classifier's rule alone: a
 lazy-position write before the node (`Eager.run(p = 8)` under a `:lazy_expression` route,
@@ -14364,7 +14364,7 @@ read `[left, right]` as reads, exported nothing, and left the baseline at `:befo
 declaration was configured; discarding the difference between "no route" and "a route whose
 positions were not obtained" was the bug. The lookup now answers `:unknown`, `Bindings.matched/2`
 collects it as a fact beside the possible writes (`{:bound, name}` | `:unknown`;
-`matched_names/1` projects the names, `unknown_routing?/1` the flag), and `Delivery.gate/2`
+`matched_names/1` projects the names, `unknown_routing?/1` the flag), and `Eligibility.gate/2`
 withholds every candidate on a node containing one: a selector around a call that may bind
 names nobody can read would trap them, and a guess in either direction corrupts the baseline.
 Conservative and rare — a `:skip` wrapper around a classifier-routed binding macro — and no
@@ -14467,7 +14467,7 @@ stays trapped, unread — which also keeps the warning profile the source's (its
 went unread too). Every built-in branch binds the same names: the `=`'s RHS is common to all,
 and a pattern mutant keeps the rest of the call. The one branch that can differ is a custom
 mutator's whole-call mutation re-homed as a `MacroPattern` branch (`UnpackMutator` replaces
-the value with a literal), so `Delivery.gate/2` now reads `MacroPattern.mutant_expr` as it
+the value with a literal), so `Eligibility.gate/2` now reads `MacroPattern.mutant_expr` as it
 reads an `InPlace` branch and withholds one that drops a fresh name read later. The export
 therefore depends on `later`, not on which candidates are live — nothing to plan after
 `claim_items`. The chain links keep their occurrence-multiplicity treatment; the scope
@@ -14509,7 +14509,7 @@ with `{bound on entry, referenced after}`, each one-sided on purpose: `bound` ma
 fresh rule then applies, which is what applied to everything before), never over-claim (an
 export naming an unbound name does not compile); `later` may over-count (a mutant withheld in
 vain), never miss. `PipeEmit` exports `matched ∩ bound` plus the fresh names every live branch
-binds; `Delivery.gate/2` withholds a whole-node replacement that drops a fresh name in `later`,
+binds; `Eligibility.gate/2` withholds a whole-node replacement that drops a fresh name in `later`,
 in both passes, so counts and ids agree. The `later` set stops at the body of a definition, a
 `fn` or a clause (Elixir lets no binding out of one) and applies no scoping inside it — a
 fresh name read outside its scope is a source error, so counting it costs nothing. The walk
@@ -15406,3 +15406,38 @@ Not done: an emitter that reads the binding directly (an `fn`/`receive` gate, re
 an `:enclosing` coverage record) still has to call `SelectorEmit.reference_active/2` itself.
 The next step is for those deliveries to return their reads with their AST, as the boundaries
 now do.
+
+### Every candidate carries its report; eligibility is its own module (2026-10-05)
+
+"Attachment constructs the report, independently of execution" gave `InPlace` and
+`MacroPattern` a `Candidate.Report`; every other variant still carried `range`/`original`/
+`mutated` (or `dropped`) fields, plus `note`/`variant` read by field. `Delivery` therefore had
+a report-driven and a field-driven way to build a Site, and reading a new variant meant
+learning which convention it followed as well as how it executes. Now every variant but
+`Hosted` (whose mutants are `InPlace`s) is built with a report, `@enforce_keys` makes one
+unbuildable without it, and the report also holds the producer's note and variant tag. A
+variant's remaining fields are what its delivery executes (`MatchPattern`'s became
+`pattern`/`mutant_pattern` for that reason). `Delivery.site/4` is one path: the report says
+what changed, the per-variant profile says only how it was delivered (`:in_place`,
+`:lifted`, or a return constant, which `Site.return_value` records without AST forms).
+
+Two constructors, on purpose. `Report.new/5` is for a mutator's result: it checks an
+attribution and positions an unattributed edit of a written pipe stage at the stage.
+`Report.replace/4` and `Report.delete/3` are for an edit the walk located itself (a tagged
+guard operator or pattern literal, a clause pattern, a dropped clause); they position at the
+range's start, as those Sites always were. Moving them to `new/5` would change positions
+wherever a tagged node is itself a written pipe.
+
+The sharp edge was `ImportWitness.for_candidate/1`, which read `original`/`mutated` by field
+from whatever carried them. For `InPlace` those must stay the executed nodes, since its
+report may name a narrower attributed clause or the written stage, which carries no import
+stamp. Every other variant splices exactly its report's edit into the clause it executes,
+so it is witnessed from the report. Two variants gained a witness read where they had
+none: `RescueDrop` (a `->` clause, which carries no stamp) and `MacroPattern` (never passed).
+
+`gate/2` moved from `Delivery` to `Candidate.Eligibility`: which candidates exist (policy,
+duplicate return constants, binding drops) is decided before ids, by emission and the
+collect walk alike, and has nothing to do with how a survivor is routed or recorded.
+
+Validation: `bench/transform_diff.sh HEAD` reports all 3,156 snapshots identical, so no
+metamutant or Site moved.

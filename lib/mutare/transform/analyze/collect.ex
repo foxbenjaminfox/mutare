@@ -17,7 +17,7 @@ defmodule Mutare.Transform.Analyze.Collect do
   #   1. filter the specs to the **collect producers** (`mutate/1`/`mutate/2` exporters plus
   #      selector hosts — see below),
   #   2. `annotate/2` the subtree and run the same pre-emission passes emission would
-  #      (`Overlap.resolve/1`; the call-option-key gate via `Candidate.Delivery.gate/1`),
+  #      (`Overlap.resolve/1`; the call-option-key gate via `Candidate.Eligibility.gate/2`),
   #   3. walk the annotated tree post-order (mirroring emission's id order), collecting each
   #      surviving `Candidate.InPlace` together with the index path to its host node while
   #      stripping the delivery metadata,
@@ -63,7 +63,7 @@ defmodule Mutare.Transform.Analyze.Collect do
   alias Mutare.Transform.{Bindings, Candidate, Meta, Overlap, Resolve, UnitReturns}
   alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.Env
-  alias Mutare.Transform.Candidate.Delivery
+  alias Mutare.Transform.Candidate.Eligibility
 
   @structural_callbacks Mutare.Mutator.Structural.behaviour_info(:callbacks)
 
@@ -147,7 +147,7 @@ defmodule Mutare.Transform.Analyze.Collect do
     own =
       candidates
       |> Enum.filter(&match?(%Candidate.InPlace{}, &1))
-      |> Delivery.gate(stripped)
+      |> Eligibility.gate(stripped)
       |> Enum.map(&{rev_path, mutation(&1)})
 
     lowered = Enum.flat_map(hosted, &lower_hosted(&1, stripped, rev_path))
@@ -208,7 +208,7 @@ defmodule Mutare.Transform.Analyze.Collect do
 
     Mutation.new(candidate.mutated,
       producer: candidate.mutator,
-      note: candidate.note,
+      note: candidate.report.note,
       variant: resolved_variant(candidate),
       attribution: attribution
     )
@@ -244,7 +244,11 @@ defmodule Mutare.Transform.Analyze.Collect do
   # `nil` is kept only for families with no variant vocabulary.
   defp resolved_variant(candidate) do
     labels =
-      Dispatch.variant(candidate.mutator, candidate.report.classification, candidate.variant)
+      Dispatch.variant(
+        candidate.mutator,
+        candidate.report.classification,
+        candidate.report.variant
+      )
 
     if labels == [] and not Dispatch.opted_in?(candidate.mutator.module),
       do: nil,

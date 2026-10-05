@@ -12,31 +12,37 @@ defmodule Mutare.Transform.ImportWitness do
   # Elixir raises "imported from both ... ambiguous" during compile, and poison recovery drops
   # the generated mutant instead of letting it run against the wrong provider.
   #
-  # `for_candidate/1` reads the import stamp (`Mutare.Transform.Imports.import_witness/1`) off a
-  # candidate's original node and, for in-place rewrites, its mutated branch. A bare imported rename
-  # needs both: the original witness proves the source name was not secretly replaced, while the
-  # mutated-branch witness proves the emitted bare sibling still names the same provider. `wrap/2`
+  # `for_candidate/1` reads the import stamp (`Mutare.Transform.Imports.import_witness/1`) off the
+  # original and mutated nodes of a candidate's change. A bare imported rename needs both: the
+  # original witness proves the source name was not secretly replaced, while the mutated witness
+  # proves the emitted bare sibling still names the same provider. For an `InPlace` those are its
+  # executed nodes, since its report may name a narrower clause or the written pipe stage; every
+  # other variant splices exactly its report's edit into the clause it executes, so the report's
+  # nodes are the ones to read. `wrap/2`
   # prefixes the witness block(s) to a single expression (the in-place path); `prepend/2` splices
   # them into a clause body's `:do` (the lifted path). Both are no-ops when no witness exists —
   # the common case (a call that isn't a bare import).
 
   alias Mutare.AST
-  alias Mutare.Transform.{Aliases, Imports}
+  alias Mutare.Transform.{Aliases, Candidate, Imports}
+  alias Mutare.Transform.Candidate.Report
 
   @type witness :: {Aliases.module_key(), atom(), arity()}
   @type witness_set :: witness() | [witness()] | nil
 
   @doc "The witness(es) for a candidate's bare imported node(s), or `nil`."
-  @spec for_candidate(map()) :: witness_set()
-  def for_candidate(%{original: original, mutated: mutated}) do
-    [original, mutated]
+  @spec for_candidate(Candidate.t()) :: witness_set()
+  def for_candidate(%Candidate.InPlace{original: original, mutated: mutated}),
+    do: from_nodes([original, mutated])
+
+  def for_candidate(%{report: %Report{} = report}), do: report |> Report.nodes() |> from_nodes()
+
+  defp from_nodes(nodes) do
+    nodes
     |> Enum.flat_map(&from_node/1)
     |> Enum.uniq()
     |> normalize()
   end
-
-  def for_candidate(%{original: original}), do: original |> from_node() |> normalize()
-  def for_candidate(_candidate), do: nil
 
   defp from_node({:&, amp_meta, [{:/, _slash_meta, [ref, _arity]}]}) when is_list(amp_meta) do
     [Imports.import_witness(amp_meta) | from_node(ref)]

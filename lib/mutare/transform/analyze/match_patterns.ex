@@ -95,11 +95,11 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
           Enum.map(mutations, fn {mutator, mutated} ->
             %Candidate.MatchPattern{
               mutator: mutator,
-              original: lhs,
-              mutated: mutated,
+              pattern: lhs,
+              mutant_pattern: mutated,
               export: export,
               raw_rhs: raw_rhs,
-              range: range
+              report: Candidate.Report.replace(lhs, mutated, range)
             }
           end)
       end
@@ -229,21 +229,20 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
     {inplace, Meta.put_candidates(node, :in_place, others)}
   end
 
-  # Convert one whole-call in-place mutation into a `MacroPattern` branch: the diff
-  # (`original`/`mutated`/`range`) stays the call/stage the mutator changed, while `mutant_expr`
-  # is what the branch *runs* — the (possibly piped) mutated call, before the export tuple. The
-  # InPlace's `note` (a `mutate`-supplied per-mutant advisory) and `variant` (a `Mutation.tagged/2`
-  # `# mutare:ignore` label) both ride through, so a noted *and* a tagged whole-call mutation on a
-  # binding-escaping macro call keep their note and label on the `Mutare.Site` — the latter is what
-  # a `[family:label]` directive matches on, so dropping it would leave the mutant unsuppressable.
+  # Convert one whole-call in-place mutation into a `MacroPattern` branch: the InPlace's
+  # `report` (the diff of the call/stage the mutator changed) rides through whole, while
+  # `mutant_expr` is what the branch *runs* — the (possibly piped) mutated call, before the
+  # export tuple. The report carries the InPlace's note (a `mutate`-supplied per-mutant
+  # advisory) and variant tag (a `Mutation.tagged/2` `# mutare:ignore` label), so a noted *and*
+  # a tagged whole-call mutation on a binding-escaping macro call keep their note and label on
+  # the `Mutare.Site` — the latter is what a `[family:label]` directive matches on, so dropping
+  # it would leave the mutant unsuppressable.
   defp call_mutation_candidate(%Candidate.InPlace{} = ip, export, mutant_expr) do
     %Candidate.MacroPattern{
       mutator: ip.mutator,
       report: ip.report,
       export: export,
-      mutant_expr: mutant_expr,
-      note: ip.note,
-      variant: ip.variant
+      mutant_expr: mutant_expr
     }
   end
 
@@ -257,7 +256,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
     |> Enum.map(fn {mutator, mutated} ->
       %Candidate.MacroPattern{
         mutator: mutator,
-        report: Candidate.Report.new(pattern, mutated, range),
+        report: Candidate.Report.replace(pattern, mutated, range),
         export: export,
         mutant_expr: rebuild_mutant.(mutated)
       }
@@ -381,7 +380,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   #     worst a branch names the incoming value, which is what the source leaves.
   #   * a name bound **fresh** is exported when something reads it after the node. Every
   #     built-in branch binds it; a re-homed whole-call branch that does not is withheld by
-  #     `Candidate.Delivery.gate/2`, so the export never depends on which candidates are live.
+  #     `Candidate.Eligibility.gate/2`, so the export never depends on which candidates are live.
   #     A fresh name nothing reads stays trapped, unread — and unexported it gains no warning
   #     the source lacked (the source's own binding went unread too).
   #

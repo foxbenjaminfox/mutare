@@ -23,6 +23,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   alias Mutare.Transform.{Candidate, Meta, NodeRange, PatternStructure, Tag}
   alias Mutare.Transform.Analyze
   alias Mutare.Transform.Analyze.Attach
+  alias Mutare.Transform.Candidate.Report
 
   # A fresh `{tag_counter, targets}` accumulator for a single-node tag walk. The candidates
   # here are discovered one node at a time, each re-tagged from scratch, so the starting
@@ -129,18 +130,14 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
     {tagged_guard, {_next, targets}} = Tag.guard_targets(guard, @fresh_tag_acc, env.mutators)
 
     swaps =
-      Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, variant, range ->
+      Tag.expand_targets(targets, fn tag, result, report ->
         %Candidate.CaseClause{
           clause_index: index,
-          mutator: mutator,
+          mutator: result.spec,
           mutant_pattern: pattern,
-          mutant_guard: Tag.replace_tag(tagged_guard, tag, mutated),
+          mutant_guard: Tag.replace_tag(tagged_guard, tag, result.node),
           raw_body: body,
-          original: original,
-          mutated: mutated,
-          range: range,
-          note: note,
-          variant: variant
+          report: report
         }
       end)
 
@@ -157,23 +154,23 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # The shared precondition of the two guard-drop offers (`case` via `CaseClause`,
   # `receive`/`fn` via `ReceiveClause`/`FnClause`): a guard is droppable only when it is **inert** (no other
   # family tagged it — `targets == []`) and `GuardDrop` is enabled. Returns the spec plus the
-  # `{:when, pattern, guard}` node (reconstructed for the Site diff/range) and its range, or
-  # `:error` when any precondition fails. Each caller supplies its own `pattern` and builds its
-  # own struct.
-  defp guard_drop_when_node(pattern, guard, targets, env) do
+  # report replacing the `{:when, pattern, guard}` node (reconstructed for the Site diff/range)
+  # with the bare `pattern`, or `:error` when any precondition fails. Each caller builds its own
+  # struct.
+  defp guard_drop_report(pattern, guard, targets, env) do
     with [] <- targets,
          %Spec{} = spec <- Spec.find(env.mutators, Mutare.Mutators.GuardDrop),
          when_node = {:when, [], [pattern, guard]},
          %{} = range <- NodeRange.get(when_node) do
-      {:ok, spec, when_node, range}
+      {:ok, spec, Report.replace(when_node, pattern, range)}
     else
       _ -> :error
     end
   end
 
   defp guard_drop_clause_candidate(index, pattern, guard, body, targets, env) do
-    case guard_drop_when_node(pattern, guard, targets, env) do
-      {:ok, spec, when_node, range} ->
+    case guard_drop_report(pattern, guard, targets, env) do
+      {:ok, spec, report} ->
         [
           %Candidate.CaseClause{
             clause_index: index,
@@ -185,9 +182,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
             mutant_pattern: pattern,
             mutant_guard: nil,
             raw_body: body,
-            original: when_node,
-            mutated: pattern,
-            range: range
+            report: report
           }
         ]
 
@@ -200,18 +195,14 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
     {tagged_pattern, {_next, targets}} =
       Tag.pattern_literal_targets(pattern, @fresh_tag_acc, env.mutators)
 
-    Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, variant, range ->
+    Tag.expand_targets(targets, fn tag, result, report ->
       %Candidate.CaseClause{
         clause_index: index,
-        mutator: mutator,
-        mutant_pattern: Tag.replace_tag(tagged_pattern, tag, mutated),
+        mutator: result.spec,
+        mutant_pattern: Tag.replace_tag(tagged_pattern, tag, result.node),
         mutant_guard: guard,
         raw_body: body,
-        original: original,
-        mutated: mutated,
-        range: range,
-        note: note,
-        variant: variant
+        report: report
       }
     end)
   end
@@ -220,16 +211,14 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   defp structural_clause_candidates(_index, _pattern, _guard, _body, _used, []), do: []
 
   defp structural_clause_candidates(index, pattern, guard, body, used, structural) do
-    structural_mutations(pattern, used, structural, fn mutator, mutated, range ->
+    structural_mutations(pattern, used, structural, fn mutator, mutated, report ->
       %Candidate.CaseClause{
         clause_index: index,
         mutator: mutator,
         mutant_pattern: mutated,
         mutant_guard: guard,
         raw_body: body,
-        original: pattern,
-        mutated: mutated,
-        range: range
+        report: report
       }
     end)
   end
@@ -237,14 +226,16 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # Run the structural (swap/wildcard) discovery on one clause pattern, skipping the
   # pattern when Sourceror can't range it (no focused diff possible — the same guard the
   # tagged path applies via `Tag.expand_targets/2`). Each `{mutator, mutated}` becomes a
-  # candidate via `build.(mutator, mutated, range)`. Shared by the `case` (`CaseClause`)
+  # candidate via `build.(mutator, mutated, report)`, `report` replacing `pattern` with `mutated`. Shared by the `case` (`CaseClause`)
   # and `receive`/`fn` paths, which differ only in the struct they build.
   defp structural_mutations(pattern, used, structural, build) do
     case NodeRange.get(pattern) do
       %{} = range ->
         pattern
         |> PatternStructure.node_mutations(used, structural)
-        |> Enum.map(fn {mutator, mutated} -> build.(mutator, mutated, range) end)
+        |> Enum.map(fn {mutator, mutated} ->
+          build.(mutator, mutated, Report.replace(pattern, mutated, range))
+        end)
 
       _ ->
         []
@@ -340,13 +331,8 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   end
 
   defp structural_position_candidates(pattern, pos, clause, build, used, structural) do
-    structural_mutations(pattern, used, structural, fn mutator, mutated, range ->
-      build.(put_clause_pattern_at(clause, pos, mutated),
-        mutator: mutator,
-        original: pattern,
-        mutated: mutated,
-        range: range
-      )
+    structural_mutations(pattern, used, structural, fn mutator, mutated, report ->
+      build.(put_clause_pattern_at(clause, pos, mutated), mutator: mutator, report: report)
     end)
   end
 
@@ -354,16 +340,12 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
     {tagged_pattern, {_next, targets}} =
       Tag.pattern_literal_targets(pattern, @fresh_tag_acc, env.mutators)
 
-    Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, variant, range ->
-      mutated_pattern = Tag.replace_tag(tagged_pattern, tag, mutated)
+    Tag.expand_targets(targets, fn tag, result, report ->
+      mutated_pattern = Tag.replace_tag(tagged_pattern, tag, result.node)
 
       build.(put_clause_pattern_at(clause, pos, mutated_pattern),
-        mutator: mutator,
-        original: original,
-        mutated: mutated,
-        range: range,
-        note: note,
-        variant: variant
+        mutator: result.spec,
+        report: report
       )
     end)
   end
@@ -377,17 +359,9 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
         {tagged_guard, {_next, targets}} = Tag.guard_targets(guard, @fresh_tag_acc, env.mutators)
 
         swaps =
-          Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, variant, range ->
-            mutated_guard = Tag.replace_tag(tagged_guard, tag, mutated)
-
-            build.(put_clause_guard(clause, mutated_guard),
-              mutator: mutator,
-              original: original,
-              mutated: mutated,
-              range: range,
-              note: note,
-              variant: variant
-            )
+          Tag.expand_targets(targets, fn tag, result, report ->
+            mutated_guard = Tag.replace_tag(tagged_guard, tag, result.node)
+            build.(put_clause_guard(clause, mutated_guard), mutator: result.spec, report: report)
           end)
 
         swaps ++ guard_drop_clause_pattern(clause, guard, build, targets, env)
@@ -403,15 +377,8 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
     # A multi-pattern `fn x, y when … ->` head has
     # no single `{:when, …}` node that renders cleanly in the diff, so it is skipped.
     with {[pattern], _used} <- clause_patterns(clause),
-         {:ok, spec, when_node, range} <- guard_drop_when_node(pattern, guard, targets, env) do
-      [
-        build.(strip_clause_guard(clause),
-          mutator: spec,
-          original: when_node,
-          mutated: pattern,
-          range: range
-        )
-      ]
+         {:ok, spec, report} <- guard_drop_report(pattern, guard, targets, env) do
+      [build.(strip_clause_guard(clause), mutator: spec, report: report)]
     else
       _ -> []
     end
@@ -527,9 +494,8 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
           [
             %Candidate.RescueDrop{
               mutator: spec,
-              dropped: clause,
               replacement: rebuild_try.(List.delete_at(clauses, index)),
-              range: range
+              report: Report.delete(clause, range)
             }
           ]
 
@@ -545,7 +511,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # rebuilt with this clause's exception-type list narrowed. Both list-bearing shapes are
   # mutated: `var in [t1, ..., tn]` (bound) and a bare `[t1, ..., tn]` head (no binding) —
   # `narrowable_types/1` returns the type list and a head-rebuilder for each. The diff
-  # (`original`/`mutated`/`range`) is the clause **head** before/after, so the bound form shows
+  # (`report`) is the clause **head** before/after, so the bound form shows
   # `var in [A, B]`→`var in [A]` and the bare form `[A, B]`→`[A]`. The non-list shapes (`var`,
   # `Type`, `var in Single`) yield nothing.
   defp rescue_type_drops({{:->, cmeta, [[head], body]}, index}, clauses, rebuild_try, spec) do
@@ -559,10 +525,8 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
 
         %Candidate.RescueNarrow{
           mutator: spec,
-          original: head,
-          mutated: mutated_head,
           replacement: rebuild_try.(List.replace_at(clauses, index, mutated_clause)),
-          range: range
+          report: Report.replace(head, mutated_head, range)
         }
       end)
     else
@@ -668,31 +632,24 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
     {tagged_guard, {_next, targets}} = Tag.guard_targets(guard, @fresh_tag_acc, env.mutators)
 
     swaps =
-      Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, variant, range ->
+      Tag.expand_targets(targets, fn tag, result, report ->
         %Candidate.ClauseGuard{
           locator: locator,
-          mutant_guard: Tag.replace_tag(tagged_guard, tag, mutated),
-          mutator: mutator,
-          original: original,
-          mutated: mutated,
-          range: range,
-          note: note,
-          variant: variant
+          mutant_guard: Tag.replace_tag(tagged_guard, tag, result.node),
+          mutator: result.spec,
+          report: report
         }
       end)
 
     drop =
       with [pattern] <- patterns,
-           {:ok, spec, when_node, range} <-
-             guard_drop_when_node(pattern, guard, targets, env) do
+           {:ok, spec, report} <- guard_drop_report(pattern, guard, targets, env) do
         [
           %Candidate.ClauseGuard{
             locator: locator,
             mutant_guard: nil,
             mutator: spec,
-            original: when_node,
-            mutated: pattern,
-            range: range
+            report: report
           }
         ]
       else

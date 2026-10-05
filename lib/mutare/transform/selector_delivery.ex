@@ -58,7 +58,7 @@ defmodule Mutare.Transform.SelectorDelivery do
   # that does not rebind it names the incoming value, which is what the source leaves after a
   # rebinding a mutant removed — and a name bound **fresh** only by the branches that bind it,
   # so it is exported when every *live* branch does. A live branch that drops a fresh name
-  # something reads later never reaches here (`Candidate.Delivery.gate/2` withheld it); one
+  # something reads later never reaches here (`Candidate.Eligibility.gate/2` withheld it); one
   # that drops a fresh name nothing reads leaves it unexported, trapped in the catch-all,
   # unread. The live set is the emitter's to hand over: an ignored or poison-skipped candidate
   # has no branch, and must not decide what the program exports.

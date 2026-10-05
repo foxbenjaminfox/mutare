@@ -109,7 +109,7 @@ defmodule Mutare.ReturnValueTest do
 
     test "a literal tail is skipped even with its node-level family disabled" do
       # `@only` runs ReturnValue *alone*, so this pins the handoff as unconditional — it is a
-      # shape rule, not the value comparison `Candidate.Delivery.gate/1` applies elsewhere.
+      # shape rule, not the value comparison `Candidate.Eligibility.gate/2` applies elsewhere.
       # Don't relax it to a value check: `nil`/`:mutare` collide with nothing these families
       # emit, and a `false` tail mutated to `nil` stays falsy, so no `refute` kills it. See NOTES.
       assert return_sites("5") == []

@@ -23,6 +23,13 @@ defmodule Mutare.Transform.Candidate do
   # said "three legal shapes" while the structs had grown past a dozen); the structs below and the
   # `Delivery` table are the catalogue.
   #
+  # What a variant *reports* is not its shape's business: every variant but `Hosted` (whose
+  # mutants are `InPlace`s) carries a `Candidate.Report`, built where the candidate is
+  # constructed — the edit, its range and position, the classification pair, and the
+  # producer's note and variant tag. The variant's own fields are what its delivery executes,
+  # so a field named `original`/`mutated` below is an executed node, never a copy of the
+  # report's. Which candidates exist at all is `Candidate.Eligibility`'s to decide.
+  #
   # The excluded positions — `:compile_time` (module-attribute values and macro
   # bodies), `:spec` (a bitstring type specifier), `:capture_arity` (the `/` in
   # `&fun/arity`) — never become candidates at all; the analyzer classifies them
@@ -55,31 +62,23 @@ defmodule Mutare.Transform.Candidate do
     # emission wraps the built selector in `^`. Default `false` — pinning is illegal outside
     # such a context (a bare `^` is a compile error), so only a deliberate route sets it.
     #
-    # `note` carries the optional per-mutant advisory the producing mutator attached (a
-    # `%Mutare.Mutator.Mutation{}` return from `mutate/1`/`mutate/2`); it rides through to the
-    # `Mutare.Site` for the report. Default `nil` — an ordinary mutation has no note.
-    #
-    # `variant` carries the `# mutare:ignore` label(s) a value family tagged at production time
-    # (the `%Mutare.Mutator.Mutation{}`'s `variant`); it rides through to `Mutare.Site`, where it
-    # takes precedence over the `c:Mutare.Mutator.variant/2` derivation. Default `nil` — an operator
-    # family (or an untagged mutation) leaves the label to be derived from the node.
-    #
-    # `report` is the checked textual edit, selection position and classification input.
-    # It is constructed at attachment and stays separate from `original`/`mutated`,
-    # which describe execution (including whole-call rewrites and resolved pipes).
+    # `report` is the checked textual edit, selection position and classification input,
+    # plus the producing mutator's optional per-mutant note and production-time
+    # `# mutare:ignore` variant tag (a `%Mutare.Mutator.Mutation{}` return; the tag takes
+    # precedence over the `c:Mutare.Mutator.variant/2` derivation). It is constructed at
+    # attachment and stays separate from `original`/`mutated`, which describe execution
+    # (including whole-call rewrites and resolved pipes).
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
             original: Macro.t(),
             mutated: Macro.t(),
             report: Mutare.Transform.Candidate.Report.t(),
             call_option_key?: boolean(),
-            pin?: boolean(),
-            note: String.t() | nil,
-            variant: Mutare.Mutator.Mutation.variant()
+            pin?: boolean()
           }
 
     @enforce_keys [:mutator, :original, :mutated, :report]
-    defstruct @enforce_keys ++ [call_option_key?: false, pin?: false, note: nil, variant: nil]
+    defstruct @enforce_keys ++ [call_option_key?: false, pin?: false]
   end
 
   defmodule Lifted do
@@ -101,32 +100,19 @@ defmodule Mutare.Transform.Candidate do
     # puts that difference in the struct.
     #
     # `tag` is the unique `meta[:mutare_tag]` marking the target inside the tagged
-    # clause group; `clause_index` is the clause it lives in. `note` carries the producing
-    # mutator's optional per-mutant advisory (a `%Mutare.Mutator.Mutation{}` return) through
-    # to the `Mutare.Site`; `nil` for an ordinary mutation. `variant` carries the production-time
-    # `# mutare:ignore` label(s) (a value family's tagged head literal), `nil` when derived.
+    # clause group; `clause_index` is the clause it lives in; `mutated` replaces the tagged
+    # node. `report` describes the literal's edit, with the producer's note and variant tag.
 
     @type t :: %__MODULE__{
             tag: non_neg_integer(),
             clause_index: non_neg_integer(),
             mutator: Mutare.Mutator.Spec.t(),
-            original: Macro.t(),
             mutated: Macro.t(),
-            range: Sourceror.Range.t(),
-            note: String.t() | nil,
-            variant: Mutare.Mutator.Mutation.variant()
+            report: Mutare.Transform.Candidate.Report.t()
           }
 
-    defstruct [
-      :tag,
-      :clause_index,
-      :mutator,
-      :original,
-      :mutated,
-      :range,
-      note: nil,
-      variant: nil
-    ]
+    @enforce_keys [:report]
+    defstruct [:tag, :clause_index, :mutator, :mutated, :report]
   end
 
   defmodule LiftedGuard do
@@ -150,23 +136,12 @@ defmodule Mutare.Transform.Candidate do
             tag: non_neg_integer(),
             clause_index: non_neg_integer(),
             mutator: Mutare.Mutator.Spec.t(),
-            original: Macro.t(),
             mutated: Macro.t(),
-            range: Sourceror.Range.t(),
-            note: String.t() | nil,
-            variant: Mutare.Mutator.Mutation.variant()
+            report: Mutare.Transform.Candidate.Report.t()
           }
 
-    defstruct [
-      :tag,
-      :clause_index,
-      :mutator,
-      :original,
-      :mutated,
-      :range,
-      note: nil,
-      variant: nil
-    ]
+    @enforce_keys [:report]
+    defstruct [:tag, :clause_index, :mutator, :mutated, :report]
   end
 
   defmodule PatternStructure do
@@ -179,40 +154,36 @@ defmodule Mutare.Transform.Candidate do
     # no taggable metadata (a 2-tuple, a list), so it is applied by **whole-clause
     # rebuild by index** — the same mechanism as `Drop`. `clause_index` says which clause
     # to rebuild; `Mutare.Transform.FunctionPlan.variant/2` swaps in `mutated_args`
-    # as that clause's head pattern args. `original`/`mutated` are the clause's head *call* node
-    # before/after (always rangeable, so the report renders a clean one-line diff), and
+    # as that clause's head pattern args. `report` edits the clause's head *call* node
+    # (always rangeable, so the report renders a clean one-line diff), and
     # `mutator` is the structural family that produced it (`PatternSwap`/`PatternWildcard`).
 
     @type t :: %__MODULE__{
             clause_index: non_neg_integer(),
             mutator: Mutare.Mutator.Spec.t(),
             mutated_args: [Macro.t()],
-            original: Macro.t(),
-            mutated: Macro.t(),
-            range: Sourceror.Range.t()
+            report: Mutare.Transform.Candidate.Report.t()
           }
 
-    defstruct [:clause_index, :mutator, :mutated_args, :original, :mutated, :range]
+    @enforce_keys [:report]
+    defstruct [:clause_index, :mutator, :mutated_args, :report]
   end
 
   defmodule RescueNarrow do
     @moduledoc false
 
     # A rescue type-list narrowing, delivered by a whole-try selector. `replacement`
-    # is the complete try with one rescue clause changed; `original`/`mutated`/`range`
-    # describe just that type-list edit for the in-place Site.
+    # is the complete try with one rescue clause changed; `report` describes just that
+    # clause head's edit for the in-place Site.
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
-            original: Macro.t(),
-            mutated: Macro.t(),
             replacement: Macro.t(),
-            range: Sourceror.Range.t(),
-            note: String.t() | nil,
-            variant: Mutare.Mutator.Mutation.variant()
+            report: Mutare.Transform.Candidate.Report.t()
           }
 
-    defstruct [:mutator, :original, :mutated, :replacement, :range, note: nil, variant: nil]
+    @enforce_keys [:report]
+    defstruct [:mutator, :replacement, :report]
   end
 
   defmodule FnClause do
@@ -220,7 +191,7 @@ defmodule Mutare.Transform.Candidate do
 
     # One anonymous-function clause with its pattern/guard mutated and its body raw.
     # FnClauseEmit interleaves it before its original, guarded by the selector captured
-    # at closure creation. The report still describes just original → mutated, in place.
+    # at closure creation. The `report` still describes just the focused edit, in place.
     # `raw_fn` shares the original immutable AST (no clause-list rebuilding per candidate).
     # Only emission in a scope without a bound selector uses it to rebuild a whole-function
     # fallback: introducing a capture there would change the bindings visible to macros.
@@ -229,24 +200,11 @@ defmodule Mutare.Transform.Candidate do
             mutant_clause: Macro.t(),
             raw_fn: Macro.t(),
             mutator: Mutare.Mutator.Spec.t(),
-            original: Macro.t(),
-            mutated: Macro.t(),
-            range: Sourceror.Range.t(),
-            note: String.t() | nil,
-            variant: Mutare.Mutator.Mutation.variant()
+            report: Mutare.Transform.Candidate.Report.t()
           }
 
-    defstruct [
-      :clause_index,
-      :mutant_clause,
-      :raw_fn,
-      :mutator,
-      :original,
-      :mutated,
-      :range,
-      note: nil,
-      variant: nil
-    ]
+    @enforce_keys [:report]
+    defstruct [:clause_index, :mutant_clause, :raw_fn, :mutator, :report]
   end
 
   defmodule ReceiveClause do
@@ -256,30 +214,17 @@ defmodule Mutare.Transform.Candidate do
     # interleaves it before its original, leaving mailbox scanning and the after block
     # on one native receive. `raw_receive` shares the normalized source AST; only live
     # fallback mutants rebuild the whole receive when no selector binding is in scope.
-    # The diff, note, variant and in-place Site retain the original focused mutation.
+    # The `report` (diff, note, variant, in-place Site) retains the original focused mutation.
     @type t :: %__MODULE__{
             clause_index: non_neg_integer(),
             mutant_clause: Macro.t(),
             raw_receive: Macro.t(),
             mutator: Mutare.Mutator.Spec.t(),
-            original: Macro.t(),
-            mutated: Macro.t(),
-            range: Sourceror.Range.t(),
-            note: String.t() | nil,
-            variant: Mutare.Mutator.Mutation.variant()
+            report: Mutare.Transform.Candidate.Report.t()
           }
 
-    defstruct [
-      :clause_index,
-      :mutant_clause,
-      :raw_receive,
-      :mutator,
-      :original,
-      :mutated,
-      :range,
-      note: nil,
-      variant: nil
-    ]
+    @enforce_keys [:report]
+    defstruct [:clause_index, :mutant_clause, :raw_receive, :mutator, :report]
   end
 
   defmodule RescueDrop do
@@ -295,18 +240,18 @@ defmodule Mutare.Transform.Candidate do
     # compiles; sound for the same reason as `RescueNarrow` — a rescue binding is body-local.
     #
     # `replacement` is the whole `try` rebuilt with this clause removed (the selector branch);
-    # `dropped` is the removed clause (for the focused `:delete` diff) and `range` locates it.
-    # `mutator` is the `RescueType` spec (the family owns both narrowing and dropping). Recorded
-    # as an `:in_place`, `:delete` `Mutare.Site` (`Site.in_place_drop/5`).
+    # `report` deletes the removed clause (the focused `:delete` diff). `mutator` is the
+    # `RescueType` spec (the family owns both narrowing and dropping). Recorded as an
+    # `:in_place`, `:delete` `Mutare.Site` (`Site.in_place_drop/6`).
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
-            dropped: Macro.t(),
             replacement: Macro.t(),
-            range: Sourceror.Range.t()
+            report: Mutare.Transform.Candidate.Report.t()
           }
 
-    defstruct [:mutator, :dropped, :replacement, :range]
+    @enforce_keys [:report]
+    defstruct [:mutator, :replacement, :report]
   end
 
   defmodule CaseClause do
@@ -327,8 +272,8 @@ defmodule Mutare.Transform.Candidate do
     # guard: a literal/structure mutation carries the *mutated* pattern + the clause's
     # *original* guard (or `nil`); a guard mutation carries the *original* pattern + the
     # *mutated* guard. `raw_body` is the clause's un-emitted body (no nested in-place
-    # selectors — only one mutant is ever active). `original`/`mutated`/`range` are the
-    # pattern/literal/guard-operator before/after, for the focused one-line diff; `mutator`
+    # selectors — only one mutant is ever active). `report` edits the
+    # pattern/literal/guard-operator, for the focused one-line diff; `mutator`
     # is the family. Recorded as an `:in_place` `Mutare.Site`.
 
     @type t :: %__MODULE__{
@@ -337,25 +282,11 @@ defmodule Mutare.Transform.Candidate do
             mutant_pattern: Macro.t(),
             mutant_guard: Macro.t() | nil,
             raw_body: Macro.t(),
-            original: Macro.t(),
-            mutated: Macro.t(),
-            range: Sourceror.Range.t(),
-            note: String.t() | nil,
-            variant: Mutare.Mutator.Mutation.variant()
+            report: Mutare.Transform.Candidate.Report.t()
           }
 
-    defstruct [
-      :clause_index,
-      :mutator,
-      :mutant_pattern,
-      :mutant_guard,
-      :raw_body,
-      :original,
-      :mutated,
-      :range,
-      note: nil,
-      variant: nil
-    ]
+    @enforce_keys [:report]
+    defstruct [:clause_index, :mutator, :mutant_pattern, :mutant_guard, :raw_body, :report]
   end
 
   defmodule MatchPattern do
@@ -375,8 +306,8 @@ defmodule Mutare.Transform.Candidate do
     #         mutare_active -> <record>; case <rhs> do {x, y} -> {x, y} end   # baseline
     #       end
     #
-    # `original`/`mutated` are the LHS pattern before/after (the focused one-line diff)
-    # and `range` locates it; `export` is the shared `{vars}` tuple (built once from the
+    # `pattern`/`mutant_pattern` are the LHS pattern the baseline and mutant branches match
+    # (`report` is their focused one-line diff); `export` is the shared `{vars}` tuple (built once from the
     # pattern's `bound_var_names`, so every branch and the outer match agree on it — plus
     # what the RHS binds, which the branch would otherwise trap: a **chained** match's
     # `mid` (`<pat> = mid = e`, `Analyze.MatchPatterns.export_with_rhs_chain/2`) and, read
@@ -390,14 +321,15 @@ defmodule Mutare.Transform.Candidate do
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
-            original: Macro.t(),
-            mutated: Macro.t(),
+            pattern: Macro.t(),
+            mutant_pattern: Macro.t(),
             export: Macro.t(),
             raw_rhs: Macro.t(),
-            range: Sourceror.Range.t()
+            report: Mutare.Transform.Candidate.Report.t()
           }
 
-    defstruct [:mutator, :original, :mutated, :export, :raw_rhs, :range]
+    @enforce_keys [:report]
+    defstruct [:mutator, :pattern, :mutant_pattern, :export, :raw_rhs, :report]
   end
 
   defmodule MacroPattern do
@@ -430,31 +362,22 @@ defmodule Mutare.Transform.Candidate do
     # wildcards forced *thin*), so the export is consistent across branches. Recorded as an
     # `:in_place` `Mutare.Site`, like `MatchPattern`.
     #
-    # `note`/`variant` carry the producing mutator's optional per-mutant metadata (a
-    # `%Mutare.Mutator.Mutation{}` return). The structural swap/wildcard source never sets either
-    # (default `nil`), but the **whole-call re-home** (`Analyze.MatchPatterns.call_mutation_candidate/3`,
-    # turning a `mutate`-built `Candidate.InPlace` on a binding-escaping macro call into this kind)
-    # carries the InPlace's `note` *and* `variant` through to the `Mutare.Site` — so a tagged
-    # whole-call mutation on a `:binding_pattern` macro keeps the label a `[family:label]` directive
-    # filters on (without it the re-homed Site would carry `variant: []` and be unsuppressable).
+    # The structural swap/wildcard source sets no note or variant tag, but the **whole-call
+    # re-home** (`Analyze.MatchPatterns.call_mutation_candidate/3`, turning a `mutate`-built
+    # `Candidate.InPlace` on a binding-escaping macro call into this kind) takes the InPlace's
+    # whole `report`, its note *and* variant tag included — so a tagged whole-call mutation on a
+    # `:binding_pattern` macro keeps the label a `[family:label]` directive filters on (without
+    # it the re-homed Site would carry `variant: []` and be unsuppressable).
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
             report: Mutare.Transform.Candidate.Report.t(),
             export: Macro.t(),
-            mutant_expr: Macro.t(),
-            note: String.t() | nil,
-            variant: Mutare.Mutator.Mutation.variant()
+            mutant_expr: Macro.t()
           }
 
-    defstruct [
-      :mutator,
-      :report,
-      :export,
-      :mutant_expr,
-      note: nil,
-      variant: nil
-    ]
+    @enforce_keys [:report]
+    defstruct [:mutator, :report, :export, :mutant_expr]
   end
 
   defmodule Hosted do
@@ -502,15 +425,15 @@ defmodule Mutare.Transform.Candidate do
     # A whole function clause removed, delivered by lifting. There is no mutant
     # clause — `clause_index` says which clause's *original* is gated off (its
     # `FunctionPlan.variant/2` is `{:drop, index}`) when this id is active;
-    # `original` is the clause itself (for the diff) and `range` locates it.
+    # `report` deletes the clause itself (for the diff).
 
     @type t :: %__MODULE__{
             clause_index: non_neg_integer(),
-            original: Macro.t(),
-            range: Sourceror.Range.t()
+            report: Mutare.Transform.Candidate.Report.t()
           }
 
-    defstruct [:clause_index, :original, :range]
+    @enforce_keys [:report]
+    defstruct [:clause_index, :report]
   end
 
   defmodule GuardDrop do
@@ -525,9 +448,9 @@ defmodule Mutare.Transform.Candidate do
     # variant with no guards, since dropping the `when` leaves the head patterns and body
     # alone just as a `LiftedGuard` swap does (`Mutare.Mutators.GuardDrop`).
     #
-    # `original` is the clause's `{:when, …}` head (rendering `f(x) when g`) and
-    # `mutated` the bare head call (`f(x)`), so the lifted-replace Site diffs to a
-    # clean one-liner dropping just the ` when g`; `range` is the `when` head's range.
+    # `report` replaces the clause's `{:when, …}` head (rendering `f(x) when g`) with
+    # the bare head call (`f(x)`), so the lifted-replace Site diffs to a clean one-liner
+    # dropping just the ` when g`.
     # The `case`/`receive`/`fn` clause guards reuse `Candidate.CaseClause` /
     # `Candidate.ReceiveClause` / `Candidate.FnClause` (a `nil` mutant guard or a
     # guard-stripped clause) —
@@ -537,12 +460,11 @@ defmodule Mutare.Transform.Candidate do
     @type t :: %__MODULE__{
             clause_index: non_neg_integer(),
             mutator: Mutare.Mutator.Spec.t(),
-            original: Macro.t(),
-            mutated: Macro.t(),
-            range: Sourceror.Range.t()
+            report: Mutare.Transform.Candidate.Report.t()
           }
 
-    defstruct [:clause_index, :mutator, :original, :mutated, :range]
+    @enforce_keys [:report]
+    defstruct [:clause_index, :mutator, :report]
   end
 
   defmodule Return do
@@ -550,9 +472,8 @@ defmodule Mutare.Transform.Candidate do
 
     # A function clause's tail expression replaced with a constant, delivered by
     # the in-place selector (the tail is a body position, so a `case` is legal
-    # there). Shaped exactly like `InPlace` for emission — `mutated` is the
-    # replacement constant, `original` the raw tail, `range` locates it — but it
-    # is a distinct kind because it is discovered *structurally* (the transform
+    # there). Shaped like `InPlace` for emission — `mutated` is the replacement
+    # constant, and `report` replaces the raw tail with it — but it is a distinct kind because it is discovered *structurally* (the transform
     # names the tail) rather than by a node-level match, and the constant carries
     # no operator, so the recorded `Mutare.Site` has `nil` ops
     # (`Site.return_value/6`). `mutator` is the producing spec — `ReturnValue` or a
@@ -560,12 +481,12 @@ defmodule Mutare.Transform.Candidate do
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
-            original: Macro.t(),
             mutated: Macro.t(),
-            range: Sourceror.Range.t()
+            report: Mutare.Transform.Candidate.Report.t()
           }
 
-    defstruct [:mutator, :original, :mutated, :range]
+    @enforce_keys [:report]
+    defstruct [:mutator, :mutated, :report]
   end
 
   defmodule ClauseGuard do
@@ -585,23 +506,11 @@ defmodule Mutare.Transform.Candidate do
             locator: locator(),
             mutant_guard: Macro.t() | nil,
             mutator: Mutare.Mutator.Spec.t(),
-            original: Macro.t(),
-            mutated: Macro.t(),
-            range: Sourceror.Range.t(),
-            note: String.t() | nil,
-            variant: Mutare.Mutator.Mutation.variant()
+            report: Mutare.Transform.Candidate.Report.t()
           }
 
-    defstruct [
-      :locator,
-      :mutant_guard,
-      :mutator,
-      :original,
-      :mutated,
-      :range,
-      note: nil,
-      variant: nil
-    ]
+    @enforce_keys [:report]
+    defstruct [:locator, :mutant_guard, :mutator, :report]
   end
 
   @type t ::

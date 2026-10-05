@@ -222,7 +222,7 @@ defmodule Mutare.Transform.BindingFacts do
   call's argument whose route is a `:routing` classifier, which is never invoked in a region
   it was withheld from (`Resolve.preserved_routing/2`). Such a call may bind names neither
   reader reports, so a delivery that must export what `node` binds withholds instead
-  (`Candidate.Delivery.gate/2`); a call is read as ordinary only where no route is declared.
+  (`Candidate.Eligibility.gate/2`); a call is read as ordinary only where no route is declared.
   A classifier nested in a syntax region is not unknown (`matched_names/1`): the region's
   route already says nothing in it is guaranteed to bind.
   """

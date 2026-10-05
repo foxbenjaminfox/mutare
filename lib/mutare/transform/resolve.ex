@@ -182,7 +182,7 @@ defmodule Mutare.Transform.Resolve do
   # region it was withheld from, and its call reads as `:unknown` — not as unrouted: a
   # declared route whose positions were not obtained may bind names the readers cannot see,
   # so an enclosing binding-sensitive delivery withholds rather than assumes
-  # (`BindingFacts.unknown_routing?/1`, `Candidate.Delivery.gate/2`), and the scope beside and
+  # (`BindingFacts.unknown_routing?/1`, `Candidate.Eligibility.gate/2`), and the scope beside and
   # after the call counts every name its arguments mention as a possible write
   # (`BindingFacts.matched_names/1`). The same answer serves a call inside a `:raw`/`:hosted`
   # position, which this pass did not walk either; there the enclosing route declared the

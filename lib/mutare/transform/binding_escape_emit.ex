@@ -29,16 +29,16 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   """
   @spec match_site(Macro.t(), [Candidate.MatchPattern.t()], Ctx.t()) :: {Macro.t(), Ctx.t()}
   def match_site({:=, _meta, [_lhs, emitted_rhs]} = match_node, candidates, ctx) do
-    %Candidate.MatchPattern{export: export, original: original_lhs} = hd(candidates)
+    %Candidate.MatchPattern{export: export, pattern: pattern} = hd(candidates)
 
     binding_site(
       match_node,
       export,
       candidates,
       ctx,
-      fn c -> match_inner_case(c.raw_rhs, c.mutated, export) end,
+      fn c -> match_inner_case(c.raw_rhs, c.mutant_pattern, export) end,
       fn ids, ctx ->
-        inner = match_inner_case(emitted_rhs, original_lhs, export)
+        inner = match_inner_case(emitted_rhs, pattern, export)
         SelectorEmit.catch_all_clause(ids, inner, ctx)
       end
     )

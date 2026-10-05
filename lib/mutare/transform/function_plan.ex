@@ -40,6 +40,7 @@ defmodule Mutare.Transform.FunctionPlan do
   alias Mutare.Mutator
   alias Mutare.Mutator.Spec
   alias Mutare.Transform.{Candidate, ClauseAST, NodeRange, PatternStructure, Tag}
+  alias Mutare.Transform.Candidate.Report
 
   # A plain-identifier function name (the only kind that can be spelled as a lifted base name
   # `__mutare_<name>_…`). Compiled once at module load, not per `liftable?/1` call.
@@ -302,26 +303,23 @@ defmodule Mutare.Transform.FunctionPlan do
     end
   end
 
-  # Expand a clause's tagged `targets` into candidates, one per `{mutator, mutated, note,
-  # variant}` (a literal can admit several — an integer → `n+1`, `n-1`, `0`). Guard and
+  # Expand a clause's tagged `targets` into candidates, one per mutator result (a literal
+  # can admit several — an integer → `n+1`, `n-1`, `0`). Guard and
   # head-literal targets carry the same fields (both are a tagged-node replacement in one
   # lifted clause), so this serves `build_guards` and `build_pattern_literals` alike, each
   # naming its own `struct` — `Candidate.LiftedGuard` or `Candidate.Lifted` — because the
   # caller is where the target's position is known (`variant/2` dispatches on it).
-  # `Tag.expand_targets/2` owns the source-order + range-skip contract. `variant` carries a
-  # value family's production-time `# mutare:ignore` tag (a head literal — a swapped
-  # float/int/string), `nil` for a guard operator (derived).
+  # `Tag.expand_targets/2` owns the source-order + range-skip contract and builds each report,
+  # whose variant tag is a value family's production-time `# mutare:ignore` tag (a head
+  # literal — a swapped float/int/string), `nil` for a guard operator (derived).
   defp lifted_candidates(struct, targets, index) do
-    Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, variant, range ->
+    Tag.expand_targets(targets, fn tag, result, report ->
       struct!(struct,
         tag: tag,
         clause_index: index,
-        mutator: mutator,
-        original: original,
-        mutated: mutated,
-        range: range,
-        note: note,
-        variant: variant
+        mutator: result.spec,
+        mutated: result.node,
+        report: report
       )
     end)
   end
@@ -394,9 +392,8 @@ defmodule Mutare.Transform.FunctionPlan do
                   clause_index: index,
                   mutator: mutator,
                   mutated_args: mutated_args,
-                  original: original,
-                  mutated: ClauseAST.put_call_args(call, mutated_args),
-                  range: range
+                  report:
+                    Report.replace(original, ClauseAST.put_call_args(call, mutated_args), range)
                 }
               end)
             end)
@@ -473,9 +470,7 @@ defmodule Mutare.Transform.FunctionPlan do
         %Candidate.GuardDrop{
           clause_index: index,
           mutator: spec,
-          original: when_node,
-          mutated: call,
-          range: range
+          report: Report.replace(when_node, call, range)
         }
       ]
     else
@@ -508,7 +503,7 @@ defmodule Mutare.Transform.FunctionPlan do
 
     if Spec.find(mutators, Mutare.Mutators.ClauseDrop) && length(droppable) >= 2 do
       Enum.map(droppable, fn {clause, index} ->
-        %Candidate.Drop{clause_index: index, original: clause, range: NodeRange.get(clause)}
+        %Candidate.Drop{clause_index: index, report: Report.delete(clause, NodeRange.get(clause))}
       end)
     else
       []

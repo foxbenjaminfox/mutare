@@ -24,7 +24,7 @@ defmodule Mutare.Transform.Bindings do
   #     then goes unexported, and the catch-all's copy stays trapped, unread. Where something
   #     does read it, the mutant's own source patch would not compile (fresh) or its delivery
   #     would override the sibling's write (conflict), so the mutant is withheld
-  #     (`Mutare.Transform.Candidate.Delivery.gate/2`).
+  #     (`Mutare.Transform.Candidate.Eligibility.gate/2`).
   #   * a name an earlier statement — or another position of an enclosing routed macro, whose
   #     positions the macro may run as statements in any order — **may** have bound, without
   #     core being able to say — a match in a position its route reads as no value

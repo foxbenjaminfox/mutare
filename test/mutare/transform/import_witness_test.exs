@@ -3,15 +3,18 @@ defmodule Mutare.Transform.ImportWitnessTest do
   # zero-arity witness an integration fixture seldom produces.
   use ExUnit.Case, async: true
 
-  alias Mutare.Transform.ImportWitness
+  alias Mutare.Transform.{Candidate, ImportWitness}
 
   describe "for_candidate/1" do
-    test "nil for a candidate whose `:original` is not an AST node (the from_node fallback)" do
-      assert ImportWitness.for_candidate(%{original: :not_a_node}) == nil
-    end
+    test "nil for a candidate whose nodes are not AST calls (the from_node fallback)" do
+      candidate = %Candidate.InPlace{
+        mutator: nil,
+        original: :not_a_node,
+        mutated: :not_a_node,
+        report: nil
+      }
 
-    test "nil for a candidate without an `:original` key" do
-      assert ImportWitness.for_candidate(%{}) == nil
+      assert ImportWitness.for_candidate(candidate) == nil
     end
   end
 

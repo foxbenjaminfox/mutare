@@ -26,6 +26,7 @@ defmodule Mutare.Transform.Tag do
 
   alias Mutare.{AST, Mutator}
   alias Mutare.Mutator.Dispatch
+  alias Mutare.Transform.Candidate.Report
   alias Mutare.Transform.{Calls, KeywordRouting, Meta, NodeRange, StructuralForms, Suppression}
 
   # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
@@ -66,10 +67,9 @@ defmodule Mutare.Transform.Tag do
 
   Targets are returned in reverse post-order (`guard_targets/3` / `pattern_literal_targets/3`
   accumulate that way); they are reversed to source order so ids land in source order.
-  `build.(tag, original, mutator, mutated, note, variant, range)` constructs each candidate — `tag`
-  to `replace_tag/3` the tagged copy, `original` for the diff, `note` the producing mutator's
-  optional advisory and `variant` its production-time `# mutare:ignore` tag (both `nil` for an
-  ordinary/untagged mutation), `range` its source range.
+  `build.(tag, result, report)` constructs each candidate — `tag` to `replace_tag/3` the tagged
+  copy with `result.node`, and `report` the `Candidate.Report` replacing the tagged original with
+  it, carrying the producing mutator's optional note and production-time `# mutare:ignore` tag.
 
   A target whose node Sourceror can't range is **dropped**: a candidate with no range
   can't be diffed or lifted. This matches the structural discovery paths, which already
@@ -77,7 +77,7 @@ defmodule Mutare.Transform.Tag do
   """
   @spec expand_targets(
           [{non_neg_integer(), Macro.t(), [Mutare.Mutator.Dispatch.Result.t()]}],
-          function()
+          (non_neg_integer(), Dispatch.Result.t(), Report.t() -> term())
         ) :: [term()]
   def expand_targets(targets, build) do
     targets
@@ -86,13 +86,14 @@ defmodule Mutare.Transform.Tag do
     |> Enum.flat_map(fn {tag, original, muts} ->
       case NodeRange.get(original) do
         %{} = range ->
-          Enum.map(muts, fn %Dispatch.Result{
-                              spec: mutator,
-                              node: mutated,
-                              note: note,
-                              variant: variant
-                            } ->
-            build.(tag, original, mutator, mutated, note, variant, range)
+          Enum.map(muts, fn %Dispatch.Result{} = result ->
+            report =
+              Report.replace(original, result.node, range,
+                note: result.note,
+                variant: result.variant
+              )
+
+            build.(tag, result, report)
           end)
 
         _ ->

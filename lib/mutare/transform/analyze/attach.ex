@@ -71,16 +71,13 @@ defmodule Mutare.Transform.Analyze.Attach do
       stage = is_nil(result.attribution) && WrittenPipe.stage_attribution(node, mutated)
 
       report =
-        Report.new(node, mutated, range, result.attribution || stage || nil, stage?: !!stage)
+        Report.new(node, mutated, range, result.attribution || stage || nil,
+          stage?: !!stage,
+          note: result.note,
+          variant: result.variant
+        )
 
-      %Candidate.InPlace{
-        mutator: result.spec,
-        original: node,
-        mutated: mutated,
-        report: report,
-        note: result.note,
-        variant: result.variant
-      }
+      %Candidate.InPlace{mutator: result.spec, original: node, mutated: mutated, report: report}
     end)
   end
 
@@ -93,9 +90,11 @@ defmodule Mutare.Transform.Analyze.Attach do
         original: original,
         mutated: result.node,
         mutator: result.spec,
-        report: Report.new(original, result.node, range, result.attribution),
-        note: result.note,
-        variant: result.variant
+        report:
+          Report.new(original, result.node, range, result.attribution,
+            note: result.note,
+            variant: result.variant
+          )
       }
     end)
   end

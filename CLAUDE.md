@@ -96,7 +96,7 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
     `Bindings` follows it: it stamps each binding-bearing node with the names bound on entry
     and the names read after it, which is what decides a selector's export (a name bound on
     entry, by every branch; a fresh one, by the branches that bind it) and which
-    binding-dropping mutants have no compiling patch (`Candidate.Delivery.gate/2` withholds
+    binding-dropping mutants have no compiling patch (`Candidate.Eligibility.gate/2` withholds
     them) — NOTES "What a selector exports is the scope's to say". `BindingFacts` owns the
     expression-local binding readers used by that pre-pass, candidate analysis, and emission;
     `Bindings` owns their surrounding scope and its shared queries — NOTES "Binding facts
@@ -118,7 +118,10 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
     walkers stay separate on purpose — NOTES "Keyword routes choose treatments once, without
     sharing a walker", "Which parts of a quote run is one reading, checked against Elixir".
   - **`ModulePlan` / `FunctionPlan` / `Candidate.*`** — the IR: statements classified into items,
-    liftable clause groups, and one typed struct per legal mutation kind.
+    liftable clause groups, and one typed struct per legal mutation kind, each holding what
+    it executes beside the `Candidate.Report` built with it (what its Site records).
+    `Candidate.Eligibility` decides which candidates exist; `Candidate.Delivery` routes them
+    and records their Sites.
   - **Emit** (`emit/2`, plus pure helpers `ClauseAST` / `GuardBuild` / `LiftedEmit` /
     `CaseClauseEmit` / `Tag` / `Overlap` / `Super`) — assigns ids bottom-up and delivers each
     candidate by one of two mechanisms: an **in-place `case` selector** (body expressions) or

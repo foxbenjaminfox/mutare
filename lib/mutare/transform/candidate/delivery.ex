@@ -2,13 +2,18 @@ defmodule Mutare.Transform.Candidate.Delivery do
   @moduledoc false
 
   # Single source of truth for how each `Mutare.Transform.Candidate` variant is *delivered*:
-  # its node-local emit route, the `Mutare.Site` constructor that records it, and — for the
+  # its node-local emit route, how its `Mutare.Site` is recorded, and — for the
   # selector-delivered kinds — the struct field holding an ordinary in-place selector's mutant
   # branch body. `site/4`, `route/1`, and `selector_branch/1` all read the one per-variant
   # `profile/1` table below, so the three facets can't drift apart: this collapses the manual
   # mirror (one struct re-listed in three separate dispatch functions, where adding a variant
-  # meant remembering to touch each). Adding a candidate is one new `profile/1` clause — the
-  # matching `build_site/4` arm and the routed emit in `Mutare.Transform` then follow.
+  # meant remembering to touch each). Adding a candidate is one new `profile/1` clause, and the
+  # routed emit in `Mutare.Transform` then follows.
+  #
+  # What a Site records about the mutation — edit, range, position, classification, note,
+  # variant tag — is the candidate's `Candidate.Report`, built when the candidate was; the
+  # profile adds only how it was delivered (`:in_place` or `:lifted`, or a return constant).
+  # Which candidates reach here at all is `Candidate.Eligibility`'s decision.
   #
   # Three groups of variant, by *who consumes them*:
   #
@@ -24,9 +29,9 @@ defmodule Mutare.Transform.Candidate.Delivery do
   #     reports `:hosted` (so `classify_node_candidates/1` rejects it); `site/4` is never called
   #     on it.
 
+  alias Mutare.Site
+  alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Report
-  alias Mutare.{AST, Site}
-  alias Mutare.Transform.{BindingFacts, Bindings, Candidate, Meta}
 
   @type node_candidate ::
           Candidate.InPlace.t()
@@ -62,160 +67,6 @@ defmodule Mutare.Transform.Candidate.Delivery do
   ]
 
   @doc """
-  Filter `node`'s candidates by mutator policy, drop duplicate return constants, and withhold
-  a mutant whose source patch could not compile because it drops a binding a later read needs.
-
-  Run *before* id assignment, so a dropped candidate leaves no id, selector, or site — it simply
-  doesn't exist for this run (unlike a poisoned id, which is recorded). The analyzer records
-  whether a candidate targets a call-option key (`call_option_key?`); the mutator
-  defines the policy through `c:Mutare.Mutator.mutate_call_option_keys?/1`. Ids stay stable across a
-  run's poison rebuilds because the mutator list — hence each spec's opts and policy — is constant
-  within a run. Shared by emission (`Mutare.Transform`) and the collect walk
-  (`Mutare.Transform.Analyze.Collect`), so the two can't disagree about which mutants exist.
-
-  A `Candidate.Return` is redundant when a surviving `Candidate.InPlace` on this same node
-  already replaces it with the same scalar constant. The site and its ignore matching use
-  the node-level candidate, regardless of candidate order. Compare literal values strictly,
-  ignoring their formatting metadata; other AST shapes are left alone. This uses actual
-  candidates, so a disabled or opted-out family never suppresses another family's replacement.
-
-  A whole-node replacement (`Candidate.InPlace`, `Candidate.Return`, or a whole-call mutation
-  re-homed as a `Candidate.MacroPattern` branch running `mutant_expr`) that binds fewer names
-  than `node` does — an argument dropped with the match inside it — is withheld when the
-  dropped name is one this position cannot export as incoming — **fresh** (not bound on
-  entry), or a **conflict** (an earlier sibling of the same expression writes it, and Elixir
-  lets neither write out before the whole expression) — and something **reads it after**:
-  patched into the source, that mutant would not compile, or delivered, its branch would name
-  the wrong value (`Mutare.Transform.Bindings`). A dropped name nothing reads is simply
-  unexported, and one bound on entry with no conflict is exported as the incoming value, so
-  neither withholds. A structural pattern mutant keeps its node's bound set (thin mode) and
-  the rest of the expression, so it never drops a name. A re-homed `MacroPattern` branch
-  returns the selector's **fixed export tuple**, which names every variable of the pattern
-  whether the source reads it after or not, so such a branch must also bind every name in
-  that tuple the scope cannot supply as incoming — `x = 9` for `destructure([x, y], v)`
-  leaves the tuple's `y` unbound even where nothing reads `y`, and is withheld: a valid
-  source mutation, but one this delivery cannot carry.
-
-  A name the node matches somewhere its route does not read as a value (`lazy(p = 8)`) is a
-  write core cannot vouch for: exported, it may name the stale incoming value; unexported, it
-  may be the write the source lets out. Where that name is in **conflict** — an earlier
-  sibling writes it, so after the expression it is bound by that sibling, whether or not it
-  was bound on entry — and read after, no delivery is faithful, so every candidate on the
-  node is withheld. So it is where the name is **uncertain** — an earlier statement, or
-  another position of the enclosing routed macro, may have bound it, and core could not
-  read that effect in full (a match in a position its route reads as no value, a call whose
-  route was withheld): exported as incoming it may name nothing, trapped it may hide the
-  write the source lets out. And so is every candidate on a node whose own
-  binding effect is **unknown**: a call inside a skipped argument whose route is a classifier
-  core did not invoke there (`BindingFacts.unknown_routing?/1`) may bind names no reader reports,
-  and a selector around it would trap them. The same classifier inside a `:raw` or `:hosted`
-  position is not unknown: that region is syntax by its route's declaration, nothing in it
-  is vouched for anyway, and its names are possible writes like any match written there.
-
-  Run on the **source** node, before its children are emitted: `Mutare.Transform` gates on
-  the way down its emit walk, so the facts read here — what the node binds, what it matches —
-  are the program's, never a generated child selector's (whose export tuple binds a result
-  temporary no source replacement could keep). Which candidates exist, and so which ids they
-  claim, then depends on the source alone, not on which other mutants are ignored,
-  poison-skipped or focused away by `emit_ids` — the count and render passes agree.
-  """
-  @spec gate([node_candidate()], Macro.t()) :: [node_candidate()]
-  def gate([], _node), do: []
-
-  def gate(candidates, node) do
-    candidates
-    |> filter_policy()
-    |> drop_duplicate_returns()
-    |> drop_binding_drops(node)
-  end
-
-  defp drop_binding_drops(candidates, node) do
-    scope = Meta.bindings(node)
-    {_bound, conflicts, uncertain, _later} = scope
-    escaping = BindingFacts.expression_bindings(node)
-    read? = &Bindings.read_after?(scope, &1)
-    exportable? = &Bindings.incoming?(scope, &1)
-
-    # Exported as incoming, the name may be stale (a conflict) or unbound (uncertain);
-    # trapped, it may be the write the source lets out.
-    unvouchable? = fn name ->
-      MapSet.member?(conflicts, name) or MapSet.member?(uncertain, name)
-    end
-
-    unvouched =
-      node
-      |> BindingFacts.matched_names()
-      |> Enum.reject(&(&1 in escaping))
-      |> Enum.filter(&(unvouchable?.(&1) and read?.(&1)))
-
-    needed = Enum.filter(escaping, &(read?.(&1) and not exportable?.(&1)))
-
-    if unvouched != [] or BindingFacts.unknown_routing?(node),
-      do: [],
-      else: Enum.reject(candidates, &drops_binding?(&1, needed, exportable?))
-  end
-
-  defp drops_binding?(%kind{} = candidate, needed, _exportable?)
-       when kind in [Candidate.InPlace, Candidate.Return] do
-    candidate |> selector_branch() |> drops_any?(needed)
-  end
-
-  defp drops_binding?(
-         %Candidate.MacroPattern{mutant_expr: branch, export: export},
-         needed,
-         exportable?
-       ) do
-    required = export |> BindingFacts.referenced_names() |> Enum.reject(exportable?)
-    drops_any?(branch, Enum.uniq(needed ++ required))
-  end
-
-  defp drops_binding?(_candidate, _needed, _exportable?), do: false
-
-  defp drops_any?(_branch, []), do: false
-
-  defp drops_any?(branch, needed) do
-    kept = BindingFacts.expression_bindings(branch)
-    Enum.any?(needed, &(&1 not in kept))
-  end
-
-  defp filter_policy(candidates) do
-    Enum.reject(candidates, fn
-      %Candidate.InPlace{call_option_key?: true, mutator: spec} ->
-        not Mutare.Mutator.Dispatch.mutate_call_option_keys?(spec)
-
-      _candidate ->
-        false
-    end)
-  end
-
-  # Runs on every node of every file, and all but a handful carry no `Candidate.Return` (most
-  # carry no candidates at all), so look for one before building the constant set.
-  defp drop_duplicate_returns(candidates) do
-    if Enum.any?(candidates, &match?(%Candidate.Return{}, &1)),
-      do: reject_covered_returns(candidates),
-      else: candidates
-  end
-
-  defp reject_covered_returns(candidates) do
-    constants =
-      for %Candidate.InPlace{mutated: mutated} <- candidates,
-          {:ok, value} <- [AST.literal_value(mutated)],
-          into: MapSet.new(),
-          do: value
-
-    Enum.reject(candidates, fn
-      %Candidate.Return{mutated: mutated} ->
-        case AST.literal_value(mutated) do
-          {:ok, value} -> MapSet.member?(constants, value)
-          :error -> false
-        end
-
-      _candidate ->
-        false
-    end)
-  end
-
-  @doc """
   Classify AST-node candidates by their node-local emit route.
 
   A fn or receive keeps its clause candidates alongside whole-node in-place candidates,
@@ -240,18 +91,6 @@ defmodule Mutare.Transform.Candidate.Delivery do
   defp clause_list_route(_), do: nil
 
   @doc """
-  The source range a claimed candidate's `Mutare.Site` records.
-
-  One home for the choice, so `position/1` cannot drift from what `site/4` ends up recording: an
-  in-place candidate carrying a producing mutator's report-location override is attributed to
-  the named clause, everything else to its own offered node.
-  """
-  @spec range(Candidate.t()) :: Sourceror.Range.t() | nil
-  def range(%{report: %Report{range: range}}), do: range
-
-  def range(candidate), do: candidate.range
-
-  @doc """
   The `{line, column}` `site/4` would record, without building the `Mutare.Site`.
 
   `Mutare.Transform.ClaimState` uses it during the **count** pass to test a candidate against a
@@ -259,16 +98,9 @@ defmodule Mutare.Transform.Candidate.Delivery do
   producing mutator's `c:Mutare.Mutator.variant/2` callback a second time just to check a
   location.
   """
-  @spec position(Candidate.t()) :: {pos_integer(), pos_integer() | nil} | nil
-  def position(%{report: %Report{position: [_ | _] = position}}),
+  @spec position(Candidate.t()) :: {pos_integer(), pos_integer()}
+  def position(%{report: %Report{position: position}}),
     do: {position[:line], position[:column]}
-
-  def position(candidate) do
-    case range(candidate) do
-      %{start: start} -> {start[:line], start[:column]}
-      _ -> nil
-    end
-  end
 
   @doc """
   Build the recorded `Mutare.Site` for a claimed candidate id.
@@ -290,7 +122,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
   """
   @spec site_fns() ::
           {(pos_integer(), Candidate.t(), String.t(), {boolean(), boolean()} -> Site.t()),
-           (Candidate.t() -> {pos_integer(), pos_integer() | nil} | nil)}
+           (Candidate.t() -> {pos_integer(), pos_integer()})}
   def site_fns, do: {&site/4, &position/1}
 
   @doc """
@@ -315,94 +147,30 @@ defmodule Mutare.Transform.Candidate.Delivery do
   #
   #   * `route`        — `t:node_route/0`, or `:lifted` / `:hosted` for the candidates routed by
   #                      `FunctionPlan` / `HostedEmit`.
-  #   * `site_kind`    — selects the `build_site/4` arm (which `Mutare.Site` constructor, and
-  #                      which of the candidate's fields it reads).
+  #   * `site_kind`    — how the delivery is recorded: `:in_place` or `:lifted` (`Site.kind`), or
+  #                      `:return_value`, an in-place constant recorded with no AST forms.
   #   * `branch_field` — the struct field `selector_branch/1` reads for an in-place selector's
   #                      mutant body; `nil` for kinds never delivered that way (a lifted / hosted
   #                      candidate, or a node-local one whose route is not `:in_place`).
-  @spec profile(Candidate.t()) :: {node_route() | :lifted | :hosted, atom(), atom() | nil}
+  @spec profile(Candidate.t()) ::
+          {node_route() | :lifted | :hosted, :in_place | :lifted | :return_value | :hosted,
+           atom() | nil}
   defp profile(%Candidate.InPlace{}), do: {:in_place, :in_place, :mutated}
   defp profile(%Candidate.Return{}), do: {:in_place, :return_value, :mutated}
   defp profile(%Candidate.RescueNarrow{}), do: {:in_place, :in_place, :replacement}
-  defp profile(%Candidate.RescueDrop{}), do: {:in_place, :in_place_drop, :replacement}
+  defp profile(%Candidate.RescueDrop{}), do: {:in_place, :in_place, :replacement}
   defp profile(%Candidate.CaseClause{}), do: {:case_clause, :in_place, nil}
   defp profile(%Candidate.FnClause{}), do: {:fn_clause, :in_place, nil}
   defp profile(%Candidate.ReceiveClause{}), do: {:receive_clause, :in_place, nil}
   defp profile(%Candidate.ClauseGuard{}), do: {:clause_guard, :in_place, nil}
   defp profile(%Candidate.MatchPattern{}), do: {:match_pattern, :in_place, nil}
   defp profile(%Candidate.MacroPattern{}), do: {:macro_pattern, :in_place, nil}
-  defp profile(%Candidate.Lifted{}), do: {:lifted, :lifted_replace, nil}
-  defp profile(%Candidate.LiftedGuard{}), do: {:lifted, :lifted_replace, nil}
-  defp profile(%Candidate.PatternStructure{}), do: {:lifted, :lifted_replace, nil}
-  defp profile(%Candidate.GuardDrop{}), do: {:lifted, :lifted_replace, nil}
-  defp profile(%Candidate.Drop{}), do: {:lifted, :clause_drop, nil}
+  defp profile(%Candidate.Lifted{}), do: {:lifted, :lifted, nil}
+  defp profile(%Candidate.LiftedGuard{}), do: {:lifted, :lifted, nil}
+  defp profile(%Candidate.PatternStructure{}), do: {:lifted, :lifted, nil}
+  defp profile(%Candidate.GuardDrop{}), do: {:lifted, :lifted, nil}
+  defp profile(%Candidate.Drop{}), do: {:lifted, :lifted, nil}
   defp profile(%Candidate.Hosted{}), do: {:hosted, :hosted, nil}
-
-  # Each `site_kind` knows which `Mutare.Site` constructor to call and which candidate fields it
-  # reads (the constructors differ in arity and in which fields they record). `flags` is the
-  # `{render?, summary?}` pair, forwarded as the two render opts.
-  defp build_site(:in_place, id, %{report: %Report{} = report} = c, file, {render?, summary?}) do
-    opts = [
-      note: note(c),
-      variant: variant(c),
-      position: report.position,
-      render?: render?,
-      summary?: summary?
-    ]
-
-    case report.edit do
-      {:delete, original} ->
-        Site.in_place_drop(id, file, report.range, original, c.mutator, opts)
-
-      {:replace, original, mutated} ->
-        {:replace, classified, classified_as} = report.classification
-
-        Site.in_place(
-          id,
-          file,
-          report.range,
-          original,
-          mutated,
-          c.mutator,
-          Keyword.put(opts, :classified, {classified, classified_as})
-        )
-    end
-  end
-
-  defp build_site(:in_place, id, c, file, {render?, summary?}),
-    do:
-      Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator,
-        note: note(c),
-        variant: variant(c),
-        render?: render?,
-        summary?: summary?
-      )
-
-  defp build_site(:lifted_replace, id, c, file, {render?, summary?}),
-    do:
-      Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator,
-        note: note(c),
-        variant: variant(c),
-        render?: render?,
-        summary?: summary?
-      )
-
-  defp build_site(:return_value, id, c, file, {render?, summary?}),
-    do:
-      Site.return_value(id, file, c.range, c.original, c.mutated, c.mutator,
-        render?: render?,
-        summary?: summary?
-      )
-
-  defp build_site(:in_place_drop, id, c, file, {render?, summary?}),
-    do:
-      Site.in_place_drop(id, file, c.range, c.dropped, c.mutator,
-        render?: render?,
-        summary?: summary?
-      )
-
-  defp build_site(:clause_drop, id, c, file, {render?, summary?}),
-    do: Site.clause_drop(id, file, c.range, c.original, render?: render?, summary?: summary?)
 
   # `Hosted` records its Sites per logical mutant in `HostedEmit`, never through `site/4`; the
   # clause exists so a stray call fails loudly rather than as a `FunctionClauseError`.
@@ -410,16 +178,56 @@ defmodule Mutare.Transform.Candidate.Delivery do
     do:
       raise(ArgumentError, "#{inspect(c.__struct__)} records its Sites per mutant in HostedEmit")
 
-  # The optional per-mutant advisory a producing mutator attached. Read by field, not by
-  # struct: any future note-bearing candidate is covered as soon as it carries the field.
-  defp note(%{note: note}), do: note
-  defp note(_candidate), do: nil
+  # A return constant carries no producer labels and records no AST forms.
+  defp build_site(
+         :return_value,
+         id,
+         %{report: %Report{edit: {:replace, original, mutated}, range: range}} = c,
+         file,
+         {render?, summary?}
+       ),
+       do:
+         Site.return_value(id, file, range, original, mutated, c.mutator,
+           render?: render?,
+           summary?: summary?
+         )
 
-  # The production-time `# mutare:ignore` variant tag a value family attached. Read by field
-  # (like `note/1`), so a candidate without the field (a pattern/case kind) resolves to `nil` —
-  # `Site` then derives the label via `c:Mutare.Mutator.variant/2`.
-  defp variant(%{variant: variant}), do: variant
-  defp variant(_candidate), do: nil
+  # A lifted deletion is a whole function clause dropped, recorded under `clause_drop` with no
+  # producing spec of its own.
+  defp build_site(
+         :lifted,
+         id,
+         %{report: %Report{edit: {:delete, clause}, range: range}},
+         file,
+         {render?, summary?}
+       ),
+       do: Site.clause_drop(id, file, range, clause, render?: render?, summary?: summary?)
+
+  # `flags` is the `{render?, summary?}` pair, forwarded as the two render opts.
+  defp build_site(site_kind, id, c, file, {render?, summary?}) do
+    %Report{range: range} = report = c.report
+
+    opts = [
+      note: report.note,
+      variant: report.variant,
+      position: report.position,
+      render?: render?,
+      summary?: summary?
+    ]
+
+    case {site_kind, report.edit, report.classification} do
+      {:in_place, {:delete, original}, :delete} ->
+        Site.in_place_drop(id, file, range, original, c.mutator, opts)
+
+      {:in_place, {:replace, original, mutated}, {:replace, classified, classified_as}} ->
+        opts = Keyword.put(opts, :classified, {classified, classified_as})
+        Site.in_place(id, file, range, original, mutated, c.mutator, opts)
+
+      {:lifted, {:replace, original, mutated}, {:replace, classified, classified_as}} ->
+        opts = Keyword.put(opts, :classified, {classified, classified_as})
+        Site.lifted_replace(id, file, range, original, mutated, c.mutator, opts)
+    end
+  end
 
   # A candidate's node-local route, raising for the lifted / hosted kinds that have no place in
   # the node-local classifier (matching `classify_node_candidates/1`'s contract).

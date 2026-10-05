@@ -1,7 +1,7 @@
 defmodule Mutare.Transform.Candidate.DeliveryTest do
   use ExUnit.Case, async: true
 
-  alias Mutare.{AST, Site}
+  alias Mutare.Site
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Delivery
 
@@ -11,70 +11,31 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
   defp op(o), do: {o, [], [{:a, [], nil}, {:b, [], nil}]}
   defp clause, do: Sourceror.parse_string!("def f(_), do: :ok")
 
-  describe "gate/2 duplicate return constants" do
-    test "node-level constants win regardless of order, literal wrapping, or metadata" do
-      for value <- [:mutare, nil, false, 0, 0.0, "mutare"] do
-        node = in_place(mutated: {:__block__, [line: 10], [value]})
-        return = %Candidate.Return{mutated: value}
-
-        assert gate([node, return]) === [node]
-        assert gate([return, node]) === [node]
-        assert gate([return]) === [return]
-      end
-    end
-
-    test "integer and float replacements remain distinct" do
-      node = in_place(mutated: AST.literal(0))
-      return = %Candidate.Return{mutated: AST.literal(0.0)}
-
-      assert gate([node, return]) === [node, return]
-    end
-
-    test "a candidate removed by its policy cannot suppress a return replacement" do
-      spec = Mutare.Mutator.Spec.for_module(Mutare.Mutators.AtomLiteral)
-
-      node =
-        in_place(
-          mutator: %{spec | opts: [call_option_keys: false]},
-          call_option_key?: true,
-          mutated: AST.literal(:mutare)
-        )
-
-      return = %Candidate.Return{mutated: AST.literal(:mutare)}
-      assert gate([node, return]) == [return]
-    end
-
-    test "non-scalar replacements and other candidate kinds are left alone" do
-      for replacement <- [op(:+), AST.literal([])] do
-        candidates = [
-          in_place(mutated: replacement),
-          %Candidate.Return{mutated: replacement}
-        ]
-
-        assert gate(candidates) == candidates
-      end
-
-      candidates = [
-        %Candidate.RescueNarrow{replacement: AST.literal(:mutare)},
-        %Candidate.Return{mutated: AST.literal(:mutare)}
-      ]
-
-      assert gate(candidates) == candidates
-    end
-  end
-
   describe "classify_node_candidates/1" do
     test "fn clauses share delivery with whole-node offers and later return candidates" do
-      candidates = [in_place(), %Candidate.FnClause{}, %Candidate.Return{}]
+      candidates = [
+        in_place(),
+        %Candidate.FnClause{report: report()},
+        %Candidate.Return{report: report()}
+      ]
+
       assert Delivery.classify_node_candidates(candidates) == {:fn_clause, candidates}
     end
 
     test "receive clauses share delivery with whole-node candidates without admitting other clause kinds" do
-      candidates = [in_place(), %Candidate.ReceiveClause{}, %Candidate.Return{}]
+      candidates = [
+        in_place(),
+        %Candidate.ReceiveClause{report: report()},
+        %Candidate.Return{report: report()}
+      ]
+
       assert Delivery.classify_node_candidates(candidates) == {:receive_clause, candidates}
 
       assert_raise RuntimeError, ~r/candidate delivery route mismatch/, fn ->
-        Delivery.classify_node_candidates([%Candidate.ReceiveClause{}, %Candidate.FnClause{}])
+        Delivery.classify_node_candidates([
+          %Candidate.ReceiveClause{report: report()},
+          %Candidate.FnClause{report: report()}
+        ])
       end
     end
 
@@ -90,23 +51,23 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
               ]} =
                Delivery.classify_node_candidates([
                  in_place(),
-                 %Candidate.Return{},
-                 %Candidate.RescueNarrow{},
-                 %Candidate.RescueDrop{}
+                 %Candidate.Return{report: report()},
+                 %Candidate.RescueNarrow{report: report()},
+                 %Candidate.RescueDrop{report: report()}
                ])
 
       assert {:case_clause, [%Candidate.CaseClause{}]} =
-               Delivery.classify_node_candidates([%Candidate.CaseClause{}])
+               Delivery.classify_node_candidates([%Candidate.CaseClause{report: report()}])
 
       assert {:match_pattern, [%Candidate.MatchPattern{}]} =
-               Delivery.classify_node_candidates([%Candidate.MatchPattern{}])
+               Delivery.classify_node_candidates([%Candidate.MatchPattern{report: report()}])
 
       assert {:macro_pattern, [%Candidate.MacroPattern{}]} =
-               Delivery.classify_node_candidates([%Candidate.MacroPattern{}])
+               Delivery.classify_node_candidates([%Candidate.MacroPattern{report: report()}])
     end
 
     test "rejects candidates owned by dedicated non-node-local emit paths" do
-      for candidate <- [%Candidate.Lifted{}, %Candidate.Hosted{}] do
+      for candidate <- [%Candidate.Lifted{report: report()}, %Candidate.Hosted{}] do
         assert_raise ArgumentError, ~r/not a node-local candidate/, fn ->
           Delivery.classify_node_candidates([candidate])
         end
@@ -117,7 +78,7 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
       assert_raise RuntimeError, ~r/candidate delivery route mismatch/, fn ->
         Delivery.classify_node_candidates([
           in_place(),
-          %Candidate.CaseClause{}
+          %Candidate.CaseClause{report: report()}
         ])
       end
     end
@@ -130,18 +91,18 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
     test "reports the delivery route of every candidate variant" do
       routes = [
         {in_place(), :in_place},
-        {%Candidate.Return{}, :in_place},
-        {%Candidate.RescueNarrow{}, :in_place},
-        {%Candidate.RescueDrop{}, :in_place},
-        {%Candidate.CaseClause{}, :case_clause},
-        {%Candidate.FnClause{}, :fn_clause},
-        {%Candidate.ReceiveClause{}, :receive_clause},
-        {%Candidate.MatchPattern{}, :match_pattern},
-        {%Candidate.MacroPattern{}, :macro_pattern},
-        {%Candidate.Lifted{}, :lifted},
-        {%Candidate.PatternStructure{}, :lifted},
-        {%Candidate.GuardDrop{}, :lifted},
-        {%Candidate.Drop{}, :lifted},
+        {%Candidate.Return{report: report()}, :in_place},
+        {%Candidate.RescueNarrow{report: report()}, :in_place},
+        {%Candidate.RescueDrop{report: report()}, :in_place},
+        {%Candidate.CaseClause{report: report()}, :case_clause},
+        {%Candidate.FnClause{report: report()}, :fn_clause},
+        {%Candidate.ReceiveClause{report: report()}, :receive_clause},
+        {%Candidate.MatchPattern{report: report()}, :match_pattern},
+        {%Candidate.MacroPattern{report: report()}, :macro_pattern},
+        {%Candidate.Lifted{report: report()}, :lifted},
+        {%Candidate.PatternStructure{report: report()}, :lifted},
+        {%Candidate.GuardDrop{report: report()}, :lifted},
+        {%Candidate.Drop{report: report()}, :lifted},
         {%Candidate.Hosted{}, :hosted}
       ]
 
@@ -158,47 +119,33 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
       replacement = op(:<)
 
       assert Delivery.selector_branch(in_place(mutated: mutated)) == mutated
-      assert Delivery.selector_branch(%Candidate.Return{mutated: mutated}) == mutated
 
-      assert Delivery.selector_branch(%Candidate.RescueNarrow{replacement: replacement}) ==
-               replacement
+      assert Delivery.selector_branch(%Candidate.Return{mutated: mutated, report: report()}) ==
+               mutated
 
-      assert Delivery.selector_branch(%Candidate.RescueDrop{replacement: replacement}) ==
-               replacement
+      assert Delivery.selector_branch(%Candidate.RescueNarrow{
+               replacement: replacement,
+               report: report()
+             }) == replacement
+
+      assert Delivery.selector_branch(%Candidate.RescueDrop{
+               replacement: replacement,
+               report: report()
+             }) == replacement
     end
   end
 
   describe "site/4" do
     test "in-place / case-clause / match-pattern / macro-pattern record an :in_place :replace site" do
       for candidate <- [
-            in_place(
-              mutator: spec(),
-              original: op(:>=),
-              mutated: op(:>),
-              range: @range
-            ),
-            %Candidate.CaseClause{
-              mutator: spec(),
-              original: op(:>=),
-              mutated: op(:>),
-              range: @range
-            },
-            %Candidate.MatchPattern{
-              mutator: spec(),
-              original: op(:>=),
-              mutated: op(:>),
-              range: @range
-            },
-            %Candidate.MacroPattern{
-              mutator: spec(),
-              report: Candidate.Report.new(op(:>=), op(:>), @range)
-            },
-            %Candidate.RescueNarrow{
-              mutator: spec(),
-              original: op(:>=),
-              mutated: op(:>),
-              range: @range
-            }
+            in_place(),
+            %Candidate.CaseClause{mutator: spec(), report: report()},
+            %Candidate.FnClause{mutator: spec(), report: report()},
+            %Candidate.ReceiveClause{mutator: spec(), report: report()},
+            %Candidate.ClauseGuard{mutator: spec(), report: report()},
+            %Candidate.MatchPattern{mutator: spec(), report: report()},
+            %Candidate.MacroPattern{mutator: spec(), report: report()},
+            %Candidate.RescueNarrow{mutator: spec(), report: report()}
           ] do
         site = Delivery.site(7, candidate, "lib/x.ex", {true, false})
         assert %Site{id: 7, kind: :in_place, operation: :replace, mutator: :relational} = site
@@ -213,9 +160,9 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
       {:foo, _, [inner]} = original
       range = Mutare.Transform.NodeRange.get(original)
       attribution = %{Mutare.Mutator.Mutation.at_drop(inner) | position: range.start}
-      report = Candidate.Report.new(original, original, range, attribution)
-      in_place = in_place(original: original, mutated: original, report: report, variant: :drop)
-      rehomed = %Candidate.MacroPattern{report: report, mutator: spec(), variant: :drop}
+      report = Candidate.Report.new(original, original, range, attribution, variant: :drop)
+      in_place = in_place(original: original, mutated: original, report: report)
+      rehomed = %Candidate.MacroPattern{report: report, mutator: spec()}
 
       for candidate <- [in_place, rehomed] do
         site = Delivery.site(7, candidate, "lib/x.ex", {true, false})
@@ -232,9 +179,8 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
     test "a return candidate records an :in_place :replace site with no original form" do
       candidate = %Candidate.Return{
         mutator: spec(),
-        original: op(:>=),
         mutated: nil,
-        range: @range
+        report: Candidate.Report.replace(op(:>=), nil, @range)
       }
 
       site = Delivery.site(7, candidate, "lib/x.ex", {true, false})
@@ -246,19 +192,10 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
 
     test "lifted candidates record a :lifted :replace site" do
       for candidate <- [
-            %Candidate.Lifted{mutator: spec(), original: op(:>=), mutated: op(:>), range: @range},
-            %Candidate.PatternStructure{
-              mutator: spec(),
-              original: op(:>=),
-              mutated: op(:>),
-              range: @range
-            },
-            %Candidate.GuardDrop{
-              mutator: spec(),
-              original: op(:>=),
-              mutated: op(:>),
-              range: @range
-            }
+            %Candidate.Lifted{mutator: spec(), mutated: op(:>), report: report()},
+            %Candidate.LiftedGuard{mutator: spec(), mutated: op(:>), report: report()},
+            %Candidate.PatternStructure{mutator: spec(), report: report()},
+            %Candidate.GuardDrop{mutator: spec(), report: report()}
           ] do
         site = Delivery.site(7, candidate, "lib/x.ex", {true, false})
         assert %Site{kind: :lifted, operation: :replace, mutator: :relational} = site
@@ -266,14 +203,18 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
     end
 
     test "a rescue-drop records an in-place :delete site" do
-      candidate = %Candidate.RescueDrop{mutator: spec(), dropped: clause(), range: @range}
+      candidate = %Candidate.RescueDrop{
+        mutator: spec(),
+        report: Candidate.Report.delete(clause(), @range)
+      }
+
       site = Delivery.site(7, candidate, "lib/x.ex", {true, false})
 
       assert %Site{kind: :in_place, operation: :delete, mutator: :relational} = site
     end
 
     test "a clause-drop records a lifted :delete site under the clause_drop mutator" do
-      candidate = %Candidate.Drop{original: clause(), range: @range}
+      candidate = %Candidate.Drop{report: Candidate.Report.delete(clause(), @range)}
       site = Delivery.site(7, candidate, "lib/x.ex", {true, false})
 
       assert %Site{kind: :lifted, operation: :delete, mutator: :clause_drop} = site
@@ -286,13 +227,7 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
     end
 
     test "render? false defers the diff code (the scan's deferral), keeping every other field" do
-      candidate =
-        in_place(
-          mutator: spec(),
-          original: op(:>=),
-          mutated: op(:>),
-          range: @range
-        )
+      candidate = in_place()
 
       eager = Delivery.site(7, candidate, "lib/x.ex", {true, false})
       deferred = Delivery.site(7, candidate, "lib/x.ex", {false, false})
@@ -309,13 +244,7 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
     end
 
     test "the summary flag is independent of render? (the live line on a deferred scan)" do
-      candidate =
-        in_place(
-          mutator: spec(),
-          original: op(:>=),
-          mutated: op(:>),
-          range: @range
-        )
+      candidate = in_place()
 
       # Deferred *_code, but summary on — the `mix mutare` non-quiet path.
       site = Delivery.site(7, candidate, "lib/x.ex", {false, true})
@@ -327,10 +256,11 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
     end
   end
 
+  defp report, do: Candidate.Report.replace(op(:>=), op(:>), @range)
+
   defp in_place(opts \\ []) do
     original = Keyword.get(opts, :original, op(:>=))
     mutated = Keyword.get(opts, :mutated, op(:>))
-    range = Keyword.get(opts, :range, @range)
 
     struct!(
       Candidate.InPlace,
@@ -339,13 +269,10 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
           mutator: spec(),
           original: original,
           mutated: mutated,
-          report: Candidate.Report.new(original, mutated, range)
+          report: Candidate.Report.new(original, mutated, @range)
         ],
-        Keyword.delete(opts, :range)
+        opts
       )
     )
   end
-
-  # A node binding nothing: the binding-drop withholding (`binding_export_test.exs`) is inert.
-  defp gate(candidates), do: Delivery.gate(candidates, {:site, [], []})
 end

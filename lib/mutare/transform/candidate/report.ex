@@ -1,31 +1,63 @@
 defmodule Mutare.Transform.Candidate.Report do
   @moduledoc false
 
-  # The reporting description of an attached mutation, independent of its executable
-  # replacement. The constructor checks an adapter's attribution once and falls back to
-  # the offered edit if it cannot place it. Consumers never reconstruct a range.
+  # The reporting description every candidate carries, built once where the candidate is
+  # constructed and independent of how the candidate executes: the textual edit, the source
+  # range it patches, the position its Site is keyed at, the pair its variant label is
+  # classified from, and the producer's optional note and production-time variant tag.
+  # `Candidate.Delivery.site/4` reads the mutation from here alone, so a candidate's struct
+  # holds only what its delivery executes. Consumers never reconstruct a range.
   #
-  # Classification is explicit: a written pipe stage is reported as written but classified
-  # as the complete call the mutator saw. Deletions never ask a replacement classifier.
+  # Two ways in. `replace/4` and `delete/3` describe an edit the constructing walk located
+  # itself — a tagged guard operator, a clause pattern, a dropped clause: it is reported where
+  # its range starts and classified as written. `new/5` describes a mutator's result: it checks
+  # an adapter's attribution once and falls back to the offered edit if it cannot place it, and
+  # a written pipe stage is reported as written but classified as the complete call the mutator
+  # saw. Deletions never ask a replacement classifier.
   alias Mutare.Mutator.Mutation
   alias Mutare.Mutator.Mutation.Attribution
   alias Mutare.Transform.{Diagnostics, NodeRange, WrittenPipe}
 
   @enforce_keys [:edit, :range, :position, :classification]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [note: nil, variant: nil]
 
   @type edit :: {:replace, Macro.t(), Macro.t()} | {:delete, Macro.t()}
   @type t :: %__MODULE__{
           edit: edit(),
           range: Sourceror.Range.t(),
           position: keyword(),
-          classification: {:replace, Macro.t(), Macro.t()} | :delete
+          classification: {:replace, Macro.t(), Macro.t()} | :delete,
+          note: String.t() | nil,
+          variant: Mutation.variant()
         }
 
+  @typedoc "The producer's `:note` and production-time `:variant` tag, both optional."
+  @type labels :: [note: String.t() | nil, variant: Mutation.variant()]
+
+  @doc "An edit replacing `original` (spanning `range`) with `mutated`, reported where it starts."
+  @spec replace(Macro.t(), Macro.t(), Sourceror.Range.t(), labels()) :: t()
+  def replace(original, mutated, range, labels \\ []) do
+    true = valid_range?(range)
+    replace(original, mutated, range, range.start, {original, mutated}, labels)
+  end
+
+  @doc "An edit deleting `original` (spanning `range`), reported where it starts."
+  @spec delete(Macro.t(), Sourceror.Range.t(), labels()) :: t()
+  def delete(original, range, labels \\ []) do
+    true = valid_range?(range)
+    delete(original, range, range.start, labels)
+  end
+
+  @doc """
+  A mutator's replacement of the offered `original` (spanning `range`) with `mutated`,
+  reported at its `attribution` when that is placeable inside `range`. `opts` carries the
+  `t:labels/0` and `:stage?`, set when the attribution is the written pipe stage core
+  derived rather than one the mutator supplied.
+  """
   @spec new(Macro.t(), Macro.t(), Sourceror.Range.t(), Attribution.t() | nil, keyword()) :: t()
   def new(original, mutated, range, attribution \\ nil, opts \\ []) do
     true = valid_range?(range)
-    stage? = Keyword.get(opts, :stage?, false)
+    {stage?, labels} = Keyword.pop(opts, :stage?, false)
 
     case checked_attribution(attribution, original, range) do
       nil ->
@@ -34,7 +66,8 @@ defmodule Mutare.Transform.Candidate.Report do
           mutated,
           range,
           WrittenPipe.stage_position(original) || range.start,
-          {original, mutated}
+          {original, mutated},
+          labels
         )
 
       {%Attribution{operation: :replace} = at, checked} ->
@@ -42,24 +75,37 @@ defmodule Mutare.Transform.Candidate.Report do
           at.position || (stage? && WrittenPipe.stage_position(original)) || checked.start
 
         classified = if stage?, do: {original, mutated}, else: {at.original, at.mutated}
-        replace(at.original, at.mutated, checked, position, classified)
+        replace(at.original, at.mutated, checked, position, classified, labels)
 
       {%Attribution{operation: :delete} = at, checked} ->
-        %__MODULE__{
-          edit: {:delete, at.original},
-          range: checked,
-          position: at.position || checked.start,
-          classification: :delete
-        }
+        delete(at.original, checked, at.position || checked.start, labels)
     end
   end
 
-  defp replace(original, mutated, range, position, {classified, classified_as}) do
+  @doc "The source nodes the edit names: the original and its replacement, or the deleted node."
+  @spec nodes(t()) :: [Macro.t()]
+  def nodes(%__MODULE__{edit: {:replace, original, mutated}}), do: [original, mutated]
+  def nodes(%__MODULE__{edit: {:delete, original}}), do: [original]
+
+  defp replace(original, mutated, range, position, {classified, classified_as}, labels) do
     %__MODULE__{
       edit: {:replace, original, mutated},
       range: range,
       position: position,
-      classification: {:replace, classified, classified_as}
+      classification: {:replace, classified, classified_as},
+      note: labels[:note],
+      variant: labels[:variant]
+    }
+  end
+
+  defp delete(original, range, position, labels) do
+    %__MODULE__{
+      edit: {:delete, original},
+      range: range,
+      position: position,
+      classification: :delete,
+      note: labels[:note],
+      variant: labels[:variant]
     }
   end
 
