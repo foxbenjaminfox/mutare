@@ -54,6 +54,18 @@ defmodule Mutare.Runner.Compile.RecoveryTest do
       assert second.recovery.skip_ids == MapSet.new([1, 2, 3])
     end
 
+    test "a second strike escalates only the struck block this round hits", %{sites: sites} do
+      dsl0 = {"lib/a.ex", {:dsl, 0}}
+      dsl1 = {"lib/a.ex", {:dsl, 1}}
+      state = %Recovery{rounds: 2, skip_ids: MapSet.new([1, 4]), struck: MapSet.new([dsl0, dsl1])}
+
+      {:retry, plan} = Recovery.next_round(attribution(line: [2]), sites, state)
+
+      assert plan.cause == {:line, MapSet.new([dsl0])}
+      assert plan.ids == MapSet.new([2, 3])
+      assert plan.recovery.escalated == MapSet.new([dsl0])
+    end
+
     test "the inline fallback leaves block-macro mutants to escalation", %{sites: sites} do
       macro = {"Ecto.Query", :from}
       attr = attribution(line: [1], macro: [{macro, [1, 2]}])
@@ -228,9 +240,16 @@ defmodule Mutare.Runner.Compile.RecoveryTest do
             Enum.all?(matched, fn {macro, _} -> MapSet.member?(next.macro_skips, macro) end)
 
         {:retry, %Plan{cause: {:line, escalated}, ids: ids}} ->
+          hit =
+            for s <- sites,
+                MapSet.member?(attr.line, s.id),
+                key(s),
+                into: MapSet.new(),
+                do: key(s)
+
           escalated_ids = for s <- sites, MapSet.member?(escalated, key(s)), do: s.id
 
-          MapSet.subset?(escalated, state.struck) and
+          escalated == MapSet.intersection(hit, state.struck) and
             MapSet.subset?(ids, MapSet.union(attr.line, MapSet.new(escalated_ids)))
       end
     end

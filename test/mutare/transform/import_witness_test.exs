@@ -3,7 +3,8 @@ defmodule Mutare.Transform.ImportWitnessTest do
   # zero-arity witness an integration fixture seldom produces.
   use ExUnit.Case, async: true
 
-  alias Mutare.Transform.{Candidate, ImportWitness}
+  alias Mutare.Transform.{Candidate, ImportWitness, Imports}
+  alias Mutare.Transform.Candidate.Report
 
   describe "for_candidate/1" do
     test "nil for a candidate whose nodes are not AST calls (the from_node fallback)" do
@@ -16,6 +17,40 @@ defmodule Mutare.Transform.ImportWitnessTest do
 
       assert ImportWitness.for_candidate(candidate) == nil
     end
+
+    # An `InPlace`'s report may name a narrower edit than the call it executes (an adapter's
+    # attributed clause, a written pipe stage), so its witnesses come from the executed nodes;
+    # reading its report instead would lose the imported call's proof.
+    test "an InPlace is witnessed by its executed nodes, not its narrower report" do
+      original = witnessed_call(:flatten, {[:Enum], :flatten, 1})
+      mutated = witnessed_call(:reverse, {[:Enum], :reverse, 1})
+      inner = {:x, [line: 1, column: 9], nil}
+
+      candidate = %Candidate.InPlace{
+        mutator: nil,
+        original: original,
+        mutated: mutated,
+        report: Report.replace(inner, {:y, [], nil}, range())
+      }
+
+      assert ImportWitness.for_candidate(candidate) ==
+               [{[:Enum], :flatten, 1}, {[:Enum], :reverse, 1}]
+    end
+
+    test "every other candidate is witnessed by its report's nodes" do
+      original = witnessed_call(:flatten, {[:Enum], :flatten, 1})
+      candidate = %Candidate.RescueDrop{report: Report.delete(original, range())}
+
+      assert ImportWitness.for_candidate(candidate) == {[:Enum], :flatten, 1}
+    end
+  end
+
+  defp witnessed_call(fun, witness) do
+    {fun, Imports.put_import_witness([line: 1, column: 1], witness), [{:x, [], nil}]}
+  end
+
+  defp range do
+    Sourceror.Range.new([line: 1, column: 1], line: 1, column: 20)
   end
 
   describe "wrap/2" do
