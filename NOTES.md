@@ -95,7 +95,7 @@ The existing per-id poison backstop would drop one implicated mutant, rebuild, h
 *next* selector, and repeat — O(mutants-in-block) rounds, easily exhausting the 25-attempt
 budget on a real DSL block, or stalling if a round's error doesn't map. So the runner
 **escalates**: when a poison recurs inside an unknown block macro, it skips *every* mutant
-in that block at once (`Mutare.Runner.escalate_block_poison/3`), the runtime equivalent of
+in that block at once (`Mutare.Runner.Compile.Recovery`'s `escalate_block_poison/3`), the runtime equivalent of
 "mark the macro `:skip`" — the body renders raw and compiles.
 
 **Evidence-based, not eager** (the precision fix). A poison inside an unknown block has *two*
@@ -110,7 +110,7 @@ DSL rejects a given selector is information that only exists at compile time —
 in **recurrence under a single drop**: wholesale recurs (drop one selector → the next fails),
 id-specific does not (drop the bad mutant → the rest compile). So escalation waits for the
 **second strike**: the *first* poison in a block drops just the implicated id(s) and marks the
-block *struck* (threaded through `prepare_compiling`'s `struck` set); only a *later, distinct*
+block *struck* (the `struck` set of `Recovery`'s state); only a *later, distinct*
 poison in an already-struck block drops the whole block. A genuinely-wholesale block therefore
 costs **one extra rebuild** (drop one, see it recur, escalate); an id-specific failure stops
 over-skipping. The residual imprecision — two *independent* id-specific failures in one block
@@ -232,7 +232,7 @@ the macro-*call* line, one line above the selector `case`** the `Manifest` recor
 holds trivially, and the run *aborted* — poison recovery was never even invoked for the case it most
 needs to handle.
 
-The fix is a **fallback attribution path** in `recover_compile_poison/5`, taken only when line attribution
+The fix is a **fallback attribution path** in poison recovery (now `Recovery.next_round/3`), taken only when line attribution
 stalls: parse the `expanding macro: Mod.fun/arity` frame the compiler *does* emit (already extracted by
 `Hint.expanding_macros/1`, previously only to print an abort-time hint) and map it to mutant ids through the
 **metamutant** (`Poison.macro_poison/2` → `Manifest.ids_in_named_calls/2`): find every call of that name in
@@ -262,7 +262,7 @@ inside it. Key decisions:
   * **Piped calls** (`(a > b) |> query()`): after pipe expansion the LHS is the macro's first argument, but
     its selector renders on the pipe's *left*, outside the RHS call node — so a `{:|>, _, [_, rhs]}` whose
     RHS names the macro is ranged as a whole, covering the piped value and every earlier stage.
-  * **Inline-macro attribution beats line attribution** (`recover_compile_poison/5`). With default mutators a
+  * **Inline-macro attribution beats line attribution** (`Recovery.next_round/3`). With default mutators a
     tail-position `query(a > b)` is *also* wrapped by an outer return-value selector; the macro rejects the
     inner argument selector, the compiler blames the macro-call line, and line attribution maps that line to
     the **outer** selector's whole-`case` fallback — wrongly dropping the innocent return-value mutants as
@@ -2224,7 +2224,7 @@ reflection (`Code.ensure_loaded?` + `function_exported?`), so a first-party DSL 
 the target project* — which the Mutare process can't load — leaves a bare macro call unstamped,
 and the macro is then misclassified as **unknown**. That is the worst place to lose the routing:
 a `:skip` body is mutated as an ordinary runtime body (it *was* meant to be opaque), and the
-unknown-block tag means a recurring compile poison makes `Runner.escalate_block_poison/3`
+unknown-block tag means a recurring compile poison makes `Recovery`'s `escalate_block_poison/3`
 drop *every* sibling mutant in the block — silently skipping valid mutants despite the user's
 `:macro_routes` registration. The fix: when reflection can't resolve the call, consult the **registry**
 directly — among the *whole*-imported modules in scope, find one registering `fun/arity` as a known
@@ -15351,3 +15351,26 @@ did either. `Transform` names module
 scopes through `Lifting.module_from_alias/2` (no alias env; it reads `Resolve`'s stamps) while
 the pre-passes use `ModuleScope.child_module/3`; both now hand a `__MODULE__`-led head to
 `Aliases.resolve_node/3`, so the two readings cannot disagree about it.
+
+### Poison recovery decides in a pure function (2026-10-05)
+
+`Runner.Compile` used to interleave the recovery rules (the budget, inline-macro precedence,
+second-strike escalation, the progress check) with the state updates, the narration and the
+rebuild, and each path updated a different subset of the bookkeeping: the inline-macro path
+records macro skips but no strike, the line path records strikes and escalations. Following an
+interaction meant tracking several sets by hand, and testing one meant a `mix compile`
+subprocess with a fixture poisoned just so.
+
+`Runner.Compile.Recovery.next_round/3` now takes the attribution, the sites and the state, and
+returns `{:abort, :exhausted | :no_progress}` or a `Plan` naming what the round newly drops, why,
+and the next state; `Compile` announces the plan, rebuilds and recompiles. One private function
+adds a plan's drops to the state, so the two cannot disagree. `recovery_test.exs` checks the
+properties that were only argued before — dropped ids and regions only accumulate, every round
+drops something not dropped before, every dropped id was blamed (or sits in a block struck
+twice), inline attribution wins whenever it names a new mutant, and an abort for want of
+progress happens only when nothing new was blamed — over generated attributions, in about a
+second.
+
+One observable change: a `{:macro_poison, …}` entry's `count` is now the macro's *newly*
+dropped ids, where it was every id the fallback matched. They differ only when the fallback
+matches an id already dropped, which a rebuilt metamutant no longer contains.

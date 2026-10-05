@@ -210,7 +210,7 @@ defmodule Mutare.Runner do
   # The shared compile prelude of `run_with_schema/3` and `check_with_schema/3`: lock,
   # materialise, compile with poison recovery, then hand `fun.(schema, sandbox,
   # recovery_summary)` the compiled sandbox. `schema` may differ from the input
-  # (poisoners flagged), which is what the run reports against. `prepare_compiling`
+  # (poisoners flagged), which is what the run reports against. `Compile.run/2`
   # always hands the sandbox back, so cleanup is owned here on every exit path — the
   # terminal-failure path and the post-`fun` `after` alike.
   defp with_compiled_sandbox(%Schema{} = schema, %Context{} = context, fun) do
@@ -238,7 +238,7 @@ defmodule Mutare.Runner do
             on_phase.({:compiled, System.monotonic_time(:millisecond) - compile_started})
 
             try do
-              fun.(schema, sandbox, Compile.summary(recovery, schema))
+              fun.(schema, sandbox, Compile.Recovery.summary(recovery, schema.sites))
             after
               cleanup_sandbox(sandbox, options)
             end

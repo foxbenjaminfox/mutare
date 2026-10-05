@@ -1072,7 +1072,7 @@ defmodule Mutare.Transform do
   # analyzed as runtime on the guess a DSL unquotes it into a function, but the
   # injected selector `case` may be illegal in the DSL and poison the single build.
   # Tag every site the body produces with this invocation's identity so poison
-  # recovery can skip the *whole* block at once (`Mutare.Runner.escalate_block_poison/3`,
+  # recovery can skip the *whole* block at once (`Mutare.Runner.Compile.Recovery`'s escalation,
   # on the block's second strike) — the runtime-stable equivalent of a `:raw` route — rather than
   # dropping one mutant at a time and re-hitting the next selector. A *registered* macro is left
   # untagged (`tag` is `nil`), so the user's `:call_routes` choice is honoured and never auto-skipped.

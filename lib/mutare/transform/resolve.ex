@@ -854,7 +854,7 @@ defmodule Mutare.Transform.Resolve do
   # `fun/arity` as a known macro. This is the positive fix for a registered `:raw`/`:pattern` DSL
   # macro whose module Mutare can't see — without it the unstamped block is classified *unknown*
   # and mutated as an ordinary runtime body, which can poison the very DSL the registration meant
-  # to exclude (and `Runner.escalate_block_poison/3` can then drop every sibling mutant in the block).
+  # to exclude (and `Runner.Compile.Recovery`'s second-strike escalation can then drop every sibling mutant in the block).
   # Limited to whole imports: a selective `import Mod, only: [m: 1]` already resolves without
   # reflection (the `{:only, set}` is read straight from the source), so it never reaches here.
   #

@@ -89,9 +89,19 @@ defmodule Mutare.Poison do
   @typedoc "A clean region, by its file and the id interval its guard carries."
   @type clean_region :: {String.t(), Manifest.clean_range()}
 
+  @typedoc """
+  Every attribution of one failed compile: the line-attributed ids, the macro-expansion
+  fallback's matches, and the clean regions an error line falls in.
+  """
+  @type attribution :: %{
+          line: MapSet.t(),
+          macro: macro_matches(),
+          clean: MapSet.t(clean_region())
+        }
+
   @doc "Attribute a compile failure using the schema's captured rendered files and runtime IDs."
   @spec attribution(String.t(), Schema.t()) ::
-          %{line: MapSet.t(), macro: macro_matches(), clean: MapSet.t(clean_region())}
+          attribution()
   def attribution(compile_output, %Schema{} = schema) do
     files = Schema.rendered_files(schema)
 
@@ -116,7 +126,7 @@ defmodule Mutare.Poison do
   ranged once per round, not once per attribution.
   """
   @spec attribution(String.t(), metamutants(), dispatch_vars(), map() | nil) ::
-          %{line: MapSet.t(), macro: macro_matches(), clean: MapSet.t(clean_region())}
+          attribution()
   def attribution(compile_output, metamutants, dispatch_vars, report_ids \\ nil) do
     attribute(compile_output, source_lookup(metamutants, dispatch_vars), report_ids)
   end

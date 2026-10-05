@@ -167,7 +167,8 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
 - **`Mutare.Runner`** (+ `Compile`, `Baseline`, `CoverageProbe`, `AppGraph`, `Stream`, `MutantRun`,
   `OutcomePolicy`, `Partitions`, `PartitionCheck`, `RunCtx`) — the orchestrator, now thin: it sequences the phases and owns sandbox
   lifecycle + the run-level harness-error abort guard, delegating the heavy concerns to submodules.
-  `Compile` is the one compile + poison-recovery loop; `Baseline` checks the suite is green;
+  `Compile` is the one compile + poison-recovery loop, whose every round `Compile.Recovery` decides
+  as a pure function (abort, or a plan of what to drop); `Baseline` checks the suite is green;
   `CoverageProbe` builds test selection; `AppGraph` asks Mix (one `mix eval`) for an umbrella's
   **declared** inter-app graph, which `Project.app_test_scopes/3` turns into the per-app narrowing of
   broad runs — the compiled `.app` lists omit `runtime: false` siblings, NOTES "Umbrella narrowing must
