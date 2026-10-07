@@ -7,7 +7,7 @@ defmodule Mutare.Sandbox.DependencyDiagnosticTest do
 
   test "a fetch failure points deps.get at the original project and preserves Mix output" do
     detail = unchecked("the dependency is not available, run \"mix deps.get\"")
-    message = DependencyDiagnostic.format(detail, @root)
+    message = DependencyDiagnostic.format(detail, @root, nil)
 
     assert message =~ "sandbox dependency validation failed"
     assert message =~ @root
@@ -18,7 +18,8 @@ defmodule Mutare.Sandbox.DependencyDiagnosticTest do
   end
 
   test "an unresolvable local dependency explains why deps.get is not the fix" do
-    message = DependencyDiagnostic.format(unchecked("the dependency is not available"), @root)
+    message =
+      DependencyDiagnostic.format(unchecked("the dependency is not available"), @root, nil)
 
     assert message =~ "local/path dependency"
     assert message =~ "outside the copied project or umbrella root"
@@ -30,18 +31,36 @@ defmodule Mutare.Sandbox.DependencyDiagnosticTest do
     compile =
       DependencyDiagnostic.format(
         unchecked("please run \"MIX_ENV=test mix deps.compile\""),
-        @root
+        @root,
+        nil
       )
 
     diverged =
-      DependencyDiagnostic.format("Dependencies have diverged:\n* plug: conflicting specs", @root)
+      DependencyDiagnostic.format(
+        "Dependencies have diverged:\n* plug: conflicting specs",
+        @root,
+        nil
+      )
 
-    invalid = DependencyDiagnostic.format(unchecked("version requirement mismatch"), @root)
+    invalid = DependencyDiagnostic.format(unchecked("version requirement mismatch"), @root, nil)
 
     assert compile =~ "MIX_ENV=test mix deps.compile"
     assert diverged =~ "deps.get` cannot resolve conflicting specs"
     assert diverged =~ "MIX_ENV=test mix deps"
     assert invalid =~ "Apply the remedy shown for each dependency"
+  end
+
+  test "a kept sandbox is named as a suspect beside the original project" do
+    detail = unchecked(~s(the dependency does not match the requirement "~> 0.5.1", got "0.4.3"))
+    sandbox = "/tmp/mutare_sandbox_abc"
+
+    kept = DependencyDiagnostic.format(detail, @root, sandbox)
+    fresh = DependencyDiagnostic.format(detail, @root, nil)
+
+    assert kept =~ "This run reused the kept sandbox at:\n  #{sandbox}\n"
+    assert kept =~ "delete that directory"
+    assert kept =~ "MIX_ENV=test mix deps"
+    refute fresh =~ "kept sandbox"
   end
 
   defp unchecked(status) do

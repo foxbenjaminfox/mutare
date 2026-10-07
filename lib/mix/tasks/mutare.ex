@@ -295,7 +295,7 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --sandbox /tmp/mut       # put the sandbox at a path of your choosing (inspect it, or cache it on CI)
       mix mutare --no-keep-sandbox        # throwaway sandbox: rebuild cold, remove it afterwards
 
-  By default Mutare keeps the sandbox between runs (`--keep-sandbox`, on): it lives at a stable per-project temp dir and is re-materialised incrementally — only changed files are rewritten, so mix's compiler reuses the cached `_build` and a re-run after adding a test recompiles nothing. That is the compile-once bet applied across runs, not just within one; the cost is one project copy plus its build sitting in the temp dir per project. `--sandbox <path>` chooses the location — handy for inspecting the generated metamutant, and on CI point it at a cached directory (cache `<path>/_build` and `<path>/deps`, keyed on `mix.lock`; tar-based caches preserve the mtimes the incremental compile relies on). `--no-keep-sandbox` opts out: a fresh copy, a cold compile, and the sandbox removed when the run finishes. Reach for it when a kept sandbox has gone bad — a build artifact corrupted by a crashed run, say, shows up as every mutant reporting a harness error — since the wipe is the reset.
+  By default Mutare keeps the sandbox between runs (`--keep-sandbox`, on): it lives at a stable per-project temp dir and is re-materialised incrementally — only changed files are rewritten, so mix's compiler reuses the cached `_build` and a re-run after adding a test recompiles nothing. That is the compile-once bet applied across runs, not just within one; the cost is one project copy plus its build sitting in the temp dir per project. `--sandbox <path>` chooses the location — handy for inspecting the generated metamutant, and on CI point it at a cached directory (cache `<path>/_build` and `<path>/deps`, keyed on `mix.lock`; tar-based caches preserve the mtimes the incremental compile relies on). `--no-keep-sandbox` opts out: a fresh copy, a cold compile, and the sandbox removed when the run finishes. It runs in a directory of its own and leaves the kept sandbox as it was, so it does not repair a kept sandbox that has gone bad — a build artifact corrupted by a crashed run, say, shows up as every mutant reporting a harness error. Delete that directory instead; the next run rebuilds it cold. The baseline, harness-error and dependency aborts name it when they suspect it.
 
   ## Output formats
 
@@ -449,7 +449,7 @@ defmodule Mix.Tasks.Mutare do
   """
   use Mix.Task
 
-  alias Mutare.{Config, Options, Project, Runner, Schema}
+  alias Mutare.{Config, Options, Project, Runner, Sandbox, Schema}
   alias Mutare.CLI
   alias Mutare.CLI.{Diagnostics, EventLog, Info, Outcome, PartialReport}
   alias Mutare.Options.Registry
@@ -736,7 +736,14 @@ defmodule Mix.Tasks.Mutare do
             on.ok.(value)
 
           {:error, reason, detail} ->
-            message = Outcome.format_error(reason, detail, root)
+            message =
+              Outcome.format_error(
+                reason,
+                detail,
+                root,
+                Sandbox.kept_path(root, run_context.options)
+              )
+
             on.error.(reason, message)
             Mix.raise(message)
         end

@@ -766,7 +766,7 @@ defmodule Mutare.SandboxTest do
       sandbox = Path.join(context.base, "sandbox")
 
       assert {^sandbox, _} = Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
-      refute File.exists?(Path.join(sandbox, "_build"))
+      assert File.ls(Path.join(sandbox, "_build/test/lib")) in [{:ok, []}, {:error, :enoent}]
     end
 
     test "keep_sandbox: does not clobber a dep build already in the sandbox", context do
@@ -784,6 +784,227 @@ defmodule Mutare.SandboxTest do
       # A second kept run must leave the preserved build alone (idempotent seed).
       Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
       assert File.read!(seeded) == "{application, dep_a, [recompiled]}."
+    end
+
+    # `deps.get` marks a refetched dep's build stale by deleting its `compile.elixir_scm` —
+    # in the original's `_build` only. A kept sandbox's build of it would otherwise be
+    # trusted by Mix against the new sources.
+    test "keep_sandbox: replaces only the dep builds whose mix.lock entry moved", context do
+      seed_dep(context.project, "moved")
+      seed_dep(context.project, "steady")
+      write_lock(context.project, moved: "0.4.3", steady: "1.0.0")
+      sandbox = Path.join(context.base, "sandbox")
+      kept_run(context, sandbox)
+
+      # The sandbox's own builds, distinguishable from the original's; `path_dep` is in no
+      # lock, as a path dependency is not.
+      for dep <- ~w(moved steady path_dep), do: write_sandbox_app(sandbox, dep, "sandbox")
+
+      write_lock(context.project, moved: "0.5.1", steady: "1.0.0")
+      write_app_file(context.project, "moved", "0.5.1")
+      kept_run(context, sandbox)
+
+      assert sandbox_app(sandbox, "moved") == app_file("moved", "0.5.1")
+      assert sandbox_app(sandbox, "steady") == app_file("steady", "sandbox")
+      assert sandbox_app(sandbox, "path_dep") == app_file("path_dep", "sandbox")
+    end
+
+    test "keep_sandbox: drops a relocked dep build the original has none of", context do
+      File.mkdir_p!(Path.join([context.project, "deps", "unbuilt"]))
+      write_lock(context.project, unbuilt: "1.0.0")
+      sandbox = Path.join(context.base, "sandbox")
+      kept_run(context, sandbox)
+
+      # Mix compiled it inside the sandbox, from the sources of the lock then in force.
+      write_sandbox_app(sandbox, "unbuilt", "1.0.0")
+      write_lock(context.project, unbuilt: "1.1.0")
+      kept_run(context, sandbox)
+
+      refute File.exists?(Path.join(sandbox, "_build/test/lib/unbuilt"))
+    end
+
+    test "keep_sandbox: a dep leaving mix.lock drops only its own build", context do
+      seed_dep(context.project, "dep_a")
+      write_lock(context.project, dep_a: "1.0.0", gone: "1.0.0")
+      sandbox = Path.join(context.base, "sandbox")
+      kept_run(context, sandbox)
+      for dep <- ~w(dep_a gone), do: write_sandbox_app(sandbox, dep, "sandbox")
+
+      write_lock(context.project, dep_a: "1.0.0")
+      kept_run(context, sandbox)
+
+      assert sandbox_app(sandbox, "dep_a") == app_file("dep_a", "sandbox")
+      refute File.exists?(Path.join(sandbox, "_build/test/lib/gone"))
+    end
+
+    # After a `git pull` moves `mix.lock` but before `deps.get`, the original's build is
+    # still the old lock's and still marked current. The run that copies it fails Mix's
+    # dependency check, so nothing may vouch for the copy: once `deps.get` has run in the
+    # original, the next run must replace it rather than keep it.
+    test "keep_sandbox: a dep build seeded by a run whose compile failed is not kept",
+         context do
+      seed_dep(context.project, "moved")
+      write_lock(context.project, moved: "1.0.0")
+      sandbox = Path.join(context.base, "sandbox")
+      kept_run(context, sandbox)
+
+      write_app_file(context.project, "moved", "1.0.0")
+      write_lock(context.project, moved: "1.1.0")
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+      assert sandbox_app(sandbox, "moved") == app_file("moved", "1.0.0")
+
+      write_app_file(context.project, "moved", "1.1.0")
+      kept_run(context, sandbox)
+      assert sandbox_app(sandbox, "moved") == app_file("moved", "1.1.0")
+    end
+
+    # A record entry outlives its build's absence (`only: :dev`, or a dep the original had
+    # not built yet), so it must not vouch for a build seeded in later: that build answers to
+    # whatever lock the original was last compiled under.
+    test "keep_sandbox: a record entry with no build does not vouch for a later seed",
+         context do
+      seed_dep(context.project, "dep_a")
+      File.mkdir_p!(Path.join([context.project, "deps", "later"]))
+      write_lock(context.project, dep_a: "1.0.0", later: "1.0.0")
+      sandbox = Path.join(context.base, "sandbox")
+      kept_run(context, sandbox)
+      refute File.exists?(Path.join(sandbox, "_build/test/lib/later"))
+
+      # The original builds it under a lock it has since moved past, and the run that copies
+      # it fails Mix's dependency check.
+      seed_dep(context.project, "later")
+      write_app_file(context.project, "later", "stale")
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+      assert sandbox_app(sandbox, "later") == app_file("later", "stale")
+
+      write_app_file(context.project, "later", "fresh")
+      kept_run(context, sandbox)
+      assert sandbox_app(sandbox, "later") == app_file("later", "fresh")
+    end
+
+    test "keep_sandbox: replaces a lock-record symlink without changing its target", context do
+      sandbox = Path.join(context.base, "sandbox")
+      options = Mutare.Options.new(sandbox: sandbox, keep_sandbox: true)
+      Sandbox.prepare(context.project, context.schema, options)
+      record = Path.join(sandbox, "_build/test/.mutare_mix.lock")
+      external = Path.join(context.base, "external.lock")
+      contents = "%{external: :untouched}"
+      File.write!(external, contents)
+
+      for write <- [
+            fn -> Sandbox.prepare(context.project, context.schema, options) end,
+            fn -> Sandbox.compiled(sandbox, options) end
+          ] do
+        File.rm!(record)
+        File.ln_s!(external, record)
+
+        write.()
+
+        assert File.read!(external) == contents
+        assert File.lstat!(record).type == :regular
+        assert File.read!(record) == "%{}"
+      end
+    end
+
+    for parent <- ["_build", "_build/test", "_build/test/lib"],
+        lock_state <- [:missing_record, :changed_lock, :unreadable_lock] do
+      @linked_build_parent parent
+      @build_lock_state lock_state
+      test "keep_sandbox: preserves external builds through linked #{parent} with #{lock_state}",
+           context do
+        seed_dep(context.project, "dep_a")
+        write_lock(context.project, dep_a: "1.0.0")
+        sandbox = Path.join(context.base, "sandbox")
+        kept_run(context, sandbox)
+        write_sandbox_app(sandbox, "dep_a", "external")
+
+        record = Path.join(sandbox, "_build/test/.mutare_mix.lock")
+
+        case @build_lock_state do
+          :missing_record ->
+            File.rm!(record)
+
+          :changed_lock ->
+            write_lock(context.project, dep_a: "2.0.0")
+
+          :unreadable_lock ->
+            File.write!(Path.join(context.project, "mix.lock"), "<<<<<<< HEAD\n")
+        end
+
+        parent = Path.join(sandbox, @linked_build_parent)
+        external = Path.join(context.base, "external-build")
+        File.rename!(parent, external)
+        File.ln_s!(external, parent)
+
+        external_app =
+          Path.join(
+            external,
+            Path.relative_to("_build/test/lib/dep_a/ebin/dep_a.app", @linked_build_parent)
+          )
+
+        external_record =
+          if @linked_build_parent != "_build/test/lib" do
+            Path.join(
+              external,
+              Path.relative_to("_build/test/.mutare_mix.lock", @linked_build_parent)
+            )
+          end
+
+        record_before = if external_record, do: File.read(external_record)
+
+        Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+
+        assert File.read!(external_app) == app_file("dep_a", "external")
+        if external_record, do: assert(File.read(external_record) == record_before)
+        assert File.lstat!(parent).type == :directory
+        assert sandbox_app(sandbox, "dep_a") == "{application, dep_a, []}."
+      end
+    end
+
+    test "a sandbox that is not kept records no lock", context do
+      seed_dep(context.project, "dep_a")
+      write_lock(context.project, dep_a: "1.0.0")
+      sandbox = Path.join(context.base, "sandbox")
+      options = Mutare.Options.new(sandbox: sandbox, keep_sandbox: false)
+
+      Sandbox.prepare(context.project, context.schema, options)
+      Sandbox.compiled(sandbox, options)
+
+      assert sandbox_app(sandbox, "dep_a") == "{application, dep_a, []}."
+      refute File.exists?(Path.join(sandbox, "_build/test/.mutare_mix.lock"))
+    end
+
+    test "keep_sandbox: a dep build no lock record vouches for is reseeded", context do
+      seed_dep(context.project, "dep_a")
+      write_lock(context.project, dep_a: "1.0.0")
+      sandbox = Path.join(context.base, "sandbox")
+      kept_run(context, sandbox)
+
+      # A sandbox kept by a Mutare that wrote no record (or a cache restored without one).
+      write_sandbox_app(sandbox, "dep_a", "sandbox")
+      File.rm!(Path.join(sandbox, "_build/test/.mutare_mix.lock"))
+      kept_run(context, sandbox)
+
+      assert sandbox_app(sandbox, "dep_a") == "{application, dep_a, []}."
+    end
+
+    test "keep_sandbox: an unreadable mix.lock vouches for no dep build", context do
+      seed_dep(context.project, "dep_a")
+      write_lock(context.project, dep_a: "1.0.0")
+      sandbox = Path.join(context.base, "sandbox")
+      kept_run(context, sandbox)
+      write_sandbox_app(sandbox, "dep_a", "sandbox")
+
+      # The sandbox's compile cannot pass Mix's dependency check, so it records nothing.
+      File.write!(Path.join(context.project, "mix.lock"), "<<<<<<< HEAD\n")
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+      assert sandbox_app(sandbox, "dep_a") == "{application, dep_a, []}."
+
+      # Nothing recorded, so the next run cannot vouch for the build either.
+      write_lock(context.project, dep_a: "1.0.0")
+      write_sandbox_app(sandbox, "dep_a", "sandbox")
+      kept_run(context, sandbox)
+      assert sandbox_app(sandbox, "dep_a") == "{application, dep_a, []}."
     end
   end
 
@@ -1395,6 +1616,41 @@ defmodule Mutare.SandboxTest do
     File.mkdir_p!(ebin)
     File.write!(Path.join(ebin, "#{name}.app"), "{application, #{name}, []}.")
   end
+
+  # A kept-sandbox run whose compile Mix accepted: `prepare/3`, then what the runner does
+  # once `mix compile` succeeds.
+  defp kept_run(context, sandbox) do
+    Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+    Sandbox.compiled(sandbox, Mutare.Options.new(sandbox: sandbox, keep_sandbox: true))
+  end
+
+  # A `mix.lock` locking each dep at a Hex version (the entry's shape is all that matters).
+  defp write_lock(project, versions) do
+    entries =
+      Enum.map_join(versions, "", fn {dep, vsn} ->
+        ~s(  "#{dep}": {:hex, :#{dep}, "#{vsn}", "checksum-#{vsn}", [:mix], [], "hexpm", "outer"},\n)
+      end)
+
+    File.write!(Path.join(project, "mix.lock"), "%{\n" <> entries <> "}\n")
+  end
+
+  defp app_file(dep, tag), do: "{application, #{dep}, [{vsn, \"#{tag}\"}]}."
+
+  defp write_app_file(project, dep, tag),
+    do:
+      File.write!(
+        Path.join([project, "_build/test/lib", dep, "ebin", "#{dep}.app"]),
+        app_file(dep, tag)
+      )
+
+  defp write_sandbox_app(sandbox, dep, tag) do
+    ebin = Path.join([sandbox, "_build/test/lib", dep, "ebin"])
+    File.mkdir_p!(ebin)
+    File.write!(Path.join(ebin, "#{dep}.app"), app_file(dep, tag))
+  end
+
+  defp sandbox_app(sandbox, dep),
+    do: File.read!(Path.join([sandbox, "_build/test/lib", dep, "ebin", "#{dep}.app"]))
 
   # A path's permission bits, with the file-type bits masked off.
   defp mode(path), do: Bitwise.band(File.lstat!(path).mode, 0o7777)

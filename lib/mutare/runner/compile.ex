@@ -73,6 +73,8 @@ defmodule Mutare.Runner.Compile do
            options.compile_timeout
          ) do
       :ok ->
+        # Mix has now checked every dependency build against the sandbox's `mix.lock`.
+        Sandbox.compiled(sandbox, options)
         {:ok, schema, sandbox, recovery}
 
       {:error, :compile_timed_out, output} ->

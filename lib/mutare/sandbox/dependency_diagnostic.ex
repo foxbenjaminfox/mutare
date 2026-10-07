@@ -8,21 +8,37 @@ defmodule Mutare.Sandbox.DependencyDiagnostic do
   the **original** project. Mutare deliberately does not execute dependency
   commands itself: they may use the network or credentials, modify `mix.lock`,
   and would write fetched sources into a disposable default sandbox.
+
+  When the sandbox is kept between runs, its `_build` outlives each run and can be
+  the stale side instead, so the message also names that directory.
   """
 
   alias Mutare.Sandbox.Command.Output
 
-  @doc "Render a dependency failure, its remediation, and Mix's original diagnostic."
-  @spec format(String.t(), Path.t()) :: String.t()
-  def format(detail, root) when is_binary(detail) and is_binary(root) do
+  @doc """
+  Render a dependency failure, its remediation, and Mix's original diagnostic.
+
+  `kept_sandbox` is the path of a sandbox kept between runs, or `nil` for a fresh one.
+  """
+  @spec format(String.t(), Path.t(), Path.t() | nil) :: String.t()
+  def format(detail, root, kept_sandbox) when is_binary(detail) and is_binary(root) do
     issue = Output.dependency_issue(detail)
 
     "sandbox dependency validation failed before the metamutant could compile.\n\n" <>
       guidance(issue, root) <>
+      kept_sandbox(kept_sandbox) <>
       "\n\nMutare does not run dependency commands automatically: they may access the " <>
       "network, require credentials, or modify mix.lock, and a default sandbox is " <>
       "disposable. Repair the original project, then rerun Mutare.\n\n" <>
       "Original Mix dependency diagnostic:\n\n" <> String.trim(detail)
+  end
+
+  defp kept_sandbox(nil), do: ""
+
+  defp kept_sandbox(sandbox) do
+    "\n\nThis run reused the kept sandbox at:\n  #{sandbox}\nwhose `_build` persists " <>
+      "between runs. If `MIX_ENV=test mix compile` succeeds in the original project, the " <>
+      "stale state is the sandbox's: delete that directory and rerun Mutare."
   end
 
   defp guidance(:fetch, root) do

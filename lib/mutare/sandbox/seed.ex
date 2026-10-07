@@ -4,7 +4,7 @@ defmodule Mutare.Sandbox.Seed do
   # original project, so the one `mix compile` rebuilds the minimum. Two independent seeds,
   # both best-effort and fail-safe (they can only ever fall back to a cold compile):
   #
-  #   * `dep_build/2` — the dependencies' beams (`@excluded` keeps `_build` out of the copy,
+  #   * `dep_build/3` — the dependencies' beams (`@excluded` keeps `_build` out of the copy,
   #     so without this every test-env dep recompiles cold each run).
   #   * `app_build/6` — the *mutated app's own* beams, so a narrow run (`--line`/`--since`/
   #     `--only`, a `paths:` narrowing, or a sparse-site full run) recompiles only the
@@ -16,8 +16,14 @@ defmodule Mutare.Sandbox.Seed do
   require Logger
 
   alias Mutare.{Options, Project, Schema}
-  alias Mutare.Sandbox.CompilerOptions
+  alias Mutare.Sandbox.{CompilerOptions, Mirror}
   alias Mutare.Sandbox.Command.Invocation
+
+  # Where the sandbox records, per dependency, the `mix.lock` entry its build answers to —
+  # written in `mix.lock`'s own format and read back by the same reader. It lives in
+  # `_build/<env>` so it travels with the builds it describes: a CI cache of the sandbox's
+  # `_build` (the cache pattern the `mix mutare` docs give) carries it along.
+  @lock_record ".mutare_mix.lock"
 
   # Seed the sandbox's `_build` with the dependencies' already-compiled artifacts
   # from the original project, so the one `mix compile` doesn't rebuild every
@@ -29,8 +35,8 @@ defmodule Mutare.Sandbox.Seed do
   # `mix.lock`). On a dependency-heavy app that cold rebuild dominates the whole
   # "compile once" step (often seconds to minutes). We copy each dep's build dir
   # (`ebin` + its `.mix` manifest), which is all mix needs to treat it as built: mix
-  # gates dependency staleness on the lock + manifest, *not* per-source mtime, so
-  # the copy's bumped mtimes don't provoke a rebuild (verified).
+  # judges a built fetchable dep by the manifests in its `.mix` dir, never by its
+  # sources' mtimes, so the copy's bumped mtimes don't provoke a rebuild (verified).
   #
   # Scoped deliberately to *dependencies*, never the mutated app(s): we copy only
   # the dirs named in the original's `deps/`, so we never seed an app's own beam.
@@ -39,24 +45,143 @@ defmodule Mutare.Sandbox.Seed do
   # app dir absent forces mix to compile the freshly-written metamutant — what we
   # want.
   #
-  # Idempotent and best-effort: a dep already present in the sandbox (a
-  # `keep_sandbox` re-run's preserved `_build`) is skipped, and a dep with no
-  # compiled artifacts (`only: :dev`, or an original that was never compiled in the
-  # test env) is simply absent — falling back to a cold compile, never an error.
-  @spec dep_build(Path.t(), Path.t()) :: :ok
-  def dep_build(root, sandbox) do
-    mix_env = Invocation.mix_env()
-    deps_lib = Path.join([root, "_build", mix_env, "lib"])
+  # A dep already built in the sandbox (a kept sandbox's preserved `_build`) is not
+  # copied over: `kept?` says the sandbox is kept, and then `relock/2` first drops each
+  # such build `mix.lock` has moved (NOTES "A kept sandbox must do what `deps.get`
+  # did"). A dep with no compiled artifacts (`only: :dev`, or an original that was never
+  # compiled in the test env) is simply absent — falling back to a cold compile, never
+  # an error.
+  @spec dep_build(Path.t(), Path.t(), boolean()) :: :ok
+  def dep_build(root, sandbox, kept?) do
+    deps_lib = Path.join([root, "_build", Invocation.mix_env(), "lib"])
+    sandbox_lib = Path.join([sandbox, "_build", Invocation.mix_env(), "lib"])
+    dep_names = dep_names(root)
 
-    for dep <- dep_names(root),
+    if kept?, do: relock(sandbox, dep_names)
+
+    for dep <- dep_names,
         src = Path.join(deps_lib, dep),
         File.dir?(src),
-        dst = Path.join([sandbox, "_build", mix_env, "lib", dep]),
+        dst = Path.join(sandbox_lib, dep),
         not File.exists?(dst) do
       File.mkdir_p!(Path.dirname(dst))
       File.cp_r!(src, dst)
     end
 
+    :ok
+  end
+
+  # Record that every dependency build in `sandbox` answers to the sandbox's `mix.lock`.
+  # Called once a kept sandbox's `mix compile` has succeeded: Mix checked each dep's
+  # sources against that lock and rebuilt every build `deps.get` had marked stale, so
+  # whatever `dep_build/3` copied in is now vouched for too.
+  @spec record_lock(Path.t()) :: :ok
+  def record_lock(sandbox), do: write_record(sandbox, sandbox_lock(sandbox))
+
+  # Before Elixir 1.20, Mix's only sign that a built fetchable dep is stale is a missing
+  # `_build/<env>/lib/<dep>/.mix/compile.elixir_scm` (`compile.fetch` before 1.19), and
+  # `deps.get` creates that sign by deleting the file — in the original project's
+  # `_build`, which is the only one it knows. A kept sandbox's build keeps it, so Mix
+  # would trust the old `.app` and beams against the new sources: a hard `does not match
+  # the requirement` when the version requirement moved too, a silently stale dependency
+  # when it did not. So drop the sandbox's build of every dep whose lock entry differs
+  # from the one recorded for its build; `dep_build/3` then reseeds it from the original
+  # (whose own build `deps.get` has already invalidated if it is behind) or Mix compiles
+  # it cold. From 1.20 Mix stores each build's lock entry and rebuilds on a mismatch
+  # itself, which makes this redundant there (NOTES "A kept sandbox must do what
+  # `deps.get` did").
+  #
+  # Then record the entries whose builds are still present: each was recorded for its
+  # build, and the lock still says the same. Everything else was dropped or never built
+  # here, and a build `dep_build/3` copies in for it answers to whatever lock the original
+  # was last compiled under — not the current one if the user has not run `deps.get`
+  # since `mix.lock` changed. Only a compile Mix accepts under the current lock vouches
+  # for such a build (`record_lock/1`).
+  defp relock(sandbox, dep_names) do
+    # The mirror preserves `_build` untouched. Replace any linked build parent before
+    # reading the record or deleting caches; guarding only the record write is too late.
+    Mirror.ensure_directory!(sandbox, Path.join(["_build", Invocation.mix_env(), "lib"]))
+    sandbox_lib = Path.join([sandbox, "_build", Invocation.mix_env(), "lib"])
+    recorded = read_lock(record_path(sandbox))
+    lock = sandbox_lock(sandbox)
+
+    drop_relocked_deps(sandbox_lib, recorded, lock, dep_names)
+    write_record(sandbox, kept_entries(sandbox_lib, recorded, lock))
+  end
+
+  # A dep with no recorded entry has no build anything vouches for, so a lock entry for it
+  # always differs. A dep that is in neither (a path dep) is kept: Mix recompiles path
+  # deps on its own. No record at all (a first kept run, or a sandbox kept from before
+  # the record existed) or a lock Mutare cannot read drops every dep build present. Mix
+  # keys the lock by dep name and builds a dep under `_build/<env>/lib/<name>` (whatever
+  # its `app:` option says), so a lock key names its build dir; the lock is read at the
+  # root of the project's mirror, the layout `dep_names/1` assumes.
+  defp drop_relocked_deps(sandbox_lib, {:ok, recorded}, {:ok, lock}, _dep_names) do
+    for name <- Enum.uniq(Map.keys(recorded) ++ Map.keys(lock)),
+        Map.get(recorded, name) != Map.get(lock, name),
+        do: File.rm_rf!(Path.join(sandbox_lib, name))
+  end
+
+  defp drop_relocked_deps(sandbox_lib, recorded, lock, dep_names) do
+    known = fn
+      {:ok, entries} -> Map.keys(entries)
+      :error -> []
+    end
+
+    for name <- Enum.uniq(known.(recorded) ++ known.(lock) ++ dep_names),
+        do: File.rm_rf!(Path.join(sandbox_lib, name))
+  end
+
+  # The lock entries whose sandbox builds `drop_relocked_deps/4` left in place.
+  defp kept_entries(sandbox_lib, {:ok, recorded}, {:ok, lock}) do
+    {:ok,
+     Map.filter(lock, fn {name, entry} ->
+       Map.get(recorded, name) == entry and File.dir?(Path.join(sandbox_lib, name))
+     end)}
+  end
+
+  defp kept_entries(_sandbox_lib, :error, {:ok, _lock}), do: {:ok, %{}}
+  defp kept_entries(_sandbox_lib, _recorded, :error), do: :error
+
+  defp record_path(sandbox),
+    do: Path.join([sandbox, "_build", Invocation.mix_env(), @lock_record])
+
+  # The `mix.lock` the sandbox's Mix reads — the original's, mirrored — as a map from dep
+  # name to entry. A project with no lock has no locked deps; a lock Mutare cannot read is
+  # `:error` (unknown), and the sandbox's own `mix deps` check reports it.
+  defp sandbox_lock(sandbox) do
+    path = Path.join(sandbox, "mix.lock")
+
+    if File.exists?(path), do: read_lock(path), else: {:ok, %{}}
+  end
+
+  # The lock file is an Elixir map literal; Mix reads it the same way. The record is
+  # read with it too.
+  defp read_lock(path) do
+    with {:ok, contents} <- File.read(path),
+         {:ok, quoted} <- Code.string_to_quoted(contents, file: path, emit_warnings: false),
+         {%{} = lock, _binding} <- Code.eval_quoted(quoted) do
+      {:ok, Map.new(lock, fn {name, entry} -> {to_string(name), entry} end)}
+    else
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  # Unknown leaves no record, so the next run drops again rather than trusting builds it
+  # cannot vouch for.
+  defp write_record(sandbox, {:ok, entries}) do
+    Mirror.put_file_if_changed(
+      sandbox,
+      Path.join(["_build", Invocation.mix_env(), @lock_record]),
+      inspect(entries, limit: :infinity, printable_limit: :infinity)
+    )
+  end
+
+  defp write_record(sandbox, :error) do
+    Mirror.ensure_directory!(sandbox, Path.join("_build", Invocation.mix_env()))
+    File.rm_rf!(record_path(sandbox))
     :ok
   end
 
@@ -90,7 +215,7 @@ defmodule Mutare.Sandbox.Seed do
   # narrowing, or a full run with sparse sites) recompiles just the metamutant file(s) —
   # not the whole application.
   #
-  # `dep_build/2` deliberately never seeds the app, because mix decides app-source
+  # `dep_build/3` deliberately never seeds the app, because mix decides app-source
   # staleness from its compile manifest, which **embeds the absolute project path**:
   # transplanted to the sandbox (a different dir) the recorded paths don't match, so
   # mix treats every source as new and recompiles the lot. (Deps escape this: mix gates

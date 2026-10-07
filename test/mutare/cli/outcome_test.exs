@@ -79,4 +79,31 @@ defmodule Mutare.CLI.OutcomeTest do
     options = Options.new(reporters: [{:json, Path.join(tmp_dir, "r.json")}], min_score: 50)
     capture_io(fn -> assert Outcome.report(run([]), options, nil) == :ok end)
   end
+
+  # `--no-keep-sandbox` runs in a different directory, so it cannot reset the kept one: the
+  # messages that suspect it name it for deletion instead.
+  describe "format_error/4 and a kept sandbox" do
+    @sandbox "/tmp/mutare_sandbox_abc"
+
+    test "names the kept sandbox to delete when the baseline fails" do
+      kept = Outcome.format_error(:baseline_failed, "1 test, 1 failure", "/proj", @sandbox)
+      fresh = Outcome.format_error(:baseline_failed, "1 test, 1 failure", "/proj", nil)
+
+      assert kept =~ "kept sandbox at:\n  #{@sandbox}\n"
+      assert kept =~ "delete that directory"
+      assert kept =~ "1 test, 1 failure"
+      refute fresh =~ "kept sandbox"
+      refute kept =~ "--no-keep-sandbox"
+    end
+
+    test "names the kept sandbox to delete when harness errors abort the run" do
+      detail = "3 mutant run(s) failed at the harness level"
+      kept = Outcome.format_error(:too_many_harness_errors, detail, "/proj", @sandbox)
+
+      assert String.starts_with?(kept, detail)
+      assert kept =~ "If this persists across runs, a stale or corrupted build artifact"
+      assert kept =~ @sandbox
+      assert Outcome.format_error(:too_many_harness_errors, detail, "/proj", nil) == detail
+    end
+  end
 end

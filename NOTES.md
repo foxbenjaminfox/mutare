@@ -812,10 +812,12 @@ silently re-paid per run. Measured on Mutare's own deps: a cold sandbox compile 
 itself is ~1.7 s. (This is the `mix compile` of the metamutant — distinct from the
 *scan*/transform-render cost tracked under "Scan is transform-bound".)
 
-**Fix (`Sandbox.Seed.dep_build/2`):** after materialising the copy, copy each
+**Fix (`Sandbox.Seed.dep_build/3`):** after materialising the copy, copy each
 dependency's already-built dir (`_build/<env>/lib/<dep>`, i.e. `ebin` + its `.mix`
-manifest) from the original into the sandbox. mix gates dependency staleness on the
-**lock + manifest**, not per-source mtime — verified: the deps are *not* recompiled
+manifest) from the original into the sandbox. mix judges a built fetchable dep by the
+manifests in its `.mix` dir, never by its sources' mtimes (and before Elixir 1.20 not
+against `mix.lock` either; see "A kept sandbox must do what `deps.get` did") —
+verified: the deps are *not* recompiled
 even though `File.cp_r!` bumps their mtimes (the asymmetry with app sources, which
 *do* recompile on an mtime bump, is why the `--keep-sandbox` notes warn about `cp`
 but this seed is safe). End-to-end through the real `prepare/3`: 5.5 s → ~1.7 s, with
@@ -831,7 +833,8 @@ Three load-bearing choices:
   protocols after recompiling the app, so the seed needs no `consolidated` dir.)
 - **Idempotent + best-effort.** Runs in both modes but only fills in deps the sandbox
   *lacks* (`not File.exists?(dst)`), so a `keep_sandbox` re-run's preserved `_build`
-  is untouched — it seeds only the first kept run and every fresh run. A dep with no
+  is reused — except a dep whose `mix.lock` entry moved, which is dropped first and
+  reseeded (see "A kept sandbox must do what `deps.get` did"). A dep with no
   test-env artifact (`only: :dev` like `dialyxir`, or an original never compiled in
   test) is simply absent and skipped; a project with no `_build`/`deps` at all (fresh
   CI checkout) seeds nothing and falls back to a cold compile. Never an error.
@@ -847,6 +850,92 @@ huge metamutant *module* compiling serially (Elixir parallelises across modules,
 within one) — not easily splittable; the volume drivers are already tamed by
 per-clause lifting, `PipeEmit.hoist` (see "lifting blowup"), and the hoisted per-site
 active-id read (see "Hoist the per-site active-id read", now done).
+
+### A kept sandbox must do what `deps.get` did `[done]`
+Reported after an upgrade from 0.4.3 to 0.5.1: the kept sandbox still held 0.4.3's
+build of `mutare`, and the compile died with `the dependency does not match the
+requirement "~> 0.5.1", got "0.4.3"`, under a message telling the user to repair the
+original project — which was fine.
+
+The cause is how Mix before 1.20 decides a fetchable dep's build is stale. It never
+compares the build against `mix.lock`; the only sign it reads is a *missing*
+`_build/<env>/lib/<dep>/.mix/compile.elixir_scm` (`Mix.Dep.Loader.recently_fetched?/1`
+in 1.19; `compile.fetch` before), and `deps.get` produces that sign by deleting the
+file in every env of the project it runs in (`Mix.Dep.Fetcher`). The file itself records only the Elixir/OTP
+versions and the SCM module, not a lock entry. So a kept sandbox's dep build — which
+`deps.get` never sees — keeps its `compile.elixir_scm`, and Mix trusts its `.app` and
+beams against the new sources the mirror copied in. When the requirement moved too, the
+`.app`'s version fails it and the compile aborts (the report). When it did not (a patch
+release under `~> 1.4`, a git dep at a new ref), **nothing fails**: the suite runs
+against the old dependency's code. Reproduced end to end with a local git dependency;
+in that run the stale dep surfaced only because the baseline asserted on its value.
+The reporter ran Elixir 1.19.
+
+**Elixir 1.20 fixed this upstream.** Mix now stores each fetchable dep's lock entry
+in its `compile.elixir_scm` and recompiles the dep when it differs from `mix.lock`
+(elixir-lang/elixir `7fa1914e`, "Store the lock in the manifest", whose stated reason
+is a `_build` restored for another version of a dependency; `af6d6b2c` moves the check
+ahead of the converger, so a stale `.app` cannot fail a requirement first). On 1.20+
+the record below is redundant and costs only the reseeds it orders; on 1.18 and 1.19
+it is the fix. The CI matrix's 1.20 job passes `kept_sandbox_deps_runner_test` with
+or without it, so the 1.18/1.19 jobs are what guard it. **Deferred:** delete the
+record (`Seed.relock/2`, `Seed.record_lock/1`, `Sandbox.compiled/2`) once the Elixir
+floor reaches 1.20; nothing else depends on it.
+
+**Fix (`Sandbox.Seed.dep_build/3`):** a kept sandbox records, in
+`_build/<env>/.mutare_mix.lock`, the `mix.lock` entry each dep build answers to. Each
+`prepare/3` drops the sandbox's build of every dep whose entry differs from the
+recorded one, then seeds as before: the original's build of it or, failing that, a cold
+compile of that one dep. Unchanged entries keep their reuse. Choices:
+- **The record lives in `_build`, not beside the mirrored `mix.lock`.** The sandbox's
+  previous `mix.lock` would have been the natural record, but the documented CI cache
+  saves `<sandbox>/_build` and `<sandbox>/deps` only, so a restored build arrives
+  without it — and with a restore-key fallback, built from a different lock. In
+  `_build` the record travels with the builds it describes.
+- **Unknown means drop.** No record (a first kept run, a sandbox kept by an older Mutare,
+  a cache from one) or an original lock Mutare cannot read drops every dep build present
+  and, for the unreadable lock, writes no record. Upgrading to this costs one reseed —
+  a copy where the original has builds.
+- **The record is a `mix.lock`, read back by the same reader.** A `term_to_binary`
+  record read with `binary_to_term(_, [:safe])` cannot decode the entry of a dep that
+  has since left the project — nothing in the new VM creates its atom — so every
+  removal would have read as no record and dropped every dep build. Evaluating lock
+  text creates the atoms it names.
+- **Only an accepted compile vouches for a seeded build.** `prepare/3` keeps in the
+  record just the entries whose builds it left in place; the whole lock is recorded
+  once `mix compile` succeeds (`Sandbox.compiled/2`, from `Runner.Compile`). The first
+  version wrote the whole lock at prepare time, reasoning that every build left behind
+  answered to it — but a build copied from the original answers to whatever lock the
+  original was last built under. After a `git pull` moves `mix.lock` and before
+  `deps.get`, that is the old one, still marked current; the run fails Mix's dependency
+  check, yet the record already vouched for the copy. `deps.get` then marks only the
+  original's build stale, and the next run kept the copy: the original bug, one run
+  later (reproduced; `kept_sandbox_deps_runner_test`). Waiting for the compile rather
+  than the dependency check alone costs a rerun of the drop after a poison-recovery
+  abort or a compile timeout, and needs no reading of Mix's output. A run killed
+  anywhere before the compile ends redoes the drop.
+  "Left in place" means *present*, not just undropped: the whole-lock record names
+  deps with no build in the sandbox (`only: :dev`, or one the original had not
+  built), and a build seeded for one of them later answers to the original's lock as
+  much as a dropped dep's reseed does.
+- **Only a kept sandbox records.** A fresh one is wiped before its next use, so the
+  record would never be read.
+- **Path deps are untouched** (in no lock, `nil` on both sides): Mix recompiles them
+  itself. A lock key always names its dep's build dir: Mix keys the lock by dep name
+  and builds every dep under `_build/<env>/lib/<name>` (`Mix.Dep.Loader`); `app:`
+  only changes which `.app` file Mix checks.
+
+Not pursued: re-copying every dep build from the original on each run. It would miss
+the deps the original never built in the test env, which the sandbox compiled itself
+and which go stale the same way.
+
+The report's second complaint stands independently: `Sandbox.DependencyDiagnostic`
+pointed only at the original project, which a kept sandbox's own state can contradict.
+When the sandbox is kept the message now names it and says to delete it if the original
+compiles — the fallback for whatever other way that `_build` might fall behind. The
+baseline and harness-error aborts name it the same way; they used to suggest
+`--no-keep-sandbox`, which leaves the kept directory as it was (see "The kept
+sandbox is the default").
 
 ### Seed the mutated app's `_build` too, so a narrowed run compiles incrementally `[done]`
 The dep seed above leaves the cold-compile-the-whole-app cost in place. That's the
@@ -1698,16 +1787,18 @@ What changes for a default run, and what was weighed:
 - **Persisted corruption.** Fresh mode's wipe was a free reset; a kept sandbox
   carries a bad `_build` forward (the PropCheck DETS incident is the archetype:
   every later run fails with undifferentiated harness errors). So the two aborts
-  that this looks like — `:too_many_harness_errors` and `:baseline_failed` — now
-  name `--no-keep-sandbox` as the cold-rebuild escape hatch.
+  that this looks like — `:too_many_harness_errors` and `:baseline_failed` — name
+  the kept sandbox's directory and say to delete it. (They first named
+  `--no-keep-sandbox`, which runs in a different directory and leaves the kept one
+  bad for the next default run.)
 - **Concurrent runs on one project.** Fresh mode gave each its own pid-salted dir;
   kept mode shares the digest path, and `Lock.acquire/1` refuses the second live
   owner rather than letting them race. Two terminals on one project is now a
   refusal, not two runs — acceptable (they would each pay the compile anyway).
-- **Dep bumps.** `Seed.dep_build/2` only fills deps the sandbox lacks, so after an
-  upgrade mix recompiles that dep cold in the sandbox instead of seeding the
-  already-built new version. Correct, slower for that one run; could reseed on a
-  manifest mismatch if it ever matters.
+- **Dep bumps.** Assumed at the time to be handled by mix: `Seed.dep_build/3` filled
+  only deps the sandbox lacked, on the belief that mix would recompile a bumped dep
+  in the sandbox. Before Elixir 1.20 it does not — see "A kept sandbox must do what
+  `deps.get` did".
 - **How incremental is a `lib/` edit?** Ids are a prefix-sum across files in
   discovery order, so a new mutant in file *k* shifts the ids in every later file
   and those metamutants get rewritten and recompiled. Kept mode is still never

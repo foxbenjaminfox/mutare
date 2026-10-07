@@ -530,9 +530,7 @@ defmodule Mutare.Runner do
         "means the suite never reached a verdict (a compile error, a missing dependency, or a " <>
         "filesystem/lock problem), so the score would be computed over a denominator hollowed " <>
         "out by infrastructure failures. Fix the sandbox, or raise --max-harness-error-rate " <>
-        "to proceed anyway. If this persists across runs, the kept sandbox itself may have " <>
-        "gone bad (a build artifact corrupted by an earlier crashed run, say): rerun with " <>
-        "--no-keep-sandbox to rebuild it cold."
+        "to proceed anyway."
 
     case harness_error_examples(results) do
       "" -> base

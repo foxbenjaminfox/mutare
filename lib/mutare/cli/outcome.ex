@@ -5,9 +5,10 @@ defmodule Mutare.CLI.Outcome do
   # `checkpoint/3` and `report_interrupted/5` write the partial reports of a run still in
   # progress (`Mutare.CLI.PartialReport`);
   # `warn_poison_recovery/1` prints the durable `:call_routes` fix after a poison-recovered run; and
-  # `format_error/3` renders each terminal `{:error, reason, detail}` into the message the task
-  # `Mix.raise`s; `scope/2` names the flags a scoped run's score is over. All output is the
-  # task's (stdout report, stderr notes) — this only builds it.
+  # `format_error/4` renders each terminal `{:error, reason, detail}` into the message the task
+  # `Mix.raise`s, given the kept sandbox's path (or `nil`) for the error that can implicate
+  # it; `scope/2` names the flags a scoped run's score is over. All output is the task's
+  # (stdout report, stderr notes) — this only builds it.
 
   alias Mutare.{CLI, Options, Run, Schema, Score}
   alias Mutare.Poison.Hint
@@ -313,16 +314,18 @@ defmodule Mutare.CLI.Outcome do
       options.fail_on_harness_error
   end
 
-  def format_error(:nothing_to_mutate, detail, _root), do: detail
+  def format_error(:nothing_to_mutate, detail, _root, _kept_sandbox), do: detail
 
-  def format_error(:too_many_harness_errors, detail, _root), do: detail
+  def format_error(:too_many_harness_errors, detail, _root, kept_sandbox) do
+    detail <> kept_sandbox_suspect(kept_sandbox, "If this persists across runs")
+  end
 
   # A poisoned compile that recovery couldn't isolate. Lead with a remediation
   # hint when we recognise the cause (a macro requiring a literal argument — see
   # `Mutare.Poison.Hint`), then the raw compiler error for the full detail. The
   # raw error can be long, so a footer points back up to the hint (the fix is at
   # the top, but the user reads the error dump last).
-  def format_error(:compile_failed, detail, _root) do
+  def format_error(:compile_failed, detail, _root, _kept_sandbox) do
     intro = "the metamutant failed to compile (compile-poisoning).\n\n"
     tail = Output.output_tail(detail, 25)
 
@@ -338,7 +341,7 @@ defmodule Mutare.CLI.Outcome do
     end
   end
 
-  def format_error(:compile_timed_out, detail, _root) do
+  def format_error(:compile_timed_out, detail, _root, _kept_sandbox) do
     "the metamutant compile exceeded its wall-clock cap (:compile_timeout, " <>
       "default 30 minutes) and halted itself.\n\n" <>
       "A legitimate compile rarely gets near the cap — this usually means a " <>
@@ -350,21 +353,31 @@ defmodule Mutare.CLI.Outcome do
       Output.output_tail(detail, 25)
   end
 
-  def format_error(:dependency_failed, detail, root) do
-    DependencyDiagnostic.format(detail, root)
+  def format_error(:dependency_failed, detail, root, kept_sandbox) do
+    DependencyDiagnostic.format(detail, root, kept_sandbox)
   end
 
-  def format_error(:baseline_failed, detail, _root) do
-    "baseline suite is not green; mutation testing needs a passing suite. " <>
-      "If `mix test` is green in the project itself, the kept sandbox may have gone bad " <>
-      "(a stale or corrupted build artifact): rerun with --no-keep-sandbox to rebuild it " <>
-      "cold.\n\n" <>
-      Output.output_tail(detail, 25)
+  def format_error(:baseline_failed, detail, _root, kept_sandbox) do
+    "baseline suite is not green; mutation testing needs a passing suite." <>
+      kept_sandbox_suspect(kept_sandbox, "If `mix test` is green in the project itself") <>
+      "\n\n" <> Output.output_tail(detail, 25)
   end
 
-  def format_error(:baseline_flaky, detail, _root) do
+  def format_error(:baseline_flaky, detail, _root, _kept_sandbox) do
     "baseline suite is flaky (passed on some runs, failed on others); mutation " <>
       "testing needs a deterministically green suite — a flaky test manufactures " <>
       "false kills. Fix or quarantine the test(s), then re-run.\n\n" <> detail
+  end
+
+  # A kept sandbox's `_build` outlives each run, so a stale or corrupted build artifact in
+  # it (one left by a crashed run, say) fails every later run the same way. Deleting the
+  # directory is the reset: `--no-keep-sandbox` would run in a different directory and
+  # leave this one for the next kept run.
+  defp kept_sandbox_suspect(nil, _condition), do: ""
+
+  defp kept_sandbox_suspect(sandbox, condition) do
+    "\n\nThis run reused the kept sandbox at:\n  #{sandbox}\nwhose `_build` persists " <>
+      "between runs. #{condition}, a stale or corrupted build artifact there may be the " <>
+      "cause: delete that directory and rerun Mutare."
   end
 end

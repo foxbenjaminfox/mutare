@@ -28,11 +28,13 @@ sandbox. Differences from a plain `mix test` that can break it:
   on purpose; raise it well above the suite's largest process.
 - **A flaky test.** `--baseline-runs 2` makes flakiness explicit instead of
   intermittent. Fix the test: flakes also manufacture false kills later.
-- **A bad kept sandbox.** A build artifact corrupted by an interrupted run.
-  `--no-keep-sandbox` rebuilds from scratch; the message suggests this too.
+- **A bad kept sandbox.** A build artifact corrupted by an interrupted run. Delete
+  the kept sandbox directory the message names; the next run rebuilds it from
+  scratch. `--no-keep-sandbox` runs elsewhere and leaves the bad directory in place.
 
 Dependencies are not fetched inside the sandbox. If the compile reports a dependency
-problem, run `MIX_ENV=test mix deps.get` in the project.
+problem, run `MIX_ENV=test mix deps.get` in the project. If the project compiles and
+the run still fails, delete the kept sandbox directory the message names.
 
 ## The metamutant fails to compile
 
@@ -96,7 +98,7 @@ A harness error is a run that reached no verdict. It is excluded from the score,
   or git branch (one per worktree, say) comes out wrong or fails to resolve. Read
   `MUTARE_PROJECT_ROOT`, the original project's absolute path, when it is set
   (same section of `mix help mutare`).
-- **The kept sandbox has gone bad.** `--no-keep-sandbox`.
+- **The kept sandbox has gone bad.** Delete the directory the message names.
 
 ## "a test failed with this mutation active, then the run crashed"
 

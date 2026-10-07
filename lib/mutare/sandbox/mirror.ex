@@ -117,6 +117,16 @@ defmodule Mutare.Sandbox.Mirror do
     :ok
   end
 
+  @doc """
+  Materialise `rel` and every parent component as ordinary directories inside the
+  owned sandbox, replacing symlinks without following them.
+  """
+  @spec ensure_directory!(Path.t(), Path.t()) :: :ok
+  def ensure_directory!(sandbox, rel) do
+    ensure_parent!(sandbox, rel)
+    ensure_dir!(Path.join(sandbox, rel))
+  end
+
   # --- mirroring one entry -------------------------------------------------
 
   defp mirror_source(root, sandbox, rel, {:regular, _mode}) do
@@ -130,8 +140,7 @@ defmodule Mutare.Sandbox.Mirror do
   # An empty source directory: created (or cleared of whatever else sat at its path), and
   # kept by `prune/3` because it is managed, even though nothing under it is.
   defp mirror_source(_root, sandbox, rel, :directory) do
-    ensure_parent!(sandbox, rel)
-    ensure_dir!(Path.join(sandbox, rel))
+    ensure_directory!(sandbox, rel)
   end
 
   # A source symlink is recreated as a symlink carrying the *same* raw target, exactly

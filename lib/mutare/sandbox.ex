@@ -40,7 +40,8 @@ defmodule Mutare.Sandbox do
       for the cache pattern.
     * **fresh (`keep_sandbox: false`)** — a throwaway dir is wiped and re-copied every run, so
       the metamutant recompiles cold, and the runner removes it afterwards. Always correct, no
-      caching — the reset for a kept sandbox that has gone bad.
+      caching. It never touches the kept sandbox's directory, so it does not reset a kept
+      sandbox that has gone bad; deleting that directory does.
 
   This module materialises the workspace. Sandbox `mix` invocations and
   per-mutant timeouts are implemented in
@@ -67,7 +68,7 @@ defmodule Mutare.Sandbox do
   # The build environment every sandbox `mix` runs under is owned by
   # `Mutare.Sandbox.Command.Invocation` (`Invocation.mix_env/0`), which sets it on
   # every invocation — so the dependencies' compiled artifacts we seed (see
-  # `Mutare.Sandbox.Seed.dep_build/2`) live under `_build/<env>/lib`.
+  # `Mutare.Sandbox.Seed.dep_build/3`) live under `_build/<env>/lib`.
 
   # The bootstrap is three dependency-free snippets, each rendered the same way
   # from a quoted AST its owner defines: the mutant selector
@@ -191,7 +192,7 @@ defmodule Mutare.Sandbox do
     context = Context.new(opts)
     options = context.options
     project = context.project
-    sandbox = options.sandbox || default_sandbox(root, options.keep_sandbox)
+    sandbox = sandbox_path(root, options)
 
     Paths.validate!(root, sandbox)
     Ownership.claim!(sandbox, options.keep_sandbox, options.sandbox != nil)
@@ -221,10 +222,11 @@ defmodule Mutare.Sandbox do
     end
 
     # Avoid recompiling unchanged dependencies on the one `mix compile` by seeding
-    # their already-built artifacts from the original project. Runs for both modes
-    # but only fills in deps the sandbox doesn't already have, so a `keep_sandbox`
-    # re-run's preserved `_build` is left untouched (it seeds only the first run).
-    Seed.dep_build(root, sandbox)
+    # their already-built artifacts from the original project. Runs for both modes;
+    # a kept sandbox reuses its own dep builds except those `mix.lock` has moved,
+    # which it drops and reseeds. The reseeded builds are trusted only after the
+    # compile succeeds (`compiled/2`).
+    Seed.dep_build(root, sandbox, options.keep_sandbox)
 
     # When a run rewrites only a handful of files (`--line`/`--since`/`--only`, or any
     # `paths:` narrowing — and even a full run with sparse mutation sites), the rest are
@@ -246,13 +248,33 @@ defmodule Mutare.Sandbox do
     options = context.options
 
     if reusable_sandbox?(options) do
-      sandbox = options.sandbox || default_sandbox(root, options.keep_sandbox)
+      sandbox = sandbox_path(root, options)
 
       Paths.validate!(root, sandbox)
       Ownership.ensure_lockable!(sandbox)
       Lock.acquire(sandbox)
     end
   end
+
+  # The kept sandbox of a run against `root` — the directory whose `_build` persists from
+  # one run to the next — or `nil` when `:keep_sandbox` is off and each run starts from a
+  # fresh copy. An explicit `:sandbox` without `:keep_sandbox` is reused as a path but
+  # wiped each run, so it is not kept.
+  @doc false
+  @spec kept_path(Path.t(), Options.t()) :: Path.t() | nil
+  def kept_path(root, %Options{keep_sandbox: true} = options), do: sandbox_path(root, options)
+
+  def kept_path(_root, %Options{keep_sandbox: false}), do: nil
+
+  @doc """
+  Record that a kept `sandbox`'s dependency builds answer to its `mix.lock`, once its
+  `mix compile` has succeeded — the only point at which Mix has checked them against it.
+  Until then, a dependency build `prepare/3` seeded from the original is not trusted by
+  the next run. A sandbox that is not kept has no next run, so nothing is recorded.
+  """
+  @spec compiled(Path.t(), Options.t()) :: :ok
+  def compiled(sandbox, %Options{keep_sandbox: true}), do: Seed.record_lock(sandbox)
+  def compiled(_sandbox, %Options{keep_sandbox: false}), do: :ok
 
   @doc false
   @spec release_lock(Lock.t() | nil) :: :ok
@@ -280,6 +302,9 @@ defmodule Mutare.Sandbox do
   def bootstrap, do: @bootstrap
 
   # --- internals -----------------------------------------------------------
+
+  defp sandbox_path(root, %Options{} = options),
+    do: options.sandbox || default_sandbox(root, options.keep_sandbox)
 
   # Fresh mode gets a unique throwaway dir, salted with this process's OS pid *and*
   # a per-run integer. `System.unique_integer/1` is unique only within *one* BEAM

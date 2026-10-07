@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On Elixir 1.18 and 1.19, a kept sandbox rebuilds a dependency whose `mix.lock` entry
+  changed. It used to keep its old build: after an upgrade that moved the version
+  requirement, the compile failed with `does not match the requirement`, and after one
+  within the requirement, the suite ran against the old dependency's code. The first
+  run after this upgrade reseeds every dependency build once. Elixir 1.20 and later
+  rebuild such a dependency themselves.
+- When a dependency check, the baseline, or too many harness errors abort a run in a
+  kept sandbox, the error message names the sandbox directory and says to delete it.
+  The dependency message used to point only at the original project, and the other
+  two suggested `--no-keep-sandbox`, which runs in a different directory and leaves
+  the kept one unchanged.
 - On Elixir's development branch (`main`), a dropped clause's live-progress summary no
   longer includes the comment written above the clause.
 - A mutant whose test failed is counted as killed even when the run then crashed before
