@@ -124,6 +124,10 @@ suppressing the mutant.
 
 ## Slow runs
 
+- **Every mutant runs the whole suite, and the probe reports `coverage dump unreadable
+  (:enoent)`.** The project sets `test_paths:` in its `mix.exs`, so `mix test` never loads
+  the `test/test_helper.exs` Mutare wrapped and the probe records nothing. Set the same
+  directories as `test_paths:` in `.mutare.exs`.
 - **Whole-suite fallbacks.** A mutant whose code runs in a process no test can be
   traced to runs the whole suite. After the coverage probe, a `↺` line says how many
   mutants will. `--verbose` tags each one's line `(whole suite)`, and the JSON marks

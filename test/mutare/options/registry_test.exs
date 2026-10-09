@@ -97,6 +97,7 @@ defmodule Mutare.Options.RegistryTest do
              {"only_files", "(all discovered files)"},
              {"only_lines", "(all lines)"},
              {"test_selection", "tests"},
+             {"test_paths", "[\"test\"]"},
              {"workers", to_string(System.schedulers_online() |> div(2) |> min(4) |> max(1))},
              {"schedulers", "#{Options.new([]).schedulers} per worker"},
              {"partition_env", "(off)"},
