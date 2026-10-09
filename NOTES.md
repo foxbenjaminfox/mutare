@@ -15695,3 +15695,26 @@ verification.
 Validation: all 123 focused transform/schema tests passed, and all 3,161 transform
 differential snapshots were byte-identical to the preceding revision.
 The full suite passed: 106 doctests, 42 properties, 4,414 tests, zero failures and one skip.
+
+### Mutant retries decide in a pure function (2026-10-09)
+
+`Runner.MutantRun.Attempts` now owns the transition from one decoded command result to
+an infrastructure retry, another kill confirmation, or a final result. Its opaque state
+keeps the independent harness and boot budgets, remaining confirmations and settled
+attempt duration. `OutcomePolicy` still owns every per-outcome classification;
+`MutantRun` executes commands, applies jittered backoff and reports the final result.
+Partition checks use the same executor with the baseline selector, as before.
+
+Each confirmation starts fresh infrastructure budgets. A passing or exhausted non-kill
+ends confirmation immediately, and SIGKILL never retries. Duration retains the existing
+meaning: the sum of settled attempts, excluding infrastructure retries and backoff;
+the last settled attempt supplies output and exit status. A terminal decision returns
+only the result, not another active state.
+
+The pure tests exercise alternating retry classes, budget resets, persistent startup
+kills, passing and inconclusive confirmations, and SIGKILL. A generated outcome-sequence
+property checks the total attempt bound, per-attempt budgets, unanimous settled kills,
+and result/duration accounting from the observable trace, without reading the opaque
+state. The focused policy/transition tests passed (11 tests and one property).
+The full suite, including the existing harness, timeout, kill-confirmation and partition
+subprocess tests, passed: 106 doctests, 43 properties, 4,420 tests, zero failures and one skip.

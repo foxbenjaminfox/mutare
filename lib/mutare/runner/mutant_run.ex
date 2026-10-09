@@ -7,11 +7,13 @@ defmodule Mutare.Runner.MutantRun do
   # `:harness_retries` budget, the dedicated boot-failure budget, the `:kill_runs` unanimous-kill
   # reruns — taking every per-outcome decision (which budget a retry draws on, what counts as a
   # kill, what to warn about, which `Mutare.Result` status to record) from
-  # `Mutare.Runner.OutcomePolicy`.
+  # `Mutare.Runner.OutcomePolicy`. `MutantRun.Attempts` owns the pure transitions
+  # between attempts; this module runs commands, sleeps and reports their final result.
   # Returns a `%Mutare.Result{}`; the streaming pass (`Mutare.Runner.Stream`) calls `run/2`.
 
   alias Mutare.{Result, Selector, Site, TestSelection}
   alias Mutare.Runner.{Hydrate, OutcomePolicy, Partitions, RunCtx}
+  alias Mutare.Runner.MutantRun.Attempts
   alias Mutare.Sandbox.Command
   alias Mutare.Sandbox.Command.Output
 
@@ -72,21 +74,14 @@ defmodule Mutare.Runner.MutantRun do
     end
   end
 
-  # The dedicated boot-contention budget (`OutcomePolicy` says which outcomes draw on it),
-  # with a short jittered backoff so a retry doesn't re-collide with the same boot
-  # stampede. Sized to the field-proven figure: 4 extra attempts (total 5) cleared it
-  # across repeated runs of a contended target.
-  @boot_failure_retries 4
+  # The executor alone owns time and jitter; Attempts returns a backoff decision.
   @boot_retry_base_ms 150
   @boot_retry_jitter_ms 350
 
   defp run_mutant(%RunCtx{} = ctx, site, selection, partition) do
     id = Mutare.RuntimeId.of(site)
 
-    result =
-      ctx
-      |> run_attempt(id, selection, partition)
-      |> require_unanimous_kill(ctx, id, selection, partition, ctx.options.kill_runs - 1)
+    result = run_attempts(ctx, id, selection, partition)
 
     case OutcomePolicy.warning(result.outcome) do
       :no_verdict -> warn_no_verdict(site, result)
@@ -98,24 +93,14 @@ defmodule Mutare.Runner.MutantRun do
     record(site, result, selection, partition)
   end
 
-  # One run of `selection` with mutant `id` active (`Selector.baseline()` for none), its
-  # infrastructure retries settled, each with a full budget.
-  defp run_attempt(%RunCtx{} = ctx, id, selection, partition),
-    do:
-      run_attempt(
-        ctx,
-        id,
-        selection,
-        partition,
-        ctx.options.harness_retries,
-        @boot_failure_retries
-      )
+  # One selected run, including infrastructure retries and kill confirmations. Only
+  # retry/confirmation decisions supply a next state; a terminal decision carries its result.
+  defp run_attempts(%RunCtx{} = ctx, id, selection, partition) do
+    attempts = Attempts.new(ctx.options.harness_retries, ctx.options.kill_runs)
+    run_attempt(ctx, id, selection, partition, attempts)
+  end
 
-  # `retries` is the general `:harness_retries` budget; `boot_retries` the dedicated
-  # boot-contention budget. The two are decremented independently by the *current* run's
-  # outcome, so a boot failure that later degrades to a plain harness error still draws
-  # its general retries, and vice versa.
-  defp run_attempt(%RunCtx{} = ctx, id, selection, partition, retries, boot_retries) do
+  defp run_attempt(%RunCtx{} = ctx, id, selection, partition, attempts) do
     result =
       Command.timed_test(ctx.sandbox, selection, id,
         cap: ctx.cap,
@@ -125,45 +110,17 @@ defmodule Mutare.Runner.MutantRun do
         partition: Partitions.slot_entry(ctx.partitions, partition)
       )
 
-    case OutcomePolicy.retry(result.outcome) do
-      :boot_contention when boot_retries > 0 ->
-        Process.sleep(boot_backoff_ms())
-        run_attempt(ctx, id, selection, partition, retries, boot_retries - 1)
+    case Attempts.next(attempts, result) do
+      {:retry, delay, next} ->
+        if delay == :backoff, do: Process.sleep(boot_backoff_ms())
+        run_attempt(ctx, id, selection, partition, next)
 
-      :harness when retries > 0 ->
-        run_attempt(ctx, id, selection, partition, retries - 1, boot_retries)
+      {:confirm, next} ->
+        run_attempt(ctx, id, selection, partition, next)
 
-      _exhausted_or_none ->
+      {:done, result} ->
         result
     end
-  end
-
-  # The kill-rerun layer sits outside harness retries. Each attempt first settles
-  # its own infrastructure retries above; only kill outcomes are repeated, and all
-  # attempts must kill. A passing rerun is the conservative verdict, while a
-  # persistent harness error stays an infrastructure failure.
-  defp require_unanimous_kill(result, _ctx, _id, _selection, _partition, remaining)
-       when remaining <= 0,
-       do: result
-
-  defp require_unanimous_kill(result, ctx, id, selection, partition, remaining) do
-    if OutcomePolicy.kill?(result.outcome) do
-      next = run_attempt(ctx, id, selection, partition)
-
-      combined = combine_attempts(result, next)
-
-      if OutcomePolicy.kill?(next.outcome) do
-        require_unanimous_kill(combined, ctx, id, selection, partition, remaining - 1)
-      else
-        combined
-      end
-    else
-      result
-    end
-  end
-
-  defp combine_attempts(previous, next) do
-    %{next | duration_ms: previous.duration_ms + next.duration_ms}
   end
 
   @doc """
@@ -179,9 +136,7 @@ defmodule Mutare.Runner.MutantRun do
   def unmutated(%RunCtx{} = ctx, selection, slot) do
     id = Selector.baseline()
 
-    ctx
-    |> run_attempt(id, selection, slot)
-    |> require_unanimous_kill(ctx, id, selection, slot, ctx.options.kill_runs - 1)
+    run_attempts(ctx, id, selection, slot)
   end
 
   defp record(%Site{} = site, result, selection, partition) do

@@ -181,7 +181,8 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   `MutantRun` runs one mutant with the retry policy (`:harness_retries`, the dedicated
   `:boot_failure` budget, the never-retried `:sigkilled` OOM-kill case + `:max_heap_mb` containment,
   `:kill_runs` unanimous reruns), taking each outcome's retry budget, kill-ness, warning and
-  result status from the one table in `OutcomePolicy` (outcomes and statuses stay two vocabularies); `PartitionCheck`, after
+  result status from the one table in `OutcomePolicy` (outcomes and statuses stay two vocabularies);
+  `MutantRun.Attempts` decides retries and confirmations as pure transitions; `PartitionCheck`, after
   the stream, reruns one kill per partition there with no mutant and warns where it fails
   (NOTES "A partition's kills are checked by rerunning one with no mutant"). `RunCtx` is the
   per-run invariant bundle threaded to `Stream`/`MutantRun`.
