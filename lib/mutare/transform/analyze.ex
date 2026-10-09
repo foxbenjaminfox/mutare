@@ -627,7 +627,8 @@ defmodule Mutare.Transform.Analyze do
   # the inner/redundant node — only the outer. (Clause 4, the short-circuit connective,
   # instead *offers* the node and drops a single one of its mutations.) Dropping a candidate
   # here (rather than post-hoc) leaves no id/site/selector, exactly like the other positive
-  # suppressions.
+  # suppressions. A fifth, the operand swap an enclosing expression cannot observe, is no
+  # clause: every call node checks its operands for one (`drop_redundant_swap/2`, case (5)).
   #
   # (1) **Double negation** `not not x` / `!!x` — the **same** operator twice. Logical
   # strips the outer *and* the inner to the identical single-negation (`not x` / `!x`),
@@ -667,6 +668,7 @@ defmodule Mutare.Transform.Analyze do
     else
       inner =
         {:in, in_meta, [analyze(left, :runtime, env), analyze(right, :runtime, env)]}
+        |> drop_redundant_swap(raw_inner)
 
       Attach.offer({neg, meta, [inner]}, node, env.mutators)
     end
@@ -827,6 +829,46 @@ defmodule Mutare.Transform.Analyze do
 
   defp negation_redundant?(_candidate, _op), do: false
 
+  # (5) **An operand swap the enclosing expression cannot observe** (`DateTime.compare(a, b)
+  # == :eq`), or observes only as a sibling mutant does (`Date.diff(a, b) > 0` swapped is
+  # Relational's `< 0`). `Suppression.redundant_swap/1` names the operand and the sibling; the
+  # swap is dropped from that operand's candidates only when
+  #
+  #   * at most one operand is anything but `Conditions.eval_steps/1`'s `:pure`, so the swap
+  #     reorders no two effects, and
+  #   * the sibling it duplicates was actually produced here.
+  #
+  # Per mutation, like (3): the operand's other candidates stay. The guard twin
+  # (`Mutare.Transform.Tag`) has no effect condition. NOTES "Operand swaps the enclosing
+  # expression cannot observe".
+  defp drop_redundant_swap(analyzed, raw) do
+    with {path, survivor} <- Suppression.redundant_swap(raw),
+         {_form, _meta, [left, right | _]} = raw_swapped <- Suppression.at(raw, path),
+         true <- reorders_no_effects?(left, right),
+         true <- survivor_produced?(analyzed, survivor) do
+      swap? =
+        &(match?(%Candidate.InPlace{}, &1) and Suppression.operand_swap?(&1.mutated, raw_swapped))
+
+      Suppression.update_at(analyzed, path, &reject_candidates(&1, swap?))
+    else
+      _redundancy_unproven -> analyzed
+    end
+  end
+
+  defp reorders_no_effects?(left, right),
+    do: Enum.count([left, right], &effectful?/1) <= 1
+
+  defp effectful?(operand), do: Enum.any?(Conditions.eval_steps(operand), &(&1 != :pure))
+
+  defp survivor_produced?(_analyzed, :unobservable), do: true
+
+  defp survivor_produced?(analyzed, {path, mutated?}) do
+    analyzed
+    |> Suppression.at(path)
+    |> Meta.candidates(:in_place)
+    |> Enum.any?(&(match?(%Candidate.InPlace{}, &1) and mutated?.(&1.mutated)))
+  end
+
   # Reject from a node's candidate list every candidate matching `predicate` (a no-op
   # when the node carries no candidates). The shared body of the three top-node
   # equivalent-sibling drops above.
@@ -840,8 +882,12 @@ defmodule Mutare.Transform.Analyze do
   # (`Routed.analyze_routed_call` — so a pattern arg isn't mutated in place and an opaque DSL
   # body is left raw) while the whole node is still offered to mutators; every other node is
   # offered and its children descended. (The call-level `:skip` never arrives: `analyze/3`
-  # returns a skipped node before any clause.)
-  defp do_analyze_call_node({form, meta, _args} = node, env) do
+  # returns a skipped node before any clause.) Either way, the node then withholds an operand
+  # swap of an argument it cannot observe (`drop_redundant_swap/2`, case (5) above).
+  defp do_analyze_call_node(node, env),
+    do: node |> analyze_call_node(env) |> drop_redundant_swap(node)
+
+  defp analyze_call_node({form, meta, _args} = node, env) do
     case Meta.routing(meta) do
       nil ->
         node = Attach.offer(node, node, env.mutators)

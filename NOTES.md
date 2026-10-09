@@ -6627,6 +6627,9 @@ equivalent survivor), so they stay positive suppressions in the analyzer — con
 with the `not in`, `ReturnValue`-skips-boolean, and `IfCondition`-skips-boolean-op
 precedents.
 
+A fifth case, which reads a node's parent rather than its shape, came later: NOTES "Operand
+swaps the enclosing expression cannot observe".
+
 ### Guard removal (`Mutare.Mutators.GuardDrop`) `[done]`
 The "delete a clause's `when` guard" operator — `def f(x) when is_binary(x)` →
 `def f(x)` — asking *is this guard load-bearing at all?* It fills a real gap: a
@@ -15577,3 +15580,74 @@ collect walk alike, and has nothing to do with how a survivor is routed or recor
 
 Validation: `bench/transform_diff.sh HEAD` reports all 3,156 snapshots identical, so no
 metamutant or Site moved.
+
+### Operand swaps the enclosing expression cannot observe (2026-10-06)
+
+`DateTime.compare(a, b) == :eq` got an OperandSwap mutant no test can kill: swapping a
+`compare`'s operands exchanges `:lt` and `:gt` in its result, and `== :eq` cannot tell them
+apart. The same reading finds swaps that duplicate another family's mutant (`Date.diff(a, b)
+> 0` swapped is Relational's `< 0`). The model (an antisymmetric operation's swap applies a
+fixed involution to its result) is in `Suppression`'s comment above `redundant_swap/1`. The
+conditions the drop also needs are in `Analyze` case (5), and the cases are listed in
+OperandSwap's moduledoc. `swap_redundancy_test` checks every claim by evaluation over
+operand values chosen to break it.
+
+Decisions, each with the alternative it rejected:
+
+- **Effects.** In a body the swap also changes which operand runs first, so the drop
+  requires that at most one operand be anything but a literal, variable or alias
+  (`Conditions.eval_steps/1`'s `:pure`). One effectful operand moved past a pure one is the
+  same program, so `compare(f(), x)` still drops. This is the body-side purity question
+  NOTES "Equivalent-sibling suppression, generalized" refused to guess at, answered by
+  syntax rather than assumed. Guards need no condition: they have no effects, and an
+  error in either order fails the guard.
+- **The duplicated mutant must exist.** A duplicate is dropped only when the analyzed
+  parent actually carries the twin's candidate, so `--mutators` without `convention` or
+  `relational` keeps the swap. The older sibling drops assume their survivor; these cannot,
+  since the survivor belongs to another family. "Exists" means *produced*, not *run*: a
+  `# mutare:ignore[relational]` on the line still drops the swap, because ignores apply to
+  Sites after the candidates exist, so the twin is produced and then recorded `:ignored`.
+  That is intended. The directive says the program is not worth testing, and the swap
+  is the same program. A disabled family is a different case: no mutant states the
+  program, so the swap is its only witness.
+- **Exception messages.** Where both orders raise, they raise the same exception type, but
+  the message can name the operands in written order: `Version.compare` with two invalid
+  versions names the first, and `Date.compare`/`NaiveDateTime.compare`/`Date.diff` across
+  incompatible calendars print both. Excluding everything with such a message would
+  exclude almost every case, including the motivating one, so the reading ignores message
+  text. A test asserting that text for a swap under `== :eq` is not one worth serving.
+- **Rounding.** Whether a `diff` is antisymmetric turns on where it rounds to the unit.
+  Rounding each operand and then subtracting is exact, and so is truncating the exact
+  difference toward zero. Rounding the exact difference *down* is not: `-0.5` becomes `-1`
+  but `0.5` becomes `0`. `System.convert_time_unit/3` rounds down, and `DateTime.diff` and
+  `Time.diff` apply it to the difference, so half a second apart reads `0` one way and `-1`
+  the other: `diff(a, b) == 0` is observable. `NaiveDateTime.diff` rounds each operand on
+  Elixir 1.19, but Elixir's `main` branch (checked 2026-10-06) passes the microsecond
+  difference to `System.convert_time_unit/3`, so a release will round it down too; it is
+  out. All three document "Fractional results are not supported and are truncated", which
+  would be antisymmetric, but none implements it, so the docs are no guarantee. `Date.diff`
+  counts days: exact.
+- **Signed zero.** `-0.0 - 0.0` is `-0.0`, while `0.0 - -0.0` is `0.0`. Erlang's `==` and
+  orderings treat both as the same number, so those readings hold; `===` tells them apart
+  from OTP 27 (on OTP 26 it does not, which is why the test asserts that half only on 27+).
+  `abs/1` keeps a zero's sign (`abs(-0.0)` is `-0.0`), so bare `abs(a - b)` is observable
+  through `inspect`. It counts only beneath a comparison (`abs(a - b) < eps`, the common
+  idiom), and a bare `abs` only over the integer `Date.diff`. The first version claimed
+  bare `abs(a - b)`. The evaluation test compared values with `==`, which equates the two
+  zeros, and missed it; it now compares external term encodings.
+- **Line scope.** The drop is decided while the candidates are built, and `:only_lines`
+  (`--line`, `--since`) selects among the finished Sites, by the line each starts on. The
+  two can land on different lines: in `DateTime.compare(a, b) ==\n :lt` the swap would sit
+  on line 1 and the Convention `:lt → :gt` that supersedes it sits on line 2, so `--line`
+  naming line 1 (or a `--since` whose diff touched only line 1) runs neither. That is
+  accepted. The line holds no mutant of its own, and the program the swap stated is still
+  reachable by naming line 2. Withholding the drop under a line scope would let the scope
+  change which mutants exist, which no other filter does.
+
+OperandSwap also stopped swapping `before?`/`after?` outright. `before?(b, a)` is
+`after?(a, b)`, TemporalOrder's mutant, exactly as `b < a` is Relational's `a > b` — and
+OperandSwap already left `<`/`>` alone for that reason, without asking whether the operands
+had effects. Keeping the calendar predicates would have been the inconsistent choice, and
+gating both on purity would keep only swaps that differ from the direction flip in which
+operand runs first, a difference that is noise.
+

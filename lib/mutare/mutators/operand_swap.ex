@@ -22,9 +22,11 @@ defmodule Mutare.Mutators.OperandSwap do
 
   The first two arguments are exchanged in these calls:
 
-    * `before?/2`, `after?/2`, `compare/2`, and `diff/2,3` on `DateTime`, `Date`, `Time`, and `NaiveDateTime`, where those functions exist
+    * `compare/2` and `diff/2,3` on `DateTime`, `Date`, `Time`, and `NaiveDateTime`, where those functions exist
     * `Version.compare/2`
     * `MapSet.difference/2` and `MapSet.subset?/2`
+
+  `before?/2` and `after?/2` are excluded for the reason the ordering operators are: `Mutare.Mutators.TemporalOrder` already produces the equivalent direction change.
 
   A trailing unit in `diff/3` is retained and may be mutated separately by `Mutare.Mutators.ModeSwap`.
 
@@ -41,6 +43,19 @@ defmodule Mutare.Mutators.OperandSwap do
   ## Skipped cases
 
   Identical operands are not swapped. Unary minus has no second operand and is handled by `Mutare.Mutators.Arithmetic`.
+
+  The transform also withholds a swap its enclosing expression cannot observe, provided at most one operand is anything but a literal, variable, or alias (so the swap reorders no two effects):
+
+    * a `compare/2` (calendar types and `Version`) tested against `:eq` or another atom besides `:lt`/`:gt` (`==`, `!=`, `===`, `!==`, `match?/2`), or for membership in a list of atoms holding both `:lt` and `:gt` or neither
+    * `Date.diff/2` or `a - b` tested for equality with zero (`===`/`!==` only against the integer `0`)
+    * `abs(Date.diff(a, b))`, and `abs(a - b)` read by `==`, `!=`, or an ordering (`abs(a - b) < tolerance`). A bare `abs(a - b)` keeps its swap: a float difference can be `0.0` one way and `-0.0` the other, and `abs/1` keeps the sign
+
+  And it withholds a swap that runs the same program as a mutant another family produced there:
+
+    * `compare(a, b) == :lt` swapped is `Mutare.Mutators.ConventionAtom`'s `== :gt`, likewise a membership list holding exactly one of `:lt`/`:gt`
+    * `Date.diff(a, b) > 0` (or `a - b > 0`) swapped is `Mutare.Mutators.Relational`'s `< 0`, likewise for every ordering operator against zero
+
+  In a guard the effect condition does not apply. Where the call raises, the swap raises an exception of the same type, though its message may name the operands in the other order. `diff` on `DateTime`, `Time`, and `NaiveDateTime` keeps its swap in every position, because rounding to the unit can make `diff(b, a)` differ from `-diff(a, b)`.
 
   Guard-safe operators and calls are also mutated in guards.
   """
@@ -59,21 +74,13 @@ defmodule Mutare.Mutators.OperandSwap do
 
   # Non-commutative *remote* stdlib calls whose first two arguments we transpose (the
   # operand-swap idea applied to a named call, as `div`/`rem` are). Keyed by the
-  # resolved module (`Mutare.Transform.Calls`): the chronological comparisons `before?`
-  # / `after?` / `compare` and the difference `diff` on every calendar type (`diff`'s
-  # trailing time-unit atom is left in place — `Mutare.Mutators.ModeSwap` mutates that
-  # axis), the three-way `Version.compare`, and the asymmetric `MapSet` operations
-  # `difference` and `subset?` (`union`/`intersection` are commutative — that name swap
-  # is `Mutare.Mutators.MapSet`'s).
+  # resolved module (`Mutare.Transform.Calls`): the three-way `compare` and the difference
+  # `diff` on every calendar type (`diff`'s trailing time-unit atom is left in place —
+  # `Mutare.Mutators.ModeSwap` mutates that axis), the three-way `Version.compare`, and the
+  # asymmetric `MapSet` operations `difference` and `subset?` (`union`/`intersection` are
+  # commutative — that name swap is `Mutare.Mutators.MapSet`'s). Not `before?`/`after?`:
+  # `before?(b, a)` is `after?(a, b)`, TemporalOrder's mutant, as `b < a` is Relational's `a > b`.
   @stdlib_swaps MapSet.new([
-                  {[:DateTime], :before?},
-                  {[:Date], :before?},
-                  {[:Time], :before?},
-                  {[:NaiveDateTime], :before?},
-                  {[:DateTime], :after?},
-                  {[:Date], :after?},
-                  {[:Time], :after?},
-                  {[:NaiveDateTime], :after?},
                   {[:DateTime], :compare},
                   {[:Date], :compare},
                   {[:Time], :compare},
@@ -119,7 +126,7 @@ defmodule Mutare.Mutators.OperandSwap do
       else: :skip
   end
 
-  # Non-commutative *remote* calls (`DateTime.before?`/`diff` and twins, `Kernel.++`):
+  # Non-commutative *remote* calls (`DateTime.compare`/`diff` and twins, `Kernel.++`):
   # transpose the first two arguments, keeping the rest (`diff`'s trailing unit rides
   # along — ModeSwap owns it). Resolved through `Mutare.Transform.Calls`, so direct,
   # aliased, and imported forms all match and a shadowing alias resolves elsewhere.

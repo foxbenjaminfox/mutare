@@ -76,10 +76,16 @@ defmodule Mutare.OperandSwapTest do
   end
 
   describe "swaps non-commutative date/time calls (operand-swap of a named call)" do
-    test "before?/after?/compare transpose their two arguments, on every calendar type" do
-      for mod <- ["DateTime", "Date", "Time", "NaiveDateTime"],
-          fun <- ["before?", "after?", "compare"] do
-        assert mutated_codes("#{mod}.#{fun}(a, b)") == ["#{mod}.#{fun}(b, a)"]
+    test "compare transposes its two arguments, on every calendar type" do
+      for mod <- ["DateTime", "Date", "Time", "NaiveDateTime"] do
+        assert mutated_codes("#{mod}.compare(a, b)") == ["#{mod}.compare(b, a)"]
+      end
+    end
+
+    test "before?/after? are left to TemporalOrder, as `<`/`>` are left to Relational" do
+      # `before?(b, a)` is `after?(a, b)`, the mutant TemporalOrder already makes.
+      for mod <- ["DateTime", "Date", "Time", "NaiveDateTime"], fun <- ["before?", "after?"] do
+        assert swap_sites("#{mod}.#{fun}(a, b)") == []
       end
     end
 
@@ -96,7 +102,7 @@ defmodule Mutare.OperandSwapTest do
     end
 
     test "a piped stage transposes its piped value, keeping any trailing unit" do
-      assert mutated_codes("a |> DateTime.before?(b)") == ["b |> DateTime.before?(a)"]
+      assert mutated_codes("a |> DateTime.compare(b)") == ["b |> DateTime.compare(a)"]
 
       assert mutated_codes("a |> DateTime.diff(b, :second)") ==
                ["b |> DateTime.diff(a, :second)"]
@@ -107,7 +113,7 @@ defmodule Mutare.OperandSwapTest do
     end
 
     test "an unrelated module, or a function not in the table, is left alone" do
-      assert swap_sites("Foo.before?(a, b)") == []
+      assert swap_sites("Foo.compare(a, b)") == []
       # add/2 is not an operand-order swap (commutative-ish offset, no entry in the table)
       assert swap_sites("DateTime.add(a, b)") == []
     end
@@ -118,13 +124,13 @@ defmodule Mutare.OperandSwapTest do
           """
           defmodule T do
             alias DateTime, as: DT
-            def f(a, b), do: DT.before?(a, b)
+            def f(a, b), do: DT.compare(a, b)
           end
           """,
           mutators: @only
         )
 
-      assert [%Site{mutator: :operand_swap, mutated_code: "DT.before?(b, a)"}] =
+      assert [%Site{mutator: :operand_swap, mutated_code: "DT.compare(b, a)"}] =
                Enum.filter(sites, &(&1.mutator == :operand_swap))
     end
 
@@ -134,7 +140,7 @@ defmodule Mutare.OperandSwapTest do
           """
           defmodule T do
             alias MyApp.DateTime
-            def f(a, b), do: DateTime.before?(a, b)
+            def f(a, b), do: DateTime.compare(a, b)
           end
           """,
           mutators: @only
@@ -144,7 +150,7 @@ defmodule Mutare.OperandSwapTest do
     end
 
     test "a body remote-call swap is delivered in place" do
-      assert [%Site{kind: :in_place}] = swap_sites("DateTime.before?(a, b)")
+      assert [%Site{kind: :in_place}] = swap_sites("DateTime.compare(a, b)")
     end
   end
 
@@ -321,7 +327,7 @@ defmodule Mutare.OperandSwapTest do
     setup do
       source = """
       defmodule Mutare.OperandSwapDateTimeFixture do
-        def earlier?(a, b), do: DateTime.before?(a, b)
+        def order(a, b), do: DateTime.compare(a, b)
       end
       """
 
@@ -334,13 +340,13 @@ defmodule Mutare.OperandSwapTest do
       %{site: site}
     end
 
-    test "baseline checks `a before b`; the mutant checks `b before a`", %{site: site} do
+    test "baseline compares `a` with `b`; the mutant compares `b` with `a`", %{site: site} do
       earlier = ~U[2020-01-01 00:00:00Z]
       later = ~U[2020-01-02 00:00:00Z]
 
-      assert Mutare.OperandSwapDateTimeFixture.earlier?(earlier, later) == true
+      assert Mutare.OperandSwapDateTimeFixture.order(earlier, later) == :lt
       Selector.put(site.id)
-      assert Mutare.OperandSwapDateTimeFixture.earlier?(earlier, later) == false
+      assert Mutare.OperandSwapDateTimeFixture.order(earlier, later) == :gt
     end
   end
 

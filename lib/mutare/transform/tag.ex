@@ -168,7 +168,12 @@ defmodule Mutare.Transform.Tag do
       # The operands by the inner node's own positions (a positional route on `==` holds under
       # `not` as it does bare); only the redundancy drop is this clause's.
       {[left, right], acc} = tag_args(raw_inner, acc, mutators)
-      {inner, acc} = offer_negation_survivors({op, op_meta, [left, right]}, op, acc, mutators)
+
+      {inner, acc} =
+        {op, op_meta, [left, right]}
+        |> offer_negation_survivors(op, acc, mutators)
+        |> drop_redundant_swap(raw_inner)
+
       offer_target({:not, meta, [inner]}, acc, mutators)
     end
   end
@@ -245,10 +250,11 @@ defmodule Mutare.Transform.Tag do
   # mutatable) but there is nothing to descend.
   defp tag_walk_form(leaf, acc, mutators), do: offer_target(leaf, acc, mutators)
 
-  # The n-ary walk: every argument by its position (`tag_args/3`), then the node offered.
-  defp tag_generic({form, meta, args}, acc, mutators) do
-    {args, acc} = tag_args({form, meta, args}, acc, mutators)
-    offer_target({form, meta, args}, acc, mutators)
+  # The n-ary walk: every argument by its position (`tag_args/3`), then the node offered —
+  # then any operand swap of an argument the node cannot observe dropped (`drop_redundant_swap/2`).
+  defp tag_generic({form, meta, _args} = raw, acc, mutators) do
+    {args, acc} = tag_args(raw, acc, mutators)
+    {form, meta, args} |> offer_target(acc, mutators) |> drop_redundant_swap(raw)
   end
 
   # A node's arguments — each by its stamped position when the node carries a route
@@ -382,6 +388,46 @@ defmodule Mutare.Transform.Tag do
 
   defp negation_redundant_mutation?(%Dispatch.Result{node: mutated}, op),
     do: Suppression.negation_redundant?(mutated, op)
+
+  # The guard twin of `Mutare.Transform.Analyze`'s case (5): drop the operand swap of an operand
+  # `raw` cannot observe (`a - b == 0`, `abs(a - b) < 1`), or observes only as a mutant that was
+  # produced (`a - b > 0` swapped is Relational's `a - b < 0`). Unlike the body, no effect check:
+  # a guard has no effects to reorder, and an error in either order fails the guard alike.
+  defp drop_redundant_swap({tagged, {_next, targets}} = tagged_acc, raw) do
+    with {path, survivor} <- Suppression.redundant_swap(raw),
+         raw_swapped = Suppression.at(raw, path),
+         tag when tag != nil <- tagged |> Suppression.at(path) |> Meta.tag(),
+         true <- survivor_produced?(tagged, targets, survivor) do
+      swap? = &Suppression.operand_swap?(&1.node, raw_swapped)
+      reject_target_mutations(tagged_acc, path, tag, swap?)
+    else
+      _redundancy_unproven -> tagged_acc
+    end
+  end
+
+  defp survivor_produced?(_tagged, _targets, :unobservable), do: true
+
+  defp survivor_produced?(tagged, targets, {path, mutated?}) do
+    case List.keyfind(targets, tagged |> Suppression.at(path) |> Meta.tag(), 0) do
+      {_tag, _node, muts} -> Enum.any?(muts, &mutated?.(&1.node))
+      nil -> false
+    end
+  end
+
+  # Remove the mutations matching `predicate` from the target tagged `tag`, the node at `path`;
+  # a target left with none goes, and its node's tag with it, as in `strip_own_target/1`.
+  defp reject_target_mutations({tagged, {next, targets}}, path, tag, predicate) do
+    {^tag, node, muts} = List.keyfind(targets, tag, 0)
+
+    case Enum.reject(muts, predicate) do
+      [] ->
+        {Suppression.update_at(tagged, path, &Meta.delete_tag/1),
+         {next, List.keydelete(targets, tag, 0)}}
+
+      kept ->
+        {tagged, {next, List.keyreplace(targets, tag, 0, {tag, node, kept})}}
+    end
+  end
 
   # A bitstring segment `<<value::spec>>`: tag-walk the value, keep the spec raw
   # except `size(expr)` args (`tag_spec/3`).

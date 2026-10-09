@@ -593,6 +593,123 @@ defmodule Mutare.TransformRedundancyTest do
     end
   end
 
+  describe "an operand swap the enclosing expression cannot observe is withheld" do
+    # OperandSwap plus the two families whose mutants a swap can duplicate.
+    @swap [
+      Mutare.Mutators.OperandSwap,
+      Mutare.Mutators.ConventionAtom,
+      Mutare.Mutators.Relational
+    ]
+
+    defp swapped?(body, mutators \\ @swap) do
+      {meta, triples} = redundancy_triples(body, mutators)
+      assert_compiles(meta)
+      Enum.any?(triples, &match?({:operand_swap, _, _}, &1))
+    end
+
+    test "a compare read against :eq or another fixed atom, written any way" do
+      for expr <- [
+            "DateTime.compare(a, b) == :eq",
+            ":eq != Date.compare(a, b)",
+            "Time.compare(a, b) === :later",
+            "Version.compare(a, b) in [:lt, :gt]",
+            "NaiveDateTime.compare(a, b) not in [:eq]",
+            "match?(:eq, DateTime.compare(a, b))",
+            "a |> DateTime.compare(b) == :eq",
+            "DateTime.compare(a, b) |> Kernel.==(:eq)",
+            "not (DateTime.compare(a, b) == :eq)"
+          ] do
+        refute swapped?("def f(a, b), do: #{expr}"), expr
+      end
+    end
+
+    test "a compare read against :lt or :gt keeps ConventionAtom's twin, not the swap" do
+      {_meta, triples} =
+        redundancy_triples("def f(a, b), do: DateTime.compare(a, b) == :lt", @swap)
+
+      assert {:convention, ":lt", ":gt"} in triples
+      refute Enum.any?(triples, &match?({:operand_swap, _, _}, &1))
+
+      refute swapped?("def f(a, b), do: DateTime.compare(a, b) in [:lt, :eq]")
+    end
+
+    test "a difference read against zero, or through abs by a comparison" do
+      for expr <- [
+            "Date.diff(a, b) == 0",
+            "a - b != 0.0",
+            "a - b === 0",
+            "abs(Date.diff(a, b))",
+            "abs(a - b) < 1",
+            "a |> Date.diff(b) == 0"
+          ] do
+        refute swapped?("def f(a, b), do: #{expr}"), expr
+      end
+    end
+
+    test "a difference ordered against zero keeps Relational's direction flip, not the swap" do
+      {_meta, triples} = redundancy_triples("def f(a, b), do: Date.diff(a, b) > 0", @swap)
+      assert {:relational, "Date.diff(a, b) > 0", "Date.diff(a, b) < 0"} in triples
+      refute Enum.any?(triples, &match?({:operand_swap, _, _}, &1))
+    end
+
+    test "the swap stays where the reading can see it" do
+      for expr <- [
+            "DateTime.compare(a, b)",
+            "DateTime.compare(a, b) == x",
+            "DateTime.compare(a, b) in [:lt, :lt]",
+            "match?(:lt, DateTime.compare(a, b))",
+            "Date.diff(a, b) > 1",
+            "a - b === 0.0",
+            "abs(a - b)",
+            "DateTime.diff(a, b) == 0"
+          ] do
+        assert swapped?("def f(a, b, x), do: #{expr}"), expr
+      end
+    end
+
+    test "the swap stays where it reorders two effectful operands" do
+      body = """
+      def f, do: DateTime.compare(g(), h()) == :eq
+      def g, do: DateTime.utc_now()
+      def h, do: DateTime.utc_now()
+      """
+
+      assert swapped?(body)
+      # One effectful operand moved past a variable is the same program.
+      refute swapped?("def f(a), do: DateTime.compare(g(a), a) == :eq\n  def g(a), do: a")
+    end
+
+    test "the swap stays where its twin was not produced" do
+      assert swapped?("def f(a, b), do: DateTime.compare(a, b) == :lt", [
+               Mutare.Mutators.OperandSwap,
+               Mutare.Mutators.Relational
+             ])
+
+      assert swapped?("def f(a, b), do: Date.diff(a, b) > 0", [
+               Mutare.Mutators.OperandSwap,
+               Mutare.Mutators.ConventionAtom
+             ])
+    end
+
+    test "in a guard, with no effect condition" do
+      for {guard, swapped} <- [
+            {"a - b == 0", false},
+            {"not (a - b == 0)", false},
+            {"a - b > 0", false},
+            {"abs(a - b) < 1", false},
+            {"a - b > 1", true},
+            {"a - b === 0.0", true}
+          ] do
+        body = """
+        def f(a, b) when #{guard}, do: :ok
+        def f(_a, _b), do: :no
+        """
+
+        assert swapped?(body) == swapped, guard
+      end
+    end
+  end
+
   # Transform a `def` body with the membership-relevant families and return the
   # `{mutator, original_code, mutated_code}` triples (relational/conditional/logical),
   # alongside the metamutant source so the caller can assert it compiles.

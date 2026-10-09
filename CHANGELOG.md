@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- OperandSwap no longer produces a swap that the expression around it cannot observe:
+  a calendar or `Version` `compare/2` tested against `:eq` (or any atom except `:lt`/`:gt`),
+  or `Date.diff/2` or `a - b` tested for equality with zero, never changes its result when
+  the operands are swapped. It also drops a swap that runs the same program as another
+  family's mutant: `compare(a, b) == :lt` swapped is ConventionAtom's `== :gt`, and
+  `Date.diff(a, b) > 0` swapped is Relational's `< 0`. A swap that would reorder two
+  operands with side effects is kept. The `OperandSwap` docs list every case.
+- OperandSwap no longer swaps the operands of `before?/2` and `after?/2`. The swapped call
+  is the one TemporalOrder already produces (`before?(b, a)` is `after?(a, b)`), just as
+  OperandSwap leaves `<`/`>` to Relational.
+- A `# mutare:ignore[operand_swap]` written for one of the swaps above now suppresses
+  nothing. It is reported as ineffective, and `--strict-ignores` stops the run until the
+  directive is removed.
 - The `{:macro_poison, …}` phase event counts, for each macro, only the mutants that round
   newly drops; it used to include mutants an earlier round had already dropped.
 
