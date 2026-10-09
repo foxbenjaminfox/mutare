@@ -359,6 +359,10 @@ defmodule Mix.Tasks.Mutare do
         expand_uses: true,
 
         # --- how the suite runs ---
+        # a single app's test directories, matching `test_paths:` in its mix.exs; each
+        # one's test_helper.exs gets the selector and coverage bootstrap. Umbrella apps
+        # always use their own `test/`
+        test_paths: ["test"],
         # :tests runs only the individual test cases covering each mutant; :coverage
         # runs whole covering files (opt-out for stateful async:false suites); :full
         # runs the whole suite for every mutant

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `test_paths:` in `.mutare.exs` names a single app's test directories, matching
+  `test_paths:` in its `mix.exs`. Mutare wraps each one's `test_helper.exs` with the
+  selector and coverage bootstrap, so a project whose tests live outside `test/` gets
+  coverage-based test selection instead of running the whole suite for every mutant. It
+  defaults to `["test"]`, the previous behaviour.
+
 ### Changed
 
 - OperandSwap no longer produces a swap that the expression around it cannot observe:

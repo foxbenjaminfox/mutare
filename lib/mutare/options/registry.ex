@@ -59,6 +59,14 @@ defmodule Mutare.Options.Registry do
         ":paths must be a non-empty list of path strings"
       )
 
+  defp validate_test_paths!(test_paths),
+    do:
+      validate!(
+        test_paths,
+        fn p -> is_list(p) and p != [] and Enum.all?(p, &is_binary/1) end,
+        ":test_paths must be a non-empty list of path strings"
+      )
+
   defp validate_exclude!(value),
     do:
       validate!(
@@ -722,6 +730,7 @@ defmodule Mutare.Options.Registry do
         validate: &validate_only_lines!/1
       ),
       spec(key: :test_selection, default: :tests, validate: &validate_test_selection!/1),
+      spec(key: :test_paths, default: ["test"], validate: &validate_test_paths!/1),
       spec(key: :workers, default: nil, cli: :integer, validate: &validate_workers!/1),
       spec(
         key: :schedulers,

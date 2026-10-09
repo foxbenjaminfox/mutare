@@ -33,6 +33,7 @@ defmodule Mutare.Options do
             MapSet.t({String.t(), pos_integer()} | {String.t(), pos_integer(), pos_integer()})
             | nil,
           test_selection: :tests | :coverage | :full,
+          test_paths: [String.t()],
           workers: pos_integer(),
           schedulers: pos_integer() | :all,
           partition_env: String.t() | nil,

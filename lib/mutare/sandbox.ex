@@ -3,9 +3,10 @@ defmodule Mutare.Sandbox do
   Materialise a schema as a runnable copy of the target project.
 
   We copy the project to a dedicated directory (excluding build output), write
-  each metamutant over its original, and inject a tiny bootstrap into
-  `test/test_helper.exs` that combines `MUTARE_MUTANT_NAMESPACE` (the active
-  mutant's file) and `MUTARE_ACTIVE_MUTANT` (its id within that file) into one
+  each metamutant over its original, and inject a tiny bootstrap into each test
+  helper (`test/test_helper.exs`, or one per `:test_paths` entry) that combines
+  `MUTARE_MUTANT_NAMESPACE` (the active mutant's file) and
+  `MUTARE_ACTIVE_MUTANT` (its id within that file) into one
   `:persistent_term` entry before the suite starts. After the user's helper, Mutare appends a
   formatter that records a failed test (`Mutare.Sandbox.Command.FailureWitness`), so a run
   that crashes after a failure still counts as a kill. A second injection prefixes
@@ -149,10 +150,11 @@ defmodule Mutare.Sandbox do
   # ---------------------------------------------------------------------------
   """
 
-  # Stable relative paths for the two files Mutare generates (vs. copies). The
+  # Stable names for the two files Mutare generates (vs. copies): the test helper's
+  # basename, joined to each test path, and the coverage helper's relative path. The
   # coverage helper's collision-avoiding `_N` suffix is a fresh-mode-only fallback;
   # `keep_sandbox` materialisation always reuses this base path.
-  @helper_rel "test/test_helper.exs"
+  @helper_name "test_helper.exs"
   @default_helper "ExUnit.start()\n"
   @coverage_helper_rel "lib/__mutare__/coverage_helper.ex"
 
@@ -410,21 +412,24 @@ defmodule Mutare.Sandbox do
   end
 
   # The test helpers whose suite the runner will drive — each gets the selector/timeout/coverage
-  # bootstrap wrapped in by `helper_files/2`. A single project has one (`test/test_helper.exs`);
-  # an umbrella runs each app's suite sequentially in one BEAM (cwd = the app dir), so each app
+  # bootstrap wrapped in by `helper_files/3`. A single project has one per configured
+  # `:test_paths` entry (`test/test_helper.exs` by default); an umbrella runs each app's suite
+  # sequentially in one BEAM (cwd = the app dir), so each app
   # with a `test/` tree gets its own copy — and *every* app, not just the mutated ones, because a
   # mutant in one app can be killed by a test in another, and the selector must be live in
   # whichever app's process runs the line.
-  defp helper_rels(root, %{umbrella?: true, apps: apps}) do
+  defp helper_rels(root, %{umbrella?: true, apps: apps}, _test_paths) do
     for %{dir: dir} <- apps,
         app_dir = Path.join(root, dir),
         File.dir?(Path.join(app_dir, "test")),
         do: Path.join([dir, "test", "test_helper.exs"])
   end
 
-  # A single app (no project, or a non-umbrella one) keeps the pre-umbrella
-  # behavior: the root helper, created if absent.
-  defp helper_rels(_root, _project), do: [@helper_rel]
+  # A single app (no project, or a non-umbrella one): `mix test` requires the helper of every
+  # entry in the project's `:test_paths`, and Mutare reads none of the target's Mix config, so the
+  # paths come from the option. Each helper is created if absent.
+  defp helper_rels(_root, _project, test_paths),
+    do: Enum.map(test_paths, &Path.join(&1, @helper_name))
 
   # Wrap the user's test helper with the selector/timeout bootstrap, the coverage
   # probe (split around `ExUnit.start/0`; see the constants above) and the failure
@@ -475,7 +480,7 @@ defmodule Mutare.Sandbox do
       schema
       |> Schema.materialized_sources()
       |> Map.merge(coverage_helper_files(root, project))
-      |> Map.merge(helper_files(root, project, attribution_source(options)))
+      |> Map.merge(helper_files(root, project, options.test_paths, attribution_source(options)))
       |> Map.merge(config_files(root))
       |> Map.merge(RuntimeConfig.files(root, @excluded))
       |> Map.merge(project_files(root, project))
@@ -583,8 +588,8 @@ defmodule Mutare.Sandbox do
     )
   end
 
-  defp helper_files(root, project, attribution) do
-    Map.new(helper_rels(root, project), fn rel ->
+  defp helper_files(root, project, test_paths, attribution) do
+    Map.new(helper_rels(root, project, test_paths), fn rel ->
       user_helper =
         case File.read(Path.join(root, rel)) do
           {:ok, source} -> source

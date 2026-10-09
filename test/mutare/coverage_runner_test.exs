@@ -208,6 +208,55 @@ defmodule Mutare.CoverageRunnerTest do
     })
   end
 
+  describe "custom :test_paths (end to end)" do
+    test "the probe records through every configured test path's helper" do
+      %{project: project, sandbox: sandbox} =
+        Project.build(:custom_test_paths, %{
+          "mix.exs" => """
+          defmodule CustomTestPaths.MixProject do
+            use Mix.Project
+
+            def project,
+              do: [
+                app: :custom_test_paths,
+                version: "0.1.0",
+                elixir: "~> 1.15",
+                test_paths: ["apps/a/test", "apps/b/test"]
+              ]
+          end
+          """,
+          "lib/calc.ex" => "defmodule Calc do\n  def add(a, b), do: a + b\nend\n",
+          "apps/a/test/test_helper.exs" => "ExUnit.start()\n",
+          "apps/a/test/calc_test.exs" => """
+          defmodule CalcTest do
+            use ExUnit.Case
+            test "covers add loosely", do: assert(is_integer(Calc.add(2, 3)))
+          end
+          """,
+          "apps/b/test/test_helper.exs" => "ExUnit.start()\n",
+          "apps/b/test/other_test.exs" => """
+          defmodule OtherTest do
+            use ExUnit.Case
+            test "unrelated", do: assert(1 == 1)
+          end
+          """
+        })
+
+      File.rm_rf!(Path.join(project, "test"))
+
+      assert {:ok, run} =
+               Mutare.run(project,
+                 sandbox: sandbox,
+                 mutators: @probe,
+                 test_paths: ["apps/a/test", "apps/b/test"]
+               )
+
+      assert [%Result{status: :survived} = result] = run.results
+      assert result.selection == :tests
+      assert tests_run(result.output) == 1
+    end
+  end
+
   describe "test-case selection (:tests default, end to end)" do
     test "the default narrows to the covering test case within a multi-test file" do
       %{project: project, sandbox: sandbox} = two_test_project(:tests_narrow)

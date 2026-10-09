@@ -298,6 +298,34 @@ defmodule Mutare.SandboxTest do
     refute File.read!(Path.join(plain, "test/test_helper.exs")) =~ "coverage attribution"
   end
 
+  test "wraps the helper of every configured test path in a single app", context do
+    for dir <- ["apps/a/test", "apps/b/test"] do
+      File.mkdir_p!(Path.join(context.project, dir))
+
+      File.write!(
+        Path.join([context.project, dir, "test_helper.exs"]),
+        "UserHelper.#{Path.basename(Path.dirname(dir))}()\n"
+      )
+    end
+
+    sandbox = Path.join(context.base, "sandbox")
+
+    Sandbox.prepare(context.project, context.schema,
+      sandbox: sandbox,
+      test_paths: ["apps/a/test", "apps/b/test"]
+    )
+
+    for {dir, call} <- [{"apps/a/test", "UserHelper.a()"}, {"apps/b/test", "UserHelper.b()"}] do
+      helper = File.read!(Path.join([sandbox, dir, "test_helper.exs"]))
+      assert helper =~ "injected by Mutare: coverage dump"
+      [{user, _}] = :binary.matches(helper, call)
+      [{dump, _}] = :binary.matches(helper, "injected by Mutare: coverage dump")
+      assert user < dump
+    end
+
+    refute File.exists?(Path.join(sandbox, "test/test_helper.exs"))
+  end
+
   test "steps the generated support app aside from a real app at its name" do
     %{umbrella: umbrella, sandbox: sandbox} =
       Umbrella.build(:support_name_taken, %{
