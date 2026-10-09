@@ -204,6 +204,7 @@ defmodule Mutare.Transform do
     ClauseGuardEmit,
     HostedEmit,
     ImportWitness,
+    Inputs,
     Invariants,
     LiftedEmit,
     Meta,
@@ -222,10 +223,6 @@ defmodule Mutare.Transform do
     UnitReturns,
     Uses
   }
-
-  # The default set is the built-in catalog's `all/0` — one source of truth, so a
-  # family registered in `Mutare.Mutators` is part of the default automatically.
-  @default_mutators Mutare.Mutators.all()
 
   @doc """
   Transform a source string into a stable public result DTO.
@@ -454,13 +451,15 @@ defmodule Mutare.Transform do
   # the `:count` sink (carried on `ctx.claim`) makes it cheaper still by skipping per-mutant
   # `Mutare.Site` construction.
   defp plan_and_emit(source, opts) do
-    Mutare.Transform.Diagnostics.with_warnings(Keyword.get(opts, :warnings, true), fn ->
-      do_plan_and_emit(source, opts)
+    parsed = Sourceror.parse_string!(source)
+    inputs = Inputs.new(opts)
+
+    Mutare.Transform.Diagnostics.with_warnings(inputs.config.warnings, fn ->
+      do_plan_and_emit(source, parsed, inputs)
     end)
   end
 
-  defp do_plan_and_emit(source, opts) do
-    parsed = Sourceror.parse_string!(source)
+  defp do_plan_and_emit(source, parsed, %Inputs{} = inputs) do
     # Pin the generated names this source provably never collides with before any
     # lifting assigns them: the private-function prefix, the dispatch variable, the
     # super-forwarding closure variable, and the hoisted pipe-stage closure variable
@@ -477,52 +476,16 @@ defmodule Mutare.Transform do
         do: Mutare.Ignore.directives_from_ast(parsed),
         else: %Mutare.Ignore.Directives{}
 
-    config = build_config(opts, names, directives)
-    ctx = build_ctx(config, opts)
+    config = source_config(inputs.config, names, directives)
+    ctx = build_ctx(config, inputs)
 
     # Validate in both sinks, even for zero-site files (which Schema counts but never renders).
     validate_ignore_qualifiers!(directives, ctx)
 
-    # Non-mutating extensions implement `Mutare.CallRouting`, `Mutare.UseExpansion`, or both:
-    # routes extend the registry below and `expand_use/3` overrides `use`-expansion. They make the built-in
-    # mutators' work land on a library's DSL (the Gettext case). Validated + resolved here at the
-    # boundary (like `:mutators`) to `Mutare.Extension.Spec`s — carrying each extension's `opts`,
-    # delivered to `expand_use/3`'s context — so a non-extension entry fails loudly rather than being
-    # silently dropped by the downstream per-callback filters. `Mutare.Options` validates the same
-    # way, so the `Mutare.run/2` path is covered too.
-    extensions = opts |> Keyword.get(:extensions, []) |> Mutare.Extension.validate!()
-
-    # The known-macro registry (`Mutare.CallRouting.Registry`): built-ins (`Kernel.match?`/`destructure`)
-    # merged with declarative `:call_routes` and routes from enabled mutators/extensions. It tells
-    # the resolution pass how to route a recognised
-    # macro's arguments (a pattern, an opaque DSL body). Built from the resolved mutator specs
-    # in `config`, so a library's mutator/extension auto-registers the macros it relies on. Extension
-    # specs are passed straight through (`build/3` reads each routing capability); routes are
-    # opts-independent library facts, so the `opts` they carry are ignored there
-    # and ride along separately to `expand_use/3`'s context.
-    macros =
-      Mutare.CallRouting.Registry.build(
-        Keyword.get(opts, :call_routes, []),
-        config.mutators,
-        extensions
-      )
-
-    # The argument-mark registry (`Mutare.Transform.Resolve.ArgumentMarks`): the positions the
-    # enabled mutators asked the transform to mark (`c:Mutare.Mutator.argument_marks/1`), plus the
-    # user's `:argument_marks` declarations (same shape, a run-level declarer), stamped at each
-    # resolved call so the reading mutators can recognise and decline them. Domain-agnostic here —
-    # the meaning of each mark lives in the mutator that reads it (e.g. `IntegerLiteral`'s timeout
-    # table; a user entry under `:timeout` borrows exactly that reaction).
-    marks =
-      Mutare.Transform.Resolve.ArgumentMarks.build(
-        config.mutators,
-        opts |> Keyword.get(:argument_marks, []) |> Mutare.Mutator.validate_argument_marks!()
-      )
-
     {transformed, ctx} =
-      ConfigMatches.with_islands(ctx.claim.sink, macros, fn record ->
-        annotated = annotate_tree(parsed, opts, extensions, macros, marks, record)
-        ctx = record_count_facts(ctx, annotated, macros)
+      ConfigMatches.with_islands(ctx.claim.sink, inputs.call_routes, fn record ->
+        annotated = annotate_tree(parsed, inputs, record)
+        ctx = record_count_facts(ctx, annotated, inputs.call_routes)
         transform_node(annotated, ctx)
       end)
 
@@ -545,63 +508,34 @@ defmodule Mutare.Transform do
 
   defp record_count_facts(ctx, _annotated, _macros), do: ctx
 
-  # The immutable transform config for one source: generated names + the resolved/validated
-  # `:mutators`, `:skip_ids`, and `:skip_lifting`. `:mutators` may arrive as family atoms / bare modules (tests,
-  # the default set) or already-resolved specs (the Options/Config path); `resolve/1` is
-  # idempotent on specs. A skipped id's site is still recorded (`poisoned: true`, for the
-  # denominator and id stability) but emits no selector/copy, so the metamutant compiles.
-  # `:skip_lifting` is a user-facing compatibility escape hatch keyed by fully-qualified MFA.
-  defp build_config(opts, names, directives) do
-    %Config{
-      file: Keyword.get(opts, :file, "nofile"),
-      runtime_namespace: Keyword.get(opts, :runtime_namespace),
-      id_origin: Keyword.get(opts, :start_id, 1),
-      mutators: opts |> Keyword.get(:mutators, @default_mutators) |> Mutare.Mutators.resolve(),
-      skip_ids: Keyword.get(opts, :skip_ids, MapSet.new()),
-      emit_ids: Keyword.get(opts, :emit_ids),
-      clean_functions: Keyword.get(opts, :clean_functions, true),
-      skip_regions: Keyword.get(opts, :skip_regions, MapSet.new()),
-      clean_threshold: Keyword.get(opts, :clean_threshold, %Config{}.clean_threshold),
-      ignore_directives: directives,
-      skip_lifting:
-        opts |> Keyword.get(:skip_lifting, MapSet.new()) |> Lifting.validate_skip_lifting!(),
-      # Default `true`: advisory warnings print once, at scan/count time. The schema's render
-      # pass, `render_sites/2`, and poison rebuilds pass `false` (see the `:warnings` doc on
-      # `transform_string/2`). Consumed by `Resolve.annotate/3` (via `annotate_tree/4`) and
-      # `ModulePlan.build/4` (the lifting advisories), so *every* advisory honours the flag.
-      warnings: Keyword.get(opts, :warnings, true),
-      # Default `true`: the public API and tests render each site's diff eagerly. A `mix mutare`
-      # scan passes `false` to defer it (see `Mutare.Transform.Config`); `:verify_invariants`
-      # renders it regardless, because one of its checks compares that code.
-      render_site_code: Keyword.get(opts, :render_site_code, true) or verify_invariants?(opts),
-      # Default `false`: build no live `summary`. A `mix mutare` run passes `true` (unless
-      # `--quiet`) so the live in-flight line has a cheap one-liner (see `Mutare.Transform.Config`).
-      summarize_sites: Keyword.get(opts, :summarize_sites, false),
-      verify_invariants: verify_invariants?(opts),
-      prefix: names.prefix,
-      active_var: names.active_var,
-      super_var: names.super_var,
-      piped_var: names.piped_var,
-      cond_var: names.cond_var,
-      case_var: names.case_var
+  # Option normalization is complete. Add only the facts obtained from this source:
+  # its directives and generated names that provably cannot collide with its identifiers.
+  defp source_config(config, names, directives) do
+    %{
+      config
+      | ignore_directives: directives,
+        prefix: names.prefix,
+        active_var: names.active_var,
+        super_var: names.super_var,
+        piped_var: names.piped_var,
+        cond_var: names.cond_var,
+        case_var: names.case_var
     }
   end
-
-  defp verify_invariants?(opts), do: Keyword.get(opts, :verify_invariants, false)
 
   # The per-source transform context: the config, a primed top-level (empty-behaviours) mutator
   # scope (`put_module_behaviours/3` refreshes the cache at each `defmodule` boundary), and the claim
   # accumulator. The `:render` sink (default) builds + retains a `Mutare.Site` per claim; `:count`
   # only tallies (the schema's render-free count pass). `next_id` seeds the id span;
   # `group`/`sites`/`count` start at their struct defaults.
-  defp build_ctx(config, opts) do
+  defp build_ctx(config, %Inputs{} = inputs) do
     %Ctx{
       config: config,
       scope: %Scope{analysis_env: analysis_env(config, MapSet.new())},
       claim: %ClaimState{
-        sink: Keyword.get(opts, :sink, :render),
-        selection: Keyword.get(opts, :selection),
-        next_id: Keyword.get(opts, :start_id, 1)
+        sink: inputs.sink,
+        selection: inputs.selection,
+        next_id: config.id_origin
       }
     }
   end
@@ -622,19 +556,19 @@ defmodule Mutare.Transform do
   # `Enum.reject`) and each known-macro call with its argument routing. Last, `UnitReturns`
   # classifies each module's functions by return shape and stamps a unit-returning function's leaf
   # tails, so the analyzer treats them as non-positions (after `Resolve`, so the stamp survives).
-  defp annotate_tree(parsed, opts, extensions, macros, marks, on_resolve) do
+  defp annotate_tree(parsed, %Inputs{config: config} = inputs, on_resolve) do
     expanded =
-      if Keyword.get(opts, :expand_uses, true),
-        do: Uses.annotate(parsed, extensions),
+      if inputs.expand_uses,
+        do: Uses.annotate(parsed, inputs.extensions),
         else: parsed
 
     with_behaviours = Behaviours.annotate(expanded)
 
     with_behaviours
-    |> Resolve.annotate(macros,
-      warnings: Keyword.get(opts, :warnings, true),
-      file: Keyword.get(opts, :file, "nofile"),
-      marks: marks,
+    |> Resolve.annotate(inputs.call_routes,
+      warnings: config.warnings,
+      file: config.file,
+      marks: inputs.marks,
       on_resolve: on_resolve
     )
     |> UnitReturns.annotate()

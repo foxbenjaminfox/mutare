@@ -15675,3 +15675,23 @@ Validation: all 3,160 transform differential snapshots were byte-identical to th
 revision. The focused lifecycle/pipe tests passed. The full suite ran 106 doctests,
 42 properties and 4,409 tests (one skip); the sole failure was the two-second timeout
 confirmation test under host contention, which passed alone without changes.
+
+### Transform options are interpreted once per pass (2026-10-09)
+
+`Transform.Inputs` owns the keyword boundary: configuration defaults, resolved mutators
+and extensions, routing and mark registries, and the count/render controls. The walk
+reads this value rather than returning to the original keyword list. Source-derived
+names and directives are added to its configuration template; the same `id_origin`
+seeds the claim counter. Verification's requirement for rendered site code is established
+when the inputs are constructed.
+
+Each pass still constructs its own inputs: raw mutators initialize again for invariant
+re-emission and hydration, while already-resolved specs retain their configuration.
+Initialization and registry callbacks retain the pass's warning policy, including nested
+suppression. Parsing remains before initialization, so malformed source invokes no
+mutator callbacks. Focused tests cover these boundaries and deferred diff rendering under
+verification.
+
+Validation: all 123 focused transform/schema tests passed, and all 3,161 transform
+differential snapshots were byte-identical to the preceding revision.
+The full suite passed: 106 doctests, 42 properties, 4,414 tests, zero failures and one skip.
