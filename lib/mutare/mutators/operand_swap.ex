@@ -55,7 +55,7 @@ defmodule Mutare.Mutators.OperandSwap do
     * `compare(a, b) == :lt` swapped is `Mutare.Mutators.ConventionAtom`'s `== :gt`, likewise a membership list holding exactly one of `:lt`/`:gt`
     * `Date.diff(a, b) > 0` (or `a - b > 0`) swapped is `Mutare.Mutators.Relational`'s `< 0`, likewise for every ordering operator against zero
 
-  In a guard the effect condition does not apply. Where the call raises, the swap raises an exception of the same type, though its message may name the operands in the other order. `diff` on `DateTime`, `Time`, and `NaiveDateTime` keeps its swap in every position, because rounding to the unit can make `diff(b, a)` differ from `-diff(a, b)`.
+  In a guard the effect condition does not apply. Where one operand is invalid, the swap raises the same type of exception as the call, though its message may name the operands in the other order. Where both are invalid, both orders raise, but the types can differ, because each order raises for whichever operand the call rejects first: `Version.compare("bad", nil)` raises `Version.InvalidVersionError`, and `Version.compare(nil, "bad")` raises `FunctionClauseError`. `diff` on `DateTime`, `Time`, and `NaiveDateTime` keeps its swap in every position, because rounding to the unit can make `diff(b, a)` differ from `-diff(a, b)`.
 
   Guard-safe operators and calls are also mutated in guards.
   """

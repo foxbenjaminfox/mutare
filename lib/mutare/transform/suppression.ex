@@ -133,8 +133,10 @@ defmodule Mutare.Transform.Suppression do
   # parent whose test the involution turns into a test one sibling mutant writes runs that
   # mutant's program (`DateTime.compare(a, b) == :lt` swapped is `… == :gt`, ConventionAtom's).
   #
-  # "Cannot observe" means: on every input, both orders return the same reading or both raise
-  # the same exception type (the message may differ). The involution is exact only where the
+  # "Cannot observe" means: on every input with at most one invalid operand, both orders
+  # return the same reading or both raise the same exception type (the message may differ).
+  # Two invalid operands make both orders raise, but each for whichever operand the operation
+  # rejects first, so the types can differ (`Version.compare("bad", nil)`). The involution is exact only where the
   # operation is: no `diff` that rounds its difference (`DateTime`, `Time`, `NaiveDateTime`),
   # and no reading that sees a float zero's sign (`===`, a bare `abs/1`). Why each line is
   # drawn where it is: NOTES "Operand swaps the enclosing expression cannot observe".

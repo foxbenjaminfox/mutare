@@ -15610,12 +15610,20 @@ Decisions, each with the alternative it rejected:
   That is intended. The directive says the program is not worth testing, and the swap
   is the same program. A disabled family is a different case: no mutant states the
   program, so the swap is its only witness.
-- **Exception messages.** Where both orders raise, they raise the same exception type, but
-  the message can name the operands in written order: `Version.compare` with two invalid
+- **Exceptions.** Where one operand is invalid, both orders raise the same exception type,
+  but the message can name the operands in written order: `Version.compare` with two invalid
   versions names the first, and `Date.compare`/`NaiveDateTime.compare`/`Date.diff` across
   incompatible calendars print both. Excluding everything with such a message would
   exclude almost every case, including the motivating one, so the reading ignores message
   text. A test asserting that text for a swap under `== :eq` is not one worth serving.
+  Two invalid operands can change the type too, since each order raises for the operand
+  the call rejects first: `Version.compare("bad", nil)` raises `Version.InvalidVersionError`
+  (`to_matchable/2` parses the first operand first), swapped it raises
+  `FunctionClauseError`. The calendar calls do the same, given malformed maps. Both orders
+  still raise, and a test that tells them apart passes two bad values and pins which one
+  is reported, so the drop accepts this for the reason it accepts message text. The first
+  version claimed the type held on every input; the evaluation test missed the
+  counterexample because no operand set held two values invalid in different ways.
 - **Rounding.** Whether a `diff` is antisymmetric turns on where it rounds to the unit.
   Rounding each operand and then subtracting is exact, and so is truncating the exact
   difference toward zero. Rounding the exact difference *down* is not: `-0.5` becomes `-1`

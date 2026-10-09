@@ -8,10 +8,12 @@ defmodule Mutare.Transform.SwapRedundancyTest do
 
   The operand values are the ones the reader's exclusions answer to: sub-unit gaps (which
   `DateTime.diff`/`Time.diff` round), signed zeros (which `abs/1` keeps and OTP 27's `===`
-  tells apart), and values that make the call raise. Values are compared by their external
-  term encoding, so a zero's sign counts on every OTP. A raise matches a raise of the same
-  exception type; its message may name the operands in the other order, which the reader
-  accepts (NOTES "Operand swaps the enclosing expression cannot observe").
+  tells apart), and invalid values, which make the call raise. Values are compared by their
+  external term encoding, so a zero's sign counts on every OTP. Where at most one operand is
+  invalid, a raise matches a raise of the same exception type; its message may name the
+  operands in the other order, which the reader accepts. Where both are, a raise matches any
+  raise: each order raises for whichever operand the call rejects first (NOTES "Operand swaps
+  the enclosing expression cannot observe").
   """
   # Pure: parses and evaluates closures in-process.
   use ExUnit.Case, async: true
@@ -21,22 +23,22 @@ defmodule Mutare.Transform.SwapRedundancyTest do
   alias Mutare.Mutators.{ConventionAtom, Relational}
   alias Mutare.Transform.Suppression
 
+  # Each operation's operands as `{valid, invalid}`. The invalid values fail in different
+  # ways, so a pair of them can raise a different type in each order.
+  @invalid [nil, :x]
+
   @three_way %{
-    "DateTime.compare" => [
-      ~U[2020-01-01 00:00:00Z],
-      ~U[2020-01-01 00:00:00.5Z],
-      ~U[2020-01-02 00:00:00Z],
-      nil
-    ],
-    "Date.compare" => [~D[2020-01-01], ~D[2020-01-02], ~D[2019-12-31], nil],
-    "Time.compare" => [~T[00:00:00], ~T[00:00:00.5], ~T[12:00:00], nil],
-    "NaiveDateTime.compare" => [~N[2020-01-01 00:00:00], ~N[2020-01-01 00:00:00.5], nil],
-    "Version.compare" => ["1.0.0", "1.0.0+build", "1.0.1", "bad", "worse"]
+    "DateTime.compare" =>
+      {[~U[2020-01-01 00:00:00Z], ~U[2020-01-01 00:00:00.5Z], ~U[2020-01-02 00:00:00Z]], @invalid},
+    "Date.compare" => {[~D[2020-01-01], ~D[2020-01-02], ~D[2019-12-31]], @invalid},
+    "Time.compare" => {[~T[00:00:00], ~T[00:00:00.5], ~T[12:00:00]], @invalid},
+    "NaiveDateTime.compare" => {[~N[2020-01-01 00:00:00], ~N[2020-01-01 00:00:00.5]], @invalid},
+    "Version.compare" => {["1.0.0", "1.0.0+build", "1.0.1"], ["bad", "worse" | @invalid]}
   }
 
   @negating %{
-    "Date.diff(a, b)" => [~D[2020-01-01], ~D[2020-01-02], ~D[2019-12-31], nil],
-    "a - b" => [0, 1, -1, 2, 0.0, -0.0, 0.5, -0.5, :x]
+    "Date.diff(a, b)" => {[~D[2020-01-01], ~D[2020-01-02], ~D[2019-12-31]], @invalid},
+    "a - b" => {[0, 1, -1, 2, 0.0, -0.0, 0.5, -0.5], @invalid}
   }
 
   @equality ~w(== != === !==)
@@ -152,6 +154,17 @@ defmodule Mutare.Transform.SwapRedundancyTest do
     end
   end
 
+  test "two invalid operands can raise a different type in each order" do
+    # The case the reading accepts, and the moduledoc's example of it: `Version.compare`
+    # parses its first operand first.
+    assert_raise Version.InvalidVersionError, fn -> Version.compare("bad", nil) end
+    assert_raise FunctionClauseError, fn -> Version.compare(nil, "bad") end
+
+    # One invalid operand raises the same type in either order.
+    assert_raise FunctionClauseError, fn -> Version.compare("1.0.0", nil) end
+    assert_raise FunctionClauseError, fn -> Version.compare(nil, "1.0.0") end
+  end
+
   defp survivor_kind(:unobservable), do: :unobservable
   defp survivor_kind({_path, _mutated?}), do: :sibling
 
@@ -177,15 +190,23 @@ defmodule Mutare.Transform.SwapRedundancyTest do
 
   defp swap({form, meta, [a, b | rest]}), do: {form, meta, [b, a | rest]}
 
-  # The expression's outcome on every operand pair: its value, or the exception type it raised.
-  defp outcomes(ast, values) do
+  # The expression's outcome on every operand pair: its value, or the exception type it
+  # raised. Where both operands are invalid, only that it raised.
+  defp outcomes(ast, {valid, invalid}) do
     {fun, _binding} = Code.eval_string("fn a, b -> #{AST.to_string(ast)} end")
+    values = Enum.map(valid, &{&1, :valid}) ++ Enum.map(invalid, &{&1, :invalid})
 
-    for a <- values, b <- values do
-      try do
-        {:ok, :erlang.term_to_binary(fun.(a, b))}
-      rescue
-        e -> {:raise, e.__struct__}
+    for {a, a_kind} <- values, {b, b_kind} <- values do
+      outcome =
+        try do
+          {:ok, :erlang.term_to_binary(fun.(a, b))}
+        rescue
+          e -> {:raise, e.__struct__}
+        end
+
+      case {a_kind, b_kind, outcome} do
+        {:invalid, :invalid, {:raise, _type}} -> :raised
+        _other -> outcome
       end
     end
   end
