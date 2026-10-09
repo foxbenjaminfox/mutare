@@ -2,8 +2,8 @@ defmodule Mutare.Transform.MetaKeys do
   @moduledoc false
   # Single source of truth for the internal `:mutare_*` keys the transform stamps onto a
   # node's `meta` keyword list. These are bookkeeping the families and emit read; none may
-  # reach the rendered metamutant source. Two aggregators derive their strip lists from here,
-  # so neither can silently drift from a stamp site (the bug this module exists to prevent —
+  # reach the rendered metamutant source. Consumers derive their strip lists from here,
+  # so none can silently drift from a stamp site (the bug this module exists to prevent —
   # before it, `Mutare.Transform.Render`'s list and the emit-time strip's list were maintained
   # by hand and `:mutare_hosted` had already gone missing from the former):
   #
@@ -12,6 +12,8 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `Mutare.Transform.Meta.Lifecycle.consume_delivery/1` strips the **candidate-delivery** subset
   #     (`delivery/0`) during emit, once a node's candidates are consumed and before the bare
   #     node is rebuilt.
+  #   * `Meta.Lifecycle` derives call/module invalidation and analysis release sets from
+  #     the lifetime on every entry. A missing or unknown lifetime fails compilation.
   #
   # Only node-`meta` keys belong here. The other `:mutare_*` atoms are **not** metadata and
   # stay owned by their modules: runtime-contract identifiers (`:mutare_active`/`:mutare_track`
@@ -20,7 +22,7 @@ defmodule Mutare.Transform.MetaKeys do
   # `:mutare_super`/`:mutare_capture_arg` in `Mutare.Transform.Names`/`Ctx`), and the
   # `:mutare_unmatched` placeholder var.
 
-  # Candidate-delivery keys, as `kind: :meta_key` pairs. Each holds a list of
+  # Candidate-delivery keys, with an explicit delivery lifetime. Each holds a list of
   # `Mutare.Transform.Candidate` structs that an emit path consumes, then strips from the node
   # before building it. No module names these atoms directly any more: `Mutare.Transform.Meta`
   # maps each *logical kind* to its key through the generated `<kind>_key/0` accessor (below), so
@@ -29,18 +31,16 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `in_place` → `:mutare`        — in-place / lifted candidates, the node-wrapping selector  (Analyze)
   #   * `case`     → `:mutare_case`   — `case` tuple-the-scrutinee per-clause candidates          (Analyze.ClausePatterns)
   #   * `hosted`   → `:mutare_hosted` — selector-host candidates for a DSL fragment (Ecto-style)  (Analyze, via Mutator host/2)
-  @delivery_kinds [in_place: :mutare, case: :mutare_case, hosted: :mutare_hosted]
-  @delivery Keyword.values(@delivery_kinds)
+  # Lifetimes declare invalidation and release policy. All are scrubbed at render.
+  # `:analysis` is also invalidated with a call, but is released throughout the tree before
+  # rendering; `:module_resolution` belongs to a call's receiver, not the call's own meta.
+  @delivery_keys [
+    {:in_place_key, :mutare, :delivery},
+    {:case_key, :mutare_case, :delivery},
+    {:hosted_key, :mutare_hosted, :delivery}
+  ]
 
-  # One zero-arity accessor per delivery kind (`in_place_key/0`, `case_key/0`, `hosted_key/0`),
-  # generated from the registry above so `Mutare.Transform.Meta`'s kind→key mapping can't drift.
-  for {kind, key} <- @delivery_kinds do
-    @doc false
-    @spec unquote(:"#{kind}_key")() :: atom()
-    def unquote(:"#{kind}_key")(), do: unquote(key)
-  end
-
-  # Pre-pass / resolution bookkeeping stamps, as `accessor_name: :meta_key` pairs. This list is
+  # Pre-pass / resolution bookkeeping stamps, as `{accessor_name, meta_key, lifetime}` entries. This list is
   # the single source of truth: `all/0`'s strip set is derived from it, and the per-key accessor
   # functions below are generated from it. Each stamping module references its key through the
   # accessor (`@meta_key MetaKeys.alias_key()`), *not* a hand-written `:mutare_*` literal — so a
@@ -72,47 +72,80 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_pipe_group`       — operator metadata needed to undo a right-nested pipe rotation (WrittenPipe)
   #   * `:mutare_pipe_continuation` — remaining stages around a synthetic prefix, for complete source patches (WrittenPipe)
   @bookkeeping_keys [
-    tag_key: :mutare_tag,
-    selector_key: :mutare_selector,
-    written_pipe_key: :mutare_written_pipe,
-    pipe_group_key: :mutare_pipe_group,
-    pipe_continuation_key: :mutare_pipe_continuation,
-    operand_of_key: :mutare_operand_of,
-    nid_key: :mutare_nid,
-    marks_key: :mutare_marks,
-    mark_call_key: :mutare_mark_call,
-    unit_tail_key: :mutare_unit_tail,
-    bindings_key: :mutare_bindings,
-    alias_key: :mutare_alias,
-    import_key: :mutare_import,
-    import_witness_key: :mutare_import_witness,
-    kernel_displaced_key: :mutare_kernel_displaced,
-    route_key: :mutare_route,
-    displaced_route_key: :mutare_displaced_route,
-    route_call_key: :mutare_route_call,
-    resolution_key: :mutare_resolution,
-    use_directives_key: :mutare_use_directives,
-    use_behaviours_key: :mutare_use_behaviours,
-    use_degraded_key: :mutare_use_degraded,
-    behaviours_key: :mutare_behaviours,
-    impl_module_key: :mutare_impl_module
+    {:tag_key, :mutare_tag, :render},
+    {:selector_key, :mutare_selector, :render},
+    {:written_pipe_key, :mutare_written_pipe, :render},
+    {:pipe_group_key, :mutare_pipe_group, :render},
+    {:pipe_continuation_key, :mutare_pipe_continuation, :render},
+    {:operand_of_key, :mutare_operand_of, :render},
+    {:nid_key, :mutare_nid, :render},
+    {:marks_key, :mutare_marks, :render},
+    {:mark_call_key, :mutare_mark_call, :call_resolution},
+    {:unit_tail_key, :mutare_unit_tail, :render},
+    {:bindings_key, :mutare_bindings, :render},
+    {:alias_key, :mutare_alias, :module_resolution},
+    {:import_key, :mutare_import, :call_resolution},
+    {:import_witness_key, :mutare_import_witness, :call_resolution},
+    {:kernel_displaced_key, :mutare_kernel_displaced, :call_resolution},
+    {:route_key, :mutare_route, :call_resolution},
+    {:displaced_route_key, :mutare_displaced_route, :call_resolution},
+    {:route_call_key, :mutare_route_call, :call_resolution},
+    {:resolution_key, :mutare_resolution, :analysis},
+    {:use_directives_key, :mutare_use_directives, :render},
+    {:use_behaviours_key, :mutare_use_behaviours, :render},
+    {:use_degraded_key, :mutare_use_degraded, :render},
+    {:behaviours_key, :mutare_behaviours, :render},
+    {:impl_module_key, :mutare_impl_module, :render}
   ]
 
-  @all @delivery ++ Keyword.values(@bookkeeping_keys)
+  @entries @delivery_keys ++ @bookkeeping_keys
 
-  # One zero-arity accessor per bookkeeping key, generated from the registry above. A stamp site
-  # binds its private constant to one of these at compile time, so the link can't drift.
-  for {name, key} <- @bookkeeping_keys do
+  # Do not filter malformed declarations in a comprehension: every entry must choose a
+  # lifetime, and a typo must fail at compile time rather than silently omit its key.
+  Enum.each(@entries, fn {name, key, lifetime}
+                         when is_atom(name) and is_atom(key) and
+                                lifetime in [
+                                  :delivery,
+                                  :call_resolution,
+                                  :module_resolution,
+                                  :analysis,
+                                  :render
+                                ] ->
+    :ok
+  end)
+
+  @all Enum.map(@entries, fn {_name, key, _lifetime} -> key end)
+  @delivery for {_name, key, :delivery} <- @entries, do: key
+  @call_resolution for {_name, key, lifetime} <- @entries,
+                       lifetime in [:call_resolution, :analysis],
+                       do: key
+  @module_resolution for {_name, key, :module_resolution} <- @entries, do: key
+  @analysis for {_name, key, :analysis} <- @entries, do: key
+
+  # A stamp site binds its accessor at compile time, so a removed key fails there too.
+  for {name, key, _lifetime} <- @entries do
     @doc false
     @spec unquote(name)() :: atom()
     def unquote(name)(), do: unquote(key)
   end
 
-  @doc "The candidate-delivery meta keys — `Mutare.Transform.Meta.Lifecycle.consume_delivery/1` drops these during emit."
+  @doc "The candidate-delivery keys consumed during emission."
   @spec delivery() :: [atom()]
   def delivery, do: @delivery
 
-  @doc "Every internal node-metadata key — `Mutare.Transform.Render` strips these before render."
+  @doc "The keys invalidated on a call when it must be resolved again."
+  @spec call_resolution() :: [atom()]
+  def call_resolution, do: @call_resolution
+
+  @doc "The keys invalidated on a module reference, including a remote call's receiver."
+  @spec module_resolution() :: [atom()]
+  def module_resolution, do: @module_resolution
+
+  @doc "The retained analysis capabilities released throughout the tree before rendering."
+  @spec analysis() :: [atom()]
+  def analysis, do: @analysis
+
+  @doc "Every internal node-metadata key, scrubbed before rendering."
   @spec all() :: [atom()]
   def all, do: @all
 end

@@ -32,16 +32,9 @@ defmodule Mutare.Transform.Meta.Lifecycle do
   # renamed bare import as the import it no longer is. The node's identity, spelling and
   # positions are not resolution's (`:mutare_nid`, `:mutare_written_pipe`, `:mutare_operand_of`)
   # and stay.
-  @call_stamps [
-    MetaKeys.import_key(),
-    MetaKeys.import_witness_key(),
-    MetaKeys.kernel_displaced_key(),
-    MetaKeys.route_key(),
-    MetaKeys.displaced_route_key(),
-    MetaKeys.route_call_key(),
-    MetaKeys.resolution_key(),
-    MetaKeys.mark_call_key()
-  ]
+  @call_stamps MetaKeys.call_resolution()
+  @module_stamps MetaKeys.module_resolution()
+  @analysis_stamps MetaKeys.analysis()
 
   @spec invalidate_call_resolution(Macro.t()) :: Macro.t()
   def invalidate_call_resolution({form, meta, args}) when is_list(meta),
@@ -107,7 +100,7 @@ defmodule Mutare.Transform.Meta.Lifecycle do
   # The module stamp `Aliases.stamp_module/3` puts on an `__aliases__` or a `__MODULE__`.
   defp unstamped_module({form, meta, context})
        when form in [:__aliases__, :__MODULE__] and is_list(meta),
-       do: {form, Keyword.delete(meta, MetaKeys.alias_key()), context}
+       do: {form, Keyword.drop(meta, @module_stamps), context}
 
   defp unstamped_module(node), do: node
 
@@ -132,7 +125,7 @@ defmodule Mutare.Transform.Meta.Lifecycle do
   defp release_analysis_meta(meta),
     do: for(item <- meta, not retained_pair?(item), do: release_analysis_carried(item))
 
-  defp retained_pair?({key, _env}), do: key == MetaKeys.resolution_key()
+  defp retained_pair?({key, _env}), do: key in @analysis_stamps
   defp retained_pair?(_item), do: false
 
   defp release_analysis_carried({_form, meta, _args} = node) when is_list(meta),

@@ -15659,3 +15659,19 @@ had effects. Keeping the calendar predicates would have been the inconsistent ch
 gating both on purity would keep only swaps that differ from the direction flip in which
 operand runs first, a difference that is noise.
 
+
+### Metadata keys declare their lifetimes (2026-10-09)
+
+`MetaKeys` now requires a lifetime on every registry entry and derives the delivery,
+call-resolution, module-resolution and analysis-release sets from those declarations.
+A missing or unknown lifetime fails compilation rather than silently omitting a key.
+`Meta.Lifecycle` still owns the transitions and their traversal: a remote receiver is
+invalidated separately from its call, written pipes retain their spelling, and analysis
+release distinguishes node metadata from program data, including nodes carried by metadata.
+The change preserves which keys each transition removes; adding a key no longer requires
+finding a second invalidation list in `Lifecycle`.
+
+Validation: all 3,160 transform differential snapshots were byte-identical to the preceding
+revision. The focused lifecycle/pipe tests passed. The full suite ran 106 doctests,
+42 properties and 4,409 tests (one skip); the sole failure was the two-second timeout
+confirmation test under host contention, which passed alone without changes.
