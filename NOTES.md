@@ -15379,9 +15379,18 @@ Choices, each the one with the fewest assumptions:
   exits, the process's later hits go unlabeled again.
 - **Resolved as the declaring process would resolve itself.** The owner is usually
   ecto_sql's `start_owner!/2` `Agent`, not the test, so the anchor's own label, stack, anchor,
-  `$callers` and `$ancestors` are walked. A lineage pid's `$callers` and `$ancestors` are
-  already in ours, so only its anchor is followed: a `Task` a request spawns reaches the test
-  through the request's anchor. Each pid is visited once, which ends a cycle of anchors.
+  `$callers` and `$ancestors` are walked. Of a lineage pid's links, only its anchor is
+  followed: a `Task` a request spawns reaches the test through the request's anchor. Where
+  `Task` and proc_lib set the lineage keys, that pid's own `$callers` and `$ancestors` are
+  already in ours. A hand-set `$callers` breaks this: Phoenix sets a channel's to its transport
+  alone (`Phoenix.LiveViewTest` passes the test as `"caller"` instead, and `Phoenix.ChannelTest`
+  joins from the test), and the transport's lineage is not the channel's. In a browser-driven
+  test it leads to the web server's supervision tree, not to the test, so walking it would find
+  nothing; the channel or LiveView reaches its test through the anchor `mutare_phoenix_ecto`
+  declares in the channel process itself. The walk misses a test only where code hand-sets
+  `$callers` to an unlabeled, unanchored process the test started. No known library does that;
+  if one does, the fix is to walk every link's lineage, not only an anchor's. Each pid is
+  visited once, which ends a cycle of anchors.
 - **Set until replaced, and part of the memo's guard.** A declaration has no expiry of its
   own: core cannot see where a process's work changes hands, so the writer declares at each
   start and withdraws (`nil`) where no owner is known. A memo guarded by `$callers` alone kept

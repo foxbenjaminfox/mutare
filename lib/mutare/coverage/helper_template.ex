@@ -467,10 +467,13 @@ defmodule Mutare.Coverage.HelperTemplate do
   # An anchor stands for the process that declared it, so it is resolved as that process would
   # resolve itself: its own label or stack, then *its* anchor, `$callers` and `$ancestors`. That is
   # how an anchor on a sandbox owner reaches the test — ecto_sql's `start_owner!/2` owner is an
-  # `Agent` whose `$ancestors` begins with the test. A lineage pid's `$callers` and `$ancestors`
-  # are already in ours, so of its links only its anchor is followed: a `Task` spawned by an
-  # anchored request process reaches the test through the request's anchor. Each pid is visited
-  # once, so anchors that name each other end the walk.
+  # `Agent` whose `$ancestors` begins with the test. Of a lineage pid's links only its anchor is
+  # followed: a `Task` spawned by an anchored request process reaches the test through the
+  # request's anchor. Where `Task` and proc_lib set the lineage keys, a lineage pid's `$callers`
+  # and `$ancestors` are already in ours; a hand-set `$callers` entry's are not (a Phoenix
+  # channel's names its transport alone), and are not walked either — NOTES "A process no
+  # lineage links to a test can declare its owner" says why that loses nothing known. Each pid is
+  # visited once, so anchors that name each other end the walk.
   #
   # Local pids only: `Process.info/2` (and the memo's `Process.alive?/1`) raise on a remote pid,
   # and a cross-node caller can't map to a local test file anyway.
