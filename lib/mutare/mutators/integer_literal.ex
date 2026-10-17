@@ -2,7 +2,7 @@ defmodule Mutare.Mutators.IntegerLiteral do
   @moduledoc """
   Integer-literal mutations: `n` → `n + 1`, `n - 1`, and `0` (the "off-by-one" boundary plus the zero sentinel), deduplicated and never equal to `n`.
 
-  Only literals in *runtime* positions are mutated, never pattern literals. Mutations that would reproduce the original value are dropped (`0` is not re-emitted for the literal `0`; `n - 1` and `0` collapse for `n = 1`).
+  Runtime literals and eligible head/clause pattern literals are mutated. Pattern replacements are delivered through the enclosing clause, rather than an in-place selector. Mutations that would reproduce the original value are dropped (`0` is not re-emitted for the literal `0`; `n - 1` and `0` collapse for `n = 1`).
 
   An integer literal in a known **timeout/duration position** (`Process.sleep/1`, the third argument of `Process.send_after/3`, the `GenServer.call/3` timeout, `Task.async_stream`'s `:timeout` option, …) is left unmutated — a near-unkillable equivalent mutant that also risks minting false `:timeout` kills. This family defines those positions in `c:Mutare.Mutator.argument_marks/1`. The transform marks them `:timeout`, and `mutate/2` skips integer literals with that mark. A *computed* duration (`base * 2`) is not a literal at the marked node, so it still mutates. (`Mutare.Mutators.AtomLiteral` reuses the same table to leave `:infinity` alone there.)
 

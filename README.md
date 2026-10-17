@@ -78,7 +78,7 @@ and run `mix usage_rules.sync`; `mix igniter.install mutare` adds that config fo
 
 1. Transform. Every in-scope source file is rewritten into a *metamutant* that embeds all of its mutants. Mutare transforms the code you write, before macro expansion—so any macros that don't accept arbitrary expressions will probably need their arguments routed `:raw` in your config (see "Routing calls" below).
 2. Compile once. The metamutant compiles a single time. The source code doesn't change between runs, so there is no per-mutant recompilation.
-3. Run the suite per mutant. A baseline test run must pass; a coverage probe then maps each mutant to the test files that exercise it. Each mutant runs in a fresh `mix test` OS process, `:workers` at a time, each capped by a wall-clock timeout. The active mutant is selected using `MUTARE_MUTANT_NAMESPACE` (its file) and `MUTARE_ACTIVE_MUTANT` (its id within that file).
+3. Run the suite per mutant. A baseline test run must pass; a coverage probe then maps each mutant to the test cases that exercise it. Each mutant runs in a fresh `mix test` OS process, `:workers` at a time, each capped by a wall-clock timeout. The active mutant is selected using `MUTARE_MUTANT_NAMESPACE` (its file) and `MUTARE_ACTIVE_MUTANT` (its id within that file).
 4. Report. Surviving mutants are listed in an abbreviated format as the run progresses, and you get a full report, with diffs and a mutation score, at the end. You can also enable JSON, HTML, or SARIF format output.
 
 Nevertheless, note that a suite that is green under plain `mix test` can fail during Mutare's baseline run when a test asserts exact `FunctionClauseError` fields or stacktrace frames, because Mutare's function *lifting* renames those internals. See "Troubleshooting baseline-only failures" in the [`mix mutare` task docs](https://hexdocs.pm/mutare/Mix.Tasks.Mutare.html) (`mix help mutare`) for the mechanics and the `skip_lifting` escape hatch.
@@ -87,7 +87,7 @@ Nevertheless, note that a suite that is green under plain `mix test` can fail du
 
 - Compile once, run N times — no per-mutant recompilation.
 - Coverage-guided selection — each mutant runs only the individual test cases that cover it (`--per-file` widens this to whole covering files for stateful `async: false` suites; `--full` runs the whole suite per mutant); uncovered mutants are skipped and excluded from the score.
-- Parallel workers + timeouts — mutants run concurrently, but capped: if a mutation hangs (e.g. a mutation that turns a loop infinite), it is halted after the deadline and counts as a kill. A timed-out run is first confirmed with an uncontended re-run, so a merely-slow mutant is never falsely recorded as killed.
+- Parallel workers + timeouts — mutants run concurrently, but capped: if a mutation hangs (e.g. a mutation that turns a loop infinite), it is halted after the deadline and counts as a kill. A timed-out run is first confirmed with an uncontended re-run, reducing false kills caused by contention.
 - A very broad built-in mutator set — arithmetic/operator swaps, relational and logical swaps, literals of every kind, collection/string/map call rewrites, pattern and clause restructurings, and more. See [`Mutare.Mutators`](https://hexdocs.pm/mutare/Mutare.Mutators.html), and write your own — the [Extending Mutare](https://hexdocs.pm/mutare/extending.html) guide walks through custom mutators and library extensions.
 - Compile-poison recovery — a mutant that wouldn't compile is identified from the compile error, dropped (reported as *poisoned*), and the build retried, to try and avoid a bad mutant spoiling the whole run—but ideally this shouldn't be necessary, and it usually isn't.
 - Umbrella-aware — target one app, several, or the whole workspace.
@@ -110,7 +110,7 @@ def parity(n), do: rem(n, 2) == 0  # mutare:ignore[arithmetic] only `rem` will b
 
 A filter accepts any built-in family name (the full list is [`Mutare.Mutators.families/0`](https://hexdocs.pm/mutare/Mutare.Mutators.html#families/0) — `arithmetic`, `relational`, `integer`, `collection`, …) or any custom mutator's `name/0`. Filtering fails safe: an unknown name (a typo) or an empty `[]` matches nothing, so the mutant runs rather than being silently hidden.
 
-Qualify a family with `:label` to suppress just one *kind* of its mutants. Here `x < 0` and `x <= 0` are equivalent — the boundary `0` returns `0` down either branch — so that one mutant can never be killed; suppress it while every other relational mutant (`>`, `>=`, `==`, …) keeps running:
+Qualify a family with `:label` to suppress just one *kind* of its mutants. Here `x < 0` and `x <= 0` are equivalent — the boundary `0` returns `0` down either branch — so that one mutant can never be killed; suppress it while the direction flip (`<` → `>`) keeps running:
 
 ```elixir
 def floor_zero(x), do: if(x < 0, do: 0, else: x)  # mutare:ignore[relational:<=] 0 ≤ 0 returns 0 here

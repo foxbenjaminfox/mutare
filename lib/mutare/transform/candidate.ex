@@ -33,7 +33,7 @@ defmodule Mutare.Transform.Candidate do
   # The excluded positions — `:compile_time` (module-attribute values and macro
   # bodies), `:spec` (a bitstring type specifier), `:capture_arity` (the `/` in
   # `&fun/arity`) — never become candidates at all; the analyzer classifies them
-  # positively and skips them (see `Mutare.Transform`'s `analyze/3`). `:pattern` is
+  # positively and skips them (see `Mutare.Transform.Analyze`). `:pattern` is
   # excluded *in place* (a `case` is illegal in a pattern), but a `def`/`defp` head
   # pattern's *literals* are mutated by lifting (`Candidate.Lifted`), the same way
   # guards are.
@@ -52,13 +52,13 @@ defmodule Mutare.Transform.Candidate do
     # own mutator through `c:Mutare.Mutator.mutate_call_option_keys?/1` whether to keep it.
     # This lets a context-free atom family suppress noisy option-name changes without
     # imposing the same policy on call-aware rewrites. Default `false` — every other
-    # candidate is a normal mutation, never gated.
+    # candidate is a normal mutation, not gated as a call-option key.
     #
     # `pin?` flags an in-place candidate whose selector `case` must be **`^`-pinned** —
     # the value sits in a compile-time DSL position that accepts an interpolated value but
     # not a bare `case` (an Ecto keyword-shorthand value, `where(q, category: "Foo")`,
     # where Ecto rejects a raw `case` but accepts `^(case …)`). Set by the `:interpolated`
-    # argument treatment (`Mutare.Transform.Analyze.route_macro_arg/3`, adapter-grade);
+    # argument treatment (`Mutare.Transform.Analyze.Routed.route_macro_arg/3`, adapter-grade);
     # emission wraps the built selector in `^`. Default `false` — pinning is illegal outside
     # such a context (a bare `^` is a compile error), so only a deliberate route sets it.
     #

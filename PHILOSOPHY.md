@@ -57,7 +57,7 @@ you can't reason about is worse than one that probes less but means what it says
 
 **One general mechanism, one optimization — chosen by position, not by fiat.**
 There is a cheap way (wrap an expression in an in-place `case` selector) and a
-fully general way (duplicate the whole function and dispatch). The cheap way is
+fully general way (lift the clauses behind a dispatcher). The cheap way is
 used wherever it *can* be — body expressions — and the general way (lifting)
 where it *must* be — guards and clause structure, which drive dispatch and can't
 host a `case`. Crucially, *placement is positional*: a mutator never declares
@@ -73,11 +73,11 @@ job. Forcing one mechanism to serve both would compromise both.
 
 **Decouple things that only *look* coupled.** The sharpest example: we worried
 for three milestones that the coverage probe would need to map shifted metamutant
-line numbers back to original lines. It didn't. The probe works *entirely in
-metamutant line space*; the report works *entirely in original line space*; the
-two never need to be related. The hard problem dissolved once we refused to
-couple them. When something feels intractably hard, check whether you've
-imagined a dependency that isn't there.
+line numbers back to original lines. It didn't. Coverage keys by *mutant id*;
+poison attribution works in *metamutant line space*; the report works in
+*original line space*. The two line spaces never need to be related. The hard
+problem dissolved once we refused to couple them. When something feels intractably
+hard, check whether you've imagined a dependency that isn't there.
 
 **Be invisible at the boundary.** The public `f/arity` is unchanged after
 lifting — callers, function captures, `@spec`, `@behaviour`/`@impl` all hit the
@@ -154,11 +154,10 @@ compile each candidate in isolation — costs N compiles and fights the spine.
 Instead, Mutare *recovers* from the one compile it already does: on failure it
 identifies the offending mutant from the error, drops it, and rebuilds. This is a
 pattern, not a one-off: **prefer the design that costs nothing in the common
-case.** The coverage probe reuses the baseline run; poison recovery is free until
-something actually poisons; selection skips work rather than adding it. And the
-one poison class that can't be auto-isolated doesn't get to break the pattern's
-spirit: when recovery is impossible, the failure arrives with a copy-pasteable
-fix, not a stack trace.
+case.** The coverage probe captures every test's coverage in one suite run;
+poison recovery is free until something actually poisons; selection skips work
+rather than adding it. When recovery is impossible but the compiler names a
+macro, we include a copy-pasteable routing fix with the error.
 
 **Defend the invariant with the simplest primitive that travels.** A mutation can
 turn a terminating loop infinite, so each run is capped. Rather than kill a hung

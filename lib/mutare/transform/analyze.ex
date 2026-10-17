@@ -77,7 +77,7 @@ defmodule Mutare.Transform.Analyze do
   # descends, rather than subtracting a blacklist from "everything is a runtime
   # body". Routing is positional, so child → context is a pattern match — which a
   # single `Macro.traverse` accumulator can't express (it can't send the spec
-  # side of a `::` one way and the value side another). Four contexts are threaded:
+  # side of a `::` one way and the value side another). Three contexts are threaded:
   #
   #   * `:runtime` — mutate in place. A node a mutator recognises gets a
   #     `Candidate.InPlace` attached to its own metadata; the candidate is built
@@ -99,11 +99,12 @@ defmodule Mutare.Transform.Analyze do
   # subtrees or dedicated helpers (named here, matched in the clauses below):
   #
   #   * `:compile_time` — module-attribute values (`@x <expr>`), macro bodies
-  #     (`defmacro`/`defmacrop`), `quote` blocks (AST construction), and lexical
+  #     (`defmacro`/`defmacrop`), quoted data, and lexical
   #     directives (`import`/`alias`/`require`/`use`, whose args must be
   #     compile-time literals). Frozen at compile / macro-expansion time, so a
   #     runtime selector there can never activate — and inside a directive arg, or
-  #     a quoted pattern/guard, would not even be legal. Pruned whole.
+  #     a quoted pattern/guard, would not even be legal. Pruned whole, except for
+  #     live unquote escapes within a runtime quote (`QuoteEscape`).
   #   * `:spec` — the type-specifier side of a bitstring `::` segment. A `case`
   #     is illegal there and a swapped `-` separator is an illegal specifier;
   #     only `size(expr)` args are a genuine runtime sub-position (`analyze_spec/3`).
@@ -230,7 +231,8 @@ defmodule Mutare.Transform.Analyze do
   # The runtime exception is an escaping `unquote(expr)` / `unquote_splicing(expr)`:
   # `expr` is evaluated when the quote is built, so in a runtime quote it can host
   # ordinary in-place selectors. Which parts of a quote run is `QuoteStructure`'s reading:
-  # a nested quote is inert as a whole, and so is a body whose unquoting is disabled.
+  # a nested quote's body is inert, as is a body whose unquoting is disabled. A nested
+  # quote's options may still contain live escapes, depending on its written form.
   defp analyze_form({:quote, meta, args}, :runtime, env) when is_list(args),
     do: {:quote, meta, QuoteEscape.analyze_quote_args(args, env)}
 
@@ -344,7 +346,7 @@ defmodule Mutare.Transform.Analyze do
   # position* — its value is discarded (only the block's final expression is its value).
   # That is exactly where a `=` match can be rewritten to mutate its LHS pattern: a
   # destructuring `=` there is used solely for its bindings, so re-exporting them through
-  # a tuple (`attach_match_pattern_candidates/4`) is value-transparent. A trailing `=`
+  # a tuple (`MatchPatterns.attach_match_pattern_candidates/3`) is value-transparent. A trailing `=`
   # *is* the block's value, so it stays a plain match (its value would change — see
   # `Candidate.MatchPattern`). Non-`=` statements analyze exactly as before. A single- or
   # empty-statement block has no non-final statement, so it falls through to the generic
@@ -360,7 +362,7 @@ defmodule Mutare.Transform.Analyze do
   # deliberately **not** offered to mutators (no `offer/3` here) — there is no "mutate `=`" entry
   # point, unlike the *macro* node (`analyze_routed_call` offers it so a `call_routes/0` mutator can
   # fire). This is load-bearing: it is *why* the value-discarded-`=` path
-  # (`attach_match_pattern_candidates/4`) can prepend its `MatchPattern` candidates with
+  # (`MatchPatterns.attach_match_pattern_candidates/3`) can prepend its `MatchPattern` candidates with
   # `put_candidates` without shadowing anything, and why no whole-`=` mutation can trap the
   # escaping bindings. If you ever start offering this node, mirror the macro path's
   # `rehome_call_mutations/2`: re-home the whole-`=` mutation into the tuple-export selector
@@ -535,7 +537,7 @@ defmodule Mutare.Transform.Analyze do
   # normally, `:scaffold` when this construct itself wraps a metaprogrammed `def` at
   # module level (so the arm's own code is left compile-time-inert). `cond` is
   # excepted above; a `when` guard among the patterns is returned whole by the
-  # `:when` clause, so guards stay untouched.
+  # `:when` clause here; the enclosing construct separately discovers guard candidates.
   defp analyze_form({:->, meta, [patterns, body]}, context, env) when is_list(patterns) do
     {:->, meta,
      [
@@ -772,7 +774,7 @@ defmodule Mutare.Transform.Analyze do
     do: {:__block__, meta, [Enum.map(clauses, &analyze(&1, :runtime, env))]}
 
   # A generic runtime node: offer it and descend, or route a known-macro call's arguments
-  # by treatment — see `do_analyze_call_node/3`. (A sigil is offered whole then descended
+  # by treatment — see `do_analyze_call_node/2`. (A sigil is offered whole then descended
   # *surgically* via `descend_sigil/2`, so an interpolated `~r/a#{b}c/` still mutates `b`
   # while its content `<<>>` wrapper is never offered; that gate lives in the helper.)
   defp analyze_form({_form, _meta, _args} = node, :runtime, env),

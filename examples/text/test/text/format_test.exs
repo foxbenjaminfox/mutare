@@ -4,8 +4,8 @@ defmodule Text.FormatTest do
   alias Text.Format
 
   # A first, simple slug: internal punctuation and a trailing "!" exercise the
-  # replace and the final trim("-"). There's no leading/trailing whitespace,
-  # though, so the `String.trim()` in the middle of the pipe is never needed.
+  # replace and the final trim("-"). The earlier String.trim() is redundant:
+  # those two stages already remove surrounding whitespace from the slug.
   test "slugify lower-cases and hyphenates" do
     assert Format.slugify("Hello, World!") == "hello-world"
   end

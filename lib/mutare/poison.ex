@@ -24,21 +24,18 @@ defmodule Mutare.Poison do
   (as a coarse fallback) the surrounding `case`. Matching only the selector clause's
   *start line*, as we used to, missed all but the first of those.
 
-  The manifest is built **here, lazily**, only for the file(s) a compile error
-  names — not eagerly for every mutated file during the scan. That eager build
-  was pure waste: a manifest is read only on a failed compile (rare — built-in
-  mutators are compile-safe), yet a full `Sourceror.parse_string!` of a large
-  metamutant is by far the most expensive step of the scan (a 1500-line source
-  whose metamutant is ~40k lines took *minutes* to re-parse). Deferring it to the
-  poison path removes that cost from every healthy run.
+  Recovery builds manifests **lazily**, only for the file(s) a compile error
+  names, and shares them between line and macro attribution for that round.
+  Independently, `verify_invariants: true` builds manifests during the scan to
+  check the transform's generated code. `Mutare.Manifest` owns the readback parser.
 
-  When line attribution maps nothing — the signature of an *inline* DSL macro that rejects
-  the spliced selector, where the compiler reports an error on the macro-*call* line no manifest region
-  covers — the runner falls back to `macro_poison/4`, which attributes by the macro *name*
-  in the compiler output (via `Mutare.Manifest.ids_in_named_calls/2`) instead of by line. Only
-  when *both* fail does the run abort. The runner obtains both results through `attribution/4`,
-  which builds each file's manifest once for the round; `ids/4` and `macro_poison/4` are
-  the two halves on their own.
+  An *inline* DSL macro can reject the spliced selector while the compiler blames
+  the macro-*call* line. `macro_poison/4` attributes by the macro *name* in the
+  compiler output (via `Mutare.Manifest.ids_in_named_calls/2`). The runner gives
+  that inline attribution priority: line attribution may map nothing, or may blame
+  a valid outer selector surrounding the call. The runner obtains both results
+  through `attribution/4`, which builds each file's manifest once for the round;
+  `ids/4` and `macro_poison/4` are the two halves on their own.
 
   An error can also land in a **clean region's uninstrumented copy**
   (`Mutare.Transform.CleanRegion`), which belongs to no mutant: the transform copies any

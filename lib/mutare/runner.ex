@@ -28,7 +28,7 @@ defmodule Mutare.Runner do
 
   Two conditions can stop the per-mutant loop before every mutant runs, whichever fires first. `:max_survivors` (`--max-survivors`) stops once that many survivors (`:survived` results) have surfaced — useful for finding and fixing a few concrete test gaps at a time. `:time_budget` (`--time-budget`, a duration string like `"10m"` parsed by `Mutare.Duration`) stops once that much wall-clock elapses in the per-mutant phase — a "see what I can get in ten minutes" run. The clock starts as the phase begins (compile/baseline/probe are not charged against it) and is checked just before a task announces and launches a real mutant run, so ordered result buffering cannot hide an expired budget and allow more mutants to start.
 
-  Unlike `:max_mutants` (a `Mutare.Schema` cap on candidate *sites*), both leave every mutant compiled in — only the *run* halts early. The per-mutant stream is consumed `ordered: true`, so a survivor stop is deterministic: the Nth survivor in source order, regardless of which worker finished first, and the reported survivors are exactly the first N. (A time-budget stop is not deterministic — it depends on how far the run got.) Runs already in flight when either condition trips are *drained* (not killed), so the sandbox teardown never races a live `mix` subprocess. If the budget elapses after every mutant has already launched, the result set is still complete unless the budget also prevents a provisional timeout from being confirmed. Otherwise the returned run carries `stopped_early`; on an early stop the harness-error abort guard is skipped (the score is already budget-limited or a partial prefix — the Mix task notes it and skips the `--min-score` gate too), since aborting would discard the very survivors the user asked to find.
+  Unlike `:max_mutants` (a `Mutare.Schema` cap on candidate *sites*), both leave every mutant compiled in — only the *run* halts early. The per-mutant stream is consumed `ordered: true`, so a survivor stop is deterministic: the Nth streamed survivor in source order, regardless of which worker finished first. Later timeout confirmations may reveal more survivors, so the final count can exceed N. (A time-budget stop is not deterministic — it depends on how far the run got.) Runs already in flight when either condition trips are *drained* (not killed), so the sandbox teardown never races a live `mix` subprocess. If the budget elapses after every mutant has already launched, the result set is still complete unless the budget also prevents a provisional timeout from being confirmed. Otherwise the returned run carries `stopped_early`; on an early stop the harness-error abort guard is skipped (the score is already budget-limited or a partial prefix — the Mix task notes it and skips the `--min-score` gate too), since aborting would discard the very survivors the user asked to find.
 
   ## Per-worker partitioning (DB isolation)
 
@@ -119,11 +119,14 @@ defmodule Mutare.Runner do
 
   Live progress hooks:
 
-    * `:reporter` — called with each `Mutare.Result` the run keeps, in source order.
+    * `:reporter` — called with each `Mutare.Result` the run keeps. Streamed results
+      arrive in source order, except provisional timeouts: with `:confirm_timeouts`,
+      their final results arrive during the later sequential confirmation pass.
       Every reported result appears in the returned run's `:results` (an early stop
       discards the runs still in flight when it trips — those are never reported), and
       the calls are serialized, so the hook needs no synchronization of its own.
-    * `:on_start` — called with each `Mutare.Site` just before its test run starts.
+    * `:on_start` — called when a worker begins processing each `Mutare.Site`,
+      including sites that will be ignored, poisoned, or skipped for no coverage.
       Unlike `:reporter`, this fires concurrently from every worker, and a site whose
       run is later discarded by an early stop still announces its start.
     * `:on_phase` — called as the run enters `:compiling`, `:baseline`,
@@ -134,8 +137,8 @@ defmodule Mutare.Runner do
     * `{:seed_app_build, summary}` — emitted during `:compiling`, once the sandbox is
       materialised: what the app-build `_build` seed did
       (`Mutare.Sandbox.Seed.summary/0` — `:seeded` with reused/recompiled beam
-      counts, a `:fallback` to a cold compile, or `:skipped`). `--verbose` renders
-      the first two.
+      counts, `:partial` when only some umbrella apps were seeded, a `:fallback`
+      to a cold compile, or `:skipped`). `--verbose` renders all but `:skipped`.
     * `{:inference_override_declined, %{file: file, reason: reason}}` — emitted during
       `:compiling`, once per `mix.exs` whose inference override did not land
       (`Mutare.Sandbox.CompilerOptions.project_source/1`). That project compiles

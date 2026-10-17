@@ -50,24 +50,20 @@ defmodule Mutare.Transform.TagTest do
       a scalar-literal node, so the guard always holds for the inputs these functions
       receive; its purpose is to fence out a *custom* mutator emitting a
       pattern-illegal replacement, which the built-in suite can't exercise. (The same
-      chain in the `tag_pattern_targets`/`tag_pattern_key` *clause heads* is a `when`
+      chain in the `tag_pattern_form`/`tag_pattern_key` *clause heads* is a `when`
       guard, where Conditional can't fire; its `or → and` logical mutant narrows the
       clause and *is* genuinely killed.)
     * **`literal_node?({:-, _, [operand]})` → `:mutare`** — only differs when the
       operand is a non-literal (a built-in never yields `-(<non-literal>)`); the
       negative-literal path itself is covered by `Mutare.NegativeFloatTest`.
-    * **`expand_targets`'s `Enum.reverse()` → `Enum.sort()`** (line 70) — the
+    * **`expand_targets`'s `Enum.reverse()` → `Enum.sort()`** — the
       targets accumulate in strictly *descending* tag order (a monotonic counter,
       each new target prepended), so reversing them and sorting the `{tag, …}`
       tuples by their unique integer tag both yield the same ascending source
       order. Behaviourally identical.
-    * **`replace_tag`'s `when is_list(meta)`** (line 89) → dropped — every node in
-      an Elixir AST is `{form, meta, args}` with a *keyword-list* `meta`, so the
-      guard never excludes a node `Macro.prewalk` actually visits; it only fences
-      out a malformed 3-tuple that can't occur in the trees this walks.
     * **`tag_in_rhs/3`'s `when is_list(args)` guard and its `other` clause**,
-      **`tag_pattern_targets/3`'s `%{}` `when is_list(pairs)` guard**, and
-      **`tag_map_pair/4`'s `other` clause** — defensive arms that are
+      **`tag_pattern_form/4`'s `%{}` `when is_list(pairs)` guard**, and
+      **`tag_map_pair/5`'s `other` clause** — defensive arms that are
       unreachable for valid input: Sourceror wraps every collection literal in a
       `{:__block__, _, [_]}` node (a 3-tuple with list args), a `%{}` node's args
       are always a list, a variable can't be a guard `in`-RHS, and a map pattern's

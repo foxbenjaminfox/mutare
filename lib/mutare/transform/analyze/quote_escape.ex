@@ -1,9 +1,10 @@
 defmodule Mutare.Transform.Analyze.QuoteEscape do
   @moduledoc false
   # The quote/unquote-escape fragment of the analyze walk, extracted from `Mutare.Transform.Analyze`.
-  # A `quote` block is compile-time AST data, so its body is left raw — *except* the arguments of an
-  # `unquote`/`unquote_splicing` that escape back to level 0, which are live runtime expressions and
-  # are analyzed as such (`analyze_quote_args/3`, quote-level-aware). Escapes carry one extra hazard:
+  # A quoted body is AST data, so it is left raw — *except* the arguments of an
+  # `unquote`/`unquote_splicing` that execute while the quote is built, which are live runtime
+  # expressions and are analyzed as such (`analyze_quote_args/2`, read through `QuoteStructure`).
+  # Escapes carry one extra hazard:
   # a match/`:binding_pattern` inside a live unquote argument may bind a variable the caller reads
   # after the quote is built, and an in-place selector on an ancestor of that binding would trap it
   # in a `case` branch — so `prune_quote_escape_*` strips exactly the candidates that would enclose
@@ -26,8 +27,8 @@ defmodule Mutare.Transform.Analyze.QuoteEscape do
     |> rebuild.()
   end
 
-  # An escape's argument is a live runtime expression; a nested quote is inert as a whole
-  # (`QuoteStructure`).
+  # An escape's argument is a live runtime expression; a nested quote's body is inert, while
+  # its options may still carry live escapes (`QuoteStructure`).
   #
   # A live unquote argument has one extra binding hazard compared with an ordinary
   # quoted expression: a match inside the argument may bind a variable the caller reads

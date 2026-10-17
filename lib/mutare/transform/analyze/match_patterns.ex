@@ -288,7 +288,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # `{pattern, range, export, used}`, or `nil` when the pattern binds nothing or isn't
   # rangeable. Split out so the binding-macro path can obtain the export tuple to re-home a
   # *whole-call* mutation onto even when no swap/wildcard pattern mutant is produced (see
-  # `attach_macro_pattern_candidates/4`).
+  # `attach_macro_pattern_candidates/5`).
   defp pattern_export_context(raw_pattern) do
     # Sourceror attaches the *statement's* leading comment to its leftmost leaf — which, for a
     # `<pat> = e` or a piped `<pat> |> macro(…)`, is inside the pattern. Strip it so the

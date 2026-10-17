@@ -46,7 +46,7 @@ defmodule Mutare.Transform.Analyze.Routed do
   def analyze_routed_call(node, routing, env, context \\ %{})
 
   # The call-level `:skip` (an inert leaf) is normally intercepted by the dispatch before it reaches
-  # here (`Mutare.Transform.Analyze.do_analyze_call_node/3`); this clause keeps the contract total
+  # here (`Mutare.Transform.Analyze.do_analyze_call_node/2`); this clause keeps the contract total
   # for any other caller — no offer, no descent, no hosts.
   def analyze_routed_call(node, :skip, _env, _context), do: node
 
@@ -151,7 +151,7 @@ defmodule Mutare.Transform.Analyze.Routed do
   # keyword values routed by their own position. `:binding_pattern` routes identically to
   # `:pattern` here; its *extra* structural-mutant offering is delivered separately (the macro
   # call sits in a value-discarded position — see `binding_pattern_macro/1` /
-  # `attach_macro_pattern_candidates/4`).
+  # `MatchPatterns.attach_macro_pattern_candidates/5`).
   defp route_macro_arg(arg, :raw, _env), do: arg
 
   # `:interior`: analyze the argument as ordinary runtime, then drop the in-place candidates that

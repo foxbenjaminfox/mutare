@@ -3,7 +3,7 @@ defmodule Mutare.Transform.Overlap do
 
   # Cross-mutator overlap resolution, run once over an annotated subtree just before
   # `Mutare.Transform.emit/2` assigns ids — so a dropped candidate leaves no id, site,
-  # or selector (exactly like the local self-opt-out `gate_candidates/1`, and ids stay
+  # or selector (exactly like the local self-opt-out `gate_candidates/2`, and ids stay
   # contiguous across poison rebuilds).
   #
   # The problem it solves: a *call-rewriting* mutator (`Mutare.Mutators.ModeSwap`) and a

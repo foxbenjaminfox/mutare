@@ -4,13 +4,12 @@ defmodule Stats.Series do
 
   A Mutare target rich in `Enum`/`List` calls — so it shows off the
   collection-shaped mutators: Collection (swap a call for a sibling of the same
-  arity, e.g. `sort` ↔ `reverse`), CollectionArity (drop a refining argument),
+  arity, e.g. `sum` ↔ `product`), CollectionArity (replace sorting with reversal),
   and CallRemoval (delete a transparent transform). It also destructures a
   `{low, high}` pair (`midrange/1`, `spread/1`), so PatternSwap exchanges the two
   bindings — a survivor when they feed a commutative `+`, a kill when they feed a
-  `-`. The instructive survivors come from *symmetric test data*, where reordering
-  a collection (or a destructured pair) can't change the answer, and from the
-  empty / single-element boundaries.
+  `-`. The instructive survivors come from order-independent results, coincidental
+  answers on the tested series lengths, and an untested empty-input clause.
   """
 
   @doc "Arithmetic mean. An empty series has a mean of 0.0 by convention."
@@ -43,7 +42,7 @@ defmodule Stats.Series do
   def midrange(values) do
     # A statement-position destructure, so PatternSwap rewrites `{low, high}` →
     # `{high, low}`. The result feeds a *commutative* `+`, so the swap can't change
-    # the midrange — a textbook surviving mutant, the same symmetry the median tests hit.
+    # the midrange — a textbook equivalent mutant.
     {low, high} = Enum.min_max(values)
     (low + high) / 2
   end

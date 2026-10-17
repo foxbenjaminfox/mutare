@@ -21,7 +21,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
   #     `Mutare.Transform` off `route/1` (`:in_place` / `:case_clause` / `:fn_clause` /
   #     `:receive_clause` / `:clause_guard` / `:match_pattern` / `:macro_pattern`).
   #     `classify_node_candidates/1` admits exactly these.
-  #   * lifted (`Lifted` / `PatternStructure` / `GuardDrop` / `Drop`) — consumed from
+  #   * lifted (`Lifted` / `LiftedGuard` / `PatternStructure` / `GuardDrop` / `Drop`) — consumed from
   #     `Mutare.Transform.FunctionPlan`, never node-local; `route/1` reports `:lifted` and
   #     `classify_node_candidates/1` rejects them.
   #   * hosted (`Hosted`) — consumed from its own metadata by `Mutare.Transform.HostedEmit`,

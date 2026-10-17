@@ -17,8 +17,8 @@ defmodule Auth.PolicyTest do
     refute Policy.strong_password?("Ab1")
   end
 
-  # locked?/2 is checked well inside each side of the threshold (5 and 2), but
-  # never *at* the boundary — so a mutant that shifts the limit to 4 survives.
+  # locked?/1 is checked at the threshold (5) and below it (2), so tightening
+  # the guard from >= to > changes the first assertion and is killed.
   test "locks the account after too many failed attempts" do
     assert Policy.locked?(5)
     refute Policy.locked?(2)

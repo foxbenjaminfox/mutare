@@ -215,8 +215,9 @@ defmodule Mutare.Manifest do
 
   The **macro-expansion fallback**'s attribution (`Mutare.Poison.macro_poison/4`): when a
   mutation splices a selector `case` into an argument a macro rewrites at compile time, the
-  macro raises during expansion and the compiler reports the macro *call* line — which no
-  region covers — so `ids_at_line/2` finds nothing. Given the macro name from the compiler's
+  macro raises during expansion and the compiler reports the macro *call* line.
+  `ids_at_line/2` may find nothing there, or blame a valid outer selector around
+  the call. Given the macro name from the compiler's
   `expanding macro:` frame, this instead finds every call of that name in the rendered
   metamutant, takes its **full** line range (`Sourceror.get_range/1`, to the closing
   delimiter — so a literal argument on its own line is still spanned), and collects the ids of

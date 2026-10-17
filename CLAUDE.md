@@ -30,8 +30,8 @@ they are unusually load-bearing and will save you re-deriving things.
 
 ```
 mix test                                        # full suite (subprocess + property soaks included)
-mix test --exclude runner --exclude property    # fast loop: skips subprocesses and the property soak
-mix test --only property                        # just the transform property soak
+mix test --exclude runner --exclude property    # fast loop: skips subprocesses and property soaks
+mix test --only property                        # generated property soaks
 mix test test/mutare/transform_test.exs          # a single file
 mix test test/mutare/transform_test.exs:42       # a single test (by line)
 mix format
@@ -42,14 +42,14 @@ bench/transform_diff.sh HEAD          # did a refactor move any transform output
 bench/replay_fix.sh /tmp/r <fix-sha>  # would the generated suites have caught that fix's defect?
 ```
 
-`:runner`-tagged tests (`runner_test`, `mix_task_test`, `timeout_test`, and every
-`*_runner_test` — `poison_runner_test`, `coverage_runner_test`, …) shell out to real `mix test`
-subprocesses, and live in their own files so the pure tests beside them can stay `async: true`
-(NOTES "Test suite: async-safe compile helpers and the sync split"). Most are themselves async,
-one module at a time in each of three `:subprocess_N` groups (`test_helper.exs` says which stay
-sync) — a new one joins the lightest group, NOTES "The suite runs concurrently"; `@moduletag :property`
-tests are PropCheck soaks that render/compile/run streams of generated modules (all under
-`Gen.transform_opts/1`, which carries the call routes the generated routed pipes need). Both
+`:runner`-tagged tests shell out to real `mix` subprocesses. Most live in dedicated
+`*_runner_test` files (plus `runner_test` and `timeout_test`); `mix_task_test` also retains
+pure tests with the subprocess cases tagged individually (NOTES "Test suite: async-safe
+compile helpers and the sync split"). Most are themselves async, one module at a time in each
+of three `:subprocess_N` groups (`test_helper.exs` says which stay sync) — a new one joins the
+lightest group, NOTES "The suite runs concurrently". `:property`-tagged tests are generated
+soaks over the transform and its contracts. The transform program generators use
+`Gen.transform_opts/1`, which carries the call routes their routed pipes need. Both
 are slow — exclude them while iterating, run the full suite before committing. `mix run` uses `:dev`, where
 `test/support/*.ex` fixtures (the custom-mutator examples) are **not** compiled — they exist only
 under `MIX_ENV=test`. Test-side helpers live there too: `Mutare.Test.Compile` (warning-swallowing
@@ -89,7 +89,7 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
     call-matching families recognise aliased / imported / Erlang-atom / `use`-injected forms, and
     behaviour-gated mutators see the enclosing `@behaviour` set. `Uses` expands `use` (in-process,
     or via an extension override) to recover the `import`/`alias` idiomatic Phoenix/Ecto hide.
-    `UnitReturns` runs last: it stamps the leaf tails of a **unit-returning** function (every path
+    After resolution, `UnitReturns` stamps the leaf tails of a **unit-returning** function (every path
     literally `:ok`/`nil`, and not a behaviour callback — a callback's `:ok` may be a contract
     outcome its runtime inspects) so no family is offered them — NOTES "Unit-returning functions
     are not return-value positions".
@@ -199,14 +199,15 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   hooks an extension installs in the probe only — NOTES "A process no lineage links to a test
   can declare its owner".
 - **`Mutare.Poison`** (+ `Hint`) — on a failed compile, maps the error's `file:line` to mutant
-  id(s), drops them via `:skip_ids`, and rebuilds (bounded). When line attribution maps nothing
-  (an *inline* DSL macro like `Ecto.Query.from/2` that rejects the spliced selector, where the
-  compiler blames the macro-*call* line), a **fallback** (`macro_poison/4`, via the metamutant +
-  `Manifest.ids_in_named_calls/2`) attributes by the `expanding macro:` name the compiler emitted
-  instead, and drops that macro's mutants wholesale. The runner takes both attributions from one
-  `Poison.attribution/4` (one manifest per file per round), and the `expanding macro:` frames are
+  id(s), drops them via `:skip_ids`, and rebuilds (bounded). For an *inline* DSL macro like
+  `Ecto.Query.from/2` that rejects the spliced selector, `macro_poison/4` attributes by the
+  compiler's `expanding macro:` name through `Manifest.ids_in_named_calls/2`, and drops the
+  macro's argument mutants wholesale. That attribution takes priority over line attribution:
+  the macro-call line may belong to an innocent enclosing selector. The runner takes both
+  attributions from one `Poison.attribution/4` (one manifest per file per round), and the `expanding macro:` frames are
   read once, by `Sandbox.Command.Output.macro_expansion_stacks/1`, for `Hint` and `Poison` alike.
-  Only when both fail does the run abort — `Hint` then renders a copy-pasteable `:skip` snippet.
+  Recovery stops when no new mutant or clean region can be dropped, or the retry bound is
+  reached — `Hint` then renders a copy-pasteable `call_routes:` snippet for named macros.
 - **`Mutare.Report`** (+ `Live`, `Json`/`Html`/`Sarif`, `Events`) — the default human reporter
   diffs each surviving mutant against the **original** source. `Live` is the live stderr
   progress — the `GenServer`, the output modes, and the terminal writes; every line's text is the
@@ -252,7 +253,7 @@ These span modules, so no single moduledoc holds them. Internalize them before s
   `MUTARE_MUTANT_NAMESPACE` live in
   `Mutare.Selector`; the timeout and owner-death env vars + watchers in
   `Mutare.Sandbox.Command.Invocation` and their exit codes in `Mutare.Sandbox.Command.Exit`; the
-  coverage contract (`MUTARE_COVERAGE`, immutable probe mode, recording readiness, the ETS tables, `MutareCov`, the dump
+  coverage contract (`MUTARE_COVERAGE`, immutable probe mode, recording readiness, the ETS tables, `:mutare_cov`, the dump
   file) in `Mutare.Coverage.Recorder`. The failure witness (`MUTARE_FAILURE_WITNESS`, the formatter the
   test helper appends) lives in `Mutare.Sandbox.Command.FailureWitness`; `Command.outcome/3` reads
   it only to refine a harness error into a kill — NOTES "A test that failed before the run

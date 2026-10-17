@@ -1,6 +1,6 @@
 defmodule Mutare.CallRouting.Call do
   @moduledoc """
-  Stable, resolved view of a known-macro call passed to routing and hosting callbacks.
+  Stable, resolved view of a routed call passed to routing and hosting callbacks.
 
   `arguments` are the call's arguments, all of them, however the call was written: Mutare
   treats a piped routed call as the direct call `Kernel.|>/2` would build, so

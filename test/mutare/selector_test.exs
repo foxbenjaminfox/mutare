@@ -1,5 +1,5 @@
 defmodule Mutare.SelectorTest do
-  # Not async: :persistent_term and the env var are process-global.
+  # Not async: the harness :persistent_term key and environment variable are VM-wide.
   use ExUnit.Case, async: false
 
   alias Mutare.Selector

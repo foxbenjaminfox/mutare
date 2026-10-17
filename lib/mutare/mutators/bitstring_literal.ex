@@ -8,7 +8,7 @@ defmodule Mutare.Mutators.BitstringLiteral do
     * a sigil's content (`~r/…/`, `~D[…]`) — the sigil mutators handle the whole node;
     * an interpolated quoted atom's content (the `<<>>` inside `:"a\#{x}b"`'s `binary_to_atom` call) — atom content, handled as a whole by `AtomLiteral`; the analyzer never offers the wrapper here.
 
-  A bitstring in a *pattern* is left alone, so a match like `<<a, b>> = bin` is not corrupted. The segment *values* still mutate independently (a byte via `Literal`, a string segment via `StringLiteral`, an expression via `Arithmetic`, a `size(expr)` arg via `Literal`).
+  A bitstring in a *pattern* is not collapsed, so a match like `<<a, b>> = bin` keeps its shape. Runtime segment *values* still mutate independently (a byte via `IntegerLiteral`, a string segment via `StringLiteral`, an expression via `Arithmetic`, a `size(expr)` argument via `IntegerLiteral`). Eligible literals in head/clause bitstring patterns may also mutate through the enclosing clause.
   """
   @behaviour Mutare.Mutator
 

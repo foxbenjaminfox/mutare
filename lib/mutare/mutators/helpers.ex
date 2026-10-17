@@ -35,7 +35,7 @@ defmodule Mutare.Mutators.Helpers do
   @doc """
   Rename a resolved call by looking its `{module, fun}` up in a swap `table`.
 
-  The single shape behind the "swap-table" families (`Collection`, `Integer`,
+  The single shape behind the "swap-table" families (`Collection`, `IntegerCall`,
   `MapKeyword`, `Numeric`'s qualified arm): resolve the call through
   `Mutare.Transform.Calls` (so a direct, aliased, or bare-imported form all match),
   look up `{module, fun}`, and rebuild the call with the new function name. The

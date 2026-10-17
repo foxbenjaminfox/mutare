@@ -17,14 +17,14 @@ Expected (abridged):
 ```
 mutare in examples/stats: 76 mutants across 1 file(s)
 
-lib/stats/series.ex:21  [clause_drop, lifted]  SURVIVED
+lib/stats/series.ex:20  [clause_drop, lifted]  SURVIVED
 -  def median([]), do: nil
 
-lib/stats/series.ex:26  [arithmetic, in-place]  SURVIVED
+lib/stats/series.ex:25  [arithmetic, in-place]  SURVIVED
 -    mid = div(count, 2)
 +    mid = rem(count, 2)
 
-lib/stats/series.ex:47  [pattern_swap, in-place]  SURVIVED
+lib/stats/series.ex:46  [pattern_swap, in-place]  SURVIVED
 -    {low, high} = Enum.min_max(values)
 +    {high, low} = Enum.min_max(values)
 ...

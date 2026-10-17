@@ -2,8 +2,9 @@ defmodule Mutare.Mutators.BooleanLiteral do
   @moduledoc """
   Boolean-literal mutation: `true` ↔ `false`.
 
-  Only literals in *runtime* positions are mutated, never pattern literals. A flip that would
-  reproduce the original value is impossible, so every eligible boolean yields exactly one mutant.
+  Runtime literals and eligible head/clause pattern literals are mutated. Pattern replacements
+  are delivered through the enclosing clause, rather than an in-place selector. A flip that
+  would reproduce the original value is impossible, so every eligible boolean yields exactly one mutant.
 
   This is the boolean flip that used to be the second arm of the old `literal` family (whose integer
   arm is now `Mutare.Mutators.IntegerLiteral`). `true` and `false` are handled here and excluded from

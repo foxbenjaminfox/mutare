@@ -22,9 +22,10 @@ defmodule Mutare.Runner.Baseline do
   non-green baseline aborts the run: `{:error, :baseline_failed, output}`. When
   `:baseline_retries` is non-zero, an all-red baseline attempt is retried before
   aborting; a mixed pass/fail attempt still aborts as flaky immediately. No
-  `--cover` here: mutant runs don't use it, so an uninstrumented baseline times
-  the cap against like conditions (and the `--cover` instrumentation belongs to
-  `Mutare.Runner.CoverageProbe`, which runs separately afterwards).
+  coverage recording here: mutant runs don't enable it, so a baseline with
+  recording disabled times the cap against like conditions. The separate
+  `Mutare.Runner.CoverageProbe` run enables the metamutant's self-recording;
+  neither run uses `--cover`.
 
   ## Flakiness (`:baseline_runs`)
 

@@ -388,11 +388,12 @@ defmodule Mutare.Coverage.Recorder do
   defp ids_literal(ids), do: Enum.map(ids, &{:__block__, [], [&1]})
 
   @doc """
-  AST for the `@compile {:no_warn_undefined, {<helper>, :hit, 1}}` attribute.
+  AST for the `@compile {:no_warn_undefined, {<helper>, :hit, arity}}` attribute.
 
   `Mutare.Transform` prepends this to every metamutant module body. Selector
-  catch-alls call the generated coverage helper's `hit/1`; in an umbrella that
-  helper can live in a generated sibling app, so the mutated app may compile before
+  catch-alls call the generated coverage helper's `hit/2` with a file namespace,
+  or `hit/1` for standalone integer ids; the attribute uses the matching arity.
+  In an umbrella that helper can live in a generated sibling app, so the mutated app may compile before
   the helper and trigger a benign xref warning. The call resolves at runtime. This
   attribute suppresses only that compile-time warning and is harmless when the
   helper is compiled in the same app.
@@ -434,7 +435,7 @@ defmodule Mutare.Coverage.Recorder do
   compile-checked module. Only its `defmodule` line is rewritten to
   `helper_module/0` (`:mutare_cov`).
 
-  The helper's `hit/1` writes coverage to shared ETS tables. Its `dump/1`
+  The helper's `hit/1` and `hit/2` write coverage to shared ETS tables. Its `dump/1`
   callback, registered with `ExUnit.after_suite/1`, writes `dump_file/0` and
   maps each test module back to its source file.
   """

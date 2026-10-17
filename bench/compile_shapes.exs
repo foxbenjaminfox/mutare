@@ -71,8 +71,8 @@ defmodule Mutare.CompileShapes do
         fixture("#{shape}-#{size}", source, mutators, check)
       end
 
-    # Cross two independent dimensions: mutations in a head/handler and the size
-    # of the unchanged body each such mutation currently duplicates.
+    # Cross two independent dimensions: mutations in a head/guard/handler and the
+    # size of the unchanged body, to measure duplication and sharing independently.
     bodies =
       for {shape, isolated} <- [
             {:head_body, [:integer]},

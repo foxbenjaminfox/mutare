@@ -26,16 +26,18 @@ defmodule Mutare.Transform.FunctionPlan do
   # leftover tag on a sibling node is harmless. Guards and pattern literals share one
   # tag counter (`build_lifted/2`) so their tags are unique group-wide.
   #
-  # ## Why only literals in a head
+  # ## Why node-level head swaps must be literals
   #
-  # A head is a pattern, so only a *literal* replacement is legal there (a swapped
-  # operator or a selector `case` is not). `tag_pattern_targets/3` therefore offers
+  # A scalar node in a head is a pattern literal, so its replacement must also be a
+  # literal (a swapped operator or a selector `case` is not legal there).
+  # `Tag.pattern_literal_targets/3` therefore offers
   # a node to the mutators only when it is a scalar literal and keeps only the
   # mutations whose replacement is *also* a literal — which selects exactly the
   # literal families (and any future literal mutator) and guarantees the mutant
-  # clause compiles. Bitstring type specifiers and keyword/map *keys* are skipped
-  # (a `unit(0)` would not compile; a key is a label, not a value), mirroring the
-  # in-place `:pattern` routing in `Mutare.Transform`.
+  # clause compiles. Bitstring type specifiers and keyword-label keys are skipped
+  # (a `unit(0)` would not compile; a label is not a value). Arrow-style map keys
+  # are value positions: scalar-key mutations are filtered against sibling keys
+  # to avoid duplicate-key compile errors (`Mutare.Transform.Tag`).
 
   alias Mutare.Mutator
   alias Mutare.Mutator.Spec
@@ -73,7 +75,7 @@ defmodule Mutare.Transform.FunctionPlan do
 
   Returns `{:lift, plan}` when the group both *admits* a lifted mutant (a guard
   swap, a head-pattern literal swap, or a droppable clause) and *can host* a
-  dispatcher (`liftable?/2`), else `:in_place` — its clauses stay where they are
+  dispatcher (`liftable?/1`), else `:in_place` — its clauses stay where they are
   and only their bodies mutate.
   """
   @spec plan(signature(), [Macro.t()], [Mutator.Spec.t()]) :: {:lift, t()} | :in_place
@@ -106,8 +108,9 @@ defmodule Mutare.Transform.FunctionPlan do
   swaps, then head-pattern structure rewrites (variable swaps / wildcards), then
   guard removals, then clause drops.
 
-  Emission walks these in order to assign ids and build one gated `defp` clause
-  per candidate, so the order fixes id assignment within a lifted function.
+  Emission walks these in order to assign ids, so the order fixes id assignment
+  within a lifted function. Eligible guard variants share a gated `defp` clause;
+  head-pattern variants get separate clauses, and drops only exclude the original.
   """
   @spec candidates(t()) :: [Candidate.t()]
   def candidates(%__MODULE__{
@@ -212,7 +215,7 @@ defmodule Mutare.Transform.FunctionPlan do
   # === guard candidates ======================================================
 
   # Tag every mutatable guard operator across the group with a unique
-  # `meta[:mutare_tag]`, returning the once-tagged clause group, a `Candidate.Lifted`
+  # `meta[:mutare_tag]`, returning the once-tagged clause group, a `Candidate.LiftedGuard`
   # per mutation, the next free tag, and the inert-guard set (clause indices whose
   # guard produced no target — fed to `build_guard_drops/3`). Clauses are visited in
   # order and, within a clause, targets in post-order DFS (matching the in-place emit
@@ -269,7 +272,7 @@ defmodule Mutare.Transform.FunctionPlan do
   # `meta[:mutare_tag]`, returning the (further) tagged clause group, a
   # `Candidate.Lifted` per mutation, and the next free tag. Mirrors `build_guards/3`
   # but walks head args (the patterns) rather than guards, and only literal-valued
-  # mutations survive (`tag_pattern_targets/3`). The tag counter continues from
+  # mutations survive (`Tag.pattern_literal_targets/3`). The tag counter continues from
   # `start_tag` so pattern tags never collide with guard tags.
   defp build_pattern_literals(clauses, mutators, start_tag) do
     {tagged_rev, cand_groups_rev, next_tag} =
@@ -324,8 +327,8 @@ defmodule Mutare.Transform.FunctionPlan do
     end)
   end
 
-  # Pattern-literal tagging (the explicit-descent walk that skips keyword/map keys
-  # and bitstring specs, with map-key-collision filtering) lives in
+  # Pattern-literal tagging (the explicit-descent walk that skips keyword-label keys
+  # and bitstring specs, with arrow-key collision filtering) lives in
   # `Mutare.Transform.Tag` — shared with the `case`/`receive`/`fn` clause-pattern
   # discovery in `Mutare.Transform.Analyze`.
 

@@ -82,8 +82,8 @@ defmodule Mutare.Transform.Analyze.Returns do
   # The tails are found on `raw_kw`, the pre-analysis body keyword, and each candidate is
   # built from its raw tail (so the diff renders the author's tail, un-annotated);
   # `deliver/2` then appends them to the same nodes in `analyzed_kw`, which already carry
-  # the operator candidates. `ReturnValue.replacements/1` decides the constant(s) (or that
-  # the tail is ineligible).
+  # the operator candidates. Each mutator's `return_replacements/1` or `/2` callback decides
+  # the replacement(s) (or that the tail is ineligible).
   def annotate_returns(analyzed_kw, raw_kw, mutators) do
     with_return_mutators(mutators, analyzed_kw, fn return_mutators ->
       {_raw_kw, pending} = walk_body(raw_kw, %{}, tail_collector(return_mutators), :mutate)

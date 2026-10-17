@@ -17,7 +17,8 @@ defmodule Mutare.Sandbox.Command.Invocation do
   `mix_env/0`; the self-hosting isolation vars), the raw spawn
   (`mix/4`/`timed_mix/4`), and the **timeout enforcement mechanism** — the env var
   used to pass the cap (`timeout_env/0`) and the dependency-free watcher AST
-  (`watcher_ast/0`) that `Mutare.Sandbox` renders into the target's test bootstrap.
+  (`watcher_ast/0`) that `Mutare.Sandbox` renders into the target's project prefix
+  and test-bootstrap fallback.
   The matching half — *decoding* what a run did from its exit code — is
   `Mutare.Sandbox.Command`; the codes both halves share are the leaf
   `Mutare.Sandbox.Command.Exit`, and `Mutare.Sandbox.Command.timed_test/4`
@@ -44,8 +45,8 @@ defmodule Mutare.Sandbox.Command.Invocation do
   whose write end only the spawning Mutare process holds, so if that process dies
   — however abruptly — the pipe hits EOF. The owner-death watcher
   (`owner_watch_ast/0`, gated by `owner_watch_env/0`, rendered by `Mutare.Sandbox`
-  into the sandbox's config and test bootstrap) blocks reading stdin and halts the
-  run with `Mutare.Sandbox.Command.Exit.owner_lost/0` as soon as EOF is read,
+  into the sandbox's project prefix, config and test bootstrap) blocks reading stdin
+  and halts the run with `Mutare.Sandbox.Command.Exit.owner_lost/0` as soon as EOF is read,
   so no sandbox `mix` outlives the run that spawned it.
   """
 
@@ -82,7 +83,8 @@ defmodule Mutare.Sandbox.Command.Invocation do
   prefix, which mix evaluates on *every* sandbox boot — so it must be armed only
   when `Mutare.Runner` sets this variable on the compile invocation, and stay
   inert on the baseline, the coverage probe, and every per-mutant `mix test`
-  (whose cap is `timeout_env/0`, armed from the test bootstrap instead).
+  (whose cap is `timeout_env/0`, armed from the project prefix with a
+  test-bootstrap fallback).
   """
   @spec compile_timeout_env() :: String.t()
   def compile_timeout_env, do: @compile_timeout_env
@@ -323,8 +325,9 @@ defmodule Mutare.Sandbox.Command.Invocation do
 
   The baseline runs under the same count as the mutants, so it checks the suite is
   green at the concurrency they get, and times it at their speed — the per-mutant
-  cap is a multiple of that time. The one compile and the coverage probe run alone
-  on the machine and are not trimmed.
+  cap is a multiple of that time. The coverage probe uses the same trim, so a
+  suite that branches on scheduler count executes the same paths. The one compile
+  runs without a scheduler trim.
   """
   @spec emulator_flags_env(run_opts()) :: [{String.t(), String.t()}]
   def emulator_flags_env(opts) do

@@ -25,11 +25,11 @@ under `test/support/` in the Mutare repository.
 | Emit mutations *inside* a DSL fragment (an Ecto `where`, say) | `Mutare.Mutator.MacroHost` | `Mutare.Mutator.MacroHost` |
 | Handle a `use` whose injected imports/behaviours Mutare can't recover | `Mutare.UseExpansion` | `Mutare.UseExpansion` |
 
-The first four are mutators and go under `:mutators`. The last three are
-extension capabilities: implemented by a *non-mutating* module, they go under
-`:extensions` (a mutator may also implement `Mutare.CallRouting` and
-`Mutare.Mutator.MacroHost` itself — then the one `:mutators` entry enables
-everything).
+The first four and macro hosts are mutators and go under `:mutators`.
+`Mutare.CallRouting` and `Mutare.UseExpansion` are extension capabilities:
+implemented by a *non-mutating* module, they go under `:extensions`. A mutator
+may also implement `Mutare.CallRouting` — then the one `:mutators` entry enables
+both its routing and its mutations.
 
 ## Writing a mutator
 
@@ -173,10 +173,10 @@ The source-driven helpers also check every transform they make
 (`verify_invariants: true`, unless you pass `false`) and raise
 `Mutare.InvariantError` when your mutator leaves the metamutant unsound: a
 recorded mutant that the metamutant cannot select, or that no coverage record
-lists, a replacement that renders identically to the original, or a mutator
-that returns something different each time it is called. A host whose splice
-overwrites selectors core already placed shows up here as core's mutants losing
-their branches. To run the same checks over a real project, use
+lists, a replacement that renders identically to the original, or nondeterministic
+metamutant emission. If a host's splice overwrites selectors core already placed,
+those core mutants lose their branches and fail these checks. To run the same
+checks over a real project, use
 `mix mutare --check --verify-invariants`.
 
 ## Writing an extension

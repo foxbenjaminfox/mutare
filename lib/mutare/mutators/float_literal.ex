@@ -4,7 +4,7 @@ defmodule Mutare.Mutators.FloatLiteral do
 
   The float counterpart of `Mutare.Mutators.IntegerLiteral`. On by default.
 
-  Add project-specific positions to leave alone with the `:skip_arguments` option (a list of `{module, function, arity, positions}`, as in `Mutare.Mutators.IntegerLiteral`).
+  To leave an argument unmutated, route its position `:raw` with the `call_routes:` option (see `Mutare.CallRouting`).
 
   Filterable variants — qualify a `# mutare:ignore` filter with `:label` to suppress just one kind (`c:Mutare.Mutator.variants/0`): `zero`, `succ`, `pred`.
   """

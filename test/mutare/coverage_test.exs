@@ -311,7 +311,7 @@ defmodule Mutare.CoverageTest do
       Enum.each(Map.keys(pre), &ensure_table/1)
 
       on_exit(fn ->
-        # Drop our probe ids first (they may live in a table the bootstrap owns under dogfooding),
+        # Drop our probe ids first (fixture capture uses tables separate from the outer probe),
         # then drop only the tables this test created. A concrete-named fixture records @attr_id to
         # the per-test table (module ignored in the match), so clear it by id.
         delete_key(H.agg_table(), @attr_id)
@@ -425,8 +425,8 @@ defmodule Mutare.CoverageTest do
   defp restore_track(:unset), do: :persistent_term.erase(Recorder.runtime(:fixture).track_key)
   defp restore_track(value), do: :persistent_term.put(Recorder.runtime(:fixture).track_key, value)
 
-  # Drop a coverage table only if this test created it; leave a pre-existing one
-  # (under the probe, the bootstrap owns it and later tests still record into it).
+  # Drop a fixture coverage table only if this test created it; preserve any
+  # pre-existing fixture table. Harness capture uses separate tables.
   defp drop_table_unless(_table, true = _pre_existed), do: :ok
 
   defp drop_table_unless(table, false) do

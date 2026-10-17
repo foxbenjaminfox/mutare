@@ -2,7 +2,7 @@
 # It exists to show the three knobs you reach for most often.
 [
   # 1. WHICH MUTATORS RUN. `:builtins` is every built-in family — the default,
-  #    spelled out here so this demo exercises the whole catalogue. To narrow it:
+  #    spelled out here so this demo enables the whole catalogue. To narrow it:
   #
   #      mutators: [:arithmetic, :relational]          # just these two
   #      mutators: [{:builtins, except: [:regex]}]     # all but one
@@ -21,5 +21,5 @@
   ]
 
   # 3. KNOWN-EQUIVALENT MUTANTS are suppressed at the source with
-  #    `# mutare:ignore` comments — see lib/shop/pricing.ex and lib/shop/cart.ex.
+  #    `# mutare:ignore` comments — see lib/shop/pricing.ex.
 ]

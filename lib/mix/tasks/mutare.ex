@@ -3,7 +3,7 @@ defmodule Mix.Tasks.Mutare do
   @moduledoc """
   Mutation-test the current project.
 
-  Mutare builds a single *metamutant*, embedding every possible mutant behind a runtime switch, compiles it once, runs your test suite once as baseline with no mutants active, then for each mutant runs the part of the suite that potentially covers the mutant, reporting back with the mutants your tests failed to catch.
+  Mutare builds a single *metamutant*, embedding the selected mutants behind a runtime switch, compiles it once, runs your test suite once as baseline with no mutants active, then for each mutant runs the part of the suite that potentially covers the mutant, reporting back with the mutants your tests failed to catch.
 
   ## Getting started
 
@@ -86,7 +86,9 @@ defmodule Mix.Tasks.Mutare do
 
   ## Inspecting without running
 
-  With these flags, the command prints information and exits without preparing a sandbox or running the suite — for discovery, scripting, and debugging configuration:
+  These flags inspect the project without running the suite — for discovery,
+  scripting, and debugging configuration. Only `--check` prepares and compiles a
+  sandbox:
 
       mix mutare --version                # the installed mutare version
       mix mutare --list-mutators          # the built-in mutator catalog (see above)
@@ -182,7 +184,7 @@ defmodule Mix.Tasks.Mutare do
                                           #   your schedulers ÷ this, capped at 4 like
                                           #   the default — pass both for more)
       mix mutare --schedulers all         # don't trim the workers' schedulers
-      mix mutare --full                   # run the whole suite for every mutant
+      mix mutare --full                   # run the whole suite for every covered mutant
                                           #   (default: only the test cases that cover it)
       mix mutare --per-file               # run whole covering test *files*, not just
                                           #   the individual covering tests — the opt-out
@@ -274,7 +276,7 @@ defmodule Mix.Tasks.Mutare do
       config :my_app, MyApp.Repo,
         database: "my_app_test\#{System.get_env("MIX_TEST_PARTITION")}"
 
-  You must pre-create and migrate the `--workers` partitioned databases (just as is required by `mix test --partitions`). The pool recycles ids across the run, so `--workers 4` needs four databases, not one per mutant; the baseline and coverage probe use partition `1`.
+  You must pre-create and migrate the `--workers` partitioned databases (just as is required by `mix test --partitions`). The pool recycles ids across the run, so `--workers 4` needs four databases, not one per mutant; the compile, baseline and coverage probe use partition `1`.
 
   Only partition `1` is checked before the mutants run: a missing or unmigrated database for any other partition makes every mutant run there fail, and those failures are recorded as kills, inflating the score. After the run, Mutare takes each other partition's fastest kill and reruns its tests on that partition with no mutant active. If they fail (on every `--kill-runs` attempt, so a suite you have called flaky is given the same benefit of the doubt as its kills), or the application won't start, the same tests are run on partition `1`; if they pass there, Mutare warns that the partition's kills may be false. If they fail there too, the tests fail when run on their own, whatever the partition, and Mutare warns about that instead. Only one kill's tests are rerun, so a partition broken for some tests but not those may go unnoticed.
 
@@ -293,9 +295,9 @@ defmodule Mix.Tasks.Mutare do
   ## Sandbox and build cache
 
       mix mutare --sandbox /tmp/mut       # put the sandbox at a path of your choosing (inspect it, or cache it on CI)
-      mix mutare --no-keep-sandbox        # throwaway sandbox: rebuild cold, remove it afterwards
+      mix mutare --no-keep-sandbox        # fresh sandbox: discard its previous build
 
-  By default Mutare keeps the sandbox between runs (`--keep-sandbox`, on): it lives at a stable per-project temp dir and is re-materialised incrementally — only changed files are rewritten, so mix's compiler reuses the cached `_build` and a re-run after adding a test recompiles nothing. That is the compile-once bet applied across runs, not just within one; the cost is one project copy plus its build sitting in the temp dir per project. `--sandbox <path>` chooses the location — handy for inspecting the generated metamutant, and on CI point it at a cached directory (cache `<path>/_build` and `<path>/deps`, keyed on `mix.lock`; tar-based caches preserve the mtimes the incremental compile relies on). `--no-keep-sandbox` opts out: a fresh copy, a cold compile, and the sandbox removed when the run finishes. It runs in a directory of its own and leaves the kept sandbox as it was, so it does not repair a kept sandbox that has gone bad — a build artifact corrupted by a crashed run, say, shows up as every mutant reporting a harness error. Delete that directory instead; the next run rebuilds it cold. The baseline, harness-error and dependency aborts name it when they suspect it.
+  By default Mutare keeps the sandbox between runs (`--keep-sandbox`, on): it lives at a stable per-project temp dir and is re-materialised incrementally — only changed files are rewritten, so mix's compiler reuses the cached `_build` and a re-run after adding a test recompiles nothing. That is the compile-once bet applied across runs, not just within one; the cost is one project copy plus its build sitting in the temp dir per project. `--sandbox <path>` chooses the location — handy for inspecting the generated metamutant, and on CI point it at a cached directory (cache `<path>/_build` and `<path>/deps`, keyed on `mix.lock`; tar-based caches preserve the mtimes the incremental compile relies on). `--no-keep-sandbox` opts out of that reuse: the sandbox is copied afresh, though build seeding may still reuse artifacts from the original project, and the runner removes it afterwards unless `--sandbox` supplied its path. It runs in a directory of its own and leaves the kept sandbox as it was, so it does not repair a kept sandbox that has gone bad — a build artifact corrupted by a crashed run, say, shows up as every mutant reporting a harness error. Delete that directory instead; the next run rebuilds it cold. The baseline, harness-error and dependency aborts name it when they suspect it.
 
   ## Output formats
 
@@ -326,7 +328,7 @@ defmodule Mix.Tasks.Mutare do
 
   ## Configuration file (`.mutare.exs`)
 
-  Configuration may also be placed in `.mutare.exs` (a keyword list); a CLI flag overrides the matching key. Every option is optional — the block below lists all the file-settable keys with their defaults:
+  Configuration may also be placed in `.mutare.exs` (a keyword list); a CLI flag overrides the matching key. Every option is optional. The example below combines defaults with project-specific exclusions, routes, and marks; its worker and scheduler counts illustrate a machine with 16 schedulers:
 
       # .mutare.exs
       [
@@ -365,7 +367,7 @@ defmodule Mix.Tasks.Mutare do
         test_paths: ["test"],
         # :tests runs only the individual test cases covering each mutant; :coverage
         # runs whole covering files (opt-out for stateful async:false suites); :full
-        # runs the whole suite for every mutant
+        # runs the whole suite for every covered mutant
         test_selection: :tests,
         # concurrent mutant runs; default: half the schedulers, capped at 4 (each
         # worker is a full `mix test` BEAM)
@@ -417,7 +419,8 @@ defmodule Mix.Tasks.Mutare do
         # --- sandbox reuse / build cache (see "Sandbox and build cache" above) ---
         sandbox: nil,
         # keep the sandbox (and its compiled _build) between runs, re-materialising
-        # it incrementally; false = throwaway copy, cold compile, removed afterwards
+        # it incrementally; false = fresh copy (build seeding still applies),
+        # removed afterwards unless :sandbox supplied its path
         keep_sandbox: true,
         # on a narrowed run (--only/--line/--since), reuse the app's already-built
         # beams so the one compile rebuilds just the mutated file(s) — not the whole

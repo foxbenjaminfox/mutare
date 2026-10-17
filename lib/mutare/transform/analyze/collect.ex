@@ -38,7 +38,7 @@ defmodule Mutare.Transform.Analyze.Collect do
   #   * **Hosted delivery is lowered to rebuilds, never woven.** A selector host participates
   #     fully: its ordinary `mutate/1`/`mutate/2` runs like any other node-level producer, and a
   #     nested `{:hosted, …}` stamp inside the subtree attaches the host's `Candidate.Hosted`
-  #     through the very same `analyze_known_macro` path the transform uses. The difference is
+  #     through the very same `Routed.analyze_routed_call/4` path the transform uses. The difference is
   #     pure readback: where emission builds one woven selector `case` whose active branch
   #     evaluates `wrap(mutant)` at the position `splice` fills (`Mutare.Transform.HostedEmit`),
   #     collect splices `wrap(mutant)` directly (`lower_hosted/3`) — one whole-call rebuild per

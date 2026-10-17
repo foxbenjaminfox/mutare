@@ -20,9 +20,10 @@ defmodule Mutare.Transform.Tag do
   # the in-place analyzer's positional routing so the *form* side of a remote call
   # stays opaque (an aliased module in a guard-safe `Integer.is_even(n)` must not be
   # offered to AliasLiteral and swapped into a guard-illegal call) and a bitstring
-  # type specifier / a keyword-or-map *key* is never offered (a swapped `-`
-  # separator, a `unit(0)`, or a mutated label would not compile). The subtleties
-  # (bitstring specs, map-key collisions) therefore live here once.
+  # type specifier / a keyword-label key is never offered (a swapped `-`
+  # separator or a `unit(0)` would not compile; a label is not a value). Arrow-style
+  # map keys are value positions, with scalar-key mutations filtered against sibling
+  # keys. The subtleties (bitstring specs, map-key collisions) therefore live here once.
 
   alias Mutare.{AST, Mutator}
   alias Mutare.Mutator.Dispatch
@@ -472,8 +473,8 @@ defmodule Mutare.Transform.Tag do
   # === pattern-literal tagging ===============================================
 
   # The pattern walk's entry, honouring a call-level `:skip` the same way `tag_walk/3` does — a
-  # head pattern is walked by the resolver too, so a skipped special form (`%{}`, `=`, `<<>>`) is
-  # an inert leaf there as well.
+  # head pattern is walked by the resolver too, so a skipped call in it is an inert leaf
+  # there as well.
   defp tag_pattern_targets(node, acc, mutators, context) do
     if Meta.skipped?(node),
       do: {node, acc},
@@ -597,7 +598,7 @@ defmodule Mutare.Transform.Tag do
   # reached — used for a negative literal, whose value `-n` lives one node deeper than
   # the unary-minus we tag. The block is built directly (not via `AST.literal/1`, which
   # re-wraps a negative as `{:-, …}` the literal families don't match), so `FloatLiteral`/
-  # `Literal` mutate the value; each clean result then *replaces the whole `-n` node*.
+  # `IntegerLiteral` mutate the value; each clean result then *replaces the whole `-n` node*.
   defp value_literal_mutations(value, mutators) do
     {:__block__, [], [value]}
     |> mutations(mutators)

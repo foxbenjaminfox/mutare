@@ -6,7 +6,7 @@ defmodule Mutare.Transform.LiftedEmit do
   # `Ctx`, no id-claiming. `Mutare.Transform.emit_function_plan/2` owns the stateful half
   # (threading `Ctx`, claiming ids via `SelectorEmit.claim_items/4`, emitting in-place body
   # selectors) and calls `assemble/7` with plain data: the plan, the emitted source clauses, the
-  # `{id, index, clause, witness}` claims, the group number, the config, and prepared
+  # `{id, variant, witness}` claims, the group number, the config, and prepared
   # coverage expressions, and an optional complete function id interval for a clean region.
   #
   # The interleaving scheme: each source clause's mutant clauses (gated `when <var> === <id>`)

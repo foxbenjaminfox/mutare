@@ -50,11 +50,11 @@ defmodule Mutare.Transform.Resolve do
   def annotate(ast), do: annotate(ast, %Routes{routes: %{}, hosts: []})
 
   @doc """
-  As `annotate/1`, plus stamp each call that resolves to a **known macro** (in the
+  As `annotate/1`, plus stamp each call with a matching route (in the
   `registry` built by `Mutare.CallRouting.Registry.build/3`) with its per-argument routing under
   `meta[:mutare_route]`, so the analyzer routes a pattern/opaque argument correctly
   instead of mutating it. The registry is carried in the env (read-only) and
-  consulted at each remote and bare call.
+  consulted at each remote and bare call, for functions and macros alike.
 
   `opts` carries the pass's diagnostics wiring: `:warnings` (default `true`) gates the
   advisory classifier warnings `RouteStamp` may print, and `:file` labels them. The

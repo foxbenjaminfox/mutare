@@ -4,11 +4,11 @@ defmodule Text.Format do
 
   A Mutare target built around String and Regex literals. The headline survivor
   is a regex *range boundary*: the suite proves that runs of separators collapse
-  to a hyphen, but never pins the exact edges of the `a-z0-9` character class —
-  so nudging an edge by one character (`a-z` → `a-y`) can slip through. The
+  to a hyphen and that `a`, `z`, `0`, and `9` are kept, but never tries a backtick
+  or brace — so growing the class into those neighbours can slip through. The
   truncation length in `excerpt/2` hides the same kind of off-by-one, and the
-  `String.trim/1` in `slugify/1` earns its keep only on input the tests never
-  supply.
+  `String.trim/1` in `slugify/1` is redundant with the replacement and final
+  hyphen trim — an equivalent mutant.
   """
 
   @doc "A URL-friendly slug: lower-cased, with runs of non-alphanumerics hyphenated."

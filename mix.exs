@@ -90,8 +90,8 @@ defmodule Mutare.MixProject do
       # Once corrupted it stays corrupted on disk, so — with `--keep-sandbox`
       # — every subsequent run (any mutant, even a future invocation) fails
       # `PropCheck.CounterStrike.init/1` and the *entire* baseline suite reports
-      # not-green, which mutare surfaces only as undifferentiated
-      # `:harness_error` on every mutant. Found dogfooding mutare on itself
+      # not-green, aborting the mutation run before any mutant is tested.
+      # Found dogfooding mutare on itself
       # (`--workers 4`); see NOTES.md "PropCheck counter-examples DETS
       # corruption under concurrent workers". Give each `mix test` process
       # (identified by its own BEAM's OS pid) a private counter-examples file

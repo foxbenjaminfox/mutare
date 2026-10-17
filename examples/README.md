@@ -22,8 +22,8 @@ each one. They're ordered here from the very simple to the quite complex:
 | [`calc`](calc/) | Shipping cost | **The 30-second introduction.** One function, one survivor: the canonical off-by-one boundary (`>= 50` → `> 50`) that survives because no test sits on the line. |
 | [`auth`](auth/) | Sign-in policy | Boolean validation: a length boundary, all-ASCII test data (`String.length` vs `byte_size`), character-class checks that are never the deciding factor, in-place vs lifted (`when` guard) mutants, and an untested helper (no-coverage). |
 | [`stats`](stats/) | Numeric aggregation | Collection-shaped mutators (`sort`/`reverse`/arity), an untested empty-input clause, a *coincidental equivalent* (`div`/`rem`), commutative vs non-commutative pattern swaps, and a guard with no boundary test. |
-| [`text`](text/) | Text formatting | String/Regex literals: a regex *range boundary* (`[a-z]` vs `[a-y]`), a removable no-op transform, an off-by-one truncation length, and a guard never approached near its threshold. |
-| [`shop`](shop/) | A multi-module shop | **The comprehensive one.** Exercises *every* built-in mutator family across six files, and tours the `.mutare.exs` config surface — choosing mutators, leaving a macro's argument raw (`call_routes:`), and suppressing known-equivalent mutants with `# mutare:ignore`. |
+| [`text`](text/) | Text formatting | String/Regex literals: regex *range boundaries*, an equivalent no-op transform, an off-by-one truncation length, and all-ASCII test data. |
+| [`shop`](shop/) | A multi-module shop | **The comprehensive one.** Exercises a broad cross-section of built-in mutator families across six files, and tours the `.mutare.exs` config surface — choosing mutators, leaving a macro's argument raw (`call_routes:`), and suppressing known-equivalent mutants with `# mutare:ignore`. |
 
 The lessons compound: the same handful of gaps — **missing boundary tests**,
 **weak test data**, **untested branches**, and **coincidental equivalents** — is

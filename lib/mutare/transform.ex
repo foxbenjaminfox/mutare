@@ -13,16 +13,20 @@ defmodule Mutare.Transform do
       separated from emission.
     * `Mutare.Transform.FunctionPlan` — one liftable clause group: its signature,
       its clauses, a single shared *tagged* clause group, and the typed lifted
-      candidates (`Candidate.Lifted` / `Candidate.Drop`) it admits.
+      candidates it admits (guard, head-pattern, and clause-drop mutations).
     * `Mutare.Transform.Candidate` — the typed, pre-id description of a single
       mutant. One struct per legal kind (see that module's moduledoc for the current
       set), so the redundant `context`/`kind`/`operation` triple (and its illegal
       combinations) is gone.
 
-  The stages, run per subtree:
+  The stages:
 
-    1. **Analyze + classify** — `analyze/3` is one context-threaded recursive
-       descent: it *names the context* of each position as it descends and, for
+    1. **Resolve** — surface `use`-injected directives and behaviours, resolve
+       calls and their argument routes, and normalize ordinary pipes to direct
+       calls. `UnitReturns` then marks inert return tails and `Bindings` records
+       the scope facts selectors need when they export bindings.
+    2. **Analyze + classify** — `Mutare.Transform.Analyze` runs one context-threaded
+       recursive descent: it *names the context* of each position as it descends and, for
        every node a mutator recognises *in a mutating context*, attaches a typed
        `Candidate.InPlace` to the node's own metadata (`meta[:mutare]`). Mutators
        run **once**, here. Routing is positional (the spec side of a `::` goes one
@@ -36,18 +40,20 @@ defmodule Mutare.Transform do
        yet still reach any explicit `def` body, which flips back to `:runtime`);
        the rest (`:compile_time`, `:spec`, `:guard`,
        `:capture_arity`) are recognised and pruned, producing no candidate.
-    2. **Plan** — a statement sequence is grouped into a `ModulePlan`; each
+    3. **Plan** — a statement sequence is grouped into a `ModulePlan`; each
        liftable clause group becomes a `FunctionPlan` carrying its lifted
        candidates. No ids are assigned yet.
-    3. **Assign** — emission walks the plan and the annotated tree bottom-up and
+    4. **Assign** — emission walks the plan and the annotated tree bottom-up and
        hands each candidate the next mutant id. Ids are assigned in post-order DFS
        and the counter advances even for ignored, unselected, and `:skip_ids`
        mutants. Ignore directives are matched against each recorded site's line,
        family, and variant before deciding whether to emit its code.
-    4. **Emit** — an in-place candidate becomes a tail-position selector `case`; a
+    5. **Emit** — an in-place candidate becomes a tail-position selector `case`; a
        `FunctionPlan` becomes one private function (threading the active id as an
-       extra arg) behind a dispatcher, each mutant a single guarded clause. Ignored,
-       unselected, and poisoned mutants retain their sites but emit no code.
+       extra arg) behind a dispatcher. Head-pattern mutants get their own guarded
+       clauses; eligible guard-only mutants share a clause through `when` alternatives,
+       and clause drops gate off the original. Ignored, unselected, and poisoned
+       mutants retain their sites but emit no code.
        A function holding two or more selector sites also keeps its source beside
        the instrumented code, as a **clean region**: a lifted group gains a copy of
        its original clauses, a clause that stays in place a second `:do` body, and
@@ -56,7 +62,7 @@ defmodule Mutare.Transform do
        path. Any source may be copied: a copy that fails to compile is attributed
        to its region, which poison recovery then drops (`:skip_regions`). A copied
        call still enters its callee through that callee's own dispatcher.
-    5. **Render** — annotations are stripped and the tree is rendered to source
+    6. **Render** — annotations are stripped and the tree is rendered to source
        (with a Sourceror keyword-block workaround).
 
   Carrying the `Candidate.InPlace` in the node's *own* metadata is what lets
@@ -80,8 +86,8 @@ defmodule Mutare.Transform do
   the *transformed* children, reachable whenever an outer mutant is inactive.
 
   A **pipe stage** is analyzed as the call it is sugar for (`left |> stage(args)` as
-  `stage(left, args)` — `WrittenPipe`), so no selector ever lands on the
-  right side of a pipe, where a `case` is illegal. Emission binds the piped value once, in a
+  `stage(left, args)` — `Resolve`, with spelling retained by `WrittenPipe`), so no selector
+  ever lands on the right side of a pipe, where a `case` is illegal. Emission binds the piped value once, in a
   one-shot closure invoked on it (`SelectorDelivery`):
   `lhs |> (fn v -> case … (each branch pipes `v`) … end).()`. Each branch references a cheap
   variable — keeping a chain of mutated stages **linear** in the rendered source, where
@@ -108,8 +114,10 @@ defmodule Mutare.Transform do
   that takes the active mutant id as an extra first arg (`mutare_active`); the
   public `f/arity` becomes a dispatcher that reads the id and forwards. Each source
   clause is emitted **once** as an original gated `when mutare_active !== <id>` for
-  every mutant that overrides/drops it; each mutant adds a **single** clause gated
-  `when mutare_active === <id>`, placed before the original it replaces:
+  every mutant that overrides/drops it. A head-pattern mutant adds a clause gated
+  `when mutare_active === <id>`, placed before the original it replaces; eligible
+  guard-only mutants share a clause through separately gated `when` alternatives.
+  A clause-drop mutant adds no clause:
 
       def f(a) do
         mutare_active = :persistent_term.get(:mutare_active, 0)
@@ -121,8 +129,9 @@ defmodule Mutare.Transform do
   Exactly one clause wins for any `(id, args)`: the mutant when its id is active and
   its head/guard match, else the original. This is **per-clause**: a mutant touching
   one clause no longer copies the other N−1, so a group with C clauses and M mutants
-  emits ~C+M clauses, not C×M (see NOTES "lifting blowup"). In-place selectors live
-  only in the *original* clauses (and non-lifted code); a mutant clause reuses the
+  emits at most C+M clauses before an optional clean copy, rather than C×M (see
+  NOTES "lifting blowup"); guard sharing and clause drops reduce that further.
+  In-place selectors live only in the *original* clauses (and non-lifted code); a mutant clause reuses the
   raw body — sound because exactly one mutant is ever active. The public `f/arity`
   is unchanged at the module boundary.
 
@@ -540,8 +549,9 @@ defmodule Mutare.Transform do
     }
   end
 
-  # Stamp the parsed tree with everything the planner reads off node meta, in dependency order —
-  # all passes touch **meta only**, so `parsed` stays pristine for the comment-based ignore scan.
+  # Prepare the parsed tree in dependency order: stamp the facts the planner reads off node
+  # meta and normalize ordinary pipes to direct calls. The immutable `parsed` value remains
+  # available for the comment-based ignore scan.
   #
   # First surface directives hidden behind `use` (`Mutare.Transform.Uses`): a module-level
   # `use MyAppWeb, :controller` / `use Ecto.Schema` is expanded in-process and the `import`/`alias`
@@ -553,9 +563,11 @@ defmodule Mutare.Transform do
   # `Resolve` resolves `alias`es/`import`s in one lexical source-order pass (an `alias` can rebind
   # a later `import`'s module — the single fold gets it right), stamping each call with the module
   # it refers to (an aliased `S.upcase` seen as `String.upcase`, a bare imported `reject(xs, f)` as
-  # `Enum.reject`) and each known-macro call with its argument routing. Last, `UnitReturns`
+  # `Enum.reject`) and each routed call with its argument routing, normalizing ordinary pipes
+  # before interpreting their arguments. Next, `UnitReturns`
   # classifies each module's functions by return shape and stamps a unit-returning function's leaf
   # tails, so the analyzer treats them as non-positions (after `Resolve`, so the stamp survives).
+  # Last, `Bindings` stamps the scope facts the selector export and delivery gate read.
   defp annotate_tree(parsed, %Inputs{config: config} = inputs, on_resolve) do
     expanded =
       if inputs.expand_uses,
@@ -575,12 +587,13 @@ defmodule Mutare.Transform do
     |> Bindings.annotate()
   end
 
-  # Prepend `@compile {:no_warn_undefined, {:mutare_cov, :hit, 1}}` to every module
-  # body, so the coverage `hit/1` call in each selector catch-all draws no xref
+  # Prepend a `@compile {:no_warn_undefined, {helper, :hit, arity}}` attribute to every module
+  # body, so the coverage call in each selector catch-all draws no xref
   # warning when the umbrella compiles a mutated app before the generated helper
-  # app (see `Mutare.Coverage.Recorder.no_warn_attr_ast/0`). Both `defmodule` and
+  # app (`hit/2` for a namespaced file, `hit/1` otherwise;
+  # see `Mutare.Coverage.Recorder.no_warn_attr_ast/1`). Both `defmodule` and
   # `defimpl` define modules with mutatable bodies; `defprotocol` has no bodies (so
-  # no `hit/1` call) and is left alone. A prewalk reaches nested modules too — an
+  # no coverage call) and is left alone. A prewalk reaches nested modules too — an
   # ancestor without its own call gets a harmless no-op attribute.
   defp silence_helper_xref(ast, namespace) do
     attr = Recorder.no_warn_attr_ast(namespace)
@@ -805,7 +818,7 @@ defmodule Mutare.Transform do
   # Emit one def/defp clause with the active-id read hoisted out of its per-site selectors. The
   # head (default values) is emitted with the read *unbound* either way (those expressions run
   # in a generated head clause where no binding is in scope), the body with it bound where the
-  # binding reaches (`emit_clause_body/3`). The one-shot `active_bound` toggles are scoped to
+  # binding reaches (`emit_clause_body/4`). The one-shot `active_bound` toggles are scoped to
   # this clause and restored on the way out, so they never leak into the next module item.
   defp emit_clause(clause, ctx, delivery) do
     bound0 = ctx.scope.active_bound
@@ -846,7 +859,7 @@ defmodule Mutare.Transform do
 
   # Emit each body block's value with the active-id read bound where the binding reaches. Block
   # order (`:do` first) is preserved, so ids land exactly as a single whole-clause emit would
-  # assign them. The `is_list` guard asserts the caller's contract (`emit_annotated_clause/3`
+  # assign them. The `is_list` guard asserts the caller's contract (`emit_annotated_clause/4`
   # only reaches here for a list body_kw); there is no fallback because a body-bearing def/defp
   # clause always has a keyword body.
   #

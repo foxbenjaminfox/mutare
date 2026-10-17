@@ -6,7 +6,7 @@ defmodule Mutare.Mutators.StringLiteral do
 
   Pattern delivery removes one low-signal duplicate: an ordinary exact string pattern keeps only the sentinel retarget (`"foo"` → `"mutare"`; with `""` as the fallback when the sentinel is the source or would duplicate a sibling map key). A string below binary-composing pattern syntax (`<>` or `<<>>`) keeps both variants because emptying a segment can remove a structural constraint while the sentinel preserves a non-empty constraint. Runtime positions always keep both. This positional policy lives in `Mutare.Transform.Tag`; this mutator continues to produce the complete pair without deciding where it will be delivered.
 
-  Add project-specific positions to leave alone with the `:skip_arguments` option (a list of `{module, function, arity, positions}`, as in `Mutare.Mutators.IntegerLiteral`).
+  To leave an argument unmutated, route its position `:raw` with the `call_routes:` option (see `Mutare.CallRouting`).
 
   Filterable variants — qualify a `# mutare:ignore` filter with `:label` to suppress just one half (`c:Mutare.Mutator.variants/0`): `empty` (the `""`) or `sentinel` (the `"mutare"`).
   """

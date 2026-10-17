@@ -369,7 +369,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
     end
   end
 
-  # The bindings on the unconditional spine (mirrors `spine_rewrite/1`'s reach).
+  # The bindings on the unconditional spine (mirrors `spine_rewrite/2`'s reach).
   @doc false
   def spine_bindings({op, _meta, [left, _right]}) when op in @short_circuit_ops,
     do: spine_bindings(left)

@@ -2,7 +2,7 @@ defmodule Mutare.Transform.Invariants do
   @moduledoc false
 
   # The `verify_invariants: true` checks: `Mutare.Transform.transform_string_with_sites/2` runs
-  # `check!/3` on each rendered file and raises `Mutare.InvariantError` listing every violation.
+  # `check!/4` on each rendered file and raises `Mutare.InvariantError` listing every violation.
   #
   # The transform records a mutant (a `Mutare.Site`) and delivers its artifact in one claim
   # (`ClaimState.claim/6`), but nothing structural makes the artifact survive until the metamutant

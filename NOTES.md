@@ -20,21 +20,21 @@ self-recording by id retired both along with `:cover`.)
 
 ### Per-mutant metamutant manifest `[done]`
 `Mutare.Manifest` is the per-file, per-mutant readback of *where each mutant lives
-in its rendered metamutant*. **`Poison`** builds one **lazily** (`from_source/1`),
-on a failed compile, only for the file(s) the error names — passing
-`schema.metamutants` (the rendered sources) to `Poison.ids/2`, which memoizes the
+in its rendered metamutant*. **`Poison`** builds one **lazily** (`from_source/2`),
+on a failed compile, only for the file(s) the error names. `Poison.attribution/4`
+takes the rendered sources and their dispatch-variable names, memoizing each
 manifest within one recovery so a file faulting on several lines is parsed once. It
 carries the **generated line ranges** of each mutant's code. (It used to also carry a
 coverage location, but coverage now self-records by id — see *Test selection* — so
-the manifest is Poison-only.)
+coverage needs no manifest.) Opt-in `verify_invariants` also uses the manifest;
+see "Verify mode: the transform reads its own output back".
 
 It used to be built **eagerly by `Schema`**, once per mutated file during the scan,
 and stored under `:manifests`. That was the scan's dominant cost and pure waste on
-the happy path: a manifest is read *only* on a compile failure (rare — built-in
-mutators are compile-safe), yet `Manifest.from_source/1` re-parses the whole rendered
-metamutant with `Sourceror.parse_string!`, which is **super-linear** in file size.
-The metamutant is ~25× the source (every mutant embeds an original+mutant selector
-branch), so a 1500-line file becomes a ~40k-line metamutant whose re-parse alone took
+the happy path: healthy runs needed no manifest. At the time, `Manifest.from_source/1`
+re-parsed the whole rendered metamutant with `Sourceror.parse_string!`, which was
+**super-linear** in file size. The metamutant was ~25× the source (every mutant
+embedded an original+mutant selector branch), so a 1500-line file became a ~40k-line metamutant whose re-parse alone took
 **minutes** — building all of them up front added several minutes to every run and
 threw them away. Deferring to the poison path removed that from healthy runs. (The
 scan is still transform/render-bound; see *Scan is transform-bound* below.)
@@ -77,9 +77,11 @@ Implementation notes:
   > *Why the metamutant was so big — lifting blowup on huge clause groups* below.
 - The old lifted private-copy attribution by `_m<id>` name is also **outdated**.
   Per-clause lifting now attributes a lifted mutant through its
-  `mutare_active === <id>` clause gate; `Manifest.gate_id/1` is the current reader.
-- `Mutare.Metamutant` shrank to just the selector-subject AST contract
-  (`subject_ast/0` + `subject?/1`); the metamutant *walk* now lives in `Mutare.Manifest`.
+  `mutare_active === <id>` clause gate; `Manifest.gate_id/2` reads a single gate,
+  while `sequence_mutants/2` reads shared guard alternatives.
+- `Mutare.Metamutant` owns the selector-subject AST contracts (`subject_ast/1` +
+  `subject?/2`, and `pattern_subject_ast/5` + `pattern_subject?/2` for tupled
+  pattern delivery); the metamutant *walk* lives in `Mutare.Manifest`.
 
 ### Unknown block macro_routes: poison the whole block, not one mutant at a time `[done]`
 An **unknown module-level block macro** (`custom_dsl do … end`) has its `do` body
@@ -4597,9 +4599,10 @@ would be tighter and more precise — still a refinement.
 ### Parallel workers (M4 done) `[refine]`
 The per-mutant phase runs `:workers` mutants concurrently (default: **half**
 `System.schedulers_online/0`, **clamped to 1..4**) via `Task.async_stream` in the
-shared sandbox. Concurrent `mix test` in one sandbox contends on mix's build lock
-("Waiting for lock…") and, since each spawns a full BEAM, oversubscribes CPU — a
-real overhead (4 workers gave ~2.4× in a spike; >4× observed at 16). The default
+shared sandbox. Before the scheduler trim described in round four, concurrent
+`mix test` runs each started every scheduler and oversubscribed the CPU — a real
+overhead (4 workers gave ~2.4× in a spike; >4× observed at 16). They also contend
+on Mix's build lock ("Waiting for lock…"), measured separately below. The default
 was schedulers_online originally; it was halved after the oversubscription
 manufactured false `:timeout` kills on phoenix_live_view (see "Timeouts" round
 two) — each worker's BEAM already uses every scheduler, so a worker per scheduler
@@ -4635,9 +4638,10 @@ the cap's yardstick, and timed at full width it measured something no mutant run
 gets. With the yardstick honest, the cap's `lanes / 2` contention factor (round
 two of "Timeouts") double-counted and went; it survives only as half the
 *oversubscription*, which is 1 unless the user asks for it (`schedulers: :all`,
-or counts whose product exceeds the machine). The probe and the one compile stay
-untrimmed — nobody's yardstick, alone on the machine — which is what the blanket
-env var could not do (it also throttled Mutare's own scan). The budget is
+or counts whose product exceeds the machine). Only the one compile stays
+untrimmed; the probe takes the mutants' trim too, so it records coverage under the
+same scheduler count they execute with. A blanket env var could not make that
+distinction (it also throttled Mutare's own scan). The budget is
 `schedulers_online`, not the core count, so a container quota or a `+S` given to
 Mutare itself shrinks what is divided and no inherited flag needs parsing. The
 no-flags worker default keeps its clamp at 4, now for the remaining reasons: a
@@ -12303,7 +12307,12 @@ String equality on `original_code`/`mutated_code`, which is what the suite asser
 everywhere, cannot see this class of bug; `SourcePatch.assert_patches/4` can, and is cheap
 enough to be the default way to test a new delivery shape.
 
-### Tests that select a mutant run `async: false`, and the suite checks it (2026-09-20)
+### Tests that select a mutant run `async: false`, and the suite checks it `[superseded — execution-private keys]` (2026-09-20)
+
+Superseded by "Selection is private to the test module" and "Selection is private
+to the module *execution*" (2026-09-24): selecting tests may now run async when
+their fixtures use the execution's private key. The entry below records the
+earlier serial-only rule.
 
 The selector is VM-wide `:persistent_term` state and every test metamutant numbers its mutants
 from 1, so a test module that calls `with_active_mutant/2` under `async: true` leaks its

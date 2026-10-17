@@ -138,10 +138,10 @@ defmodule Mutare.Calls do
   defdelegate resolved_routed_call(node), to: Transform.Calls
 
   @doc """
-  Returns the resolved treatment for each argument of a registered macro
-  call, or `nil`.
+  Returns the resolved treatment for each argument of a routed call, macro or function,
+  or `nil`.
 
-  Treatments come from the fully merged macro-routing registry and include any
+  Treatments come from the fully merged call-routing registry and include any
   shape-aware classification already performed for the call. The result may contain
   static treatments, `:hosted`, or nested keyword routing.
 
@@ -156,8 +156,8 @@ defmodule Mutare.Calls do
 
   ## Routing describes arguments; registration identifies ownership
 
-  A route specifies how to treat a registered macro's *arguments*. It does not stop a mutator's own
-  catalog from matching the **call**, which the expression walk still offers — so a macro
+  A route specifies how to treat a call's *arguments*. It does not stop a mutator's own
+  catalog from matching the **call**, which the expression walk still offers — so a call
   registered `:raw` is opaque in its interior and exposed in its name. (The call-level `:skip`
   is the exception: an inert leaf is offered to nobody, and this reader returns `:skip` for it.)
 
@@ -165,14 +165,14 @@ defmodule Mutare.Calls do
   inside a DSL whose API functions are never imported. A name is not an identity: rewriting
   somebody else's macro to a sibling name emits a call nobody defines, which the library rejects
   while expanding. Having a treatment is exactly what being registered means, so a non-`nil`
-  result identifies a registered macro — skip the node:
+  result identifies a routed call — skip the node:
 
       def mutate(node) do
         if Mutare.Calls.routed_treatments(node), do: :skip, else: swap(node)
       end
 
-  Test for `nil`, not for a non-empty list: `[]` is a registered macro with no visible
-  arguments, whose treatment is also defined by the registered route. The test recognises a *registered* macro —
+  Test for `nil`, not for a non-empty list: `[]` is a routed call with no visible
+  arguments, whose treatment is also defined by the registered route. The test recognises a *routed* call —
   including one registered by name only, the route for calls whose module cannot be resolved —
   and nothing beyond that. An unregistered macro is indistinguishable from an ordinary call, so
   a catalog still needs whatever arity and import gating it already applies.

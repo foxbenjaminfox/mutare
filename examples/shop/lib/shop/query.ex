@@ -7,7 +7,7 @@ defmodule Shop.Query do
   code. Used inside a function (as `Shop.Search` does), Mutare would otherwise
   splice mutation selectors into that expression; `.mutare.exs` lists the macro
   under `call_routes:` to leave the argument raw — the dependency-free twin of
-  `{Ecto.Query, :from, :skip}`.
+  `{Ecto.Query, :from, 2, [:expression, :raw]}`.
   """
 
   defmacro matching(source, condition) do

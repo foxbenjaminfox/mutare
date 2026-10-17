@@ -48,7 +48,8 @@ defmodule Mutare.Schema do
        selection, the matching local ids (without rendering site diffs) — plus the
        *facts* the end-of-build diagnostics read (matched configuration entries, the
        comment-directive container, degraded `use`s), collected here because this
-       is the one pass that parses every file: nothing later re-parses. The count
+       is the pass that parses every file, including those with no sites. Later
+       diagnostics read these facts without reparsing. The count
        is drift-proof: it comes from the *same* id-claiming path emission uses, so
        it equals the matching render's `next_id - start_id` by construction.
     2. **Render** (`render_files/4`) — prefix-sum the counts so each sited file
@@ -557,8 +558,8 @@ defmodule Mutare.Schema do
   # report time (`Mutare.Runner.Hydrate`). Deferral changes no id/tree/count — only whether each
   # `Mutare.Site` carries rendered code now or `nil`. Independently, the cheap `Macro` live
   # `summary` is built per site when a live reporter will show the in-flight mutant
-  # (`context.summarize_sites`, set by the Mix task unless `--quiet`); unlike the diff, the live
-  # line can't defer — it shows every mutant as it runs.
+  # (`context.summarize_sites`, set for animating reporters with deferred code); unlike the diff,
+  # the live line can't defer — it shows every mutant as it runs.
   defp render_one(%Job{} = job, %Context{} = context, skip_ids, skip_regions) do
     opts =
       transform_opts(context.options) ++

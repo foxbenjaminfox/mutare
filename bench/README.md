@@ -84,7 +84,7 @@ included in the decision. `projects.tsv` records the configured set for every pr
 | `fn-*`, `fn_default-*` | 10 / 20 / 40 clauses | Per-clause function delivery; two arguments, guards, captured outer binding |
 | `receive-*`, `receive_default-*` | 10 / 20 / 40 clauses | Per-clause receive delivery; unmatched messages, mailbox order, zero timeout |
 | `head_body-{isolated,default}-NxB` | 2 / 4 / 8 head literals × 10 / 40 / 160 body statements | Raw-body duplication from pattern mutations; isolated set is IntegerLiteral |
-| `guard_body-{isolated,default}-NxB` | Same grid, guard comparisons × body statements | Raw-body duplication from guard mutations; isolated set is Relational |
+| `guard_body-{isolated,default}-NxB` | Same grid, guard comparisons × body statements | Body sharing across guard-only mutants; isolated set is Relational |
 | `case_body-*`, `fn_body-*`, `receive_body-*` (`-{isolated,default}-NxB`) | The `guard_body` grid inside a `case`, `fn`, or `receive` clause | Raw-body duplication from guard mutations in the arrow-clause constructs; isolated set is Relational |
 | `rescue_types-{isolated,default}-NxB` | Same grid, exception types × body statements | Compare whole-`try` duplication with shared protected bodies for type-list narrowing; isolated set is RescueType |
 | `rescue_clauses-{isolated,default}-NxB` | Same grid, rescue clauses × body statements | Same comparison for rescue-clause removal; isolated set is RescueType |

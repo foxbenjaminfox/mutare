@@ -393,10 +393,11 @@ defmodule Mutare.Options.Registry do
   defp validate_strict_ignores!(value), do: validate_boolean!(:strict_ignores, value)
 
   # When true (`--verify-invariants`), every rendered file is checked before the run trusts it
-  # (`Mutare.Transform.Invariants`): the metamutant is read back and rendered a second time, and a
-  # violation — a recorded mutant with no reachable branch or coverage record, a mutant that
-  # renders unchanged, a nondeterministic render — aborts the scan with `Mutare.InvariantError`.
-  # For developing custom mutators, hosts, and extensions; it costs a parse, a second render, and
+  # (`Mutare.Transform.Invariants`): the metamutant is read back and its source emitted a second
+  # time. A violation — a recorded mutant with no reachable branch or coverage record, a mutant
+  # that renders unchanged, a nondeterministic emission — aborts the scan with
+  # `Mutare.InvariantError`.
+  # For developing custom mutators, hosts, and extensions; it costs a parse, a second emission, and
   # every mutant's diff text per file. Default `false`.
   defp validate_verify_invariants!(value), do: validate_boolean!(:verify_invariants, value)
 

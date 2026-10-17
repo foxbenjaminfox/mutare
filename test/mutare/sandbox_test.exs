@@ -469,8 +469,8 @@ defmodule Mutare.SandboxTest do
       # Deliberately unresolved (see `config_files/1`): divining a custom
       # `config_path` would mean parsing or evaluating the target's `mix.exs`.
       # The injected default-path file is dead weight mix never loads; the
-      # target's real config is not modified, and `mix test` runs stay covered
-      # by the test-bootstrap copy of the watcher.
+      # target's real config is not modified. The project prefix still supplies
+      # the owner-death watcher before compile and runtime startup.
       File.write!(Path.join(context.project, "mix.exs"), """
       defmodule Demo.MixProject do
         use Mix.Project

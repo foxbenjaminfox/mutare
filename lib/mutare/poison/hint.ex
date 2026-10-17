@@ -1,23 +1,20 @@
 defmodule Mutare.Poison.Hint do
   @moduledoc """
-  Turns one unrecoverable compile failure into advice the user can act on.
+  Suggests routes for macro-related compile poisoning.
 
-  Almost every compile-poisoning mutation is recovered automatically — Mutare
-  finds the offending mutant, drops it, and rebuilds. One case can't be: a macro
-  that requires a **compile-time literal argument** (`Size.megabytes(5)` and the
-  like). Mutating the literal turns it into runtime code, the macro rejects it and
-  raises while the compiler is expanding it, and because the compiler reports the error at the
-  macro *call* rather than at the mutation inside it, Mutare cannot identify which single
-  mutant to drop. The whole run aborts.
+  `Mutare.Poison` can recover from macros that reject mutated arguments,
+  including compile-time-literal macros such as `Size.megabytes(5)`, by finding
+  their argument mutants in the rendered metamutant and rebuilding without them.
+  `macro_skip_note/1` and `escalation_note/1` suggest durable routes after a
+  successful recovery, so the next run need not rediscover the same poison.
 
-  The way out is to leave that macro's arguments as written by routing it `:raw`
-  in `.mutare.exs` (the `:call_routes` option). This module recognises the situation
-  from the failed compile's output, identifies the macro(s) at fault, and produces
-  that advice — including a copy-pasteable snippet — so the error the user sees
-  explains how to get unblocked instead of just echoing the raw compiler error.
+  If recovery cannot finish, `for_compile_failure/1` reads macro-expansion frames
+  from the final failed compile and suggests routes the user can apply. It returns
+  `nil` when no usable macro frame is present.
 
-  Returns `nil` for any other compile failure, where the raw error stands on its
-  own.
+  A uniform `:raw` route leaves a call's arguments as written; the call itself
+  remains eligible for whole-call mutations. Suggestions use `:skip` instead
+  for a structural head that accepts only that treatment.
   """
 
   alias Mutare.Sandbox.Command.Output
@@ -26,9 +23,10 @@ defmodule Mutare.Poison.Hint do
   @doc """
   A copy-pasteable remediation hint for the failed-compile `output`, or `nil`.
 
-  Recognises the one poison case Mutare can't recover on its own — a macro that
-  needs a compile-time literal argument — and returns advice on how to skip it.
-  Any other failure returns `nil`, leaving the raw compiler error to stand alone.
+  Called after compile-poison recovery could not finish. Reads usable macro-expansion
+  frames and suggests argument routes for the implicated macros. The same macros
+  may be recoverable when metamutant attribution succeeds; this function only
+  formats advice from the output. Returns `nil` when no usable macro frame is present.
   """
   @spec for_compile_failure(String.t()) :: String.t() | nil
   def for_compile_failure(output) when is_binary(output) do
@@ -39,7 +37,7 @@ defmodule Mutare.Poison.Hint do
   end
 
   @doc """
-  The macro(s) to advise skipping, as distinct `{module_string, function_atom}`
+  The macro(s) to advise routing, as distinct `{module_string, function_atom}`
   pairs read from the `expanding macro:` frames in `output`, in first-seen order.
   `[]` when there are none. The names of `culprits/1`, deduplicated.
 
@@ -59,10 +57,10 @@ defmodule Mutare.Poison.Hint do
   `{{module_string, function_atom}, {file, line} | nil}`, in source order — one entry per
   stacktrace whose innermost frame names a macro we can advise on.
 
-  Each compile error reports only its **innermost** macro — the one whose literal argument
-  was actually mutated. A literal-only macro nested inside another (`if Size.megabytes(5)`)
-  also lists the enclosing macros, but skipping those would needlessly hide valid mutants, so
-  only the culprit is kept (the frames come from
+  Each expansion stack contributes only its **innermost** macro. A literal-only
+  macro nested inside another (`if Size.megabytes(5)`) also lists the enclosing
+  macros, but routing those would needlessly withhold valid mutants, so only the
+  innermost is kept (the frames come from
   `Mutare.Sandbox.Command.Output.macro_expansion_stacks/1`, innermost first). The call site is
   the frame's own — the file whose metamutant holds the poisoning mutant — which is why
   `Mutare.Poison.macro_poison/4` reads this rather than `expanding_macros/1`.
@@ -109,11 +107,12 @@ defmodule Mutare.Poison.Hint do
 
   Unlike `for_compile_failure/1` — which fires on an *unrecoverable* abort — this is the
   advice printed after a run *recovered*: the metamutant compiled, but only because
-  Mutare guessed a DSL body could be mutated, hit poison, and skipped the block at
-  runtime. That recovery is rediscovered from scratch on every run (the dropped ids are
+  Mutare guessed a DSL body could be mutated, hit poison, and rebuilt without the
+  block's mutants. That recovery is rediscovered from scratch on every run (the dropped ids are
   in-memory only), so we hand the user the durable, name-based fix. Each escalated macro
   becomes a module-wildcard `{:*, :name, :raw}` route (the invocation's module is an
-  unknown DSL we don't resolve), skipping that macro name wherever it appears.
+  unknown DSL we don't resolve), leaving its arguments as written wherever that
+  macro name appears. The call itself remains eligible for whole-call mutations.
 
   `escalations` is `Mutare.Run`'s `:recovery.escalated` (a list of
   `t:Mutare.Run.escalation/0`).
@@ -196,9 +195,9 @@ defmodule Mutare.Poison.Hint do
   defp plural([_]), do: ""
   defp plural(_macros), do: "s"
 
-  # A copy-pasteable `.mutare.exs` keyword list of module-wildcard skips — one
-  # `{:*, :name, :raw}` per escalated macro name, skipping it in any module (the
-  # invocation's module is an unknown DSL Mutare doesn't resolve to a concrete name).
+  # A copy-pasteable `.mutare.exs` keyword list of module-wildcard argument routes — one
+  # `{:*, :name, :raw}` per escalated macro name, leaving its arguments as written in any module
+  # (the invocation's module is an unknown DSL Mutare doesn't resolve to a concrete name).
   defp wildcard_snippet(macros) do
     entries =
       Enum.map_join(macros, ",\n", fn macro ->
@@ -273,7 +272,7 @@ defmodule Mutare.Poison.Hint do
   end
 
   # A copy-pasteable `.mutare.exs` keyword list. One arity-agnostic 3-tuple per
-  # macro (`{Module, :fun, :raw}`), so every arity of the macro is skipped. A head Mutare
+  # macro (`{Module, :fun, :raw}`), so every arity leaves its arguments as written. A head Mutare
   # analyzes structurally (`Kernel.in/2`, say) takes `:skip` — the only route it accepts — and
   # a definition (`Kernel.def/2`) takes no route at all, so it gets a comment pointing at
   # `# mutare:ignore` instead (`Mutare.Transform.StructuralForms`).

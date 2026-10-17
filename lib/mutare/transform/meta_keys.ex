@@ -16,8 +16,8 @@ defmodule Mutare.Transform.MetaKeys do
   #     the lifetime on every entry. A missing or unknown lifetime fails compilation.
   #
   # Only node-`meta` keys belong here. The other `:mutare_*` atoms are **not** metadata and
-  # stay owned by their modules: runtime-contract identifiers (`:mutare_active`/`:mutare_track`
-  # persistent_term keys in `Mutare.Selector`; the `:mutare_cov*` ETS tables in
+  # stay owned by their modules: runtime-contract identifiers (`:mutare_active` in
+  # `Mutare.Selector`; the `:mutare_track` persistent_term key and `:mutare_cov*` ETS tables in
   # `Mutare.Coverage.Recorder`), generated variable-name bases (`:mutare_piped`/`:mutare_cond`/
   # `:mutare_super`/`:mutare_capture_arg` in `Mutare.Transform.Names`/`Ctx`), and the
   # `:mutare_unmatched` placeholder var.

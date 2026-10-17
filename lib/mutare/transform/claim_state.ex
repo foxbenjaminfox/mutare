@@ -8,7 +8,8 @@ defmodule Mutare.Transform.ClaimState do
   #     one), so ids stay stable across the rebuilds poison recovery relies on.
   #   * `group` — numbers lifted clause groups, for collision-free private function names.
   #   * `sites` — the recorded `Mutare.Site`s (reversed; the caller flips them once), the input
-  #     to the report and the lazily-built manifest. Retained only by the `:render` sink.
+  #     to the report. The lazily-built manifest reads the rendered source instead.
+  #     Retained only by the `:render` sink.
   #   * `count` — a running mutant tally, the `:count` sink's cheap stand-in for `length(sites)`.
   #   * `emitted` — the artifacts actually delivered into the tree.
   #   * `selection` / `selected_ids` — under a `--line` selection, the `Mutare.LineScope` asked
@@ -41,7 +42,7 @@ defmodule Mutare.Transform.ClaimState do
   #     `Site` — and never invokes a producing mutator's `variant/2` for a position it is only
   #     locating.
   #
-  # `claim/5` is the one place the two sinks diverge; everything upstream is sink-agnostic.
+  # `claim/6` is the one place the two sinks diverge; everything upstream is sink-agnostic.
   # For a namespaced schema render, next_id, Sites, skips, and selection remain
   # in report space; only artifact_fn receives id - id_origin + 1. Every delivery
   # path therefore emits local integers without changing its placement mechanics.

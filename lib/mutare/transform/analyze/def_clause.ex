@@ -62,7 +62,8 @@ defmodule Mutare.Transform.Analyze.DefClause do
 
   # One `rescue`/`catch`/`else` clause: its patterns are matches (`:pattern`), its
   # body is runtime. A `when` guard among the patterns is returned whole by the
-  # `:when` clause of `analyze/3` (guard mutation in a try clause isn't supported).
+  # `:when` clause of `Analyze` (guards in the implicit def-body `catch`/`else` clauses
+  # are not offered here; explicit `try` clauses have separate guard discovery).
   defp analyze_try_clause({:->, meta, [patterns, body]}, env)
        when is_list(patterns) do
     patterns = Enum.map(patterns, &Analyze.pattern(&1, env))

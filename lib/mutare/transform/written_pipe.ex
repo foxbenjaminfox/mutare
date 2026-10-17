@@ -88,7 +88,7 @@ defmodule Mutare.Transform.WrittenPipe do
   end
 
   @doc """
-  The `|>` a rewritten call was written as — the inverse of `direct/1`, around whatever
+  The `|>` a rewritten call was written as — the inverse of `direct/2`, around whatever
   argument 0 the call now holds — or `nil` for any other node. It is what
   `Mutare.Transform.NodeRange.get/1` ranges in the call's stead, since the call stands where the
   whole `left |> stage` stood.

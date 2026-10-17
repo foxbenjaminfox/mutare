@@ -52,8 +52,8 @@ defmodule Mutare.Run.Context do
         }
 
   # The wiring fields — everything on the struct except `:options` (the hooks, `:project`, and the
-  # run-mode `:defer_site_code` flag). `defstruct` and `@context_keys` both derive from this single
-  # list, so a newly-added wiring field can't leave `@context_keys` stale: it is split out of the
+  # run-mode `:defer_site_code` and `:summarize_sites` flags). `defstruct` and `@context_keys` both
+  # derive from this list, so a newly-added wiring field can't leave `@context_keys` stale: it is split out of the
   # keyword input automatically rather than silently mis-routed into `Options.new/1` (where it would
   # fail as an unknown option).
   #
@@ -175,8 +175,9 @@ defmodule Mutare.Run.Context do
   @doc """
   Ensure the context carries a `Mutare.Project`, resolving one from `root` if it is
   unset. The entry points (`Mutare.Runner.run/2`, the Mix task) resolve the project
-  from the target path + scope flags; the direct `Mutare.run/2` API leaves it `nil`,
-  so it is resolved here as a single-app project at `root`.
+  from the target path + scope flags; when no project is supplied,
+  `Mutare.Project.resolve/1` detects a single project, umbrella root, or umbrella
+  child at `root`.
   """
   @spec ensure_project(t(), Path.t()) :: t()
   def ensure_project(%__MODULE__{project: nil} = context, root),

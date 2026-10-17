@@ -14,9 +14,9 @@ defmodule Stats.SeriesTest do
     assert Series.mean([]) == 0.0
   end
 
-  # Both fixtures are *symmetric* — reading them back-to-front gives the same
-  # multiset — so a mutant that sorts the other way (or reverses instead of
-  # sorting) lands on the same median and survives. Asymmetric data would kill it.
+  # Replacing div(count, 2) with rem(count, 2) happens to give the same median
+  # for both tested lengths (3 and 4). A five-element series would distinguish
+  # the two index calculations. Reversing instead of sorting is killed here.
   test "median of an odd-length series" do
     assert Series.median([5, 1, 3]) == 3
   end
@@ -33,7 +33,7 @@ defmodule Stats.SeriesTest do
 
   # midrange/1 destructures `{low, high}` then averages with a commutative `+`, so
   # PatternSwap's `{high, low}` lands on the same value and survives — the destructuring
-  # twin of the symmetric-median survivor above.
+  # counterpart to the coincidental median survivor above.
   test "midrange averages the smallest and largest" do
     assert Series.midrange([3, 1, 4, 1, 5]) == 3.0
   end

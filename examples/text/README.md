@@ -18,8 +18,9 @@ Expected (abridged):
 mutare in examples/text: 42 mutants across 1 file(s)
 
 lib/text/format.ex:18  [call_removal, in-place]  SURVIVED
+     text
+     |> String.downcase()
 -    |> String.trim()
-+    |> Elixir.Function.identity()
 
 lib/text/format.ex:19  [regex, in-place]  SURVIVED
 -    |> String.replace(~r/[^a-z0-9]+/, "-")
@@ -44,10 +45,10 @@ Why those survive:
   the regex twin of [`calc`](../calc/)'s `>= 50` → `> 50`. Two survivors, both
   near-equivalent; pinning the rest took one fixture with characters sitting on
   the class boundaries.
-- **`String.trim()` is removable in `slugify` (`call_removal`).** Neither fixture
-  has surrounding whitespace, so the trim is already a no-op — deleting it changes
-  nothing. The transform only earns its keep on input the test never supplies.
-  **Untested input shape.**
+- **`String.trim()` is removable in `slugify` (`call_removal`).** The regex
+  replacement turns surrounding whitespace into hyphens, and the final
+  `String.trim("-")` removes those. The earlier whitespace trim is redundant,
+  so deleting it produces an **equivalent mutant** that no extra fixture can kill.
 - **The truncation boundary (`<= max` → `< max`).** `excerpt/2` is tested well
   below the limit (a 5-char string, `max: 20`) and well above it (`max: 9`), but
   never with a string whose length is *exactly* `max` — the one input that tells

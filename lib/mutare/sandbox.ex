@@ -3,13 +3,14 @@ defmodule Mutare.Sandbox do
   Materialise a schema as a runnable copy of the target project.
 
   We copy the project to a dedicated directory (excluding build output), write
-  each metamutant over its original, and inject a tiny bootstrap into each test
-  helper (`test/test_helper.exs`, or one per `:test_paths` entry) that combines
-  `MUTARE_MUTANT_NAMESPACE` (the active mutant's file) and
-  `MUTARE_ACTIVE_MUTANT` (its id within that file) into one
-  `:persistent_term` entry before the suite starts. After the user's helper, Mutare appends a
-  formatter that records a failed test (`Mutare.Sandbox.Command.FailureWitness`), so a run
-  that crashes after a failure still counts as a kill. A second injection prefixes
+  each metamutant over its original, and prefix each `mix.exs` with a tiny
+  bootstrap that combines `MUTARE_MUTANT_NAMESPACE` (the active
+  mutant's file) and `MUTARE_ACTIVE_MUTANT` (its id within that file) into one
+  `:persistent_term` entry before target project code runs. Each test helper
+  (`test/test_helper.exs`, or one per `:test_paths` entry) carries an idempotent
+  fallback, and after the user's helper Mutare appends a formatter that records a
+  failed test (`Mutare.Sandbox.Command.FailureWitness`), so a run that crashes
+  after a failure still counts as a kill. A second injection prefixes
   `config/config.exs` with the owner-death watcher
   (`Mutare.Sandbox.Command.Invocation.owner_watch_ast/0`),
   so every sandbox `mix` — including the one-time compile, which runs before any
@@ -40,9 +41,11 @@ defmodule Mutare.Sandbox do
       temp dir; CI pins `:sandbox` at a cached directory instead. See `NOTES.md`
       for the cache pattern.
     * **fresh (`keep_sandbox: false`)** — a throwaway dir is wiped and re-copied every run, so
-      the metamutant recompiles cold, and the runner removes it afterwards. Always correct, no
-      caching. It never touches the kept sandbox's directory, so it does not reset a kept
-      sandbox that has gone bad; deleting that directory does.
+      the previous sandbox build is discarded, and the runner removes the sandbox
+      afterwards unless its path was explicitly supplied. Build seeding may still
+      reuse artifacts from the original project. It never touches the kept sandbox's
+      directory, so it does not reset a kept sandbox that has gone bad; deleting that
+      directory does.
 
   This module materialises the workspace. Sandbox `mix` invocations and
   per-mutant timeouts are implemented in
@@ -71,11 +74,12 @@ defmodule Mutare.Sandbox do
   # every invocation — so the dependencies' compiled artifacts we seed (see
   # `Mutare.Sandbox.Seed.dep_build/3`) live under `_build/<env>/lib`.
 
-  # The bootstrap is three dependency-free snippets, each rendered the same way
+  # The bootstrap is four dependency-free snippets, each rendered the same way
   # from a quoted AST its owner defines: the mutant selector
   # (`Mutare.Selector.bootstrap_ast/0`), the per-mutant timeout watcher
   # (`Mutare.Sandbox.Command.Invocation.watcher_ast/0`), and the owner-death
-  # watcher (`Invocation.owner_watch_ast/0`). Both watchers enforce their bound
+  # watcher (`Invocation.owner_watch_ast/0`), plus immutable coverage-probe mode
+  # (`Recorder.mode_ast/1`). Both watchers enforce their bound
   # *portably* — instead of the runner killing a hung OS process tree (which
   # needs platform-specific signals), the mutant process halts *itself*: after
   # the deadline for the timeout, on stdin EOF (the spawning Mutare process died)
@@ -151,9 +155,9 @@ defmodule Mutare.Sandbox do
   """
 
   # Stable names for the two files Mutare generates (vs. copies): the test helper's
-  # basename, joined to each test path, and the coverage helper's relative path. The
-  # coverage helper's collision-avoiding `_N` suffix is a fresh-mode-only fallback;
-  # `keep_sandbox` materialisation always reuses this base path.
+  # basename, joined to each test path, and the single-app coverage helper's relative
+  # path. Both modes step the coverage-helper path aside with an `_N` suffix when the
+  # original project already owns it; probing the original keeps the path stable.
   @helper_name "test_helper.exs"
   @default_helper "ExUnit.start()\n"
   @coverage_helper_rel "lib/__mutare__/coverage_helper.ex"
@@ -175,8 +179,9 @@ defmodule Mutare.Sandbox do
   `opts` may be a `Mutare.Run.Context`, a `Mutare.Options` struct, or a keyword
   list. `:sandbox` selects the target directory; without it Mutare uses a stable
   per-project temp directory (kept mode, the default) or a fresh one (`keep_sandbox:
-  false`). The context's project scope controls which umbrella apps are
-  materialized; its hooks are not consulted — the runner reports the summary.
+  false`). The context's project layout controls bootstrap injection into
+  umbrella apps; the whole project tree is copied. Its hooks are not consulted —
+  the runner reports the summary.
 
   The sandbox must be separate from the project tree: it may not be the project
   root, contain the project, or live inside it. This check is done here because it
@@ -541,9 +546,9 @@ defmodule Mutare.Sandbox do
   # watcher. Deliberately no attempt to resolve a custom `config_path:` — that
   # would mean divining it from `mix.exs` without evaluating target build code.
   # A project pointing `config_path` elsewhere simply never loads this file
-  # (harmless dead weight): its one-time compile goes unguarded, while its
-  # `mix test` runs still carry the watcher via the test bootstrap. The content
-  # is derived from the *root's* config on every (re-)materialisation, so
+  # (harmless dead weight): the project prefix still guards owner death and
+  # runtime deadlines, but the compile's own deadline lives only in this config
+  # prefix. The content is derived from the *root's* config on every (re-)materialisation, so
   # kept-mode syncs are stable and never stack a second prefix.
   defp config_files(root) do
     case File.read(Path.join(root, @config_rel)) do

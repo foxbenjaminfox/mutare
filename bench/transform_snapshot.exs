@@ -5,8 +5,8 @@
 #   MIX_ENV=test mix run bench/transform_snapshot.exs snapshot CORPUS_FILE OUT_DIR
 #
 # `corpus` is written once, by the revision under test, so both revisions transform the same
-# sources under the same options. `snapshot` must therefore run on a revision that lacks the
-# generators, and reads nothing but the corpus file and `Mutare.transform_string/2`.
+# sources under the same options. `snapshot` must therefore work even on a revision that lacks
+# the generators; it reads the corpus file and calls `Mutare.transform_string/2`.
 
 defmodule TransformSnapshot do
   alias Mutare.Test.{CleanSourcePatchGenerators, SourcePatchGenerators}

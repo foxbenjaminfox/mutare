@@ -38,16 +38,16 @@ Why those survive (or skip):
   password of length 7 vs 8 is ever compared, so widening the comparison by one
   is invisible. A **missing boundary test** — the same gap [`calc`](../calc/)
   shows in miniature.
-- **`String.length` → `byte_size` (the same line).** Both count 8 for every
-  password in the suite, because every fixture is plain ASCII, where one
+- **`String.length` → `byte_size` (the same line).** Both return the same length
+  for every password in the suite, because every fixture is plain ASCII, where one
   character is one byte. A password with an accented letter near the threshold
   (`"Sécret1"` — 7 graphemes, 8 bytes) would tell grapheme-length from
   byte-length apart; nothing in the suite does. **Weak (all-ASCII) test data.**
 - **The character-class checks (`~r/[[:upper:]]/` → `~r//`, and → `~r/[^...]/`).**
-  An empty regex matches *any* string and a negated class matches the complement,
-  so each of `has_upper?`/`has_lower?`/`has_digit?` becomes "always true" or
-  "inverted". The only weak password in the suite, `"Ab1"`, is rejected on
-  *length* before the classes ever matter — so no test isolates a long password
+  An empty regex matches *any* string; a negated class matches any character
+  outside that class. The strong passwords mix all three classes, so both
+  replacements still pass. The weak passwords are rejected on *length* before
+  the classes ever matter — so no test isolates a long password
   missing exactly one class. Two survivors per class, all the same gap: nothing
   proves a character class is actually *required*. A test like
   `refute strong_password?("lowercase123")` (long, but no upper-case) closes it.

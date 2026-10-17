@@ -40,7 +40,7 @@ defmodule Mutare.Mutators.CollectionArity do
   def mutate(node) do
     with {:ok, {new_fun, keep}, {_module, _fun, args, rebuild}} <-
            Helpers.lookup_resolved_arity(node, @rules) do
-      # `rebuild` reuses the written alias node (every rule stays within `Enum`).
+      # `rebuild` reuses the written module node; every rule keeps its original module.
       [rebuild.(new_fun, Enum.map(keep, &Enum.fetch!(args, &1)))]
     end
   end

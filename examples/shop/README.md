@@ -3,9 +3,9 @@
 The big one — a small **multi-module** shop (no dependencies) written to do two
 things the other examples don't:
 
-1. **Exercise every built-in mutator family.** Across six files it triggers all
-   44 — from `arithmetic` and `regex` to `genserver`, `bitstring_spec`,
-   `pattern_swap`, and `rescue_type`. (`mix mutare examples/shop --dry-run` lists
+1. **Exercise a broad cross-section of built-in mutator families.** Across six
+   files it triggers families from `arithmetic` and `regex` to `genserver`,
+   `bitstring_spec`, `pattern_swap`, and `rescue_type`. (`mix mutare examples/shop --dry-run` lists
    every mutant, grouped by file, without compiling or running anything.)
 2. **Show the `.mutare.exs` config surface** — choosing mutators, leaving a
    macro's argument raw, and suppressing known-equivalent mutants with
@@ -34,7 +34,7 @@ mix mutare examples/shop
 Expected (abridged — 28 survivors across four files):
 
 ```
-mutare in examples/shop: 287 mutants across 6 file(s)
+mutare in examples/shop: 285 mutants across 6 file(s)
 
 lib/shop/catalog.ex:18  [regex, in-place]  SURVIVED
 -    String.match?(sku, ~r/^[A-Z]{3}-\d{4}$/)
@@ -48,7 +48,7 @@ lib/shop/inventory.ex:41  [guard_drop, lifted]  SURVIVED
 -  def code_size(sku) when is_binary(sku) do
 +  def code_size(sku) do
 ...
-mutation score: 89.9%  (250 killed, 28 survived, 5 no-coverage, 4 ignored, 287 total)
+mutation score: 89.9%  (248 killed, 28 survived, 5 no-coverage, 4 ignored, 285 total)
 ```
 
 ## The config tour (`.mutare.exs`)
@@ -64,7 +64,8 @@ This is the example's real subject — open
   `matching(products, row.price <= budget)` — a query *expression*, not runtime
   code. Leaving it raw drops `search.ex` from 11 mutants to 4. **Comment that line
   out and re-run** to watch the `relational`/`conditional` mutants on the query
-  conditions reappear — the dependency-free version of `{Ecto.Query, :from, :skip}`.
+  conditions reappear — the dependency-free version of
+  `{Ecto.Query, :from, 2, [:expression, :raw]}`.
 - **`# mutare:ignore`** lives in the source, not the config. `lib/shop/pricing.ex`
   carries all three flavours — run `mix mutare examples/shop --list-ignores` to
   see them:
@@ -89,8 +90,8 @@ The 28 survivors span the codebase; a representative handful:
   match) or shrinking the `[A-Z]` class to `[A-Y]` all survive. **Untested
   format edges.**
 - **List order (`cart.ex:23`).** `lines ++ [line]` → `[line] ++ lines` prepends
-  instead of appends. Every test adds to a one-line cart, so order is never
-  observed. **Weak test data.**
+  instead of appends. The assertion on line order starts with an empty cart;
+  tests with several lines only check filtered or sorted results. **Weak test data.**
 - **A removable guard (`inventory.ex:41`).** `def code_size(sku) when is_binary(sku)`
   is only ever called with a binary, so deleting the guard changes nothing the
   suite sees. **Untested precondition.**
