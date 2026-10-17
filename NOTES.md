@@ -15636,22 +15636,32 @@ Decisions, each with the alternative it rejected:
 - **Rounding.** Whether a `diff` is antisymmetric turns on where it rounds to the unit.
   Rounding each operand and then subtracting is exact, and so is truncating the exact
   difference toward zero. Rounding the exact difference *down* is not: `-0.5` becomes `-1`
-  but `0.5` becomes `0`. `System.convert_time_unit/3` rounds down, and `DateTime.diff` and
-  `Time.diff` apply it to the difference, so half a second apart reads `0` one way and `-1`
-  the other: `diff(a, b) == 0` is observable. `NaiveDateTime.diff` rounds each operand on
-  Elixir 1.19, but Elixir's `main` branch (checked 2026-10-06) passes the microsecond
-  difference to `System.convert_time_unit/3`, so a release will round it down too; it is
-  out. All three document "Fractional results are not supported and are truncated", which
-  would be antisymmetric, but none implements it, so the docs are no guarantee. `Date.diff`
-  counts days: exact.
+  but `0.5` becomes `0`. `System.convert_time_unit/3` rounds down, and `Time.diff` applies it
+  to the difference, so half a second apart reads `0` one way and `-1` the other:
+  `diff(a, b) == 0` is observable. `DateTime.diff` does the same on Elixir 1.19 and 1.20; 1.18
+  truncated the difference toward zero, and `main` does again (elixir-lang c2526fe9,
+  2026-09-24, not on the `v1.20` branch as of 2026-10-17). The target may run 1.19 or 1.20,
+  so it is out. `NaiveDateTime.diff` rounds each operand on Elixir 1.18 and 1.19, but
+  Elixir's `main` branch (checked 2026-10-06) passes the microsecond difference to
+  `System.convert_time_unit/3`, so a release will round it down too; it is out. All three
+  document "Fractional results are not supported and are truncated", which would be
+  antisymmetric, but not every release implements it, so the docs are no guarantee.
+  `Date.diff` counts days: exact.
 - **Signed zero.** `-0.0 - 0.0` is `-0.0`, while `0.0 - -0.0` is `0.0`. Erlang's `==` and
   orderings treat both as the same number, so those readings hold; `===` tells them apart
   from OTP 27 (on OTP 26 it does not, which is why the test asserts that half only on 27+).
-  `abs/1` keeps a zero's sign (`abs(-0.0)` is `-0.0`), so bare `abs(a - b)` is observable
-  through `inspect`. It counts only beneath a comparison (`abs(a - b) < eps`, the common
-  idiom), and a bare `abs` only over the integer `Date.diff`. The first version claimed
-  bare `abs(a - b)`. The evaluation test compared values with `==`, which equates the two
-  zeros, and missed it; it now compares external term encodings.
+  `abs/1` keeps a zero's sign before OTP 27 (`abs(-0.0)` is `-0.0` on 25 and 26, `0.0`
+  from 27): the BIF returns its argument unchanged unless `f < 0.0`, which `-0.0` is not,
+  and OTP 27 tests `f <= 0.0` instead. So on those releases bare `abs(a - b)` is observable through `inspect`. It
+  counts only beneath a comparison (`abs(a - b) < eps`, the common idiom), and a bare `abs`
+  only over the integer `Date.diff`. The first version claimed bare `abs(a - b)`. The
+  evaluation test compared values with `==`, which equates the two zeros, and missed it; it
+  now compares external term encodings.
+- **Version-dependent witnesses.** Both the `DateTime.diff` rounding and the `abs/1` sign
+  hold only on some supported releases, and the test that witnesses each exclusion first
+  asserted them on all: CI failed on every pairing but Elixir 1.19 / OTP 26. Each witness
+  is now asserted only where it holds; the exclusions stay on every release, since the
+  transform does not know which one the target runs.
 - **Line scope.** The drop is decided while the candidates are built, and `:only_lines`
   (`--line`, `--since`) selects among the finished Sites, by the line each starts on. The
   two can land on different lines: in `DateTime.compare(a, b) ==\n :lt` the swap would sit

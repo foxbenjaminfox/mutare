@@ -48,7 +48,7 @@ defmodule Mutare.Mutators.OperandSwap do
 
     * a `compare/2` (calendar types and `Version`) tested against `:eq` or another atom besides `:lt`/`:gt` (`==`, `!=`, `===`, `!==`, `match?/2`), or for membership in a list of atoms holding both `:lt` and `:gt` or neither
     * `Date.diff/2` or `a - b` tested for equality with zero (`===`/`!==` only against the integer `0`)
-    * `abs(Date.diff(a, b))`, and `abs(a - b)` read by `==`, `!=`, or an ordering (`abs(a - b) < tolerance`). A bare `abs(a - b)` keeps its swap: a float difference can be `0.0` one way and `-0.0` the other, and `abs/1` keeps the sign
+    * `abs(Date.diff(a, b))`, and `abs(a - b)` read by `==`, `!=`, or an ordering (`abs(a - b) < tolerance`). A bare `abs(a - b)` keeps its swap: a float difference can be `0.0` one way and `-0.0` the other, and before OTP 27 `abs/1` keeps the sign
 
   And it withholds a swap that runs the same program as a mutant another family produced there:
 

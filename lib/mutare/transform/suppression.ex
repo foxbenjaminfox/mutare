@@ -211,8 +211,9 @@ defmodule Mutare.Transform.Suppression do
     end)
   end
 
-  # `abs(a - b) < tolerance`: `abs` erases the negation but keeps a zero's sign, which a
-  # comparison other than `===`/`!==` then cannot see. Whatever the other operand is.
+  # `abs(a - b) < tolerance`: `abs` erases the negation but (before OTP 27) keeps a zero's
+  # sign, which a comparison other than `===`/`!==` then cannot see. Whatever the other
+  # operand is.
   defp reading_through_abs(op, [_, _] = args)
        when op in [:==, :!=] or is_map_key(@direction_flips, op) do
     args
@@ -310,7 +311,7 @@ defmodule Mutare.Transform.Suppression do
   end
 
   # The absolute value of an integer difference. (Of a float difference it keeps the zero's
-  # sign; `reading_through_abs/2` handles the comparisons that cannot see it.)
+  # sign before OTP 27; `reading_through_abs/2` handles the comparisons that cannot see it.)
   defp reading(:integer_difference, :abs, [_], 0), do: {[0], :unobservable}
   defp reading(_kind, _op, _args, _index), do: nil
 

@@ -7,8 +7,8 @@ defmodule Mutare.Transform.SwapRedundancyTest do
   than sampled.
 
   The operand values are the ones the reader's exclusions answer to: sub-unit gaps (which
-  `DateTime.diff`/`Time.diff` round), signed zeros (which `abs/1` keeps and OTP 27's `===`
-  tells apart), and invalid values, which make the call raise. Values are compared by their
+  `DateTime.diff`/`Time.diff` can round), signed zeros (which `abs/1` keeps before OTP 27 and
+  `===` tells apart from it), and invalid values, which make the call raise. Values are compared by their
   external term encoding, so a zero's sign counts on every OTP. Where at most one operand is
   invalid, a raise matches a raise of the same exception type; its message may name the
   operands in the other order, which the reader accepts. Where both are, a raise matches any
@@ -125,15 +125,23 @@ defmodule Mutare.Transform.SwapRedundancyTest do
   end
 
   test "the readings left out are observable" do
-    # `DateTime.diff` rounds down: half a second apart reads 0 one way and -1 the other.
+    # Each reading is left out on every Elixir and OTP, since the target may run one that
+    # observes it; each witness is asserted where it holds.
+
+    # `DateTime.diff` rounds down on Elixir 1.19 and 1.20: half a second apart reads 0 one way
+    # and -1 the other. 1.18 and `main` truncate toward zero, which is exact.
     a = ~U[2020-01-01 00:00:00.5Z]
     b = ~U[2020-01-01 00:00:00Z]
-    assert DateTime.diff(a, b) == 0 != (DateTime.diff(b, a) == 0)
 
-    # A float difference can be a zero of either sign, and `abs/1` keeps it; OTP 27's `===`
-    # sees it too (OTP 26's does not, but the target may run 27).
+    if Version.match?(System.version(), "~> 1.19.0 or ~> 1.20.0"),
+      do: assert(DateTime.diff(a, b) == 0 != (DateTime.diff(b, a) == 0))
+
+    # A float difference can be a zero of either sign. `abs/1` keeps it before OTP 27 (from 27,
+    # `abs(-0.0)` is `0.0`); OTP 27's `===` sees it (OTP 26's does not).
     {x, y} = {-0.0, 0.0}
-    assert inspect(abs(x - y)) != inspect(abs(y - x))
+
+    if String.to_integer(System.otp_release()) <= 26,
+      do: assert(inspect(abs(x - y)) != inspect(abs(y - x)))
 
     if String.to_integer(System.otp_release()) >= 27,
       do: assert(x - y === 0.0 != (y - x === 0.0))
